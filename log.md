@@ -75,3 +75,6 @@
   `TM_DEBUG_IME=1` のデバッグフックで変換中→確定を確認（一覧 28→0 件）。
   実 IME の手動確認は未実施。
 - テスト: workspace 131 + web 4。
+- CI run 43616522864: ネイティブ IME 変更後も 5 ジョブすべて成功
+  （Windows 4m28s / macOS 1m10s / cargo-deny / wasm 1m49s / gates 3m55s）。
+- Windows/macOS 物理実機・クラウド検証の選択肢と費用を `notes/physical-verification.md` に整理。
