@@ -19,7 +19,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（現在 **private**）
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
   `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit）。
-  追加で wasm check / cargo-deny / native-windows / native-macos の 5 ジョブ構成
+  追加で wasm check / cargo-deny / native-windows / native-macos の 5 ジョブ構成。
+  初回実行（run 43612670190）は **5 ジョブすべて成功**（Windows 4m49s / macOS 1m11s /
+  cargo-deny 22s / wasm 1m47s / gates 2m28s）
 - 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
 - Dependabot（Cargo / web / GitHub Actions、週次）とセキュリティアラートを有効化済み。
 
@@ -162,12 +164,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）をヘッドレス Chrome で検証（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
-| Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化 |
+| Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功 |
 | wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 5 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos）。push 後に実結果を追記 |
+| CI | 5 ジョブすべて成功（run 43612670190。gates / wasm / cargo-deny / native-windows / native-macos） |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
 [notes/web-shell.md](notes/web-shell.md)、IME は [notes/ime.md](notes/ime.md)、

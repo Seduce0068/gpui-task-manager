@@ -60,3 +60,10 @@
   Linux 専用 tasks/threads を gate。CI に native-windows / native-macos / deny を追加。
   Windows workspace check / macOS 4 crate check はローカル成功。
 - テスト: workspace 118 + web 15。
+
+## 2026-11-15（CI 初回実行）
+
+- run 43612670190: **5 ジョブすべて成功**（gates 2m28s / wasm 1m47s / cargo-deny 22s /
+  native-windows 4m49s / native-macos 1m11s）。
+- Dependabot 初回更新: Cargo ルート / web / GitHub Actions の 3 ジョブ成功。
+  PR #1（actions/checkout 4→7）が作成され、PR の CI も成功（レビュー待ち）。
