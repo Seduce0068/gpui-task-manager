@@ -189,7 +189,7 @@ cd poc-wasm && trunk build --release
 
 | ツール | 内容 | 結果 |
 |---|---|---|
-| Dependabot | `.github/dependabot.yml`（Cargo ルート / web、GitHub Actions、週次）。GPUI 系は完全ピン運用のため ignore。セキュリティアラート / 自動修正を API で有効化 | `vulnerability-alerts.enabled=true` / `automated-security-fixes.enabled=true` |
+| Dependabot | `.github/dependabot.yml`（Cargo ルート / web、GitHub Actions、週次）。GPUI 系は完全ピン運用のため ignore。セキュリティアラート / 自動修正を API で有効化 | `vulnerability-alerts.enabled=true` / `automated-security-fixes.enabled=true`。初回更新ジョブ 3 件成功、PR #1（actions/checkout 4→7）作成・PR CI 成功 |
 | cargo-deny | `deny.toml`（ライセンス allowlist、脆弱性、重複版 warn、供給元 deny）。ルート / web の両方 | 両方 **advisories / bans / licenses / sources ok** |
 | wasm-opt | `web/index.html` の `data-wasm-opt="z"`（trunk が wasm-opt を自動取得） | wasm 14,799,786 → **7,589,230 B**、gzip 3,656,199 → **3,024,986 B** |
 | wasm-opt 後の Web 検証 | 既存 CDP スクリプト（デモ） | `{"failures": [], "passed": true}`、スクリーンショット 8 枚（`wasmopt-*.png`） |
@@ -211,7 +211,7 @@ cd poc-wasm && trunk build --release
 | `cargo check --target x86_64-pc-windows-msvc -p tm-platform --tests` / clippy | 成功 |
 | `cargo check --target aarch64-apple-darwin`（core / viewmodel / platform / agent） | 成功 |
 | app の macOS ビルド | Linux ホストでは `gpui-pre-apple` の Metal シェーダ生成が動かず不可（環境制約）。CI `native-macos` で検証 |
-| CI ジョブ | `native-windows` / `native-macos` / `deny` を追加（push 後に実結果を追記） |
+| CI ジョブ | `native-windows` / `native-macos` / `deny` を追加。run 43612670190 で **5 ジョブすべて成功**（Windows 4m49s / macOS 1m11s / deny 22s / wasm 1m47s / gates 2m28s） |
 
 - Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動
   （PATH ハイジャック回避）。Stop/Continue は非対応。
