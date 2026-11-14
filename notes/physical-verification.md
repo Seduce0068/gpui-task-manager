@@ -94,6 +94,45 @@ status: draft
   4. 安価な第2 GPU 追加（低コストで快適。物理投資あり）
   5. デュアルブート（最終手段）
 
+## 1.4 試行結果（2026-11-15、ソフトウェア Vulkan / Windows VM）
+
+### 1.4.1 Linux 上でのソフトウェア Vulkan（成功）
+
+- ホストには Mesa の **lavapipe**（`/usr/share/vulkan/icd.d/lvp_icd.json`）が導入済み。
+- `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` でネイティブ版を起動し、
+  **GPU を使わずソフトウェア Vulkan で GPUI が描画できることを確認**した。
+  - `vulkaninfo --summary` の device は `llvmpipe (LLVM 21.1.8, 256 bits)`、Vulkan 1.4。
+  - `./target/debug/gpui-task-manager --demo --redact` が起動し、スクリーンショット
+    `notes/assets/lavapipe-native.png` を取得。
+- これは「GPUI がソフトウェア Vulkan で動く」ことの証明であり、**Windows ゲストで
+  lavapipe が動くことの証明ではない**（Windows 側の ICD は未検証）。
+
+### 1.4.2 Windows VM（今回は完遂できず）
+
+試行環境の確認結果:
+
+| 項目 | 結果 |
+|---|---|
+| KVM/QEMU | `qemu-system-x86_64` / `virt-install` / `virsh` / `swtpm` / OVMF 導入済み |
+| libvirt | `qemu:///system` 接続可、`default` ネットワーク動作中、ユーザーは `libvirt` グループ |
+| CPU 仮想化 | `svm` あり、`/dev/kvm` あり |
+| IOMMU | `/sys/kernel/iommu_groups` は 0 件（GPU パススルーには BIOS/カーネル設定と再起動が必要） |
+| ディスク | 空き **46 GB**（Windows 11 + ツールチェーンには余裕が少ない） |
+| 評価版 ISO | Microsoft Evaluation Center の ISO リンクは **`info.microsoft.com` の登録フォームへリダイレクト**され、エージェントだけではダウンロードできない |
+| Windows バイナリ | 未生成（CI で Windows ビルドの artifact を出すか、`cargo-xwin` 等が必要） |
+| ソフトウェア Vulkan（Windows 側） | Mesa-dist-win の lavapipe を利用可能（`pal1000/mesa-dist-win` 26.2.6）だが未検証 |
+
+- 判断: **Windows VM の構築は、評価版 ISO の入手（ユーザーによる Microsoft アカウントでの
+  登録・ダウンロード）がブロッカー**。ISO が用意できれば、VM 作成（libvirt + OVMF +
+  swtpm）→ Windows インストール → アプリ + Mesa lavapipe 投入 → `virsh screenshot` まで
+  自動化できる見込み。
+- 次の選択肢:
+  1. ユーザーが [Windows 11 Enterprise 評価版](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
+     の ISO をダウンロードしてパスを共有する（無料。Microsoft アカウントで登録）。
+  2. 既存の Windows ライセンス/ISO がある場合はそれを使う。
+  3. クラウド GPU Windows の無料トライアルを使う（Azure/GCP。カード・GPU クォータ要確認）。
+  4. 今回は物理/VM の Windows 検証を保留し、CI の Windows ビルド・テストのみで良しとする。
+
 ## 2. 現在どこまで検証済みか（2026-11-15 時点）
 
 | 検証層 | 内容 | 状態 |
