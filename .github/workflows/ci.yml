@@ -36,7 +36,7 @@ jobs:
     name: wasm check (tm-core / tm-viewmodel / web)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -53,7 +53,7 @@ jobs:
     name: native check (windows-latest)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Check workspace
         run: cargo check --workspace
@@ -64,7 +64,7 @@ jobs:
     name: native check (macos-latest)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Check workspace
         run: cargo check --workspace
@@ -76,7 +76,7 @@ jobs:
     name: cargo-deny (licenses / advisories / duplicates)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@cargo-deny
       - name: Check native workspace
         run: cargo deny --manifest-path Cargo.toml check
