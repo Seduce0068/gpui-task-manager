@@ -220,10 +220,10 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 マウスでは行クリックで選択、列ヘッダでソート、詳細パネルのボタンでシグナル操作。
 
-ブラウザ版の絞り込みは日本語 IME（composition）に対応する。`gpui-pre-web` の IME
-ミラー（隠し textarea）と `EntityInputHandler` を使い、変換中の未確定文字列は入力欄に
-だけ表示し、確定文字列だけを `Dashboard` に反映する（`notes/ime.md`）。ネイティブ版の
-IME は未実装（設計案は同ノート）。
+ブラウザ版・ネイティブ版とも絞り込みは日本語 IME（composition）に対応する。
+`gpui-pre-web` の IME ミラー（隠し textarea）と、ネイティブの
+`window.handle_input` + `EntityInputHandler` を使い、変換中の未確定文字列は入力欄に
+だけ表示し、確定文字列だけを `Dashboard` に反映する（`notes/ime.md`）。
 
 ### 5.4 表示の安全性
 
@@ -380,8 +380,9 @@ IME は未実装（設計案は同ノート）。
 | エージェント | JSON 応答、認証、CORS、読み取り専用 | `cargo test -p tm-agent` + curl |
 | UI スモーク | Wayland 起動、ウィンドウ確認、スクリーンショット | 手動 + KWin D-Bus |
 | wasm | `cargo check --target wasm32-unknown-unknown`、`trunk build`、ブラウザ表示 | スパイク + CDP |
-| web 入力 | `FilterInput` の状態機械（UTF-16・選択・marked range） | `cargo test --manifest-path web/Cargo.toml --lib`（15 件） |
-| IME | composition 中は確定しない・確定後に反映・Esc 復帰 | CDP `Input.imeSetComposition`（32 チェック） |
+| 入力状態 | `FilterInput` の状態機械（UTF-16・選択・marked range、Web/ネイティブ共有） | `cargo test -p tm-viewmodel`（28 件） |
+| IME（Web） | composition 中は確定しない・確定後に反映・Esc 復帰 | CDP `Input.imeSetComposition`（32 チェック） |
+| IME（native） | `EntityInputHandler` 経由の変換中表示と確定反映 | `TM_DEBUG_IME=1` + スクリーンショット |
 | クロスプラットフォーム | Windows/macOS ターゲットの check、CI ランナー | `cargo check --target ...` / GitHub Actions |
 
 ### 8.2 決定性
@@ -490,7 +491,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | AC-10 | ブラウザで GPUI 画面が表示される（スパイク） | ヘッドレス Chrome |
 | AC-11 | エージェントが読み取り専用で、トークンなしの要求を拒否する | curl |
 | AC-12 | 設計書・調査レポート・README が実装と一致する | レビュー |
-| AC-13 | ブラウザ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 |
+| AC-13 | ブラウザ版 / ネイティブ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 + `TM_DEBUG_IME=1` |
 | AC-14 | Windows / macOS ターゲットでワークスペースが型検査できる | `cargo check --target` + CI |
 | AC-15 | cargo-deny がルート / web とも成功する | `cargo deny check` |
 
@@ -636,13 +637,25 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: 物理実機の GUI 操作・IME は未検証のまま残るが、型検査と単体テストは
   OS ごとに担保できる。
 
+### ADR-019: ネイティブ IME は EntityInputHandler の最小実装
+
+- 状況: `gpui-pre-linux` は Wayland text-input-v3 / X11 XIM を実装しているが、
+  アプリ側の `EntityInputHandler` 登録がないと変換中文字列や複数文字確定が捨てられる。
+  `gpui-component::Input` への置換は編集モードの意味論を変えるリスクが高い。
+- 決定: `FilterInput` を `tm-viewmodel` に共有化し、`TaskManagerApp` に
+  `EntityInputHandler` を実装してフィルタ欄の bounds に登録する。既存の
+  Ctrl+F / Esc / Enter の意味論は維持し、文字入力だけをハンドラ経由にする。
+  実 IME の無い環境向けに `TM_DEBUG_IME=1` のデバッグフックを用意する。
+- 結果: ブラウザ版と同じ `FilterInput` を共有しつつ、ネイティブでも変換中表示と
+  確定反映を実装。実 IME の候補ウィンドウ・予測変換は未検証。
+
 ---
 
 ## 14. 既知の制限・未検証
 
 - Windows / macOS の**物理実機**でのビルド・実行は未検証。OS 別 cfg と CI ランナーで
   型検査・テストを実施する（Windows は Stop/Continue 非対応、Terminate/Kill は強制終了）。
-- ネイティブ版の IME は未実装（ブラウザ版は対応済み）。
+- ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施。
 - Wayland 以外（X11 セッション）での表示は未検証。GPUI の x11 feature は有効。
 - プロセスのツリー表示、優先度変更、cgroup 表示、GPU 監視は未実装。
 - ライトテーマ、設定永続化、自動更新は未実装。

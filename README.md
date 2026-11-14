@@ -34,8 +34,8 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - シグナル操作（SIGTERM / SIGKILL / SIGSTOP / SIGCONT）を**確認ダイアログ経由**で実行
 - 安全装置: PID 1 と自分自身の拒否、PID + 起動時刻による PID 再利用検出
 - キーボード操作: ↑↓ / PgUp/PgDn / Home/End / Space / Ctrl+F / Ctrl+K / F2 / F5 / F1
-- ブラウザ版の日本語 IME（composition）対応。変換中は未確定文字列のみ入力欄に表示し、
-  確定文字列だけを絞り込みへ反映
+- **ブラウザ版 / ネイティブ版の日本語 IME（composition）対応**。変換中は未確定文字列を
+  入力欄にのみ表示し、確定文字列だけを絞り込みへ反映
 - `--demo` で決定的な合成データ起動（スクリーンショット・回帰用）
 - 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
@@ -153,8 +153,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **118 passed / 0 failed**（core 49 / viewmodel 15 / platform 9 / agent 39 / app 6） |
-| web ユニットテスト | **15 passed / 0 failed**（`filter_input` 11 + agent 4） |
+| `cargo test --workspace` | **131 passed / 0 failed**（core 49 / viewmodel 28 / platform 9 / agent 39 / app 6） |
+| web ユニットテスト | **4 passed / 0 failed**（`filter_input` のテストは共有化に伴い `tm-viewmodel` へ移動） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
@@ -167,6 +167,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功 |
 | wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
+| 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
 | CI | 5 ジョブすべて成功（run 43612670190。gates / wasm / cargo-deny / native-windows / native-macos） |
@@ -183,7 +184,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - Windows は POSIX シグナルがないため Stop/Continue 非対応（Terminate/Kill は
   `taskkill /F` による強制終了）
 - ブラウザ版は読み取り専用（OS プロセスはブラウザから取得できないため）
-- ネイティブ版の IME は未実装（ブラウザ版は対応済み。設計案は [notes/ime.md](notes/ime.md)）
+- ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
+  （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - プロセスツリー、優先度変更、GPU 監視、ライトテーマ、設定永続化は未実装
 - ブラウザ wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）

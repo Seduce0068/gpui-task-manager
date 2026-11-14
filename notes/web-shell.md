@@ -287,7 +287,7 @@ $ cd web && trunk build --release
 ## 既知の制約・未確認事項
 
 - 読み取り専用（シグナル操作なし）。ブラウザから OS のプロセスを直接は読めない。
-- 日本語 IME はブラウザ版で対応（`EntityInputHandler` + composition、`notes/ime.md`）。ネイティブ版は未実装。
+- 日本語 IME はブラウザ版・ネイティブ版とも対応（`EntityInputHandler` + composition、`notes/ime.md`）。
 - headless Chrome は WebGL2（ANGLE + SwiftShader）へフォールバックする。
   WebGPU を強制すると device lost で描画停止（スパイクで確認）。実 GPU の
   WebGPU 描画、Safari / Firefox は未検証。

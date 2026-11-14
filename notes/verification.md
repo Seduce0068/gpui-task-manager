@@ -24,10 +24,10 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **118 passed / 0 failed**（tm-core 49 / tm-viewmodel 15 / tm-platform 9 / tm-agent 39 / app 6）
-| web ユニットテスト | **15 passed / 0 failed**（`filter_input` 11 + agent 4） |
+| `cargo test --workspace` | **131 passed / 0 failed**（tm-core 49 / tm-viewmodel 28 / tm-platform 9 / tm-agent 39 / app 6） |
+| web ユニットテスト | **4 passed / 0 failed**（`filter_input` テストは共有化に伴い `tm-viewmodel` の 28 件へ移動） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
-| `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件は理由付き ignore。cargo-deny はルート / web とも ok |（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など、いずれも GPUI 依存由来） |
+| `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
 
 ## 3. ネイティブ UI（実データ）
@@ -194,14 +194,18 @@ cd poc-wasm && trunk build --release
 | wasm-opt | `web/index.html` の `data-wasm-opt="z"`（trunk が wasm-opt を自動取得） | wasm 14,799,786 → **7,589,230 B**、gzip 3,656,199 → **3,024,986 B** |
 | wasm-opt 後の Web 検証 | 既存 CDP スクリプト（デモ） | `{"failures": [], "passed": true}`、スクリーンショット 8 枚（`wasmopt-*.png`） |
 
-## 11. 日本語 IME（ブラウザ版、2026-11-15）
+## 11. 日本語 IME（ブラウザ版 / ネイティブ版、2026-11-15）
 
 - `gpui-pre-web` の IME ミラー（隠し textarea）+ アプリ側 `EntityInputHandler` で実装。
 - 変換中は未確定文字列を入力欄にのみ表示し、`Dashboard` へは確定文字列だけを反映。
 - CDP `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」を再現し、
   **32/32 チェック pass**、JS 例外 0。単体テスト 15 件（web）。
-- ネイティブ版は未実装（設計案は `notes/ime.md`）。
-- 証拠: `notes/assets/ime-*.png`、`web/scripts/cdp_verify_ime.py`。
+- ネイティブ版: `FilterInput` を `tm-viewmodel` に共有化し、`EntityInputHandler` を
+  実装。`TM_DEBUG_IME=1` で「にほんご」（変換中・一覧 28 件のまま）→「日本語」
+  （確定・一覧 0 件）を確認。`notes/assets/native-ime-*.png`。
+  実 IME（IBus/fcitx5）での手動確認は未実施。
+- 証拠: `notes/assets/ime-*.png`、`notes/assets/native-ime-*.png`、
+  `web/scripts/cdp_verify_ime.py`。
 
 ## 12. Windows / macOS（2026-11-15）
 

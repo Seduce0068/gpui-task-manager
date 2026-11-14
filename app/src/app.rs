@@ -6,6 +6,7 @@
 //! behind an `Arc<Mutex<...>>` and is only touched from the GPUI background
 //! executor, so the UI thread never blocks on `/proc` reads.
 
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,7 +17,9 @@ use gpui_kit::*;
 use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{ProcessKey, ProcessStatus, Signal, SortKey, SystemProbe, Timestamp};
-use tm_viewmodel::{Command, Dashboard, Effect, DEFAULT_REFRESH_INTERVAL};
+use tm_viewmodel::{
+    Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
+};
 
 use crate::theme::*;
 use crate::ui::{action_button, card, kv, metric_bar, pill, section_title, sparkline};
@@ -74,6 +77,11 @@ pub struct TaskManagerApp {
     probe: SharedProbe,
     sampling_in_flight: bool,
     filter_editing: bool,
+    /// 絞り込み欄の編集状態（IME の未確定文字列を含む）。
+    ///
+    /// 確定済み文字列だけを `dashboard` に反映する。IME からの UTF-16 編集は
+    /// すべて [`EntityInputHandler`] 経由でここを通る。
+    filter_input: FilterInput,
     show_help: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -110,6 +118,7 @@ impl TaskManagerApp {
             probe: Arc::new(Mutex::new(Some(probe))),
             sampling_in_flight: false,
             filter_editing: false,
+            filter_input: FilterInput::new(),
             show_help: false,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -127,6 +136,7 @@ impl TaskManagerApp {
     pub fn start(&mut self, cx: &mut Context<Self>) {
         self.start_timer(cx);
         self.handle_command(Command::Tick, cx);
+        self.spawn_ime_debug_hook(cx);
     }
 
     fn start_timer(&self, cx: &mut Context<Self>) {
@@ -229,10 +239,103 @@ impl TaskManagerApp {
         cx.notify();
     }
 
+    /// 絞り込み編集を開始する。現在の確定文字列を入力欄へ引き継ぐ。
+    fn begin_filter_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.filter_editing {
+            self.filter_input.clear();
+            let current = self.dashboard.filter_text().to_string();
+            if !current.is_empty() {
+                self.filter_input.replace_text(None, &current);
+            }
+            self.filter_editing = true;
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// 絞り込み編集を終了する。確定文字列は Dashboard に残したままにする。
+    fn end_filter_editing(&mut self, cx: &mut Context<Self>) {
+        self.filter_editing = false;
+        self.filter_input.unmark();
+        cx.notify();
+    }
+
+    /// 絞り込み欄を空にして、一覧の絞り込みも解除する。
+    fn clear_filter(&mut self, cx: &mut Context<Self>) {
+        self.filter_input.clear();
+        self.handle_command(Command::ClearFilter, cx);
+    }
+
+    /// [`EntityInputHandler`] からの編集結果を表示と Dashboard に反映する。
+    ///
+    /// IME 変換中（[`EditOutcome::Composing`]）は表示だけ更新し、確定文字列を
+    /// フィルタへ渡さない。確定・削除・貼り付けのときだけ
+    /// [`Command::SetFilterText`] / [`Command::ClearFilter`] を発行する。
+    fn apply_input_outcome(&mut self, outcome: EditOutcome, cx: &mut Context<Self>) {
+        if outcome == EditOutcome::Committed {
+            let committed = self.filter_input.committed_text();
+            let command = if committed.is_empty() {
+                Command::ClearFilter
+            } else {
+                Command::SetFilterText(committed)
+            };
+            self.handle_command(command, cx);
+        } else if outcome == EditOutcome::Composing {
+            cx.notify();
+        }
+    }
+
+    /// デバッグ専用: 実 IME を注入できない環境で composition の表示と確定反映を
+    /// 確認するためのフック。`TM_DEBUG_IME=1` のときだけ動き、通常起動では無効。
+    ///
+    /// 実際のプラットフォーム IME 経路（Wayland text-input-v3 / X11 XIM）は
+    /// 迂回し、[`FilterInput`] の状態遷移と Dashboard 反映だけを再現する。
+    fn spawn_ime_debug_hook(&self, cx: &mut Context<Self>) {
+        if std::env::var("TM_DEBUG_IME").as_deref() != Ok("1") {
+            return;
+        }
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            // (表示テキスト, 待ち時間 ms)。3 ステップ目で確定する。
+            let steps = [("にほんご", 2_500u64), ("日本語", 4_000), ("", 4_000)];
+            for (text, delay) in steps {
+                background.timer(Duration::from_millis(delay)).await;
+                let alive = this.update(cx, |this, cx| {
+                    if text.is_empty() {
+                        let outcome = this.filter_input.replace_text(None, "日本語");
+                        this.apply_input_outcome(outcome, cx);
+                        eprintln!(
+                            "TM_DEBUG_IME: committed filter={:?} composing={} field={:?}",
+                            this.dashboard.filter_text(),
+                            this.filter_input.is_composing(),
+                            this.filter_input.text()
+                        );
+                    } else {
+                        if !this.filter_editing {
+                            this.filter_editing = true;
+                            this.filter_input.clear();
+                        }
+                        let outcome = this.filter_input.replace_and_mark(None, text, None);
+                        this.apply_input_outcome(outcome, cx);
+                        eprintln!(
+                            "TM_DEBUG_IME: composing field={:?} marked={:?} filter={:?}",
+                            this.filter_input.text(),
+                            this.filter_input.marked_range(),
+                            this.dashboard.filter_text()
+                        );
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.to_lowercase();
         let control = event.keystroke.modifiers.control;
-        let alt = event.keystroke.modifiers.alt;
 
         if self.dashboard.pending_kill().is_some() {
             if let Some(command) = dialog_command(&key, control) {
@@ -249,39 +352,34 @@ impl TaskManagerApp {
         }
         if self.filter_editing {
             match key.as_str() {
+                // Esc: 絞り込みを解除して編集モードを抜ける。
                 "escape" => {
                     self.filter_editing = false;
-                    self.handle_command(Command::ClearFilter, cx);
+                    self.clear_filter(cx);
+                    cx.stop_propagation();
                 }
-                "backspace" => {
-                    let mut text = self.dashboard.filter_text().to_string();
-                    text.pop();
-                    self.handle_command(Command::SetFilterText(text), cx);
-                }
+                // Enter: IME の確定はプラットフォーム側が行う。編集モードを抜ける。
                 "enter" => {
-                    self.filter_editing = false;
-                    cx.notify();
+                    self.end_filter_editing(cx);
+                    cx.stop_propagation();
                 }
-                _ => {
-                    if !control && !alt {
-                        if let Some(character) = event.keystroke.key_char.as_deref() {
-                            if !character.is_empty() {
-                                let mut text = self.dashboard.filter_text().to_string();
-                                text.push_str(character);
-                                self.handle_command(Command::SetFilterText(text), cx);
-                            }
-                        }
-                    }
+                // Backspace はネイティブではプラットフォームが処理しないため、
+                // ここで入力欄の状態を更新する（Web はブラウザ既定動作が担当）。
+                "backspace" => {
+                    let outcome = self.filter_input.backspace();
+                    self.apply_input_outcome(outcome, cx);
+                    cx.stop_propagation();
                 }
+                // 文字入力・貼り付け・IME 変換は EntityInputHandler が受ける。
+                // ここで文字を足すと二重挿入になるので何もしない
+                // （stop_propagation するとプラットフォーム側の挿入も止まる）。
+                _ => {}
             }
             return;
         }
 
         match (control, key.as_str()) {
-            (true, "f") => {
-                self.filter_editing = true;
-                cx.notify();
-            }
+            (true, "f") => self.begin_filter_editing(window, cx),
             (true, "k") => {
                 if let Some(process) = self.dashboard.selected_process() {
                     let key = process.key;
@@ -677,12 +775,48 @@ impl TaskManagerApp {
     fn toolbar(&mut self, cx: &mut Context<Self>) -> Div {
         let summary = self.summary();
         let editing = self.filter_editing;
-        let filter_text = self.dashboard.filter_text().to_string();
         let sort = self.dashboard.sort_spec();
         let active_interval = self.dashboard.interval();
 
+        // 表示は「確定前 + 変換中 + 確定後」の 3 分割。IME 変換中の文字列は
+        // 青 + 下線で見せ、Dashboard の絞り込みにはまだ渡さない。
+        // 編集中でなければ Dashboard の確定文字列をそのまま表示する。
+        let (before, composing, after) = if editing {
+            let (before, composing, after) = self.filter_input.display_parts();
+            (before.to_string(), composing.to_string(), after.to_string())
+        } else {
+            (
+                self.dashboard.filter_text().to_string(),
+                String::new(),
+                String::new(),
+            )
+        };
+        let composing_active = !composing.is_empty();
+        let field_is_empty = before.is_empty() && composing.is_empty() && after.is_empty();
+
+        let mut field_children: Vec<Div> = Vec::new();
+        if field_is_empty {
+            field_children.push(div().child("名前・コマンド・ユーザー・PID"));
+        } else {
+            if !before.is_empty() {
+                field_children.push(div().child(before));
+            }
+            if composing_active {
+                field_children.push(div().text_color(rgb(C_BLUE)).underline().child(composing));
+            }
+            if !after.is_empty() {
+                field_children.push(div().child(after));
+            }
+        }
+
+        // IME ハンドラは絞り込み編集中だけ、フィルタボックスの bounds に対して登録する。
+        // `Window::handle_input` は paint 中に呼ぶのが GPUI の作法。
+        let input_view = cx.entity();
+        let input_focus_handle = self.focus_handle.clone();
+
         let filter_box = div()
             .id("filter-box")
+            .relative()
             .flex()
             .items_center()
             .gap_2()
@@ -695,27 +829,43 @@ impl TaskManagerApp {
             .border_color(rgb(if editing { C_BLUE } else { C_SURFACE }))
             .cursor_pointer()
             .on_click(cx.listener(|this, _event, window, cx| {
-                this.filter_editing = true;
-                this.focus_handle.focus(window, cx);
-                cx.notify();
+                this.begin_filter_editing(window, cx);
             }))
             .child(div().text_xs().text_color(rgb(C_MUTED)).child("検索"))
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .flex_1()
+                    .min_w_0()
                     .text_sm()
-                    .text_color(rgb(if filter_text.is_empty() {
-                        C_DIM
-                    } else {
-                        C_TEXT
-                    }))
-                    .child(if filter_text.is_empty() {
-                        "名前・コマンド・ユーザー・PID".to_string()
-                    } else {
-                        filter_text
-                    }),
+                    .text_color(rgb(if field_is_empty { C_DIM } else { C_TEXT }))
+                    .truncate()
+                    .children(field_children),
             )
             .when(editing, |this| {
-                this.child(div().text_color(rgb(C_BLUE)).child("▌"))
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(C_BLUE))
+                        .child(if composing_active { "変換中" } else { "▌" }),
+                )
+                .child(
+                    canvas(
+                        |bounds, _window, _cx| bounds,
+                        move |bounds, _prepaint, window, cx| {
+                            window.handle_input(
+                                &input_focus_handle,
+                                ElementInputHandler::new(bounds, input_view.clone()),
+                                cx,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
             });
 
         let clear_button = action_button(
@@ -726,6 +876,7 @@ impl TaskManagerApp {
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.filter_editing = false;
+                this.filter_input.clear();
                 this.handle_command(Command::ClearFilter, cx);
             }),
         );
@@ -1225,6 +1376,11 @@ impl TaskManagerApp {
                 .truncate()
                 .child(status.text)
                 .into_any_element(),
+            None if self.filter_editing => div()
+                .text_xs()
+                .text_color(rgb(C_BLUE))
+                .child("日本語 IME 入力可（変換中は青+下線）· Enter で終了 · Esc で解除")
+                .into_any_element(),
             None => div()
                 .text_xs()
                 .text_color(rgb(C_DIM))
@@ -1447,6 +1603,135 @@ impl TaskManagerApp {
                         .children(rows),
                 ),
         )
+    }
+}
+
+// ------------------------------------------------------- IME / text input
+
+/// ネイティブの IME（Wayland text-input-v3 / X11 XIM）を絞り込み欄へ橋渡しする。
+///
+/// `gpui-pre-linux` は composition の変換中文字列を
+/// [`Self::replace_and_mark_text_in_range`]、確定を
+/// [`Self::replace_text_in_range`]、変換中止を [`Self::unmark_text`] として呼ぶ。
+/// UTF-16 オフセットの解釈は共有の [`FilterInput`] が担当し、**確定済み文字列
+/// だけ**を Dashboard に反映する。絞り込み編集中だけ
+/// `accepts_text_input` が `true` になる。
+impl EntityInputHandler for TaskManagerApp {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (text, actual) = self.filter_input.text_for_range(range);
+        *adjusted_range = Some(actual);
+        Some(text)
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: self.filter_input.selection(),
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        self.filter_input.marked_range()
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let outcome = self.filter_input.unmark();
+        self.apply_input_outcome(outcome, cx);
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self.filter_input.replace_text(range, text);
+        self.apply_input_outcome(outcome, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self
+            .filter_input
+            .replace_and_mark(range, new_text, new_selected_range);
+        self.apply_input_outcome(outcome, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // 変換候補ウィンドウを絞り込み欄の位置に出す。フィルタ欄は 1 行なので、
+        // 行内の厳密なキャレット位置ではなく欄の矩形を返す。
+        Some(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn text_length_utf16(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        Some(self.filter_input.utf16_len())
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.filter_input.set_selection(range_utf16);
+        cx.notify();
+    }
+
+    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        self.filter_editing
+    }
+
+    fn text_input_configuration(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> TextInputConfiguration {
+        TextInputConfiguration {
+            autocorrect: false,
+            suggestions: false,
+            ..Default::default()
+        }
     }
 }
 

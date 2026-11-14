@@ -177,7 +177,7 @@ python3 cdp_verify_web.py \
   （隠し textarea）と `EntityInputHandler` を使い、composition 中の未確定文字列は
   入力欄にのみ表示し、確定文字列だけを絞り込みへ反映します。ヘッドレス Chrome の
   `Input.imeSetComposition` / `Input.insertText` で検証済み（`../notes/ime.md`）。
-  **ネイティブ版は未実装**です（設計案は `../notes/ime.md`）。
+  ネイティブ版も `EntityInputHandler` で実装済みです（`../notes/ime.md`）。
 - **描画は WebGL2 フォールバック**: headless Chrome では WebGPU アダプタが
   取得できず、GPUI が WebGL2（ANGLE + SwiftShader）へ自動フォールバックします。
   WebGPU を強制すると device lost で描画が停止します（スパイクで確認済み）。
