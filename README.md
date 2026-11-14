@@ -170,11 +170,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 5 ジョブすべて成功（run 43612670190。gates / wasm / cargo-deny / native-windows / native-macos） |
+| CI | 5 ジョブすべて成功（run 43616522864。gates / wasm / cargo-deny / native-windows / native-macos） |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
 [notes/web-shell.md](notes/web-shell.md)、IME は [notes/ime.md](notes/ime.md)、
 クロスプラットフォームは [notes/cross-platform.md](notes/cross-platform.md)、
+物理実機/クラウド検証の選択肢は [notes/physical-verification.md](notes/physical-verification.md)、
 独立レビューは [notes/review-2026-11-14.md](notes/review-2026-11-14.md) を参照してください。
 
 ## 既知の制限
