@@ -64,6 +64,36 @@ status: draft
     前提、IT プロフェッショナル向けの評価用途という制約がある。恒常的な開発には
     既存ライセンスの Home/Pro を使うのが正しい。
 
+## 1.3 デュアルブートを避ける方法（2026-11-15 整理）
+
+「Windows のために毎回再起動して切り替えるのは面倒」という制約に対する選択肢。
+物理実機の忠実度を保ちつつ再起動を避ける方法は、大きく次の 4 系統。
+
+| 方法 | 再起動 | 忠実度 | 費用 | 難易度 | 備考 |
+|---|---|---|---|---|---|
+| **KVM/VFIO で GPU パススルー**（既存 GTX 1660 SUPER を Windows VM へ） | 不要 | 高（ネイティブ GPU） | 無料（既存ハード） | 高 | Ryzen 5 3600 は AMD-V/IOMMU 対応。ただし GPU を VM に渡す間はホストの画面が使えない（iGPU なし）。SSH/別端末から操作し、VM 停止後に GPU を戻す。単一 GPU パススルーの特殊手順・リスクあり |
+| **安価な第2 GPU を追加**し、ホストはそれで表示、1660 SUPER を VM へ | 不要 | 高 | 中古 GPU 代（数千円〜） | 中 | ホストを常用したまま Windows VM を GPU 付きで使える。B450 の空き PCIe スロットと電源容量を確認 |
+| **Windows VM + ソフトウェア Vulkan**（パススルーなし） | 不要 | 低〜中（GPU 性能・描画は非代表） | 無料 | 中 | Mesa lavapipe / SwiftShader 等の Vulkan ICD を Windows に入れて GPUI が起動するかは未検証。UI レイアウト・IME・プロセス操作の機能確認向け |
+| **クラウド GPU Windows VM**（Azure NVadsA10_v5 等） | 不要 | 高 | 無料クレジットの範囲なら無料、超過は時間課金 | 低 | RDP で操作。無料トライアルの GPU クォータが下りるかは要確認。カード登録が必要な場合あり |
+| **リモート/借用の Windows PC** | 不要 | 高 | 借用なら無料 | 低 | RDP/Parsec 等で操作。相手の環境を汚さないよう `--demo` と `--redact` を使う |
+| GitHub Actions Windows ランナー | 不要 | ビルド/テストのみ | 無料枠内 | 低 | GUI・IME・プロセス操作は不可（導入済み） |
+| デュアルブート | **必要** | 高 | 無料/ライセンス次第 | 低〜中 | 最も単純だが切り替えが面倒 |
+
+- GPU パススルーの前提（[ArchWiki: PCI passthrough via OVMF](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF)）:
+  CPU の仮想化 + IOMMU、マザーボード/BIOS の IOMMU 対応、ゲスト GPU の UEFI ROM。
+  AMD Zen は IOMMU 対応。単一 GPU の場合は「ブート GPU をゲストへ渡す」特殊手順や
+  Looking Glass などの構成が必要で、ホストの画面が失われる時間帯を許容する必要がある。
+- 無料クレジットの例: [Azure 無料アカウント](https://azure.microsoft.com/en-us/free/)、
+  [Google Cloud 無料トライアル](https://cloud.google.com/free)。いずれも**期間・金額限定**で、
+  最新条件と GPU クォータは公式で確認する。AWS の無料枠に GPU インスタンスは含まれない
+  （[AWS Free Tier](https://aws.amazon.com/free/)）。
+- 推奨順（「切り替えを避けたい・無料優先」の場合）:
+  1. 無料クレジットでクラウド GPU Windows（最も手間が少なく忠実度が高い。ただし期間限定）
+  2. Windows VM + ソフトウェア Vulkan（無料・再起動なし。GPU 描画の証明にはならない）
+  3. 単一 GPU パススルー（無料・再起動なし。セットアップとホスト画面の制約が大きい）
+  4. 安価な第2 GPU 追加（低コストで快適。物理投資あり）
+  5. デュアルブート（最終手段）
+
 ## 2. 現在どこまで検証済みか（2026-11-15 時点）
 
 | 検証層 | 内容 | 状態 |
