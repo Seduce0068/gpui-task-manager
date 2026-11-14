@@ -27,6 +27,21 @@ status: draft
 - 検証時は `--demo` と `--redact` を使い、**自分で起動した子プロセス以外は kill しない**。
   クラウドは使い捨てアカウント/リソースで行い、終了時に必ず停止・削除する。
 
+## 1.1 無料でできる範囲（2026-11-15 確認）
+
+| 対象 | 無料でできるか | 方法・条件 |
+|---|---|---|
+| Windows 物理実機 | **できる** | Microsoft Evaluation Center の **Windows 11 Enterprise 評価版（90 日）**。プロダクトキー不要で ISO をダウンロードでき、既存 PC の空きディスクにクリーンインストールして検証できる。90 日経過後はデスクトップが黒くなり毎時シャットダウンされるため、評価用途に限定する。 |
+| Windows（VM） | できるが GPU 検証の代替にならない | 同じ評価版 ISO を VM に入れることは可能。ただし GPU パススルーなしでは Vulkan がソフトウェア描画になり、GPUI の実行時検証にはならない。 |
+| Windows（クラウド GPU） | **無料では難しい** | Azure/AWS の GPU VM は時間課金。無料クレジットは期間・金額限定。 |
+| macOS 物理実機 | **借用できれば無料** | 知人・家族・勤務先の Mac を借りる。新規購入は有料。 |
+| macOS クラウド | **無料枠なし** | MacStadium / AWS EC2 Mac は有料（MacStadium M4.S $149/月〜、AWS は最低 24 時間）。 |
+| macOS CI（ビルド・テスト） | 条件付きで無料 | GitHub Actions の標準ランナーは**public リポジトリでは無料**。private リポジトリは GitHub Free の月額 $12 分の included compute 内なら追加課金なし（macOS は $0.062/分、Windows は $0.010/分、Linux は $0.006/分）。**GUI・IME・プロセス操作は不可**。 |
+
+- 本リポジトリは private。CI 1 回あたりの概算は Linux 約 6 分（$0.04）+ Windows 約 5 分（$0.05）+ macOS 約 2 分（$0.12）≒ **$0.2/回**で、GitHub Free の $12/月の範囲なら月 50 回程度まで無料。
+- **無料で「全部」はできない**: macOS の対話 GUI/IME を無料で新規に用意する公式ルートはない。
+  現実的な無料構成は「Windows は評価版で物理検証、macOS は借用 or CI でビルド/テストのみ」。
+
 ## 2. 現在どこまで検証済みか（2026-11-15 時点）
 
 | 検証層 | 内容 | 状態 |
@@ -160,6 +175,8 @@ status: draft
 
 ## 9. 参照（2026-11-15 取得）
 
+- Microsoft: Windows 11 Enterprise 評価版（90 日、無料）
+  <https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise>
 - Microsoft: Windows 11 のダウンロード <https://www.microsoft.com/ja-jp/software-download/windows11>
 - Microsoft Learn: NVadsA10_v5 sizes series
   <https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nvadsa10v5-series>
@@ -168,6 +185,10 @@ status: draft
 - AWS: EC2 G4 instances <https://aws.amazon.com/ec2/instance-types/g4/>
 - MacStadium: Pricing <https://macstadium.com/pricing>
 - Apple: Mac mini <https://www.apple.com/jp/mac-mini/>
+- GitHub Docs: GitHub Actions billing（Free の included compute は $12/月）
+  <https://docs.github.com/en/billing/concepts/product-billing/github-actions>
+- GitHub Docs: Actions runner pricing（Linux $0.006 / Windows $0.010 / macOS $0.062 per minute）
+  <https://docs.github.com/en/billing/reference/actions-runner-pricing>
 - GitHub Docs: GitHub-hosted runners
   <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>
 - Zed: Building Zed for Windows
