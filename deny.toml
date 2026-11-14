@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-deny configuration for the GPUI task manager.
+#
+# Policy:
+# - vulnerabilities fail the build;
+# - known unmaintained transitive dependencies are explicitly ignored with a
+#   reason and tracked in DESIGN.md §14 (they come from the pinned GPUI stack);
+# - only permissive licenses are allowed (Apache-2.0 compatible);
+# - unknown registries / git sources are rejected.
+#
+# Run locally:  cargo deny check
+# Web workspace: cargo deny --manifest-path web/Cargo.toml check
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "wasm32-unknown-unknown" },
+]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+]
+
+[licenses]
+confidence-threshold = 0.90
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = [
+    # `Apache-2.0 WITH LLVM-exception` appears as one alternative in an
+    # OR-expression; the plain Apache-2.0 alternative is also accepted.
+    { allow = ["Apache-2.0 WITH LLVM-exception"], name = "rustix" },
+    { allow = ["Apache-2.0 WITH LLVM-exception"], name = "linux-raw-sys" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -17,9 +17,11 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 ## GitHub
 
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（現在 **private**）
-- CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)（共通の `Seduce0068/workflows@v1`
-  に委譲。fmt → check → test → clippy → cargo audit + wasm check）
-- 公開用の `main` はクリーンな1コミット。開発履歴はローカルの `master` に保持している。
+- CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
+  `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit）。
+  追加で wasm check / cargo-deny / native-windows / native-macos の 5 ジョブ構成
+- 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
+- Dependabot（Cargo / web / GitHub Actions、週次）とセキュリティアラートを有効化済み。
 
 ## できること（MVP）
 
@@ -30,7 +32,10 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - シグナル操作（SIGTERM / SIGKILL / SIGSTOP / SIGCONT）を**確認ダイアログ経由**で実行
 - 安全装置: PID 1 と自分自身の拒否、PID + 起動時刻による PID 再利用検出
 - キーボード操作: ↑↓ / PgUp/PgDn / Home/End / Space / Ctrl+F / Ctrl+K / F2 / F5 / F1
+- ブラウザ版の日本語 IME（composition）対応。変換中は未確定文字列のみ入力欄に表示し、
+  確定文字列だけを絞り込みへ反映
 - `--demo` で決定的な合成データ起動（スクリーンショット・回帰用）
+- 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
 
@@ -92,8 +97,9 @@ cd poc-wasm && trunk build --release
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
 （`gpui-pre-web`、WebGPU → WebGL2 自動フォールバック）で描画します。
 `tm-agent` に接続しない場合は決定的なデモデータで動作します。プロセス操作は
-**提供しません**（読み取り専用）。wasm サイズは約 14 MB（gzip 3.6 MB、
-wasm-opt 未適用）。
+**提供しません**（読み取り専用）。wasm サイズは **7.24 MiB（gzip 2.89 MiB）**で、
+`data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
+`EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
 ## アーキテクチャ
 
@@ -124,8 +130,9 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `web/` | wasm シェル（GPUI Web + デモ / エージェント接続、読み取り専用） |
 | `poc-wasm/` | GPUI Web の最小スパイク（Runtime Proof・スクリーンショット） |
 | `agent/` | ブラウザ用の読み取り専用ループバック HTTP エージェント |
-| `notes/` | 調査ノート・wasm スパイク・検証ログ |
-| `scripts/` | ビルド補助（`dev-setup.sh`） |
+| `notes/` | 調査ノート・wasm スパイク・IME/クロスプラットフォーム検証・レビュー |
+| `scripts/` | ビルド補助（`dev-setup.sh`, `check.sh`） |
+| `deny.toml` / `.github/dependabot.yml` | 依存ポリシー（ライセンス・脆弱性・自動更新） |
 
 ## セキュリティ方針（要約）
 
@@ -137,13 +144,15 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - ブラウザ / デモは**読み取り専用**（操作ボタン無効、エージェントに操作 API なし）
 - エージェントは `127.0.0.1` のみ bind、トークン必須、CORS は localhost のみ
 - OS 由来の文字列は制御文字・ANSI エスケープを除去して表示
-- GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` を実行済み（脆弱性 0）
+- GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて
+  `cargo-deny`（ライセンス・脆弱性・重複版）を CI で実行（ルート / web とも ok）
 
-## 検証状況（2026-11-14、Runtime Proof）
+## 検証状況（2026-11-15、Runtime Proof）
 
 | 項目 | 結果 |
 |---|---|
 | `cargo test --workspace` | **118 passed / 0 failed**（core 49 / viewmodel 15 / platform 9 / agent 39 / app 6） |
+| web ユニットテスト | **15 passed / 0 failed**（`filter_input` 11 + agent 4） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
@@ -152,17 +161,29 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | wasm スパイク | `trunk build --release` 成功、ヘッドレス Chrome で描画・CJK・入力・fetch を確認（WebGL2 フォールバック） |
 | ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）をヘッドレス Chrome で検証（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
+| `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
+| Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化 |
+| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass |
+| 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
+| Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
+| macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
+| CI | 5 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos）。push 後に実結果を追記 |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
-[notes/web-shell.md](notes/web-shell.md)、独立レビューは
-[notes/review-2026-11-14.md](notes/review-2026-11-14.md) を参照してください。
+[notes/web-shell.md](notes/web-shell.md)、IME は [notes/ime.md](notes/ime.md)、
+クロスプラットフォームは [notes/cross-platform.md](notes/cross-platform.md)、
+独立レビューは [notes/review-2026-11-14.md](notes/review-2026-11-14.md) を参照してください。
 
 ## 既知の制限
 
-- Windows / macOS は未検証（コードは `sysinfo` 経由でポータブル）
+- Windows / macOS は**実機では未検証**。コードは OS 別 cfg でコンパイル可能にし、
+  GitHub Actions の windows-latest / macos-latest を実機相当の検証として使う
+- Windows は POSIX シグナルがないため Stop/Continue 非対応（Terminate/Kill は
+  `taskkill /F` による強制終了）
 - ブラウザ版は読み取り専用（OS プロセスはブラウザから取得できないため）
-- IME 入力、プロセスツリー、優先度変更、GPU 監視、ライトテーマ、設定永続化は未実装
-- ブラウザ wasm は 14 MB（gzip 3.6 MB）で、wasm-opt 未適用
+- ネイティブ版の IME は未実装（ブラウザ版は対応済み。設計案は [notes/ime.md](notes/ime.md)）
+- プロセスツリー、優先度変更、GPU 監視、ライトテーマ、設定永続化は未実装
+- ブラウザ wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある

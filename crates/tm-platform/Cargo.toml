@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Native SystemProbe implementation (sysinfo + rustix) for the GPUI task manager"
+description = "Native SystemProbe implementation (sysinfo; rustix on Unix) for the GPUI task manager"
 
 [dependencies]
 tm-core = { workspace = true }
@@ -17,5 +17,10 @@ sysinfo = { version = "=0.40.3", default-features = false, features = [
     "network",
     "user",
 ] }
+
+# rustix は POSIX シグナル送信（process::kill_process）にだけ使う Unix 専用 API。
+# Windows では sysinfo の Process::kill_with（taskkill /F）で代用するため、
+# 依存自体を Unix ターゲットに限定して Windows ビルドに持ち込まない。
+[target.'cfg(unix)'.dependencies]
 # RUSTSEC-2026-0486 の修正版に完全固定する。
 rustix = { version = "=1.1.6", features = ["process"] }

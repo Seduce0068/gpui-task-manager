@@ -126,7 +126,7 @@ sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;
 コマンド列は表示専用（ソート対象外）。
 
 キーボードは `on_key_down` で処理する: 文字入力で絞り込み、`Backspace` で削除、
-`Esc` で解除、`↑↓/PageUp/PageDown/Home/End` で選択移動。日本語 IME は未対応
+`Esc` で解除、`↑↓/PageUp/PageDown/Home/End` で選択移動。日本語 IME はブラウザ版で対応（`notes/ime.md`）
 （ASCII のみ）。
 
 ## データ経路
@@ -201,11 +201,11 @@ $ cd web && trunk build --release
 
 | ファイル | サイズ | gzip |
 |---|---|---|
-| `dist/*_bg.wasm` | 14,799,786 B（14.1 MiB） | 3,656,199 B（3.5 MiB） |
+| `dist/*_bg.wasm` | 7,589,230 B（7.24 MiB） | 3,024,986 B（2.89 MiB） |
 | `dist/*.js` | 158,865 B（156 KiB） | 24,420 B |
 | `dist/index.html` | 1,318 B | - |
 
-`data-wasm-opt="0"` のため wasm-opt は未適用。
+`data-wasm-opt="z"` により wasm-opt（-Oz）を適用（14.8 MB → 7.6 MB）。
 
 ### 2. デモモード（CDP 検証）
 
@@ -287,11 +287,11 @@ $ cd web && trunk build --release
 ## 既知の制約・未確認事項
 
 - 読み取り専用（シグナル操作なし）。ブラウザから OS のプロセスを直接は読めない。
-- 日本語 IME 未対応（ASCII 入力のみ。`EntityInputHandler` 未実装）。
+- 日本語 IME はブラウザ版で対応（`EntityInputHandler` + composition、`notes/ime.md`）。ネイティブ版は未実装。
 - headless Chrome は WebGL2（ANGLE + SwiftShader）へフォールバックする。
   WebGPU を強制すると device lost で描画停止（スパイクで確認）。実 GPU の
   WebGPU 描画、Safari / Firefox は未検証。
-- wasm が 14.1 MiB と大きい（wasm-opt 未適用）。初回ロード時間は未計測
+- wasm が 7.24 MiB（gzip 2.89 MiB）と大きい（wasm-opt 適用済み）。初回ロード時間は未計測
   （localhost のスパイクでは wasm 転送 46 ms だったが、実ネットワークでは
   転送とコンパイルが支配的になる）。
 - 単一ウィンドウのみ。ポップアップ/ダイアログ/ファイルダイアログ不可。

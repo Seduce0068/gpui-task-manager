@@ -50,8 +50,9 @@ trunk build --release
 ```
 
 - 初回は依存 crate のコンパイル込みで 1〜2 分、2 回目以降は数秒です。
-- 生成物サイズ（release）: wasm 14.1 MiB（gzip 3.5 MiB）、JS 156 KiB、
-  `index.html` 1.3 KiB。`data-wasm-opt="0"` のため wasm-opt は未適用です。
+- 生成物サイズ（release）: wasm 7.24 MiB（7,589,230 B、gzip 2.89 MiB）、
+  JS 155 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により trunk が
+  wasm-opt（-Oz）を適用します（初回は wasm-opt を自動ダウンロード）。
 
 ## 起動（デモモード）
 
@@ -172,13 +173,16 @@ python3 cdp_verify_web.py \
 
 - **読み取り専用**: ブラウザからプロセス操作はできません。UI にシグナル送信は
   なく、`tm-agent` も GET のみを提供します。
-- **日本語 IME 未対応**: 検索欄は `on_key_down` の ASCII 入力のみです。
-  GPUI Web で IME を使うには `EntityInputHandler` の実装が必要です（未実装）。
+- **日本語 IME（ブラウザ版は対応済み）**: `gpui-pre-web` の IME ミラー
+  （隠し textarea）と `EntityInputHandler` を使い、composition 中の未確定文字列は
+  入力欄にのみ表示し、確定文字列だけを絞り込みへ反映します。ヘッドレス Chrome の
+  `Input.imeSetComposition` / `Input.insertText` で検証済み（`../notes/ime.md`）。
+  **ネイティブ版は未実装**です（設計案は `../notes/ime.md`）。
 - **描画は WebGL2 フォールバック**: headless Chrome では WebGPU アダプタが
   取得できず、GPUI が WebGL2（ANGLE + SwiftShader）へ自動フォールバックします。
   WebGPU を強制すると device lost で描画が停止します（スパイクで確認済み）。
   実 GPU の通常 Chrome での WebGPU 描画は未確認です。
-- **wasm サイズ**: 14.1 MiB（gzip 3.5 MiB）。wasm-opt 未適用のため大きく、
+- **wasm サイズ**: 7.24 MiB（gzip 2.89 MiB）。wasm-opt（-Oz）適用後も大きいため、
   初回ロードに時間がかかります。配信時は gzip/brotli を有効にしてください。
 - **単一ウィンドウ**: GPUI Web はトップレベルウィンドウ 1 個のみで、
   ポップアップ・ダイアログ・ファイルダイアログは使えません。

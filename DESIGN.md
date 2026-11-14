@@ -27,7 +27,8 @@ Ubuntu 系デスクトップ（Kubuntu / KDE Plasma / Wayland を第一ターゲ
 
 - root 権限が必要な操作（優先度変更、cgroup 操作、カーネルパラメータ）。
 - リモートホストの監視（SSH / Prometheus 連携）。ただし拡張点は設計に残す。
-- Windows / macOS の実機検証（コードはポータブルに保つが、検証は Linux のみ）。
+- Windows / macOS の**物理実機**での検証（OS 別 cfg と GitHub Actions の
+  windows-latest / macos-latest を実機相当の検証として使う）。
 - 設定の永続化、自動更新、多言語化（日本語 UI のみ）。
 - ブラウザからのプロセス操作（安全側に倒して読み取り専用）。
 
@@ -219,6 +220,11 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 マウスでは行クリックで選択、列ヘッダでソート、詳細パネルのボタンでシグナル操作。
 
+ブラウザ版の絞り込みは日本語 IME（composition）に対応する。`gpui-pre-web` の IME
+ミラー（隠し textarea）と `EntityInputHandler` を使い、変換中の未確定文字列は入力欄に
+だけ表示し、確定文字列だけを `Dashboard` に反映する（`notes/ime.md`）。ネイティブ版の
+IME は未実装（設計案は同ノート）。
+
 ### 5.4 表示の安全性
 
 - プロセス名・コマンドは OS から来る攻撃者影響下のデータである。改行・制御文字・
@@ -285,7 +291,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - CJK は `CanvasFontFallback::EmojiAndCjk` が必須。`gpui_platform::application()`
   では設定できないため、`gpui_web::WebPlatform` を直接構築して
   `fetch_http_client` を注入する。
-- wasm サイズは 14 MB（gzip 3.6 MB、wasm-opt 未適用）。配布時は最適化が必要。
+- wasm サイズは wasm-opt（-Oz）適用後 **7.24 MiB（gzip 2.89 MiB）**。
+  `web/index.html` の `data-wasm-opt="z"` で trunk が wasm-opt を自動適用する。
 
 ### 6.5 ブラウザ版シェルの実装結果（`web/`）
 
@@ -297,8 +304,12 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
   絞り込み・ソート・エラー表示を確認し、panic / JS 例外は 0。
 - ライブ接続は URL フラグメント `#token=` + `Authorization: Bearer` ヘッダ方式。
   クエリ文字列のトークンは使用しない。
-- 証拠: `notes/web-shell.md`、`notes/assets/web-shell-*.png`、
-  `web/verification/web-shell-evidence-*.json`。
+- 日本語 IME: `EntityInputHandler` + composition を実装。CDP の
+  `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」の
+  変換・確定・Esc 復帰を 32 チェックで検証（JS 例外 0）。`web/` の単体テスト 15 件。
+- wasm-opt（-Oz）適用後もデモ / ライブ / エラー時の CDP 検証は pass。
+- 証拠: `notes/web-shell.md`、`notes/ime.md`、`notes/assets/web-shell-*.png`、
+  `notes/assets/ime-*.png`、`web/verification/*.json`。
 
 ---
 
@@ -326,10 +337,12 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 5. **ループバック限定**: エージェントは `127.0.0.1` にのみ bind。`Authorization:
    Bearer` 必須、`Host` ヘッダも loopback に限定。CORS は localhost オリジンのみ。
 6. **表示サニタイズ**: 制御文字・ANSI エスケープ除去、文字数制限。
-7. **供給網**: GPUI 系は完全一致ピン + `Cargo.lock` コミット。`cargo audit` を
-   実行済みで**脆弱性 0**、未保守（unmaintained）警告 8 件（GPUI 依存由来）を確認。
-   `cargo-deny`（ライセンス・重複版）は追加導入予定。`sysinfo` / `rustix` は
-   活発なメンテナの crate を選ぶ。
+7. **供給網**: GPUI 系は完全一致ピン + `Cargo.lock` コミット。`cargo audit` に加え
+   `cargo-deny`（advisories / bans / licenses / sources）をルート / web の両方で
+   実行し、すべて ok。未保守（unmaintained）8 件は理由付きで `deny.toml` に ignore し、
+   DESIGN §14 で追跡する。Dependabot（Cargo / web / GitHub Actions、週次）と
+   セキュリティアラート / 自動修正を有効化している。GPUI 系は自動更新の対象外
+   （ADR-001 の完全ピン運用）。
 8. **秘密情報を扱わない**: 設定ファイル・認証情報・DB を持たない。トークンは
    起動時に生成し、stderr にのみ表示する。
 
@@ -348,6 +361,10 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - プロセス名の Unicode 双方向制御文字（RTL override 等）は `tm-core::sanitize` で
   除去する（U+202A–U+202E, U+2066–U+2069, U+200E/F, U+061C）。ゼロ幅文字など
   表示に影響する他の書式文字は将来の検討対象。
+- ネイティブ版の IME は未実装。ブラウザ版のみ composition 対応を検証済み。
+- Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動に
+  限定し PATH ハイジャックを避けるが、Windows では Stop/Continue 非対応で、
+  Terminate/Kill は強制終了になる。macOS の実機検証は CI ランナーのみ。
 
 ---
 
@@ -362,7 +379,10 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | プラットフォーム | 実機サンプルの妥当性、存在しない PID、PID 1 / 自分自身、spawn した子の終了 | `cargo test -p tm-platform` |
 | エージェント | JSON 応答、認証、CORS、読み取り専用 | `cargo test -p tm-agent` + curl |
 | UI スモーク | Wayland 起動、ウィンドウ確認、スクリーンショット | 手動 + KWin D-Bus |
-| wasm | `cargo check --target wasm32-unknown-unknown`、`trunk build`、ブラウザ表示 | スパイクで検証 |
+| wasm | `cargo check --target wasm32-unknown-unknown`、`trunk build`、ブラウザ表示 | スパイク + CDP |
+| web 入力 | `FilterInput` の状態機械（UTF-16・選択・marked range） | `cargo test --manifest-path web/Cargo.toml --lib`（15 件） |
+| IME | composition 中は確定しない・確定後に反映・Esc 復帰 | CDP `Input.imeSetComposition`（32 チェック） |
+| クロスプラットフォーム | Windows/macOS ターゲットの check、CI ランナー | `cargo check --target ...` / GitHub Actions |
 
 ### 8.2 決定性
 
@@ -397,7 +417,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
 | エージェント 1 スナップショット | 約 250 ms（シリアル処理） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
-| wasm（release） | 14 MB / gzip 3.6 MB（wasm-opt 未適用） |
+| wasm（release、wasm-opt -Oz） | 7.24 MiB / gzip 2.89 MiB |
 
 ---
 
@@ -446,8 +466,10 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 ### 11.3 CI
 
-- Linux: fmt → check → test → clippy（`-D warnings`）→ wasm check。
-- 依存監査: `cargo audit`。ライセンス/重複版は `cargo deny`（導入予定）。
+- Linux: fmt → check → test → clippy（`-D warnings`）→ cargo audit（共通ワークフロー）。
+- 追加ジョブ: wasm check、cargo-deny（ルート / web）、native-windows
+  （windows-latest）、native-macos（macos-latest）。
+- 依存監査: `cargo audit` + `cargo deny`（advisories / bans / licenses / sources）。
 - GPUI の X11 依存は CI でも `libxkbcommon-x11-dev` を導入する。
 
 ---
@@ -468,6 +490,9 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | AC-10 | ブラウザで GPUI 画面が表示される（スパイク） | ヘッドレス Chrome |
 | AC-11 | エージェントが読み取り専用で、トークンなしの要求を拒否する | curl |
 | AC-12 | 設計書・調査レポート・README が実装と一致する | レビュー |
+| AC-13 | ブラウザ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 |
+| AC-14 | Windows / macOS ターゲットでワークスペースが型検査できる | `cargo check --target` + CI |
+| AC-15 | cargo-deny がルート / web とも成功する | `cargo deny check` |
 
 ---
 
@@ -586,21 +611,46 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: 常用時のトークンがプロセス一覧に現れない。ファイルのパーミッション管理は
   運用者の責任であり、SECURITY.md に `chmod 600` を記載する。
 
+### ADR-016: 依存監査と自動更新
+
+- 決定: `deny.toml` でライセンス（許容リスト）・脆弱性・重複版・供給元を定義し、
+  CI の `deny` ジョブでルート / web の両ワークスペースを検査する。Dependabot は
+  Cargo（ルート / web）と GitHub Actions を週次で更新し、GPUI 系は完全ピン運用の
+  ため対象外（ignore）にする。
+- 結果: 未保守 8 件は理由付きで ignore。新規の脆弱性・ライセンス違反・不明レジストリは
+  失敗する。GPUI の更新は手動で行う。
+
+### ADR-017: wasm-opt（-Oz）を trunk で適用
+
+- 決定: `web/index.html` の `data-wasm-opt="z"` で wasm-opt を有効化する。
+- 結果: wasm 14,799,786 B → 7,589,230 B（gzip 3,656,199 → 3,024,986 B）。
+  適用後も CDP 検証（デモ / ライブ / エラー時）は pass。初回ビルドは wasm-opt を
+  自動ダウンロードする。
+
+### ADR-018: Windows / macOS は cfg + CI ランナーで検証
+
+- 状況: 開発ホストは Linux のみで、物理実機の Windows / macOS がない。
+- 決定: `tm-platform` を OS 別 cfg（Unix: rustix / Windows: `taskkill` 絶対パス）に
+  分岐し、GitHub Actions の windows-latest / macos-latest で `cargo check --workspace`
+  と portable テストを実行する。Windows の Stop/Continue は非対応と明記する。
+- 結果: 物理実機の GUI 操作・IME は未検証のまま残るが、型検査と単体テストは
+  OS ごとに担保できる。
+
 ---
 
 ## 14. 既知の制限・未検証
 
-- Windows / macOS の実機ビルド・実行は未検証（コードは sysinfo 経由でポータブル）。
+- Windows / macOS の**物理実機**でのビルド・実行は未検証。OS 別 cfg と CI ランナーで
+  型検査・テストを実施する（Windows は Stop/Continue 非対応、Terminate/Kill は強制終了）。
+- ネイティブ版の IME は未実装（ブラウザ版は対応済み）。
 - Wayland 以外（X11 セッション）での表示は未検証。GPUI の x11 feature は有効。
-- ブラウザ版の実用 UI はスパイク段階（`web/` の完成度に依存）。
-- IME による日本語入力は未対応（絞り込みは ASCII 前提）。
 - プロセスのツリー表示、優先度変更、cgroup 表示、GPU 監視は未実装。
 - ライトテーマ、設定永続化、自動更新は未実装。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
-- ブラウザ版の wasm は 14 MB（gzip 3.6 MB）で、wasm-opt 未適用。
+- ブラウザ版の wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
-- ブラウザ版の検索は ASCII 入力のみ（IME 未対応）。
+- ブラウザ版の検索は日本語 IME に対応済み。ネイティブ版は ASCII 入力のみ（IME 未実装）。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での
   WebGPU 描画は未確認。
 - IME 入力は未対応（`EntityInputHandler` の実装が必要）。
