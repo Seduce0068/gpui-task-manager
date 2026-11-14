@@ -1,0 +1,20 @@
+[package]
+name = "sysinfo-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Runtime proof: sysinfo 0.40.3 sampling cost and available fields (research only)"
+
+# 親 workspace に取り込まれないよう空の workspace を宣言する
+[workspace]
+
+[dependencies]
+sysinfo = { version = "=0.40.3", default-features = false, features = [
+    "system",
+    "disk",
+    "network",
+    "user",
+    "multithread",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

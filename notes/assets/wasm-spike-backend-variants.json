@@ -1,0 +1,57 @@
+{
+  "webgl_forced": {
+    "url": "http://127.0.0.1:8090/?backend=webgl",
+    "dom": {
+      "title": "GPUI Web Spike | tick=5 cpu=62.9% mem=7892MB clicks=0 query=",
+      "canvas": {
+        "w": 1200,
+        "h": 657
+      },
+      "bodyText": ""
+    },
+    "console": [
+      {
+        "type": "info",
+        "text": "[INFO] gpui_web_spike: GPUI web spike: start()"
+      },
+      {
+        "type": "info",
+        "text": "[INFO] gpui_wgpu::wgpu_context: Browser graphics initialized: requested=WebGl, selected=Gl, adapter=\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\", limits=Limits { max_texture_dimension_1d: 8192, max_texture_dimension_2d: 8192, max_texture_dimension_3d: 2048, max_texture_array_layers: 256, max_bind_groups: 4, max_bind_groups_plus_vertex_buffers: 24, max_bindings_per_bind_group: 1000, max_dynamic_uniform_buffers_per_pipeline_layout: 8, max_dynamic_storage_buffers_per_pipeline_layout: 0, max_sampled_textures_per_shader_stage: 16, max_samplers_per_s"
+      },
+      {
+        "type": "info",
+        "text": "[INFO] gpui_web::platform: Browser graphics initialized successfully with Gl"
+      },
+      {
+        "type": "info",
+        "text": "[INFO] gpui_web_spike: アプリケーションフォントをロードしました (IBM Plex Sans/Mono)"
+      },
+      {
+        "type": "warning",
+        "text": "[WARN] gpui_wgpu::wgpu_renderer: Failed to poll device during resize: Timeout"
+      },
+      {
+        "type": "info",
+        "text": "[INFO] gpui_web_spike: fetch /stats.json => status=HTTP 200, body_len=242"
+      }
+    ]
+  },
+  "webgpu_forced_no_flags": {
+    "url": "http://127.0.0.1:8090/?backend=webgpu",
+    "dom": {
+      "title": "GPUI Web スパイク",
+      "canvas": null,
+      "bodyText": "Failed to initialize browser graphics: No browser graphics backend could be initialized. Only WebGPU was tried because the application requested it explicitly. WebGPU failure: Failed to request a WebGpu adapter compatible with the canvas: No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 not requested, gl not requested, webgpu found no adapters"
+    },
+    "console": [
+      {
+        "type": "info",
+        "text": "[INFO] gpui_web_spike: GPUI web spike: start()"
+      },
+      {
+        "type": "error",
+        "text": "[ERROR] gpui_web::platform: Failed to initialize browser graphics: No browser graphics backend could be initialized. Only WebGPU was tried because the application requested it explicitly. WebGPU failure: Failed to request a WebGpu adapter compatible with the canvas: No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 not requested, gl not requested, webgpu found no adapters"
+      }
+    ]
+  }
+}

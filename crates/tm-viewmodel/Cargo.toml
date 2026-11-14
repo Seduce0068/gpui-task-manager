@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "tm-viewmodel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "UI-independent presentation state machine for the GPUI task manager"
+
+[dependencies]
+tm-core = { workspace = true }

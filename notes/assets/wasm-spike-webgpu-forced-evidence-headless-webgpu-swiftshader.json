@@ -1,0 +1,138 @@
+{
+  "label": "headless-webgpu-swiftshader",
+  "url": "http://127.0.0.1:8090/?backend=webgpu",
+  "started_at": "2026-11-14T20:44:33+0900",
+  "steps": [
+    {
+      "step": "initial",
+      "title": "GPUI Web Spike | tick=9 cpu=20.9% mem=7967MB clicks=0 query=",
+      "proof": "tick=9;cpu=20.9;mem_mb=7967;clicks=0;query=;selected_pid=-;http=HTTP 200",
+      "dom_html": "<html lang=\"ja\"><head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title>GPUI Web Spike | tick=9 cpu=20.9% mem=7967MB clicks=0 query=</title>\n    <!-- trunk: Rust(wgpu) アプリをビルドして wasm-bindgen で読み込む -->\n    \n<script type=\"module\">\nimport init, * as bindings from '/gpui-web-spike-edeaa8228630aec9.js';\nconst wasm = await init({ module_or_path: '/gpui-web-spike-f4ffb2fd98da22d1_bg.wasm' });\n\n\nwindow.wasmBindings = bindings;\n\n\ndispatchEvent(new CustomEvent(\"TrunkApplicationStarted\", {detail: {wasm}}));\n\n</script>\n    <!-- 同一オリジン HTTP fetch の検証用ダミー API -->\n    \n    <style>\n      html,\n      body {\n        margin: 0;\n        padding: 0;\n        width: 100%;\n        height: 100%;\n        overflow: hidden;\n        background: #11111b;\n      }\n      canvas {\n        position: absolute;\n        inset: 0;\n        display: block;\n      }\n    </style>\n  <link rel=\"modulepreload\" href=\"/gpui-web-spike-edeaa8228630aec9.js\" crossorigin=\"anonymous\" integrity=\"sha384-c2sU+9AqKtXEhLH+ThzPDVQQ/9OnUr+9lPjolVg5COhbRjFX/cMo70il8GdGDAXf\"><link rel=\"preload\" href=\"/gpui-web-spike-f4ffb2fd98da22d1_bg.wasm\" crossorigin=\"anonymous\" integrity=\"sha384-rac+86OhGbPsDubE8fUxdQiJqYjzwPJAGPI2jXHdNSLKAs5PkIuDthVLfY0qD2c7\" as=\"fetch\" type=\"application/wasm\"></head>\n  <body data-gpui-proof=\"tick=9;cpu=20.9;mem_mb=7967;clicks=0;query=;selected_pid=-;http=HTTP 200\">\n\n<canvas tabindex=\"-1\" width=\"1200\" height=\"657\" style=\"width: 100%; height: 100%; display: block; outline: none; touch-action: none; user-select: none;\"></canvas><textarea spellcheck=\"false\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"off\" style=\"position: fixed; top: 0px; left: 0px; width: 1px; height: 1px; opacity: 0; font-size: 16px;\"></textarea><div style=\"position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-top,0px)\"></div><div style=\"position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-right,0px)\"></div><div style=\"position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom,0px)\"></div><div style=\"position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-left,0px)\"></div></body></html>"
+    },
+    {
+      "step": "after_ticks",
+      "title": "GPUI Web Spike | tick=12 cpu=38.0% mem=6096MB clicks=0 query=",
+      "proof": "tick=12;cpu=38.0;mem_mb=6096;clicks=0;query=;selected_pid=-;http=HTTP 200"
+    },
+    {
+      "step": "scroll_down",
+      "title": "GPUI Web Spike | tick=12 cpu=38.0% mem=6096MB clicks=0 query="
+    },
+    {
+      "step": "row_click",
+      "title": "GPUI Web Spike | tick=14 cpu=41.2% mem=6897MB clicks=1 query=",
+      "proof": "tick=14;cpu=41.2;mem_mb=6897;clicks=1;query=;selected_pid=128;http=HTTP 200"
+    },
+    {
+      "step": "search_typed",
+      "title": "GPUI Web Spike | tick=15 cpu=61.8% mem=13823MB clicks=1 query=http",
+      "proof": "tick=15;cpu=61.8;mem_mb=13823;clicks=1;query=http;selected_pid=128;http=HTTP 200"
+    },
+    {
+      "step": "search_backspace",
+      "title": "GPUI Web Spike | tick=16 cpu=51.1% mem=7370MB clicks=1 query=ht",
+      "proof": "tick=16;cpu=51.1;mem_mb=7370;clicks=1;query=ht;selected_pid=128;http=HTTP 200"
+    },
+    {
+      "step": "button_click",
+      "title": "GPUI Web Spike | tick=17 cpu=31.2% mem=10236MB clicks=2 query=ht",
+      "proof": "tick=17;cpu=31.2;mem_mb=10236;clicks=2;query=ht;selected_pid=128;http=HTTP 200"
+    },
+    {
+      "step": "final",
+      "title": "GPUI Web Spike | tick=19 cpu=52.9% mem=8659MB clicks=2 query=ht",
+      "proof": "tick=19;cpu=52.9;mem_mb=8659;clicks=2;query=ht;selected_pid=128;http=HTTP 200"
+    }
+  ],
+  "env": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "webgpu": true,
+    "webgl2": true,
+    "canvas": {
+      "width": 1200,
+      "height": 657,
+      "clientWidth": 1200,
+      "clientHeight": 657,
+      "connected": true
+    },
+    "title": "GPUI Web Spike | tick=9 cpu=20.9% mem=7967MB clicks=0 query=",
+    "proof": "tick=9;cpu=20.9;mem_mb=7967;clicks=0;query=;selected_pid=-;http=HTTP 200",
+    "bodyChildren": 6
+  },
+  "console": [
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[other] The `integrity` attribute is currently ignored for preload destinations that do not support subresource integrity. See https://crbug.com/981419 for more information",
+      "timestamp": 1794656673233.843
+    },
+    {
+      "source": "console",
+      "type": "info",
+      "text": "[INFO] gpui_web_spike: GPUI web spike: start()",
+      "timestamp": 1794656673308.959
+    },
+    {
+      "source": "console",
+      "type": "warning",
+      "text": "[WARN] gpui_wgpu::wgpu_context: Dual-source blending not available on this GPU. Subpixel text antialiasing will be disabled.",
+      "timestamp": 1794656673317.996
+    },
+    {
+      "source": "log",
+      "type": "error",
+      "text": "[network] Failed to load resource: the server responded with a status of 404 (File not found)",
+      "timestamp": 1794656673320.124
+    },
+    {
+      "source": "console",
+      "type": "info",
+      "text": "[INFO] gpui_wgpu::wgpu_context: Browser graphics initialized: requested=WebGpu, selected=BrowserWebGpu, adapter=\"\", limits=Limits { max_texture_dimension_1d: 8192, max_texture_dimension_2d: 8192, max_texture_dimension_3d: 2048, max_texture_array_layers: 256, max_bind_groups: 4, max_bind_groups_plus_vertex_buffers: 24, max_bindings_per_bind_group: 1000, max_dynamic_uniform_buffers_per_pipeline_layout: 8, max_dynamic_storage_buffers_per_pipeline_layout: 4, max_sampled_textures_per_shader_stage: 16, max_samplers_per_shader_stage: 16, max_storage_buffers_per_shader_stage: 8, max_storage_textures_per_shader_stage: 4, max_uniform_buffers_per_shader_stage: 12, max_binding_array_elements_per_shader_stage: 0, max_binding_array_acceleration_structure_elements_per_shader_stage: 0, max_binding_array_sampler_elements_per_shader_stage: 0, max_uniform_buffer_binding_size: 65536, max_storage_buffer_binding_size: 134217728, max_vertex_buffers: 8, max_buffer_size: 268435456, max_vertex_attributes: 16, max_vertex_buffer_array_stride: 2048, max_inter_stage_shader_variables: 16, min_uniform_buffer_offset_alignment: 256, min_storage_buffer_offset_alignment: 256, max_color_attachments: 8, max_color_attachment_bytes_per_sample: 32, max_compute_workgroup_storage_size: 16384, max_compute_invocations_per_workgroup: 256, max_compute_workgroup_size_x: 256, max_compute_workgroup_size_y: 256, max_compute_workgroup_size_z: 64, max_compute_workgroups_per_dimension: 65535, max_immediate_size: 0, max_non_sampler_bindings: 1000000, max_task_workgroup_total_count: 0, max_task_workgroups_per_dimension: 0, max_mesh_workgroup_total_count: 0, max_mesh_workgroups_per_dimension: 0, max_task_invocations_per_workgroup: 0, max_task_invocations_per_dimension: 0, max_mesh_invocations_per_workgroup: 0, max_mesh_invocations_per_dimension: 0, max_task_payload_size: 0, max_mesh_output_vertices: 0, max_mesh_output_primitives: 0, max_mesh_output_layers: 0, max_mesh_multiview_view_count: 0, max_blas_primitive_count: 0, max_blas_geometry_count: 0, max_tlas_instance_count: 0, max_acceleration_structures_per_shader_stage: 0, max_buffers_and_acceleration_structures_per_shader_stage: 28, max_multiview_view_count: 0, max_ray_dispatch_count: 0, max_ray_recursion_depth: 0 }, dual_source_blending=false",
+      "timestamp": 1794656673322.994
+    },
+    {
+      "source": "console",
+      "type": "info",
+      "text": "[INFO] gpui_web::platform: Browser graphics initialized successfully with BrowserWebGpu",
+      "timestamp": 1794656673323.138
+    },
+    {
+      "source": "console",
+      "type": "info",
+      "text": "[INFO] gpui_web_spike: アプリケーションフォントをロードしました (IBM Plex Sans/Mono)",
+      "timestamp": 1794656673323.858
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] WebGPU canvas configured with a different format than is preferred by this device (\"rgba8unorm\"). This requires an extra copy, which may impact performance.",
+      "timestamp": 1794656673450.971
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] A valid external Instance reference no longer exists.",
+      "timestamp": 1794656673459.791
+    },
+    {
+      "source": "console",
+      "type": "error",
+      "text": "[ERROR] gpui_wgpu::wgpu_context: wgpu device lost: reason=Unknown, message=A valid external Instance reference no longer exists.",
+      "timestamp": 1794656673460.789
+    },
+    {
+      "source": "console",
+      "type": "error",
+      "text": "[ERROR] gpui_wgpu::wgpu_renderer: Browser graphics context was lost; rendering has stopped. Reload the page to recover.",
+      "timestamp": 1794656673470.224
+    },
+    {
+      "source": "console",
+      "type": "info",
+      "text": "[INFO] gpui_web_spike: fetch /stats.json => status=HTTP 200, body_len=242",
+      "timestamp": 1794656673473.652
+    }
+  ],
+  "raw_event_count": 22,
+  "finished_at": "2026-11-14T20:44:53+0900"
+}

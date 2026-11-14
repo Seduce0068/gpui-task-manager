@@ -1,0 +1,766 @@
+//! Native [`tm_core::SystemProbe`] implementation.
+//!
+//! This crate is the only place in the workspace that talks to the operating
+//! system directly:
+//!
+//! - [`sysinfo`] 0.40 collects CPU, memory, process, network and disk data.
+//! - [`rustix`] sends signals with its safe API, so the crate stays free of
+//!   `unsafe` code.
+//!
+//! The UI never depends on this crate; it only sees [`tm_core::model`] value
+//! objects. Keeping the platform code behind the [`SystemProbe`] port is what
+//! lets the same view-model run against the native probe, the deterministic
+//! demo probe, or (in the browser) an agent-backed probe.
+//!
+//! # Process list
+//!
+//! `sysinfo` inserts the threads of every process into its process map when
+//! thread information is requested. The probe filters userland thread entries
+//! out so the snapshot contains one row per process, and reports the thread
+//! count in [`tm_core::model::ProcessSnapshot::threads`] instead.
+//!
+//! # Process identity
+//!
+//! PIDs are reused by the kernel. Every [`tm_core::model::ProcessKey`] therefore
+//! stores the PID **and** the process start time. [`NativeProbe::control`]
+//! re-reads the start time immediately before signalling and refuses the
+//! request when it no longer matches, so a recycled PID can never be signalled
+//! by mistake.
+//!
+//! # CPU sampling
+//!
+//! `sysinfo` computes CPU usage from the delta between two refreshes, so the
+//! first sample of a process's lifetime reports `0.0`. Callers that want
+//! meaningful numbers should sample periodically (the UI does this once per
+//! refresh interval).
+//!
+//! Per-process CPU percentages are **not** taken from `Process::cpu_usage()`.
+//! That value is derived from the global CPU delta at the end of the process
+//! refresh; when a process refresh takes longer than
+//! `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL` (common on machines with thousands of
+//! processes) the delta collapses and every busy process saturates at
+//! `cores * 100`. Instead the probe keeps `Process::accumulated_cpu_time()`
+//! (CPU-milliseconds) per `ProcessKey` and divides the delta by the measured
+//! wall-clock interval, which is stable regardless of how long the refresh
+//! takes.
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+use std::collections::HashMap;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use rustix::io::Errno;
+use rustix::process::{kill_process, Pid as RustixPid, Signal as RustixSignal};
+use sysinfo::{
+    CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
+    ProcessStatus as SysinfoProcessStatus, ProcessesToUpdate, RefreshKind, System, ThreadKind,
+    UpdateKind, Users,
+};
+use tm_core::model::{
+    CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot,
+    ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+};
+use tm_core::port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
+use tm_core::sanitize::{sanitize_display, MAX_COMMAND_CHARS, MAX_NAME_CHARS};
+
+/// Native [`SystemProbe`] backed by `sysinfo` and `rustix`.
+///
+/// The probe keeps one `sysinfo::System` alive across samples: `sysinfo` derives
+/// CPU percentages from the difference between two refreshes, so reusing the
+/// handle is required for correct values.
+pub struct NativeProbe {
+    system: System,
+    networks: Option<Networks>,
+    disks: Option<Disks>,
+    users: Option<Users>,
+    hostname: Option<String>,
+    os_name: Option<String>,
+    kernel_version: Option<String>,
+    os_label: String,
+    /// Accumulated CPU time (CPU-milliseconds) of every process at the previous
+    /// sample, keyed by PID + start time.
+    previous_cpu_ms: HashMap<ProcessKey, u64>,
+    /// When the previous sample was taken, used to turn CPU-time deltas into
+    /// percentages.
+    last_sample_at: Option<Instant>,
+}
+
+impl NativeProbe {
+    /// Creates a probe and takes the initial sample that `sysinfo` needs before
+    /// it can compute CPU deltas.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProbeError::Io`] when `sysinfo` cannot initialise its view of
+    /// the machine (for example on an unsupported target). Network and disk
+    /// enumeration failures are non-fatal: those sections are then reported as
+    /// empty instead of failing the whole sample.
+    pub fn new() -> Result<Self, ProbeError> {
+        let system = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_cpu(CpuRefreshKind::everything())
+                .with_memory(MemoryRefreshKind::everything())
+                .with_processes(process_refresh_kind()),
+        )
+        .map_err(|err| ProbeError::Io(format!("sysinfo の初期化に失敗: {err}")))?;
+
+        let hostname = System::host_name()
+            .ok()
+            .map(|host| sanitize_display(&host, MAX_NAME_CHARS))
+            .filter(|host| !host.is_empty());
+        let os_name = System::name().ok();
+        let kernel_version = System::kernel_version().ok();
+        let os_label = System::long_os_version()
+            .ok()
+            .or_else(|| os_name.clone())
+            .unwrap_or_else(|| std::env::consts::OS.to_string());
+
+        Ok(Self {
+            system,
+            networks: Networks::new_with_refreshed_list().ok(),
+            disks: Disks::new_with_refreshed_list().ok(),
+            users: Users::new_with_refreshed_list().ok(),
+            hostname,
+            os_name,
+            kernel_version,
+            os_label,
+            previous_cpu_ms: HashMap::new(),
+            last_sample_at: None,
+        })
+    }
+
+    /// Takes one sample without going through the [`SystemProbe`] trait.
+    ///
+    /// This is a convenience for callers that hold a concrete `NativeProbe`.
+    ///
+    /// # Errors
+    ///
+    /// Currently never fails; the `Result` mirrors [`SystemProbe::sample`] so
+    /// callers can stay generic over the port.
+    pub fn sample_native(&mut self) -> Result<SystemSnapshot, ProbeError> {
+        let now = Instant::now();
+        let elapsed_ms = self
+            .last_sample_at
+            .map(|last| now.duration_since(last).as_millis())
+            .map(|millis| u64::try_from(millis).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        self.refresh();
+        let (snapshot, next_cpu_ms) = self.build_snapshot(elapsed_ms);
+        self.previous_cpu_ms = next_cpu_ms;
+        self.last_sample_at = Some(now);
+        Ok(snapshot)
+    }
+
+    /// Refreshes every data source held by the probe.
+    ///
+    /// CPU usage is refreshed first so per-core values describe the interval
+    /// since the previous sample. Process CPU percentages are **not** taken
+    /// from `sysinfo`'s `Process::cpu_usage()`: that value is derived from the
+    /// global CPU delta at the end of the process refresh, and a process
+    /// refresh that takes longer than
+    /// `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL` makes the delta collapse and the
+    /// value saturate at `cores * 100`. See `sample_native` for the
+    /// accumulated-CPU-time based calculation instead.
+    fn refresh(&mut self) {
+        self.system
+            .refresh_cpu_specifics(CpuRefreshKind::everything());
+        self.system
+            .refresh_memory_specifics(MemoryRefreshKind::everything());
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process_refresh_kind(),
+        );
+        if let Some(networks) = self.networks.as_mut() {
+            networks.refresh(true);
+        }
+        if let Some(disks) = self.disks.as_mut() {
+            disks.refresh(true);
+        }
+    }
+
+    /// Builds the domain snapshot and the CPU-time bookkeeping for the next
+    /// sample.
+    fn build_snapshot(&self, elapsed_ms: u64) -> (SystemSnapshot, HashMap<ProcessKey, u64>) {
+        let (processes, next_cpu_ms) = self.process_snapshots(elapsed_ms);
+        let snapshot = SystemSnapshot {
+            sampled_at: now_millis(),
+            hostname: self.hostname.clone(),
+            os_name: self.os_name.clone(),
+            kernel_version: self.kernel_version.clone(),
+            cpu: self.cpu_snapshot(),
+            memory: self.memory_snapshot(),
+            processes,
+            network: self.network_snapshot(),
+            disks: self.disk_snapshots(),
+            self_pid: Some(std::process::id()),
+        };
+        (snapshot, next_cpu_ms)
+    }
+
+    fn cpu_snapshot(&self) -> CpuSnapshot {
+        let cpus = self.system.cpus();
+        let per_core_percent = cpus
+            .iter()
+            .map(|cpu| cpu.usage().clamp(0.0, 100.0))
+            .collect::<Vec<_>>();
+        // `global_cpu_usage()` is refreshed again at the end of the process
+        // refresh, so it can describe a much shorter window than the per-core
+        // values. The mean of the per-core values describes the sample
+        // interval consistently.
+        let total_percent = if per_core_percent.is_empty() {
+            0.0
+        } else {
+            (per_core_percent.iter().sum::<f32>() / per_core_percent.len() as f32).clamp(0.0, 100.0)
+        };
+        let load_average = System::load_average()
+            .map(|load| [load.one as f32, load.five as f32, load.fifteen as f32])
+            .unwrap_or([0.0; 3]);
+        let frequency_mhz = average_frequency_mhz(cpus);
+        CpuSnapshot {
+            total_percent,
+            per_core_percent,
+            load_average,
+            uptime_secs: System::uptime().unwrap_or(0),
+            frequency_mhz,
+        }
+    }
+
+    fn memory_snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot {
+            total_bytes: self.system.total_memory(),
+            used_bytes: self.system.used_memory(),
+            available_bytes: self.system.available_memory(),
+            swap_total_bytes: self.system.total_swap(),
+            swap_used_bytes: self.system.used_swap(),
+        }
+    }
+
+    /// Builds the process list and records the accumulated CPU time of every
+    /// process for the next sample.
+    ///
+    /// `cpu_percent` is `delta(accumulated_cpu_ms) / delta(wall_ms) * 100`, so
+    /// it is `0.0` for the first sample of a process (matching `sysinfo`'s
+    /// documented first-sample behaviour) and can exceed 100 on multicore
+    /// systems.
+    fn process_snapshots(
+        &self,
+        elapsed_ms: u64,
+    ) -> (Vec<ProcessSnapshot>, HashMap<ProcessKey, u64>) {
+        let mut next_cpu_ms = HashMap::with_capacity(self.system.processes().len());
+        let mut processes = self
+            .system
+            .processes()
+            .iter()
+            // On Linux, `sysinfo` inserts every thread of a process into its
+            // process map when `with_tasks()` is enabled. A task manager table
+            // must show one row per process, so userland thread entries are
+            // filtered out; kernel threads stay because they are real
+            // processes. `threads` below reports the thread count instead.
+            .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
+            .map(|(pid, process)| {
+                let raw_name = process.name().to_string_lossy();
+                let name = sanitize_display(&raw_name, MAX_NAME_CHARS);
+                let raw_command = process
+                    .cmd()
+                    .iter()
+                    .map(|part| part.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let command = if raw_command.trim().is_empty() {
+                    // Kernel threads have no argv; showing the name is more
+                    // useful than an empty command column.
+                    sanitize_display(&raw_name, MAX_COMMAND_CHARS)
+                } else {
+                    sanitize_display(&raw_command, MAX_COMMAND_CHARS)
+                };
+                let user = process
+                    .user_id()
+                    .and_then(|uid| self.users.as_ref()?.get_user_by_id(uid))
+                    .map(|user| sanitize_display(user.name(), MAX_NAME_CHARS))
+                    .filter(|user| !user.is_empty());
+                let key = ProcessKey::new(pid.as_u32(), process.start_time());
+                let cpu_ms = process.accumulated_cpu_time();
+                let cpu_percent = match self.previous_cpu_ms.get(&key) {
+                    Some(previous) if elapsed_ms > 0 => {
+                        let delta = cpu_ms.saturating_sub(*previous);
+                        (delta as f64 / elapsed_ms as f64 * 100.0).max(0.0) as f32
+                    }
+                    _ => 0.0,
+                };
+                next_cpu_ms.insert(key, cpu_ms);
+                ProcessSnapshot {
+                    key,
+                    name,
+                    command,
+                    user,
+                    status: map_status(process.status()),
+                    cpu_percent,
+                    memory_bytes: process.memory(),
+                    virtual_memory_bytes: process.virtual_memory(),
+                    // `sysinfo` excludes the process's own (main) thread from
+                    // `tasks()`, so a single-threaded process reports one
+                    // thread rather than zero.
+                    threads: process
+                        .tasks()
+                        .map(|tasks| tasks.len().saturating_add(1).min(u32::MAX as usize) as u32),
+                    parent_pid: process.parent().map(Pid::as_u32),
+                }
+            })
+            .collect::<Vec<_>>();
+        // `sysinfo` stores processes in a `HashMap`; sorting by PID keeps the
+        // wire format and the UI table deterministic between samples.
+        processes.sort_by_key(|process| (process.key.pid, process.key.start_time_secs));
+        (processes, next_cpu_ms)
+    }
+
+    fn network_snapshot(&self) -> NetworkSnapshot {
+        let mut interfaces = self
+            .networks
+            .as_ref()
+            .map(|networks| {
+                networks
+                    .iter()
+                    .filter_map(|(name, data)| {
+                        let name = sanitize_display(&name.to_string_lossy(), MAX_NAME_CHARS);
+                        // Loopback traffic is not network usage; exclude it so
+                        // the overview rate reflects real interfaces.
+                        if name == "lo" {
+                            return None;
+                        }
+                        Some(NetworkInterfaceSnapshot {
+                            name,
+                            received_bytes: data.total_received(),
+                            transmitted_bytes: data.total_transmitted(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        interfaces.sort_by(|left, right| left.name.cmp(&right.name));
+        NetworkSnapshot { interfaces }
+    }
+
+    fn disk_snapshots(&self) -> Vec<DiskUsageSnapshot> {
+        let mut disks = self
+            .disks
+            .as_ref()
+            .map(|disks| {
+                disks
+                    .iter()
+                    .filter(|disk| disk.total_space() > 0)
+                    .map(|disk| {
+                        let total = disk.total_space();
+                        let available = disk.available_space().min(total);
+                        DiskUsageSnapshot {
+                            mount_point: sanitize_display(
+                                &disk.mount_point().to_string_lossy(),
+                                MAX_COMMAND_CHARS,
+                            ),
+                            total_bytes: total,
+                            available_bytes: available,
+                            used_bytes: total.saturating_sub(available),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        disks.sort_by(|left, right| left.mount_point.cmp(&right.mount_point));
+        disks
+    }
+}
+
+impl SystemProbe for NativeProbe {
+    fn platform_info(&self) -> PlatformInfo {
+        PlatformInfo::native(self.os_label.clone())
+    }
+
+    fn sample(&mut self) -> Result<SystemSnapshot, ProbeError> {
+        self.sample_native()
+    }
+
+    fn control(&mut self, key: ProcessKey, signal: Signal) -> Result<(), ControlError> {
+        // Safety rules first: `kill(0, ...)` targets the whole process group
+        // and PID 1 is the init system. The application must never signal
+        // either, and it must never signal itself.
+        let pid = key.pid;
+        if pid == 0 || pid == 1 || pid == std::process::id() {
+            return Err(ControlError::Protected);
+        }
+        // A PID that cannot be represented as `pid_t` cannot exist.
+        if pid > i32::MAX as u32 {
+            return Err(ControlError::NotFound);
+        }
+
+        let sysinfo_pid = Pid::from_u32(pid);
+        // Re-read the process immediately before signalling. `Some(pid)` makes
+        // sysinfo read `/proc/<pid>` directly and insert the entry when it is
+        // not known yet, so this also works for processes sampled after the
+        // caller's last snapshot.
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let Some(process) = self.system.process(sysinfo_pid) else {
+            return Err(ControlError::NotFound);
+        };
+        if process.start_time() != key.start_time_secs {
+            // The PID now belongs to a different process (or the start time
+            // could not be read); refuse to touch it.
+            return Err(ControlError::NotFound);
+        }
+
+        let raw_pid = RustixPid::from_raw(pid as i32).ok_or(ControlError::NotFound)?;
+        match kill_process(raw_pid, map_signal(signal)) {
+            Ok(()) => Ok(()),
+            Err(err) if err == Errno::PERM => Err(ControlError::PermissionDenied),
+            Err(err) if err == Errno::SRCH => Err(ControlError::NotFound),
+            Err(err) => Err(ControlError::Failed(format!("kill: {err}"))),
+        }
+    }
+}
+
+/// The refresh policy used for the full process list.
+///
+/// `cmd` and `user` only need to be fetched once per process, while CPU,
+/// memory and the thread list change continuously. Tasks (threads) are needed
+/// for the thread count column and are only available on Linux.
+fn process_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_cmd(UpdateKind::OnlyIfNotSet)
+        .with_user(UpdateKind::OnlyIfNotSet)
+        .with_tasks()
+}
+
+/// Maps the `sysinfo` scheduler state onto the domain enum.
+fn map_status(status: SysinfoProcessStatus) -> ProcessStatus {
+    match status {
+        SysinfoProcessStatus::Run => ProcessStatus::Running,
+        SysinfoProcessStatus::Sleep => ProcessStatus::Sleeping,
+        SysinfoProcessStatus::Idle => ProcessStatus::Idle,
+        SysinfoProcessStatus::Stop | SysinfoProcessStatus::Suspended => ProcessStatus::Stopped,
+        SysinfoProcessStatus::Zombie => ProcessStatus::Zombie,
+        SysinfoProcessStatus::Tracing => ProcessStatus::Tracing,
+        SysinfoProcessStatus::Dead
+        | SysinfoProcessStatus::Wakekill
+        | SysinfoProcessStatus::Waking
+        | SysinfoProcessStatus::Parked
+        | SysinfoProcessStatus::LockBlocked
+        | SysinfoProcessStatus::UninterruptibleDiskSleep
+        | SysinfoProcessStatus::Unknown(_) => ProcessStatus::Unknown,
+    }
+}
+
+/// Maps the domain signal onto the POSIX signal used by `rustix`.
+fn map_signal(signal: Signal) -> RustixSignal {
+    match signal {
+        Signal::Terminate => RustixSignal::TERM,
+        Signal::Kill => RustixSignal::KILL,
+        Signal::Stop => RustixSignal::STOP,
+        Signal::Continue => RustixSignal::CONT,
+    }
+}
+
+/// Average non-zero core frequency, or `None` when the platform reports none.
+fn average_frequency_mhz(cpus: &[sysinfo::Cpu]) -> Option<u64> {
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    for frequency in cpus.iter().map(sysinfo::Cpu::frequency).filter(|f| *f > 0) {
+        sum = sum.saturating_add(frequency);
+        count += 1;
+    }
+    // `checked_div` is `None` exactly when no core reported a frequency.
+    sum.checked_div(count)
+}
+
+/// Wall-clock timestamp with millisecond precision.
+fn now_millis() -> Timestamp {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    Timestamp::from_millis(millis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Child, Command};
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    /// Spawns a `sleep 30` child that tests may signal, and guarantees cleanup.
+    struct ChildGuard {
+        child: Child,
+    }
+
+    impl ChildGuard {
+        fn spawn() -> Self {
+            let child = Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("spawn sleep 30");
+            Self { child }
+        }
+
+        fn pid(&self) -> u32 {
+            self.child.id()
+        }
+
+        fn wait_for_exit(&mut self, timeout: Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return true,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        sleep(Duration::from_millis(25));
+                    }
+                    _ => return false,
+                }
+            }
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            // Kill fallback: a test that failed before SIGTERM must not leak a
+            // 30 second process.
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Samples until the spawned child is visible and returns its identity.
+    fn wait_for_process(probe: &mut NativeProbe, pid: u32) -> ProcessKey {
+        for _ in 0..100 {
+            sleep(Duration::from_millis(25));
+            let snapshot = probe.sample().expect("sample");
+            if let Some(process) = snapshot.processes.iter().find(|p| p.key.pid == pid) {
+                return process.key;
+            }
+        }
+        panic!("child process {pid} did not show up in the snapshot");
+    }
+
+    #[test]
+    fn sample_reports_a_plausible_machine() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+
+        assert!(
+            !snapshot.processes.is_empty(),
+            "process list must not be empty"
+        );
+        assert!(snapshot.cpu.core_count() > 0, "at least one logical core");
+        assert!(
+            snapshot.memory.total_bytes > 0,
+            "total memory must be known"
+        );
+        assert!(snapshot.sampled_at.as_secs() > 0, "timestamp must be set");
+        assert_eq!(snapshot.self_pid, Some(std::process::id()));
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .any(|process| process.key.pid == std::process::id()),
+            "the sampler must see itself"
+        );
+        assert!(snapshot.hostname.is_some(), "hostname should be readable");
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.name.chars().count() <= MAX_NAME_CHARS + 1),
+            "process names are truncated"
+        );
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.command.chars().count() <= MAX_COMMAND_CHARS + 1),
+            "commands are truncated"
+        );
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.cpu_percent == 0.0),
+            "the first sample has no CPU reference yet"
+        );
+    }
+
+    #[test]
+    fn platform_info_describes_the_native_backend() {
+        let probe = NativeProbe::new().expect("native probe");
+        let info = probe.platform_info();
+        assert!(info.supports_process_control);
+        assert!(info.supports_network);
+        assert!(info.supports_disks);
+        assert!(!info.is_demo);
+        assert!(!info.os.is_empty());
+    }
+
+    #[test]
+    fn userland_threads_are_not_listed_as_processes() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        let listed = snapshot
+            .processes
+            .iter()
+            .map(|process| process.key.pid)
+            .collect::<std::collections::HashSet<_>>();
+
+        for (pid, process) in probe.system.processes() {
+            let Some(tasks) = process.tasks() else {
+                continue;
+            };
+            for task in tasks {
+                assert!(
+                    !listed.contains(&task.as_u32()),
+                    "thread {} of process {} must not be listed as a process",
+                    task.as_u32(),
+                    pid.as_u32()
+                );
+            }
+        }
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.threads.is_none_or(|threads| threads >= 1)),
+            "a listed process always has at least its own thread"
+        );
+    }
+
+    #[test]
+    fn two_samples_keep_cpu_percentages_in_range() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let first = probe.sample().expect("first sample");
+        // sysinfo needs at least MINIMUM_CPU_UPDATE_INTERVAL between refreshes
+        // for a meaningful second value.
+        sleep(Duration::from_millis(250));
+        let second = probe.sample().expect("second sample");
+
+        for snapshot in [&first, &second] {
+            assert!(
+                (0.0..=100.0).contains(&snapshot.cpu.total_percent),
+                "total CPU percent out of range: {}",
+                snapshot.cpu.total_percent
+            );
+            assert!(
+                snapshot
+                    .cpu
+                    .per_core_percent
+                    .iter()
+                    .all(|percent| (0.0..=100.0).contains(percent)),
+                "per-core CPU percent out of range"
+            );
+            assert!(snapshot.memory.used_percent() <= 100.0);
+        }
+        assert_eq!(first.cpu.core_count(), second.cpu.core_count());
+        assert!(
+            second.cpu.uptime_secs >= first.cpu.uptime_secs,
+            "uptime must not go backwards"
+        );
+
+        // Process CPU percentages are derived from accumulated CPU time, so
+        // they are bounded by the number of cores and their sum by the machine
+        // capacity. `sysinfo`'s own `Process::cpu_usage()` used to saturate at
+        // `cores * 100` on this machine because a process refresh takes longer
+        // than its minimum CPU interval; this guards against a regression.
+        let capacity = second.cpu.core_count() as f32 * 100.0;
+        let mut process_sum = 0.0f32;
+        for process in &second.processes {
+            assert!(
+                process.cpu_percent.is_finite() && process.cpu_percent >= 0.0,
+                "process CPU percent must be finite and non-negative: {}",
+                process.cpu_percent
+            );
+            assert!(
+                process.cpu_percent <= capacity,
+                "process CPU percent {} exceeds machine capacity {capacity}",
+                process.cpu_percent
+            );
+            process_sum += process.cpu_percent;
+        }
+        assert!(
+            process_sum <= capacity * 2.0,
+            "sum of process CPU percentages {process_sum} is implausible for {capacity}% capacity"
+        );
+    }
+
+    #[test]
+    fn control_protects_pid_zero_pid_one_and_self() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        for pid in [0, 1, std::process::id()] {
+            assert_eq!(
+                probe.control(ProcessKey::new(pid, 0), Signal::Terminate),
+                Err(ControlError::Protected),
+                "pid {pid} must be protected"
+            );
+        }
+    }
+
+    #[test]
+    fn control_reports_not_found_for_a_reaped_process() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        // Spawn and reap a child, then use its old PID with a start time that
+        // cannot belong to it. Even if the kernel recycled the PID in between,
+        // the start time mismatch must yield NotFound.
+        let mut child = Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("reap true");
+        assert_eq!(
+            probe.control(ProcessKey::new(pid, 0), Signal::Terminate),
+            Err(ControlError::NotFound)
+        );
+    }
+
+    #[test]
+    fn control_reports_not_found_for_out_of_range_pid() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        assert_eq!(
+            probe.control(ProcessKey::new(u32::MAX, 0), Signal::Terminate),
+            Err(ControlError::NotFound)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn control_rejects_a_stale_start_time() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let mut child = ChildGuard::spawn();
+        let key = wait_for_process(&mut probe, child.pid());
+        let stale = ProcessKey::new(key.pid, key.start_time_secs + 1);
+
+        assert_eq!(
+            probe.control(stale, Signal::Terminate),
+            Err(ControlError::NotFound),
+            "a mismatched start time must never be signalled"
+        );
+        assert!(
+            child.child.try_wait().expect("try_wait").is_none(),
+            "the child must still be running after a rejected signal"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_ends_a_child_process() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let mut child = ChildGuard::spawn();
+        let key = wait_for_process(&mut probe, child.pid());
+
+        probe
+            .control(key, Signal::Terminate)
+            .expect("SIGTERM to own child");
+        assert!(
+            child.wait_for_exit(Duration::from_secs(5)),
+            "child did not exit after SIGTERM"
+        );
+    }
+}

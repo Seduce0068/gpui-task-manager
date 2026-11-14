@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "tm-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native SystemProbe implementation (sysinfo + rustix) for the GPUI task manager"
+
+[dependencies]
+tm-core = { workspace = true }
+# GPU/component 収集はタスクマネージャーに不要なので default features を絞り、
+# system（CPU/メモリ/プロセス）、disk、network、user だけを使う。
+sysinfo = { version = "=0.40.3", default-features = false, features = [
+    "system",
+    "disk",
+    "network",
+    "user",
+] }
+# RUSTSEC-2026-0486 の修正版に完全固定する。
+rustix = { version = "=1.1.6", features = ["process"] }
