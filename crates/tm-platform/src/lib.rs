@@ -4,8 +4,23 @@
 //! system directly:
 //!
 //! - [`sysinfo`] 0.40 collects CPU, memory, process, network and disk data.
-//! - [`rustix`] sends signals with its safe API, so the crate stays free of
-//!   `unsafe` code.
+//! - `rustix` sends POSIX signals with its safe API on Unix, so the crate
+//!   stays free of `unsafe` code.
+//!
+//! # Platform support
+//!
+//! - **Unix (Linux, macOS, ...)**: `sysinfo` samples the machine and `rustix`
+//!   delivers `SIGTERM` / `SIGKILL` / `SIGSTOP` / `SIGCONT`. Thread counts are
+//!   only collected on Linux (`sysinfo` exposes no task list elsewhere), so
+//!   macOS and other Unix targets report `threads: None`.
+//! - **Windows**: `sysinfo` samples the machine and `taskkill /F` (invoked by
+//!   absolute path under `%SystemRoot%\System32`, never through `PATH`)
+//!   terminates processes. Windows has no POSIX signals, so `Terminate` and
+//!   `Kill` both end the process forcefully and `Stop` / `Continue` return
+//!   [`ControlError::Unsupported`].
+//!
+//! The safety rules (never PID 0, PID 1 or the app itself; re-check the start
+//! time immediately before signalling) are shared by every platform.
 //!
 //! The UI never depends on this crate; it only sees [`tm_core::model`] value
 //! objects. Keeping the platform code behind the [`SystemProbe`] port is what
@@ -50,7 +65,9 @@
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use rustix::io::Errno;
+#[cfg(unix)]
 use rustix::process::{kill_process, Pid as RustixPid, Signal as RustixSignal};
 use sysinfo::{
     CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
@@ -258,6 +275,8 @@ impl NativeProbe {
             // must show one row per process, so userland thread entries are
             // filtered out; kernel threads stay because they are real
             // processes. `threads` below reports the thread count instead.
+            // Other platforms never insert thread entries (`thread_kind()`
+            // returns `None`), so the filter is a no-op there.
             .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
             .map(|(pid, process)| {
                 let raw_name = process.name().to_string_lossy();
@@ -301,10 +320,9 @@ impl NativeProbe {
                     virtual_memory_bytes: process.virtual_memory(),
                     // `sysinfo` excludes the process's own (main) thread from
                     // `tasks()`, so a single-threaded process reports one
-                    // thread rather than zero.
-                    threads: process
-                        .tasks()
-                        .map(|tasks| tasks.len().saturating_add(1).min(u32::MAX as usize) as u32),
+                    // thread rather than zero. Only Linux collects tasks, so
+                    // other platforms report `None` (shown as "—").
+                    threads: thread_count(process),
                     parent_pid: process.parent().map(Pid::as_u32),
                 }
             })
@@ -383,19 +401,22 @@ impl SystemProbe for NativeProbe {
     fn control(&mut self, key: ProcessKey, signal: Signal) -> Result<(), ControlError> {
         // Safety rules first: `kill(0, ...)` targets the whole process group
         // and PID 1 is the init system. The application must never signal
-        // either, and it must never signal itself.
+        // either, and it must never signal itself. These rules are the same on
+        // every platform, so they live outside the platform-specific branch.
         let pid = key.pid;
         if pid == 0 || pid == 1 || pid == std::process::id() {
             return Err(ControlError::Protected);
         }
-        // A PID that cannot be represented as `pid_t` cannot exist.
+        // A PID that cannot be represented as `pid_t` cannot exist. Windows
+        // PIDs are `u32`, so only Unix needs this bound.
+        #[cfg(unix)]
         if pid > i32::MAX as u32 {
             return Err(ControlError::NotFound);
         }
 
         let sysinfo_pid = Pid::from_u32(pid);
         // Re-read the process immediately before signalling. `Some(pid)` makes
-        // sysinfo read `/proc/<pid>` directly and insert the entry when it is
+        // sysinfo read the process directly and insert the entry when it is
         // not known yet, so this also works for processes sampled after the
         // caller's last snapshot.
         self.system.refresh_processes_specifics(
@@ -412,31 +433,137 @@ impl SystemProbe for NativeProbe {
             return Err(ControlError::NotFound);
         }
 
-        let raw_pid = RustixPid::from_raw(pid as i32).ok_or(ControlError::NotFound)?;
-        match kill_process(raw_pid, map_signal(signal)) {
-            Ok(()) => Ok(()),
-            Err(err) if err == Errno::PERM => Err(ControlError::PermissionDenied),
-            Err(err) if err == Errno::SRCH => Err(ControlError::NotFound),
-            Err(err) => Err(ControlError::Failed(format!("kill: {err}"))),
-        }
+        control_process(process, signal)
     }
 }
 
 /// The refresh policy used for the full process list.
 ///
-/// `cmd` and `user` only need to be fetched once per process, while CPU,
-/// memory and the thread list change continuously. Tasks (threads) are needed
-/// for the thread count column and are only available on Linux.
+/// `cmd` and `user` only need to be fetched once per process, while CPU and
+/// memory change continuously. Tasks (threads) are needed for the thread count
+/// column but `sysinfo` only collects them on Linux, so the flag is only set
+/// there.
 fn process_refresh_kind() -> ProcessRefreshKind {
-    ProcessRefreshKind::nothing()
+    let kind = ProcessRefreshKind::nothing()
         .with_cpu()
         .with_memory()
         .with_cmd(UpdateKind::OnlyIfNotSet)
-        .with_user(UpdateKind::OnlyIfNotSet)
-        .with_tasks()
+        .with_user(UpdateKind::OnlyIfNotSet);
+    #[cfg(target_os = "linux")]
+    let kind = kind.with_tasks();
+    kind
+}
+
+/// Number of threads in `process`, or `None` when the platform cannot report
+/// it.
+///
+/// `sysinfo` only fills the task list on Linux; macOS, the BSDs and Windows
+/// have no equivalent API, so the UI shows "—" there.
+#[cfg(target_os = "linux")]
+fn thread_count(process: &sysinfo::Process) -> Option<u32> {
+    // `sysinfo` excludes the process's own (main) thread from `tasks()`, so a
+    // single-threaded process reports one thread rather than zero.
+    process
+        .tasks()
+        .map(|tasks| tasks.len().saturating_add(1).min(u32::MAX as usize) as u32)
+}
+
+/// Number of threads in `process`, or `None` when the platform cannot report
+/// it.
+#[cfg(not(target_os = "linux"))]
+fn thread_count(_process: &sysinfo::Process) -> Option<u32> {
+    None
+}
+
+/// Sends `signal` to `process` with the platform's native mechanism.
+///
+/// The caller has already validated the PID and re-checked the start time.
+#[cfg(unix)]
+fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), ControlError> {
+    let pid = process.pid().as_u32();
+    // `from_raw` returns `None` for a PID that does not fit in `pid_t`; such a
+    // process cannot exist.
+    let raw_pid = RustixPid::from_raw(pid as i32).ok_or(ControlError::NotFound)?;
+    match kill_process(raw_pid, map_signal(signal)) {
+        Ok(()) => Ok(()),
+        Err(err) if err == Errno::PERM => Err(ControlError::PermissionDenied),
+        Err(err) if err == Errno::SRCH => Err(ControlError::NotFound),
+        Err(err) => Err(ControlError::Failed(format!("kill: {err}"))),
+    }
+}
+
+/// Sends `signal` to `process` on Windows.
+///
+/// Windows has no POSIX signals. `Terminate` and `Kill` are both implemented
+/// with `taskkill /F` (forceful termination); there is no graceful equivalent.
+/// `Stop` / `Continue` have no Windows equivalent and are reported as
+/// unsupported.
+///
+/// `taskkill.exe` is invoked through its absolute path under
+/// `%SystemRoot%\System32` instead of relying on `PATH` resolution: a hijacked
+/// `PATH` must not be able to substitute an attacker-controlled executable.
+/// (sysinfo's `Process::kill_with` uses `Command::new("taskkill.exe")`, which
+/// resolves through `PATH`, so it is not used here.)
+#[cfg(windows)]
+fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), ControlError> {
+    let pid = process.pid().as_u32();
+    match signal {
+        Signal::Terminate | Signal::Kill => {}
+        Signal::Stop | Signal::Continue => return Err(ControlError::Unsupported),
+    }
+
+    let mut command = std::process::Command::new(taskkill_path());
+    command.arg("/PID").arg(pid.to_string()).arg("/F");
+    // The task manager is a GUI application; do not flash a console window for
+    // the helper process.
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = command
+        .output()
+        .map_err(|err| ControlError::Failed(format!("taskkill の実行に失敗: {err}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(ControlError::Failed(format!(
+            "taskkill が失敗しました ({}): {}",
+            output.status,
+            stderr.trim()
+        )))
+    }
+}
+
+/// Absolute path of the Windows `taskkill.exe`.
+///
+/// Uses `%SystemRoot%\System32\taskkill.exe` and falls back to
+/// `C:\Windows\System32\taskkill.exe` when the variable is unset or empty.
+/// The absolute path avoids `PATH` hijacking.
+#[cfg(windows)]
+fn taskkill_path() -> std::path::PathBuf {
+    let system_root = std::env::var_os("SystemRoot")
+        .filter(|root| !root.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows"));
+    std::path::PathBuf::from(system_root)
+        .join("System32")
+        .join("taskkill.exe")
+}
+
+/// Fallback for platforms that are neither Unix nor Windows: the probe is
+/// read-only.
+#[cfg(not(any(unix, windows)))]
+fn control_process(_process: &sysinfo::Process, _signal: Signal) -> Result<(), ControlError> {
+    Err(ControlError::Unsupported)
 }
 
 /// Maps the `sysinfo` scheduler state onto the domain enum.
+///
+/// `sysinfo::ProcessStatus` declares every variant on every platform (the
+/// platform documentation on each variant only says which states can actually
+/// occur), so one exhaustive match works for all targets.
 fn map_status(status: SysinfoProcessStatus) -> ProcessStatus {
     match status {
         SysinfoProcessStatus::Run => ProcessStatus::Running,
@@ -456,6 +583,7 @@ fn map_status(status: SysinfoProcessStatus) -> ProcessStatus {
 }
 
 /// Maps the domain signal onto the POSIX signal used by `rustix`.
+#[cfg(unix)]
 fn map_signal(signal: Signal) -> RustixSignal {
     match signal {
         Signal::Terminate => RustixSignal::TERM,
@@ -489,15 +617,18 @@ fn now_millis() -> Timestamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::process::{Child, Command};
     use std::thread::sleep;
     use std::time::Duration;
 
     /// Spawns a `sleep 30` child that tests may signal, and guarantees cleanup.
+    #[cfg(unix)]
     struct ChildGuard {
         child: Child,
     }
 
+    #[cfg(unix)]
     impl ChildGuard {
         fn spawn() -> Self {
             let child = Command::new("sleep")
@@ -525,6 +656,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for ChildGuard {
         fn drop(&mut self) {
             // Kill fallback: a test that failed before SIGTERM must not leak a
@@ -535,6 +667,7 @@ mod tests {
     }
 
     /// Samples until the spawned child is visible and returns its identity.
+    #[cfg(unix)]
     fn wait_for_process(probe: &mut NativeProbe, pid: u32) -> ProcessKey {
         for _ in 0..100 {
             sleep(Duration::from_millis(25));
@@ -705,6 +838,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn control_reports_not_found_for_a_reaped_process() {
         let mut probe = NativeProbe::new().expect("native probe");
@@ -729,7 +863,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn control_rejects_a_stale_start_time() {
         let mut probe = NativeProbe::new().expect("native probe");
@@ -748,7 +882,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn terminate_ends_a_child_process() {
         let mut probe = NativeProbe::new().expect("native probe");

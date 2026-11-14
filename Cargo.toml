@@ -18,8 +18,8 @@ authors = ["gpui-task-manager contributors"]
 description = "A cross-platform, browser-capable system task manager built with GPUI"
 
 [workspace.dependencies]
-tm-core = { path = "crates/tm-core" }
-tm-viewmodel = { path = "crates/tm-viewmodel" }
+tm-core = { path = "crates/tm-core", version = "0.1.0" }
+tm-viewmodel = { path = "crates/tm-viewmodel", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -4,6 +4,8 @@ name = "tm-web"
 version = "0.1.0"
 edition = "2024"
 publish = false
+# cargo-deny: workspace 外の独立 crate でもライセンスを明示する。
+license = "Apache-2.0"
 description = "Browser (wasm) GPUI shell for the GPUI task manager"
 
 # 親 workspace（work/gpui-task-manager/Cargo.toml）に巻き込まれないよう独立 crate にする。
@@ -23,8 +25,9 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-fe
 gpui_web = { package = "gpui-pre-web", version = "=0.3.12", default-features = false }
 
 # ドメイン / プレゼンテーション層はネイティブ版と共有する。
-tm-core = { path = "../crates/tm-core", features = ["serde"] }
-tm-viewmodel = { path = "../crates/tm-viewmodel" }
+# path 依存にも version を書く（cargo-deny の wildcard 検査対策）。
+tm-core = { path = "../crates/tm-core", version = "0.1.0", features = ["serde"] }
+tm-viewmodel = { path = "../crates/tm-viewmodel", version = "0.1.0" }
 
 anyhow = "1"
 console_error_panic_hook = "0.1"

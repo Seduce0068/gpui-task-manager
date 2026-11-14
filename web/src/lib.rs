@@ -11,17 +11,22 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(target_family = "wasm")]
 use std::borrow::Cow;
 
+#[cfg(target_family = "wasm")]
 use gpui::{App, Application, WindowOptions, prelude::*};
 
 mod agent;
+mod filter_input;
 mod shell;
 mod theme;
 mod widgets;
 
+#[cfg(target_family = "wasm")]
 use shell::TaskManagerApp;
 
+#[cfg(target_family = "wasm")]
 fn load_fonts(cx: &App) -> anyhow::Result<()> {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
         Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf").as_slice()),
@@ -31,6 +36,7 @@ fn load_fonts(cx: &App) -> anyhow::Result<()> {
     cx.text_system().add_fonts(fonts)
 }
 
+#[cfg(target_family = "wasm")]
 fn run() {
     // WebPlatform を直接構築する理由:
     // 1. CJK を Canvas フォールバックで描画する `CanvasFontFallback::EmojiAndCjk` を有効にするため

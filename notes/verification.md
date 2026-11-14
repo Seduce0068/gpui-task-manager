@@ -24,9 +24,10 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **118 passed / 0 failed**（tm-core 49 / tm-viewmodel 15 / tm-platform 9 / tm-agent 39 / app 6） |
+| `cargo test --workspace` | **118 passed / 0 failed**（tm-core 49 / tm-viewmodel 15 / tm-platform 9 / tm-agent 39 / app 6）
+| web ユニットテスト | **15 passed / 0 failed**（`filter_input` 11 + agent 4） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
-| `cargo audit` | 脆弱性 0。未保守（unmaintained）警告 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など、いずれも GPUI 依存由来） |
+| `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件は理由付き ignore。cargo-deny はルート / web とも ok |（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など、いずれも GPUI 依存由来） |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
 
 ## 3. ネイティブ UI（実データ）
@@ -88,7 +89,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | CJK テキスト | `CanvasFontFallback::EmojiAndCjk` で表示成功 |
 | スクロール・クリック・検索入力・1 秒定期更新 | 成功 |
 | HTTP fetch | 成功（`/stats.json` → HTTP 200） |
-| wasm サイズ | 14 MB（gzip 3.6 MB）+ JS 154 KB（wasm-opt 未適用） |
+| wasm サイズ（スパイク時点） | 14 MB（gzip 3.6 MB）+ JS 154 KB。後に wasm-opt -Oz を適用し 7.24 MiB（gzip 2.89 MiB、§10） |
 | 証拠 | `notes/assets/wasm-spike-*.png`、`wasm-spike-evidence-headless-default-release.json` |
 
 ### 5.1 ブラウザ版シェル（`web/`）
@@ -104,7 +105,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | コンソール | panic / JS 例外 0（WebGL2 フォールバック等の想定内警告のみ） |
 
 - `cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml`: 成功
-- `cd web && trunk build --release`: 成功（wasm 14.1 MiB / gzip 3.5 MiB、JS 156 KiB）
+- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB）
 - 証拠: `notes/assets/web-shell-*.png`（18 枚）、`web/verification/web-shell-evidence-*.json`
 
 ## 6. 既知の制限・未検証
@@ -183,3 +184,35 @@ cd poc-wasm && trunk build --release
 | ポリシー文書 | `SECURITY.md`（安全原則・脅威モデル・残余リスク） | レビュー |
 
 追加後のゲート: `bash scripts/check.sh` 成功（fmt / clippy / test 118 件 / wasm check）。
+
+## 10. ツール導入（2026-11-15）
+
+| ツール | 内容 | 結果 |
+|---|---|---|
+| Dependabot | `.github/dependabot.yml`（Cargo ルート / web、GitHub Actions、週次）。GPUI 系は完全ピン運用のため ignore。セキュリティアラート / 自動修正を API で有効化 | `vulnerability-alerts.enabled=true` / `automated-security-fixes.enabled=true` |
+| cargo-deny | `deny.toml`（ライセンス allowlist、脆弱性、重複版 warn、供給元 deny）。ルート / web の両方 | 両方 **advisories / bans / licenses / sources ok** |
+| wasm-opt | `web/index.html` の `data-wasm-opt="z"`（trunk が wasm-opt を自動取得） | wasm 14,799,786 → **7,589,230 B**、gzip 3,656,199 → **3,024,986 B** |
+| wasm-opt 後の Web 検証 | 既存 CDP スクリプト（デモ） | `{"failures": [], "passed": true}`、スクリーンショット 8 枚（`wasmopt-*.png`） |
+
+## 11. 日本語 IME（ブラウザ版、2026-11-15）
+
+- `gpui-pre-web` の IME ミラー（隠し textarea）+ アプリ側 `EntityInputHandler` で実装。
+- 変換中は未確定文字列を入力欄にのみ表示し、`Dashboard` へは確定文字列だけを反映。
+- CDP `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」を再現し、
+  **32/32 チェック pass**、JS 例外 0。単体テスト 15 件（web）。
+- ネイティブ版は未実装（設計案は `notes/ime.md`）。
+- 証拠: `notes/assets/ime-*.png`、`web/scripts/cdp_verify_ime.py`。
+
+## 12. Windows / macOS（2026-11-15）
+
+| 検証 | 結果 |
+|---|---|
+| `cargo check --target x86_64-pc-windows-msvc --workspace` | 成功（app/GPUI 含む） |
+| `cargo check --target x86_64-pc-windows-msvc -p tm-platform --tests` / clippy | 成功 |
+| `cargo check --target aarch64-apple-darwin`（core / viewmodel / platform / agent） | 成功 |
+| app の macOS ビルド | Linux ホストでは `gpui-pre-apple` の Metal シェーダ生成が動かず不可（環境制約）。CI `native-macos` で検証 |
+| CI ジョブ | `native-windows` / `native-macos` / `deny` を追加（push 後に実結果を追記） |
+
+- Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動
+  （PATH ハイジャック回避）。Stop/Continue は非対応。
+- `thread_count` は 637 プロセスで `/proc/<pid>/status` の `Threads:` と照合し不一致 0。

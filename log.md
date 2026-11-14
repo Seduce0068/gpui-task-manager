@@ -47,3 +47,16 @@
   wasm check（core / viewmodel / web）1m56s。
 - 認証: `gh` の account 表示は旧名 `onoderakeita`、現行 login は `Seduce0068`。
   `gh repo create` の GraphQL はプロキシで失敗したため REST API で作成した。
+
+## 2026-11-15（ツール・IME・クロスプラットフォーム）
+
+- Dependabot を有効化（Cargo ルート / web、GitHub Actions、週次。GPUI 系は ignore）。
+- `cargo-deny 0.20.2` を導入し `deny.toml` を追加。ルート / web とも ok。
+- wasm-opt（-Oz）を trunk で有効化。wasm 14.8 MB → 7.6 MB（gzip 3.66 → 3.02 MB）、
+  CDP 検証 pass。
+- ブラウザ版の日本語 IME を実装（`EntityInputHandler` + composition、CDP 32 チェック）。
+  ネイティブ版は設計案のみ（`notes/ime.md`）。
+- Windows/macOS 対応: rustix を Unix 限定、Windows は `taskkill` 絶対パス起動、
+  Linux 専用 tasks/threads を gate。CI に native-windows / native-macos / deny を追加。
+  Windows workspace check / macOS 4 crate check はローカル成功。
+- テスト: workspace 118 + web 15。

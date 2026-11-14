@@ -50,6 +50,12 @@ verified: 2026-11-14T22:35:00+09:00
    メモリ上と起動ログ（1 回）のみ。
 8. **公開物の衛生**: スクリーンショット・証拠 JSON は `--redact` を使い、ホスト名・
    ユーザー名・ホームパス・コマンド引数内のホスト名 / tailnet ドメインを伏せる。
+9. **入力（IME）**: ブラウザ版は composition 中の未確定文字列をアプリ状態に反映せず、
+   確定文字列だけを絞り込みに渡す。確定文字列はユーザー自身の入力であり、OS 由来の
+   表示文字列とは別扱いとする。
+10. **クロスプラットフォーム**: Windows は `%SystemRoot%\System32\taskkill.exe` の
+    絶対パス起動のみ（PATH 解決をしない）。Stop/Continue は非対応。macOS は rustix の
+    安全 API を使う。
 
 ## 4. 脅威モデル（要約）
 
@@ -85,8 +91,10 @@ chmod 600 ~/.config/tm-agent.token
 - GPUI 系（`gpui-kit` / `gpui-pre*`）、`sysinfo`、`rustix` は**完全一致ピン**。
   `Cargo.lock` をコミットする。
 - `rustix` は RUSTSEC-2026-0486 の修正版 `=1.1.6` に固定。
-- `cargo audit` を CI で実行（脆弱性 0、未保守警告 8 件は GPUI 依存由来）。
-- `cargo-deny`（ライセンス・重複版）は未導入。導入時は CI ゲートに追加する。
+- `cargo audit` と `cargo-deny`（advisories / bans / licenses / sources）を CI で
+  実行する。ルート / web の両ワークスペースで ok（未保守 8 件は理由付き ignore）。
+- Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
+  自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
 - 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
 
 ## 7. 残余リスク
@@ -97,7 +105,11 @@ chmod 600 ~/.config/tm-agent.token
   独立したセキュリティ監査は未実施。
 - ブラウザのトークンは URL フラグメントから読み取るため、画面共有・スクリーンショット・
   同一ユーザーの他プロセスには露出し得る。読み取り専用 API と loopback 限定で影響を抑える。
-- IME 未対応、実 GPU の WebGPU、Safari / Firefox、Windows / macOS は未検証。
+- ネイティブ版 IME は未実装（ブラウザ版は composition 対応済み）。実 GPU の WebGPU、
+  Safari / Firefox、Windows / macOS の物理実機は未検証（Windows/macOS は CI ランナーで
+  型検査・単体テストを実施）。
+- Windows のシグナル送信は `taskkill /F` による強制終了で、POSIX の SIGTERM/SIGSTOP
+  とは意味が異なる。
 - `--redact` は既知の識別子（ホスト名・ユーザー名・ホームパス・tailnet ドメイン）を
   置換するが、ゼロ幅文字・同形異義文字によるなりすましは完全には防がない。
 
@@ -105,7 +117,7 @@ chmod 600 ~/.config/tm-agent.token
 
 ```bash
 cd work/gpui-task-manager
-bash scripts/check.sh          # fmt / clippy / test 118 件 / wasm check
+bash scripts/check.sh          # fmt / clippy / test 118 件 / web 15 件 / wasm / cargo-deny
 cargo audit
 ```
 
@@ -119,3 +131,7 @@ cargo audit
 - `tm-core`: 制御文字・ANSI・bidi の除去、500 ケースの決定論的サニタイズ検査。
 - `tm-agent`: クエリトークン拒否、Host 検証、Bearer 認証、CORS、`--token-file`、
   `--redact`（コマンド引数内ホスト名・tailnet ドメインを含む）。
+- `web`: `FilterInput` の UTF-16 / selection / marked range の状態機械 11 件 +
+  agent 4 件。IME は CDP の composition 32 チェック（確定前は反映しない）。
+- クロスプラットフォーム: Windows ターゲットの workspace check、macOS 4 crate の
+  check、CI の windows-latest / macos-latest。

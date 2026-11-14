@@ -44,3 +44,41 @@ jobs:
         run: |
           cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
           cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
+
+  # Windows / macOS は開発ホスト（Linux）に実機が無いため、GitHub Actions の
+  # windows-latest / macos-latest を「実機相当の検証」として位置づける。
+  # どちらも `cargo check --workspace` で app（GPUI）を含む全クレートを型検査し、
+  # OS 固有の cfg 分岐が壊れていないことを確認する。
+  native-windows:
+    name: native check (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check workspace
+        run: cargo check --workspace
+      - name: Test portable crates
+        run: cargo test -p tm-core -p tm-viewmodel
+
+  native-macos:
+    name: native check (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check workspace
+        run: cargo check --workspace
+      - name: Test portable and platform crates
+        run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
+
+  # ライセンス・脆弱性・重複バージョンのゲート。ポリシーは deny.toml（ルート）に置く。
+  deny:
+    name: cargo-deny (licenses / advisories / duplicates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Check native workspace
+        run: cargo deny --manifest-path Cargo.toml check
+      - name: Check web workspace
+        run: cargo deny --manifest-path web/Cargo.toml check
