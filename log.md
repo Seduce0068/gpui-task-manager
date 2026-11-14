@@ -37,3 +37,13 @@
 - 既存 `Seduce0068/workflows`（public）を確認し、CI 参照を現行名 `Seduce0068/workflows@v1` に修正。
 - 個人情報を含む過去履歴を push しないよう、**クリーンな1コミットの `main`** を作成して
   private リポジトリへ push する方針（ローカル `archive/master` に旧履歴を保持）。
+
+## 2026-11-14（GitHub 公開）
+
+- リポジトリ: https://github.com/Seduce0068/gpui-task-manager （**private**）
+- 公開用の `main` はクリーンな1コミット（旧履歴はローカルの `master` / `archive/master` に保持、
+  push していない）。
+- CI（run 43604507187）: **成功**。gates（fmt / check / test / clippy / cargo audit）7m02s、
+  wasm check（core / viewmodel / web）1m56s。
+- 認証: `gh` の account 表示は旧名 `onoderakeita`、現行 login は `Seduce0068`。
+  `gh repo create` の GraphQL はプロキシで失敗したため REST API で作成した。
