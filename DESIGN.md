@@ -306,7 +306,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
   クエリ文字列のトークンは使用しない。
 - 日本語 IME: `EntityInputHandler` + composition を実装。CDP の
   `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」の
-  変換・確定・Esc 復帰を 32 チェックで検証（JS 例外 0）。`web/` の単体テスト 15 件。
+  変換・確定・Esc 復帰を 32 チェックで検証（JS 例外 0）。`FilterInput` のテストは
+  `tm-viewmodel` に移設（28 件）、`web/` の単体テストは 4 件。
 - wasm-opt（-Oz）適用後もデモ / ライブ / エラー時の CDP 検証は pass。
 - 証拠: `notes/web-shell.md`、`notes/ime.md`、`notes/assets/web-shell-*.png`、
   `notes/assets/ime-*.png`、`web/verification/*.json`。
@@ -361,7 +362,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - プロセス名の Unicode 双方向制御文字（RTL override 等）は `tm-core::sanitize` で
   除去する（U+202A–U+202E, U+2066–U+2069, U+200E/F, U+061C）。ゼロ幅文字など
   表示に影響する他の書式文字は将来の検討対象。
-- ネイティブ版の IME は未実装。ブラウザ版のみ composition 対応を検証済み。
+- ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
+  （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）。
 - Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動に
   限定し PATH ハイジャックを避けるが、Windows では Stop/Continue 非対応で、
   Terminate/Kill は強制終了になる。macOS の実機検証は CI ランナーのみ。
@@ -663,13 +665,11 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - ブラウザ版の wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
-- ブラウザ版の検索は日本語 IME に対応済み。ネイティブ版は ASCII 入力のみ（IME 未実装）。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での
   WebGPU 描画は未確認。
-- IME 入力は未対応（`EntityInputHandler` の実装が必要）。
 - エージェントはシリアル処理（1 スナップショット約 250 ms）。同時リクエストは
   キューされる。
-- `cargo-deny` は未導入。ライセンス・重複版の CI ゲートは今後追加する。
+- `cargo-deny` は導入済み（`deny.toml`、ルート / web の CI ジョブ）。
 - ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。
 - ディスクは `total_space() == 0` の擬似マウントを除外する。
 - スレッド数が取得できないプロセスは「—」と表示する。

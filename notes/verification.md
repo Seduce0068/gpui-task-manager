@@ -199,7 +199,7 @@ cd poc-wasm && trunk build --release
 - `gpui-pre-web` の IME ミラー（隠し textarea）+ アプリ側 `EntityInputHandler` で実装。
 - 変換中は未確定文字列を入力欄にのみ表示し、`Dashboard` へは確定文字列だけを反映。
 - CDP `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」を再現し、
-  **32/32 チェック pass**、JS 例外 0。単体テスト 15 件（web）。
+  **32/32 チェック pass**、JS 例外 0。`FilterInput` の単体テストは `tm-viewmodel` に移設（28 件）、web は 4 件。
 - ネイティブ版: `FilterInput` を `tm-viewmodel` に共有化し、`EntityInputHandler` を
   実装。`TM_DEBUG_IME=1` で「にほんご」（変換中・一覧 28 件のまま）→「日本語」
   （確定・一覧 0 件）を確認。`notes/assets/native-ime-*.png`。
