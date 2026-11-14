@@ -150,6 +150,23 @@ impl FilterInput {
         }
     }
 
+    /// 選択範囲、またはキャレット直前の 1 文字を削除する（Backspace）。
+    ///
+    /// Web ではブラウザの既定動作 → `input` 差分取り込みで同じ結果になるが、
+    /// ネイティブではキーイベントをアプリ側で処理する必要があるため共有する。
+    pub fn backspace(&mut self) -> EditOutcome {
+        let selection = self.selection.clone();
+        if selection.start != selection.end {
+            return self.replace_text(Some(selection), "");
+        }
+        let end = selection.start;
+        if end == 0 {
+            return EditOutcome::Unchanged;
+        }
+        let start = previous_char_start(&self.text, end);
+        self.replace_text(Some(start..end), "")
+    }
+
     /// 選択範囲を設定する（ブラウザの `selectionchange` 取り込み）。
     pub fn set_selection(&mut self, range: Range<usize>) {
         let len = self.utf16_len();
@@ -245,6 +262,15 @@ fn utf16_index(text: &str, byte_index: usize) -> usize {
         .chars()
         .map(char::len_utf16)
         .sum()
+}
+
+/// UTF-16 オフセット `utf16_index` の直前にある文字の開始 UTF-16 オフセット。
+fn previous_char_start(text: &str, utf16_index: usize) -> usize {
+    let byte = floor_byte_index(text, utf16_index);
+    match text[..byte].chars().next_back() {
+        Some(character) => utf16_index.saturating_sub(character.len_utf16()),
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +429,41 @@ mod tests {
         assert_eq!(input.marked_range(), Some(0..4));
         input.replace_text(None, "日本語");
         assert_eq!(input.committed_text(), "日本語");
+    }
+
+    #[test]
+    fn backspace_deletes_the_previous_character() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "日本語abc");
+        assert_eq!(input.backspace(), EditOutcome::Committed);
+        assert_eq!(input.text(), "日本語ab");
+        assert_eq!(input.committed_text(), "日本語ab");
+        assert_eq!(input.selection(), 5..5);
+
+        // 変換中は表示テキストの末尾 1 文字を消し、変換中状態を解除する
+        // （実 IME は変換中の Backspace を自分で処理するため、これは保険）。
+        input.replace_and_mark(None, "にほんご", None);
+        assert_eq!(input.backspace(), EditOutcome::Committed);
+        assert_eq!(input.committed_text(), "日本語abにほん");
+        assert!(!input.is_composing());
+    }
+
+    #[test]
+    fn backspace_replaces_a_selection_and_handles_surrogate_pairs() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "abc");
+        input.set_selection(1..3);
+        assert_eq!(input.backspace(), EditOutcome::Committed);
+        assert_eq!(input.text(), "a");
+
+        // 絵文字（UTF-16 で 2 コードユニット）も 1 文字として消える。
+        input.clear();
+        input.replace_text(None, "🦀");
+        assert_eq!(input.backspace(), EditOutcome::Committed);
+        assert_eq!(input.text(), "");
+
+        // 先頭での Backspace は何もしない。
+        assert_eq!(input.backspace(), EditOutcome::Unchanged);
     }
 
     #[test]

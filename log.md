@@ -67,3 +67,11 @@
   native-windows 4m49s / native-macos 1m11s）。
 - Dependabot 初回更新: Cargo ルート / web / GitHub Actions の 3 ジョブ成功。
   PR #1（actions/checkout 4→7）が作成され、PR の CI も成功（レビュー待ち）。
+
+## 2026-11-15（ネイティブ IME・PR マージ）
+
+- Dependabot PR #1（actions/checkout 4→7）をマージ。main の CI 5 ジョブも成功。
+- ネイティブ IME: `FilterInput` を `tm-viewmodel` へ共有化し、`EntityInputHandler` を実装。
+  `TM_DEBUG_IME=1` のデバッグフックで変換中→確定を確認（一覧 28→0 件）。
+  実 IME の手動確認は未実施。
+- テスト: workspace 131 + web 4。

@@ -25,10 +25,11 @@ use gpui::{
 use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe};
-use tm_viewmodel::{Command, DEFAULT_REFRESH_INTERVAL, Dashboard, Effect};
+use tm_viewmodel::{
+    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput,
+};
 
 use crate::agent::{AgentClient, AgentConfig};
-use crate::filter_input::{EditOutcome, FilterInput};
 use crate::theme::*;
 use crate::widgets::{card, h_flex, kv, metric_bar, pill, section_title, sparkline, v_flex};
 

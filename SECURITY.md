@@ -50,9 +50,9 @@ verified: 2026-11-14T22:35:00+09:00
    メモリ上と起動ログ（1 回）のみ。
 8. **公開物の衛生**: スクリーンショット・証拠 JSON は `--redact` を使い、ホスト名・
    ユーザー名・ホームパス・コマンド引数内のホスト名 / tailnet ドメインを伏せる。
-9. **入力（IME）**: ブラウザ版は composition 中の未確定文字列をアプリ状態に反映せず、
-   確定文字列だけを絞り込みに渡す。確定文字列はユーザー自身の入力であり、OS 由来の
-   表示文字列とは別扱いとする。
+9. **入力（IME）**: ブラウザ版・ネイティブ版とも composition 中の未確定文字列を
+   アプリ状態に反映せず、確定文字列だけを絞り込みに渡す。確定文字列はユーザー自身の
+   入力であり、OS 由来の表示文字列とは別扱いとする。
 10. **クロスプラットフォーム**: Windows は `%SystemRoot%\System32\taskkill.exe` の
     絶対パス起動のみ（PATH 解決をしない）。Stop/Continue は非対応。macOS は rustix の
     安全 API を使う。
@@ -105,7 +105,7 @@ chmod 600 ~/.config/tm-agent.token
   独立したセキュリティ監査は未実施。
 - ブラウザのトークンは URL フラグメントから読み取るため、画面共有・スクリーンショット・
   同一ユーザーの他プロセスには露出し得る。読み取り専用 API と loopback 限定で影響を抑える。
-- ネイティブ版 IME は未実装（ブラウザ版は composition 対応済み）。実 GPU の WebGPU、
+- ネイティブ版 IME は実装済みだが実 IME（IBus/fcitx5）での手動確認は未実施。実 GPU の WebGPU、
   Safari / Firefox、Windows / macOS の物理実機は未検証（Windows/macOS は CI ランナーで
   型検査・単体テストを実施）。
 - Windows のシグナル送信は `taskkill /F` による強制終了で、POSIX の SIGTERM/SIGSTOP
@@ -117,7 +117,7 @@ chmod 600 ~/.config/tm-agent.token
 
 ```bash
 cd work/gpui-task-manager
-bash scripts/check.sh          # fmt / clippy / test 118 件 / web 15 件 / wasm / cargo-deny
+bash scripts/check.sh          # fmt / clippy / test 131 件 / web 4 件 / wasm / cargo-deny
 cargo audit
 ```
 
@@ -131,7 +131,9 @@ cargo audit
 - `tm-core`: 制御文字・ANSI・bidi の除去、500 ケースの決定論的サニタイズ検査。
 - `tm-agent`: クエリトークン拒否、Host 検証、Bearer 認証、CORS、`--token-file`、
   `--redact`（コマンド引数内ホスト名・tailnet ドメインを含む）。
-- `web`: `FilterInput` の UTF-16 / selection / marked range の状態機械 11 件 +
-  agent 4 件。IME は CDP の composition 32 チェック（確定前は反映しない）。
+- `tm-viewmodel`: `FilterInput` の UTF-16 / selection / marked range の状態機械
+  （Web/ネイティブ共有、28 件）。`web` は agent 4 件。
+  IME は CDP の composition 32 チェック + ネイティブ `TM_DEBUG_IME=1` 検証
+  （確定前は反映しない）。
 - クロスプラットフォーム: Windows ターゲットの workspace check、macOS 4 crate の
   check、CI の windows-latest / macos-latest。

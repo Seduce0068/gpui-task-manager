@@ -17,6 +17,10 @@ use tm_core::{
     ProcessSnapshot, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
 };
 
+pub mod filter_input;
+
+pub use filter_input::{EditOutcome, FilterInput};
+
 /// Lowest refresh interval the UI accepts (250 ms).
 pub const MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 /// Highest refresh interval the UI accepts (10 s).
