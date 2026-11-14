@@ -1,0 +1,7 @@
+{
+  "source": "poc-wasm/public/stats.json",
+  "host": "gpui-web-spike",
+  "uptime_s": 12345,
+  "load_avg": [0.42, 0.31, 0.25],
+  "note": "same-origin fetch の検証用ダミー。ブラウザから OS の実プロセスは読めない。"
+}

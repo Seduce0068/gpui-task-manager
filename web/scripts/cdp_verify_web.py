@@ -1,0 +1,673 @@
+#!/usr/bin/env python3
+"""ブラウザ版 GPUI タスクマネージャーシェルの Runtime Proof 取得スクリプト。
+
+ヘッドレス Chrome を CDP（Chrome DevTools Protocol）で操作し、描画・タイマー更新・
+スクロール・行クリック（詳細パネル）・キーボード絞り込み・列クリックソートを
+スクリーンショットと状態フック（body[data-gpui-proof]）で確認する。
+
+使い方:
+    # 静的配信（別シェル）
+    cd work/gpui-task-manager/web/dist
+    python3 -m http.server 8091 --bind 127.0.0.1
+
+    # Chrome（別シェル）
+    google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \
+      --window-size=1440,1000 --remote-debugging-port=9223 \
+      --user-data-dir=/tmp/tm-web-chrome about:blank
+
+    # デモモード
+    python3 cdp_verify_web.py --url http://127.0.0.1:8091/ \
+        --out ../../notes/assets --evidence-out ../verification --prefix web-shell --label demo
+
+    # ライブモード（tm-agent を 18787 で起動しておく。トークンは URL フラグメント）
+    # 公開物に載せるスクリーンショットは --redact で個人情報を伏せること。
+    TM_AGENT_TOKEN=test ./target/debug/tm-agent --listen 127.0.0.1:18787 --redact &
+    python3 cdp_verify_web.py \
+        --url 'http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test' \
+        --out ../../notes/assets --evidence-out ../verification --prefix web-shell --label live
+
+クリック座標は src/shell.rs のレイアウト定数から計算する（ウィンドウ幅 vw は
+状態フックから取得）。表の行の y 座標は固定高さ（header 52 / overview 186 /
+toolbar 36 / gap 12 / root padding 12 / table header 30 / row 30）から決まる。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import json
+import pathlib
+import time
+import urllib.request
+
+import websockets
+
+# --- src/shell.rs のレイアウト定数と同期させること -------------------------
+ROOT_PAD = 12.0
+GAP = 12.0
+HEADER_H = 52.0
+OVERVIEW_H = 186.0
+TOOLBAR_H = 36.0
+TABLE_HEADER_H = 30.0
+ROW_H = 30.0
+DETAILS_W = 320.0
+COL_NAME = 170.0
+COL_CPU = 68.0
+COL_MEMORY = 84.0
+COL_PID = 60.0
+COL_USER = 96.0
+COL_STATUS = 74.0
+COL_THREADS = 64.0
+TABLE_GAP = 8.0
+
+MAIN_TOP = ROOT_PAD + HEADER_H + GAP + OVERVIEW_H + GAP + TOOLBAR_H + GAP
+ROW0_CENTER_Y = MAIN_TOP + 1.0 + TABLE_HEADER_H + ROW_H / 2.0  # border 1px
+HEADER_Y = MAIN_TOP + 1.0 + TABLE_HEADER_H / 2.0
+TOOLBAR_CENTER_Y = ROOT_PAD + HEADER_H + GAP + OVERVIEW_H + GAP + TOOLBAR_H / 2.0
+
+
+class CDP:
+    def __init__(self) -> None:
+        self.ws = None
+        self.events: list[dict] = []
+        self.pending: dict[int, asyncio.Future] = {}
+        self._id = 0
+        self._reader: asyncio.Task | None = None
+
+    async def connect(self, ws_url: str) -> None:
+        self.ws = await websockets.connect(ws_url, max_size=128 * 1024 * 1024)
+        self._reader = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self) -> None:
+        try:
+            async for raw in self.ws:
+                message = json.loads(raw)
+                if "id" in message and message["id"] in self.pending:
+                    future = self.pending.pop(message["id"])
+                    if not future.done():
+                        future.set_result(message)
+                else:
+                    self.events.append(message)
+        except Exception as error:  # noqa: BLE001 - 検証スクリプトなので記録して続行
+            self.events.append({"method": "__reader_closed__", "error": repr(error)})
+
+    async def call(self, method: str, params: dict | None = None):
+        self._id += 1
+        future = asyncio.get_event_loop().create_future()
+        self.pending[self._id] = future
+        await self.ws.send(
+            json.dumps({"id": self._id, "method": method, "params": params or {}})
+        )
+        message = await asyncio.wait_for(future, timeout=120)
+        if "error" in message:
+            raise RuntimeError(f"{method} failed: {message['error']}")
+        return message.get("result", {})
+
+    async def evaluate(self, expression: str):
+        result = await self.call(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True},
+        )
+        if "exceptionDetails" in result:
+            return {"__exception__": result["exceptionDetails"]}
+        return result.get("result", {}).get("value")
+
+    async def drain(self) -> None:
+        await self.evaluate("1")
+        await asyncio.sleep(0.1)
+        await self.evaluate("1")
+
+
+def pick_page_target(port: int) -> str:
+    url = f"http://127.0.0.1:{port}/json/list"
+    with urllib.request.urlopen(url, timeout=10) as response:
+        targets = json.load(response)
+    for target in targets:
+        if target.get("type") == "page":
+            return target["webSocketDebuggerUrl"]
+    raise RuntimeError(f"page target が見つかりません: {targets}")
+
+
+async def screenshot(cdp: CDP, path: pathlib.Path) -> None:
+    result = await cdp.call("Page.captureScreenshot", {"format": "png"})
+    path.write_bytes(base64.b64decode(result["data"]))
+    print(f"  screenshot: {path}")
+
+
+async def click(cdp: CDP, x: float, y: float) -> None:
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseMoved", "x": x, "y": y, "button": "none"},
+    )
+    await asyncio.sleep(0.05)
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "buttons": 1,
+            "clickCount": 1,
+        },
+    )
+    await asyncio.sleep(0.05)
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "buttons": 0,
+            "clickCount": 1,
+        },
+    )
+
+
+async def type_text(cdp: CDP, text: str) -> None:
+    for character in text:
+        code = ord(character.upper())
+        await cdp.call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "keyDown",
+                "key": character,
+                "code": f"Key{character.upper()}",
+                "text": character,
+                "unmodifiedText": character,
+                "windowsVirtualKeyCode": code,
+                "nativeVirtualKeyCode": code,
+            },
+        )
+        await cdp.call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "keyUp",
+                "key": character,
+                "code": f"Key{character.upper()}",
+                "windowsVirtualKeyCode": code,
+                "nativeVirtualKeyCode": code,
+            },
+        )
+        await asyncio.sleep(0.06)
+
+
+async def press_key(cdp: CDP, key: str, code: str, vk: int) -> None:
+    await cdp.call(
+        "Input.dispatchKeyEvent",
+        {
+            "type": "keyDown",
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        },
+    )
+    await cdp.call(
+        "Input.dispatchKeyEvent",
+        {
+            "type": "keyUp",
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        },
+    )
+    await asyncio.sleep(0.1)
+
+
+async def wheel(cdp: CDP, x: float, y: float, delta_y: float) -> None:
+    await cdp.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": delta_y},
+    )
+    await asyncio.sleep(0.4)
+
+
+PROOF_EXPR = """
+(() => {
+  const canvas = document.querySelector('canvas');
+  return {
+    title: document.title,
+    proof: document.body ? document.body.getAttribute('data-gpui-proof') : null,
+    canvas: canvas ? {
+      width: canvas.width,
+      height: canvas.height,
+      clientWidth: canvas.clientWidth,
+      clientHeight: canvas.clientHeight,
+    } : null,
+    bodyChildren: document.body ? document.body.children.length : 0,
+  };
+})()
+"""
+
+
+def parse_proof(proof: str | None) -> dict:
+    fields: dict = {}
+    if not proof:
+        return fields
+    for part in proof.split(";"):
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        fields[key] = value
+    return fields
+
+
+def collect_network(events: list[dict]) -> dict:
+    """スナップショット要求の URL・メソッド・Authorization ヘッダ有無を集計する。
+
+    トークンが URL（クエリ）に載っていないこと、Authorization ヘッダで送られ、
+    CORS プリフライト（OPTIONS）が成立していることを Runtime Proof にする。
+    """
+    extra_headers: dict[str, set[str]] = {}
+    for event in events:
+        if event.get("method") != "Network.requestWillBeSentExtraInfo":
+            continue
+        params = event.get("params", {})
+        headers = {
+            str(name).lower()
+            for name in (params.get("headers") or {}).keys()
+        }
+        extra_headers[params.get("requestId", "")] = headers
+
+    requests = []
+    for event in events:
+        if event.get("method") != "Network.requestWillBeSent":
+            continue
+        params = event.get("params", {})
+        request = params.get("request", {})
+        url = request.get("url") or ""
+        if "/api/v1/snapshot" not in url:
+            continue
+        headers = extra_headers.get(params.get("requestId", ""), set())
+        requests.append(
+            {
+                "method": request.get("method"),
+                "url": url,
+                "has_authorization_header": "authorization" in headers,
+            }
+        )
+    preflight_count = sum(1 for request in requests if request["method"] == "OPTIONS")
+    get_count = sum(1 for request in requests if request["method"] == "GET")
+    token_in_url = any("token=" in (request["url"] or "") for request in requests)
+    authorized = any(request["has_authorization_header"] for request in requests)
+    return {
+        "snapshot_requests": requests,
+        "preflight_count": preflight_count,
+        "get_count": get_count,
+        "token_in_url": token_in_url,
+        "authorization_header_seen": authorized,
+    }
+
+
+def console_texts(events: list[dict]) -> list[dict]:
+    messages = []
+    for event in events:
+        method = event.get("method")
+        params = event.get("params", {})
+        if method == "Runtime.consoleAPICalled":
+            args = []
+            for arg in params.get("args", []):
+                value = arg.get("value")
+                if value is None:
+                    value = arg.get("description") or arg.get("type")
+                args.append(value)
+            messages.append(
+                {
+                    "source": "console",
+                    "type": params.get("type"),
+                    "text": " ".join(str(arg) for arg in args),
+                }
+            )
+        elif method == "Log.entryAdded":
+            entry = params.get("entry", {})
+            messages.append(
+                {
+                    "source": "log",
+                    "type": entry.get("level"),
+                    "text": f"[{entry.get('source')}] {entry.get('text')}",
+                }
+            )
+        elif method == "Runtime.exceptionThrown":
+            details = params.get("exceptionDetails", {})
+            exception = details.get("exception", {})
+            messages.append(
+                {
+                    "source": "exception",
+                    "type": "error",
+                    "text": exception.get("description") or details.get("text"),
+                }
+            )
+    return messages
+
+
+def column_centers(vw: float) -> dict:
+    """src/shell.rs の列幅からヘッダーのクリック中心 x を計算する。"""
+    table_width = vw - 2 * ROOT_PAD - DETAILS_W - GAP
+    content_width = table_width - 2.0 - 24.0  # border 1px x2 + px_3 (12px x2)
+    command_width = (
+        content_width
+        - (COL_NAME + COL_CPU + COL_MEMORY + COL_PID + COL_USER + COL_STATUS + COL_THREADS)
+        - 7 * TABLE_GAP
+    )
+    x = ROOT_PAD + 1.0 + 12.0
+    centers = {"name": x + COL_NAME / 2.0}
+    x += COL_NAME + TABLE_GAP + command_width + TABLE_GAP
+    centers["cpu"] = x + COL_CPU / 2.0
+    x += COL_CPU + TABLE_GAP
+    centers["memory"] = x + COL_MEMORY / 2.0
+    x += COL_MEMORY + TABLE_GAP
+    centers["pid"] = x + COL_PID / 2.0
+    x += COL_PID + TABLE_GAP
+    centers["user"] = x + COL_USER / 2.0
+    x += COL_USER + TABLE_GAP
+    centers["status"] = x + COL_STATUS / 2.0
+    x += COL_STATUS + TABLE_GAP
+    centers["threads"] = x + COL_THREADS / 2.0
+    return centers
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=9223)
+    parser.add_argument("--url", default="http://127.0.0.1:8091/")
+    parser.add_argument("--out", default="../../notes/assets")
+    parser.add_argument("--evidence-out", default="../verification")
+    parser.add_argument("--prefix", default="web-shell")
+    parser.add_argument("--label", default="demo")
+    parser.add_argument("--wait", type=float, default=5.0)
+    parser.add_argument(
+        "--expect-agent-error",
+        action="store_true",
+        help="エージェント停止時のエラー表示だけを検証する（デモへフォールバックしないこと）",
+    )
+    args = parser.parse_args()
+
+    out_dir = pathlib.Path(args.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_dir = pathlib.Path(args.evidence_out).resolve()
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    ws_url = pick_page_target(args.port)
+    cdp = CDP()
+    await cdp.connect(ws_url)
+    await cdp.call("Page.enable")
+    await cdp.call("Runtime.enable")
+    await cdp.call("Log.enable")
+    await cdp.call("Network.enable")
+
+    evidence: dict = {
+        "label": args.label,
+        "url": args.url,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "layout": {
+            "row0_center_y": ROW0_CENTER_Y,
+            "header_y": HEADER_Y,
+            "toolbar_center_y": TOOLBAR_CENTER_Y,
+        },
+        "steps": [],
+    }
+    failures: list[str] = []
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+            print(f"  FAIL: {message}")
+
+    # 直前のページと同じ URL だと同一文書扱いでリロードされないことがあるため、
+    # いったん about:blank へ移動してから対象 URL を開く（状態の混入を防ぐ）。
+    await cdp.call("Page.navigate", {"url": "about:blank"})
+    await asyncio.sleep(0.6)
+    await cdp.drain()
+    # 直前のページ（旧ページのサンプラや Runtime.enable 時のバッファ再生）の
+    # ログ・イベントを持ち込まない。証拠は今回のページロード分だけにする。
+    await cdp.call("Log.clear")
+    await cdp.call("Runtime.discardConsoleEntries")
+    cdp.events.clear()
+    await cdp.call("Page.navigate", {"url": args.url})
+    await asyncio.sleep(args.wait)
+    await cdp.drain()
+
+    env = await cdp.evaluate(PROOF_EXPR)
+    evidence["env"] = env
+    proof = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "initial", "proof": proof, "title": env.get("title")})
+    check(bool(proof), "状態フック body[data-gpui-proof] が取得できる")
+    if not args.expect_agent_error:
+        check(int(proof.get("rows", "0")) > 0, "プロセス行が 1 件以上表示される")
+    vw = float(proof.get("vw", "0") or 0)
+    check(vw > 0, "viewport 幅を取得できる")
+    centers = column_centers(vw)
+    evidence["layout"]["column_centers"] = centers
+    await screenshot(cdp, out_dir / f"{args.prefix}-01-initial-{args.label}.png")
+
+    if args.expect_agent_error:
+        # ライブ指定でエージェントが落ちている場合: デモへフォールバックせず、
+        # ステータスバーと表にエラーを表示することを確認する。
+        await asyncio.sleep(2.0)
+        await cdp.drain()
+        env = await cdp.evaluate(PROOF_EXPR)
+        proof_error = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+        evidence["steps"].append(
+            {"step": "agent_error", "proof": proof_error, "title": env.get("title")}
+        )
+        check(proof_error.get("mode") == "live", "エラー時もライブモードのまま（デモへ落ちない）")
+        check(proof_error.get("live_error") == "1", "取得失敗がステータスに反映される")
+        check(proof_error.get("rows") == "0", "失敗時にデモデータを表示しない")
+        await screenshot(cdp, out_dir / f"{args.prefix}-09-agent-error-{args.label}.png")
+
+        network = collect_network(cdp.events)
+        evidence["network"] = network
+        check(not network["token_in_url"], "トークンがリクエスト URL に含まれない")
+
+        console = console_texts(cdp.events)
+        evidence["console"] = console
+        benign = [
+            message
+            for message in console
+            if message.get("source") == "log"
+            and (
+                message.get("type") == "warning"
+                or "failed to load resource" in (message.get("text") or "").lower()
+            )
+        ]
+        severe = [message for message in console if message not in benign]
+        panic_messages = [
+            message
+            for message in severe
+            if message.get("source") == "exception"
+            or message.get("type") == "error"
+            or "panicked" in (message.get("text") or "").lower()
+        ]
+        evidence["benign_console_count"] = len(benign)
+        evidence["panic_or_error_count"] = len(panic_messages)
+        evidence["panic_or_errors"] = panic_messages
+        check(not panic_messages, "コンソールに panic / JS 例外はない")
+        evidence["failures"] = failures
+        evidence["passed"] = not failures
+        evidence["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        evidence_path = evidence_dir / f"{args.prefix}-evidence-{args.label}.json"
+        evidence_path.write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"evidence: {evidence_path}")
+        print("---- console ----")
+        for message in console:
+            print(f"[{message['source']}/{message['type']}] {message['text']}")
+        print("---- checks ----")
+        print(json.dumps({"failures": failures, "passed": not failures}, ensure_ascii=False))
+        return 0 if not failures else 1
+
+    # 1 秒タイマーによる更新
+    tick_before = int(proof.get("tick", "0"))
+    await asyncio.sleep(2.5)
+    await cdp.drain()
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_ticks = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append(
+        {"step": "after_ticks", "tick_before": tick_before, "proof": proof_ticks}
+    )
+    check(
+        int(proof_ticks.get("tick", "0")) > tick_before,
+        "1 秒タイマーで tick が増加する",
+    )
+    await screenshot(cdp, out_dir / f"{args.prefix}-02-after-ticks-{args.label}.png")
+
+    # スクロール（表の中央でホイール）
+    table_center_x = ROOT_PAD + (vw - 2 * ROOT_PAD - DETAILS_W - GAP) / 2.0
+    await wheel(cdp, table_center_x, 640, 400)
+    await cdp.drain()
+    scroll_env = await cdp.evaluate(PROOF_EXPR)
+    evidence["steps"].append(
+        {
+            "step": "scroll_down",
+            "proof": parse_proof(
+                scroll_env.get("proof") if isinstance(scroll_env, dict) else None
+            ),
+        }
+    )
+    await screenshot(cdp, out_dir / f"{args.prefix}-03-scrolled-{args.label}.png")
+    await wheel(cdp, table_center_x, 640, -800)
+    await cdp.drain()
+
+    # 行クリック → 詳細パネル（選択 PID の変化）
+    row_y = ROW0_CENTER_Y + 2 * ROW_H
+    await click(cdp, ROOT_PAD + 300, row_y)
+    await asyncio.sleep(0.6)
+    await cdp.drain()
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_click = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "row_click", "row_y": row_y, "proof": proof_click})
+    check(
+        proof_click.get("selected_pid", "-") not in ("-", "", None),
+        "行クリックでプロセスが選択される",
+    )
+    await screenshot(cdp, out_dir / f"{args.prefix}-04-row-click-{args.label}.png")
+
+    # キーボード絞り込み（ASCII。日本語 IME は未対応）
+    await click(cdp, ROOT_PAD + 170, TOOLBAR_CENTER_Y)
+    await asyncio.sleep(0.3)
+    await type_text(cdp, "fire")
+    await asyncio.sleep(0.5)
+    await cdp.drain()
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_filter = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "filter_typed", "proof": proof_filter})
+    check(proof_filter.get("filter") == "fire", "キー入力が絞り込みに反映される")
+    check(
+        int(proof_filter.get("rows", "0")) < int(proof.get("rows", "0")),
+        "絞り込みで表示行が減る",
+    )
+    await screenshot(cdp, out_dir / f"{args.prefix}-05-filter-{args.label}.png")
+
+    # Esc で絞り込み解除
+    await press_key(cdp, "Escape", "Escape", 27)
+    await asyncio.sleep(0.4)
+    await cdp.drain()
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_clear = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "filter_cleared", "proof": proof_clear})
+    check(proof_clear.get("filter") == "", "Esc で絞り込みが解除される")
+
+    # 列クリックでソート（CPU → 方向反転 → 名前列）
+    await click(cdp, centers["cpu"], HEADER_Y)
+    await asyncio.sleep(0.4)
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_sort_cpu = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "sort_cpu", "proof": proof_sort_cpu})
+    check(proof_sort_cpu.get("sort") == "CPU", "CPU 列クリックで CPU ソートになる")
+    await screenshot(cdp, out_dir / f"{args.prefix}-06-sort-cpu-{args.label}.png")
+
+    await click(cdp, centers["cpu"], HEADER_Y)
+    await asyncio.sleep(0.4)
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_sort_flip = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "sort_cpu_flip", "proof": proof_sort_flip})
+    check(
+        proof_sort_flip.get("dir") != proof_sort_cpu.get("dir"),
+        "同じ列の再クリックでソート方向が反転する",
+    )
+
+    await click(cdp, centers["name"], HEADER_Y)
+    await asyncio.sleep(0.4)
+    env = await cdp.evaluate(PROOF_EXPR)
+    proof_sort_name = parse_proof(env.get("proof") if isinstance(env, dict) else None)
+    evidence["steps"].append({"step": "sort_name", "proof": proof_sort_name})
+    check(proof_sort_name.get("sort") == "名前", "名前列クリックで名前ソートになる")
+    await screenshot(cdp, out_dir / f"{args.prefix}-07-sort-name-{args.label}.png")
+
+    # 最終状態
+    await asyncio.sleep(1.2)
+    await cdp.drain()
+    env = await cdp.evaluate(PROOF_EXPR)
+    evidence["steps"].append(
+        {"step": "final", "proof": parse_proof(env.get("proof")), "title": env.get("title")}
+    )
+    await screenshot(cdp, out_dir / f"{args.prefix}-08-final-{args.label}.png")
+
+    # ネットワーク（トークンが URL に載らず Authorization ヘッダで送られていること）
+    network = collect_network(cdp.events)
+    evidence["network"] = network
+    check(not network["token_in_url"], "トークンがリクエスト URL に含まれない")
+    if args.label == "live":
+        check(network["get_count"] >= 1, "スナップショット GET が発行される")
+        # プリフライトは Access-Control-Max-Age=600 でブラウザにキャッシュされるため、
+        # 同一 Chrome プロファイルでの 2 回目以降は OPTIONS が観測されないことがある。
+        # Authorization ヘッダが GET で送られていることを主たる証拠にし、
+        # プリフライト回数は証拠 JSON に記録する（キャッシュ時は 0）。
+        check(
+            network["authorization_header_seen"] or network["preflight_count"] >= 1,
+            "Authorization ヘッダが送られる（またはプリフライトが観測される）",
+        )
+
+    # コンソール（panic / JS 例外がないこと）
+    #
+    # GPUI/wgpu は WebGPU フォールバックやサブピクセル AA 無効化を警告として出す。
+    # これらは想定内なので失敗扱いにしない。失敗扱いは「Runtime.exceptionThrown」
+    # と panic 文言のみ。ネットワークの 404 ログ（favicon 等）も benign として記録する。
+    console = console_texts(cdp.events)
+    evidence["console"] = console
+
+    def is_benign(message: dict) -> bool:
+        text = (message.get("text") or "").lower()
+        if message.get("source") == "log" and "failed to load resource" in text:
+            return True
+        return message.get("source") == "log" and message.get("type") == "warning"
+
+    benign = [message for message in console if is_benign(message)]
+    severe = [message for message in console if not is_benign(message)]
+    panic_messages = [
+        message
+        for message in severe
+        if message.get("source") == "exception"
+        or message.get("type") == "error"
+        or "panicked" in (message.get("text") or "").lower()
+        or "unreachable executed" in (message.get("text") or "").lower()
+    ]
+    evidence["benign_console_count"] = len(benign)
+    evidence["panic_or_error_count"] = len(panic_messages)
+    evidence["panic_or_errors"] = panic_messages
+    check(not panic_messages, "コンソールに panic / JS 例外がない")
+
+    evidence["failures"] = failures
+    evidence["passed"] = not failures
+    evidence["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    evidence_path = evidence_dir / f"{args.prefix}-evidence-{args.label}.json"
+    evidence_path.write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"evidence: {evidence_path}")
+    print("---- console ----")
+    for message in console:
+        print(f"[{message['source']}/{message['type']}] {message['text']}")
+    print("---- checks ----")
+    print(json.dumps({"failures": failures, "passed": not failures}, ensure_ascii=False))
+    return 0 if not failures else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

@@ -1,0 +1,11 @@
+/target
+**/target
+app/native-libs/
+/poc-wasm/dist
+/poc-wasm/target
+/poc-crates/target
+/web/dist
+*.log
+!notes/assets/*.log
+!poc-crates/**/*.log
+.DS_Store

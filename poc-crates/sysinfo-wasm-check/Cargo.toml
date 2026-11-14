@@ -1,0 +1,11 @@
+[package]
+name = "sysinfo-wasm-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Compile check: sysinfo 0.40.3 on wasm32-unknown-unknown (research only)"
+
+[workspace]
+
+[dependencies]
+sysinfo = { version = "=0.40.3", default-features = false, features = ["system"] }

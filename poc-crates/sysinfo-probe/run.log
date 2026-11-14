@@ -1,0 +1,68 @@
+   Compiling sysinfo-probe v0.1.0 (/home/user/document/deepseek-harness/default-workspace/work/gpui-task-manager/poc-crates/sysinfo-probe)
+    Finished `release` profile [optimized] target(s) in 0.62s
+     Running `target/release/sysinfo-probe`
+== sysinfo probe: crate version 0.40.3 ==
+[timing] System::new_all() cold start: 85.027234ms
+[timing] Disks::new_with_refreshed_list(): 1.080602ms
+[timing] Networks::new_with_refreshed_list(): 1.249091ms
+[timing] full tick  (refresh_all + disks + networks): median=31.440903ms min=30.27202ms max=36.892232ms n=7
+[timing] targeted tick (cpu+memory+processes only):   median=24.280293ms min=20.861438ms max=27.408202ms n=7
+[timing] disks.refresh only: median=898.574µs / networks.refresh only: median=1.174251ms
+
+== system ==
+host=Ok("<host>") os=Ok("Ubuntu") os_version=Ok("26.04") kernel=Ok("7.0.0-43-generic")
+uptime=Ok(522800) boot_time_unix=Ok(1794131936) physical_cores=Ok(6) logical_cpus=12
+load_avg 1/5/15 = 8.39/7.99/7.31
+cpu_brand="AMD Ryzen 5 3600 6-Core Processor" cpu_frequency_mhz=3949
+global_cpu_percent=48.41
+per_core_cpu_percent (12 cores) = [42.3, 53.8, 57.7, 61.5, 51.9, 44.4, 42.3, 46.2, 36.0, 37.0, 57.7, 48.0]
+
+== memory ==
+total=67351371776 used=49043570688 available=18307801088 free=2297499648 swap_total=68719472640 swap_used=21142663168
+
+== networks ==
+if=br-19b60f1f19dc total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=3e:30:94:23:14:2b mtu=1500
+if=docker0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=ce:b0:0e:1c:43:48 mtu=1500
+if=tailscale0 total_rx=57831855 total_tx=25423078 rx_since_last=224 tx_since_last=0 pkts_rx=386304 pkts_tx=389380 err_rx=0 mac=00:00:00:00:00:00 mtu=1280
+if=lxcbr0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=10:66:6a:00:00:00 mtu=1500
+if=enp4s0 total_rx=98132741593 total_tx=13711775029 rx_since_last=4470 tx_since_last=3887 pkts_rx=95518386 pkts_tx=37564405 err_rx=0 mac=d4:5d:64:ee:7f:8f mtu=1280
+if=lo total_rx=116447834135 total_tx=116447834135 rx_since_last=3977 tx_since_last=3977 pkts_rx=47468427 pkts_tx=47468427 err_rx=0 mac=00:00:00:00:00:00 mtu=65536
+if=br-9a7ce1e92d28 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=5e:d0:b0:f1:95:50 mtu=1500
+if=virbr0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=52:54:00:ab:71:77 mtu=1500
+
+== disks ==
+disk="/dev/nvme0n1p7" mount="/" fs="ext4" kind=SSD total=629697183744 available=100447502336 removable=false read_only=false
+disk="/dev/nvme0n1p2" mount="/boot/efi" fs="vfat" kind=SSD total=100663296 available=60939264 removable=false read_only=false
+disk="/dev/sdb1" mount="/mnt/timeshift" fs="ext4" kind=SSD total=471415693312 available=331495960576 removable=true read_only=false
+disk="lxcfs" mount="/var/lib/lxcfs" fs="fuse.lxcfs" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/2363ec980e8503da19476f7f564f4dfb790b14efa2c0a7779d6abe6d95dd8da1" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/cb3f2761da4750b3a80f43bd4d3030f1ec4d5a2930a9c86e11235f1bba9f02a4" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/1f1ad0723fe1a01e297849abf262e3a5d4545640ffbe82b2cd76147478705265" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/761a3a4d11561be86a2ef894e937b2130447f2da5b826e3061384ab03d6459d0" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/4552193caac72682c0937f5b6358775a71f865532d9c8604bf2b0e604e96bc65" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/c9c452aed8386d79f5949016c193c338bcf43f5fe9f514bb94d55d4be33fcabe" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/c3408f5bdb41df4a3859ce73cdf763ffb26b152cdf872a36b2d5aae708f28c30" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/530f50b2009a67ea73b07074c2a91cfa7e4f1fee8c30132890924c90ba8eeb29" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+
+== processes ==
+process_count=3549
+top 5 by cpu:
+pid=6977 name="firefox-bin" user=Some("user") status=Sleep start_time=1794132006 run_time=522730 cpu=214.01 mem=4018008064 cmdline="/home/user/downloads/firefox/firefox --sm-client-id 1031c3692fc2e9000179380566300041380770000"
+pid=8545 name="Isolated Web Co" user=Some("user") status=Run start_time=1794132011 run_time=522725 cpu=76.43 mem=2690158592 cmdline="/home/user/downloads/firefox/firefox-bin -contentproc -isForBrowser -prefsHandle 0:37179 -prefMapHandle 1:304037 -jsInitHandle 2:161360 -parentBuildID 20261102144711 -sandboxReporter 3 -ipcHandle 4 -initialChannelId {08180635-df7a-4c53-90f7-94b9bb463c8d} -parentPid 6977 -crashHelperPid 7054 -crashHelper 5 -crashReporter 6 -greomni /home/user/downloads/firefox/omni.ja -appomni /home/user/downloads/firefox/browser/omni.ja -appDir /home/user/downloads/firefox/browser 13 tab"
+pid=8577 name="Isolated Web Co" user=Some("user") status=Sleep start_time=1794132011 run_time=522725 cpu=72.61 mem=2446483456 cmdline="/home/user/downloads/firefox/firefox-bin -contentproc -isForBrowser -prefsHandle 0:37179 -prefMapHandle 1:304037 -jsInitHandle 2:161360 -parentBuildID 20261102144711 -sandboxReporter 3 -ipcHandle 4 -initialChannelId {ebcd3eb9-b28e-4bea-8333-3f3e8e4b22b3} -parentPid 6977 -crashHelperPid 7054 -crashHelper 5 -crashReporter 6 -greomni /home/user/downloads/firefox/omni.ja -appomni /home/user/downloads/firefox/browser/omni.ja -appDir /home/user/downloads/firefox/browser 16 tab"
+pid=7226 name="TaskCon~ller #0" user=Some("user") status=Run start_time=1794132006 run_time=522730 cpu=57.32 mem=4019830784 cmdline="/home/user/downloads/firefox/firefox --sm-client-id 1031c3692fc2e9000179380566300041380770000"
+pid=4012693 name="sysinfo-probe" user=Some("user") status=Sleep start_time=1794654731 run_time=5 cpu=57.32 mem=35463168 cmdline="target/release/sysinfo-probe"
+field coverage: user=None 33/3549 / cmdline empty 325/3549 / exe=None 756/3549
+
+/proc mount line: proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+
+== kill test (own child only) ==
+spawned pid=4012817 before=Some(("sleep", 1794654736, "Sleep"))
+kill_with(Signal::Term) -> Some(true)
+after kill: still_in_sysinfo=true child.try_wait()=Ok(Some(ExitStatus(unix_wait_status(15))))
+
+== json ==
+snapshot json bytes=2241066 (processes=3549)
+head: {"schema":"gpui-task-manager/snapshot/v1","captured_at_unix":1794654737,"sysinfo_crate_version":"0.40.3","host_name":"<host>","os_name":"Ubuntu","os_version":"26.04","kernel_version":"7.0.0-43-generic","uptime_secs":522800,"boot_time_unix":1794131936,"load_avg":[8.39,7.99,7.31],"physical_cores":6,"logical_cpus":12,"cpu_brand":"AMD Ryzen 5 3600 6-Core Processor","cpu_frequency_mhz":3949,"global_cpu_percent":37.35294,"per_core_cpu_percent":[42.307693,53.846157,57.692307,61.538464,51.851852,44.444443,42.307693,46.15385,36.0,37.03704,57.692307,48.0],"memory_total":673513717
+
+DONE

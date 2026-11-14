@@ -1,0 +1,39 @@
+[package]
+name = "gpui-web-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# 親 workspace に巻き込まれないよう、独立 crate として扱う
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# gpui-pre は Zed GPUI の再公開スナップショット（Apache-2.0）。
+# wasm では既定 feature の multithreaded（wasm_thread / nightly 必須）を切る。
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false }
+# WebPlatform を直接構築し、CanvasFontFallback::EmojiAndCjk と FetchHttpClient を使うため。
+gpui_web = { package = "gpui-pre-web", version = "=0.3.12", default-features = false }
+
+anyhow = "1"
+console_error_panic_hook = "0.1"
+futures = "0.3"
+js-sys = "0.3"
+log = "0.4"
+wasm-bindgen = "0.2.120"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "Location",
+    "Window",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,7 @@
+2026-11-14T11:55:58.347847Z  INFO 🚀 Starting trunk 0.22.1
+2026-11-14T11:55:58.348427Z  WARN The field `address` in the configuration is deprecated and will be removed in a future version. Migrate to the `addresses` field, which allows adding more than one.
+2026-11-14T11:55:58.349824Z  INFO 📦 starting build
+2026-11-14T11:55:58.350164Z  INFO node packages []
+    Finished `release` profile [optimized] target(s) in 0.28s
+2026-11-14T11:56:01.070149Z  INFO applying new distribution
+2026-11-14T11:56:01.072343Z  INFO ✅ success
