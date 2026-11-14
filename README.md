@@ -14,6 +14,13 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - スタック: Rust 1.92+ / `gpui-kit =0.9.1`（`gpui-pre 0.3.12`）/ `sysinfo =0.40.3` / `rustix =1.1.6`
 - ライセンス: **Apache-2.0**（第三者表示は [NOTICE.md](NOTICE.md)）
 
+## GitHub
+
+- リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（現在 **private**）
+- CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)（共通の `Seduce0068/workflows@v1`
+  に委譲。fmt → check → test → clippy → cargo audit + wasm check）
+- 公開用の `main` はクリーンな1コミット。開発履歴はローカルの `master` に保持している。
+
 ## できること（MVP）
 
 - プロセス一覧: 名前・コマンド・CPU・メモリ・PID・ユーザー・状態・スレッド数
