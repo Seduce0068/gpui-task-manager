@@ -49,7 +49,7 @@ verified: 2026-11-15T17:50:00+09:00
 - [x] **初期方針**: `cargo vet init` により全依存を一括 `exempt` として記録（root 804 / web 560）。exempt は「未監査の明示」であり「監査済み」ではない。以後は実レビューできた依存から `audits.toml` に記録する。
 - [x] **監査基準（criteria）**: 既定の `safe-to-deploy` を使用（init 生成の exemptions のまま）。配布物（native/wasm/web）を扱うため、当面はデフォルト基準から始め、必要になった時点で criteria の追加/使い分けを見直す。
 - [x] **更新運用**: Dependabot/ピン更新でバージョンが変わると `cargo vet --locked` が失敗する。対応は ①実レビュー（`cargo vet inspect` / `diff`）後に `certify`、②レビュー前なら理由を明記した `add-exemption`。監査記録の捏造はしない。
-- [ ] **CI 統合**: 未実施。`Seduce0068/workflows` の共通 `rust-gates.yml@v1` 側で対応できるかを先に検討する（個人リポジトリ CI 方針）。
+- [x] **CI 統合**: 共通 `rust-gates.yml@v1` の `extra_gates` 入力で `cargo vet --locked`（root / web）を必須化（共通ワークフロー側の変更は不要）。`cargo-vet` は `taiki-e/install-action` 未対応のため `cargo install cargo-vet --version 0.10.3 --locked` で導入。ローカルは `scripts/check.sh` に optional ゲートとして追加（cargo-vet 未導入環境では skip）。
 - [x] **git/path 依存ポリシー**: 原則回避（現状 git 0 件 / 非workspace path 0 件）。追加時は固定リビジョン/タグ・差分レビュー・手動記録で補う。
 
 ## 4. 段階的導入状況
@@ -69,7 +69,7 @@ verified: 2026-11-15T17:50:00+09:00
 
 ## 6. 次の具体アクション候補（安全・小さく進める）
 
-- CI ゲート化: `Seduce0068/workflows` `rust-gates.yml@v1` で `cargo vet --locked`（root / web）を必須化できるか調査し、可能なら共通ワークフロー側で対応する。
+- CI 統合は実施済み（`extra_gates` で `cargo vet --locked`、root / web）。初回 CI 実行結果を確認し、失敗があれば修正する。
 - 実レビューの最初の対象: 直接依存・高リスク領域（`rustix`、`sysinfo`、`libc`、`serde`、`tm-agent` の HTTP/サーバ系依存）から `cargo vet inspect` / `diff` で確認し、`certify` を記録する（ネットワークが必要なためレビュー環境で実施）。
 - trust/imports の候補を比較し、採用基準を短く文書化する（信頼根拠・更新頻度・criteria 対応・自組織方針との整合）。
 - `cargo metadata` から依存・git/path 依存の一覧を定期確認する手順を維持する（監査判断そのものは自動化しない）。

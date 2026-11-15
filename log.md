@@ -278,3 +278,9 @@
 - `README.md` / `SECURITY.md` / `notes/verification.md` / `notes/cargo-vet-adoption.md` を現状に合わせて更新。
 - 検証: `cargo vet --locked`（root: `Vetting Succeeded (804 exempted)` / web: `Vetting Succeeded (560 exempted)`）、`cargo vet fmt` 差分なし。`cargo vet suggest` はネットワーク取得が必要で制限環境では失敗。
 - 未実施: CI ゲート化（`Seduce0068/workflows` 共通ワークフロー側での検討を優先）、実レビューに基づく `certify`、外部 imports の評価。
+
+## 2026-11-15（cargo-vet の CI / ローカルゲート追加）
+
+- CI: 共通 `rust-gates.yml@v1` の `extra_gates` で `cargo vet --locked`（root / web）を必須化（`cargo install cargo-vet --version 0.10.3 --locked` で導入、taiki-e/install-action は cargo-vet 未対応のため）。
+- ローカル: `scripts/check.sh` に `cargo vet --locked`（root / web）の optional ゲートを追加。
+- 検証: `bash -n` / `shellcheck` / `shfmt -d -i 2` / YAML パース / `bash scripts/check.sh` ローカル実行。CI 初回実行結果は push 後に `gh run` で確認。
