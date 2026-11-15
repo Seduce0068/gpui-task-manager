@@ -334,3 +334,10 @@
 
 - `cargo build -p gpui-task-manager` → `TM_DEBUG_IME=1` で起動し、`composing(にほんご, marked=0..4, filter="")` → `composing(日本語, marked=0..3, filter="")` → `committed(filter="日本語", composing=false)` を実機で再確認。
 - 証跡 `notes/assets/native-ime-evidence.txt` を追加。実 IME（IBus/fcitx5）経路は未検証のまま。
+
+## 2026-11-16（Wayland text-input-v3 プロトコル観察と実IME経路の調査）
+
+- 実 IME 環境（fcitx5 + mozc 稼働、`XMODIFIERS=@im=fcitx5`）を確認し、`WAYLAND_DEBUG=1 TM_DEBUG_IME=1` でプロトコルログ（3,055 行）を取得。
+- 確認: compositor が `zwp_text_input_manager_v3` を公開、GPUI がバインドして `get_text_input(id 27, wl_seat#3)` を発行。text-input-v3 のセットアップは成功。依存 crate `gpui-pre-linux 0.3.12` が `enable()` / `disable()` / `commit_string` / `preedit_string` を実装していることもソースで確認。
+- 未到達: ウィンドウがキーボードフォーカスを取得しなかったため `enable()` が発行されず（`wl_keyboard.enter` count = 0）。実 IME 経路の完全検証には対話操作またはキー注入ツールが必要。
+- 証跡: `notes/assets/native-ime-wayland-trace.txt`（プロトコル関連 70 行の抜粋）。`notes/verification.md` に所見と限界を追記。
