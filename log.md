@@ -158,3 +158,19 @@
   cargo test -q && cargo check -q`、`cargo fmt --all --check`、
   `cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace -q`。
 
+
+## 2026-11-15（cargo-vet 導入準備・デモコンポーネントテスト）
+
+- `cargo-vet` 導入準備メモ `notes/cargo-vet-adoption.md` を追加。
+  - 現状（未導入、`supply-chain/` なし、ローカル `cargo vet` 未導入）と既存供給網対策（cargo-audit/deny、CycloneDX SBOM、Dependabot、ピン運用）を整理。
+  - `cargo metadata` ベースの依存棚卸し（総 809、crates.io 804、workspace path 5、git/path 非workspace 0）と導入前未決事項（trust/imports、初期方針、criteria、更新/CI 運用）を記録。監査記録は作成していない。
+- `notes/index.md` に cargo-vet 導入準備メモへのリンクを追加。
+- `tm-core` demo の温度/コンポーネント監視を明示検証するテスト `demo_snapshot_includes_deterministic_components` を追加（決定論性・ラベル・閾値・tick 間変化）。
+
+### 検証
+
+- `cargo fmt --all --check`: 成功
+- `cargo test -p tm-core -q`: 成功（56 passed）
+- `cargo clippy -p tm-core --all-targets -- -D warnings`: 成功
+- `cargo test --workspace -q`: 成功（12 + 39 + 56 + 9 + 37 passed, 0 failed）
+- `cargo clippy --workspace --all-targets -- -D warnings`: 成功

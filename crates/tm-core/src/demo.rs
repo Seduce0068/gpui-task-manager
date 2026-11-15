@@ -550,6 +550,23 @@ mod tests {
     }
 
     #[test]
+    fn demo_snapshot_includes_deterministic_components() {
+        let snapshot = demo_snapshot(5);
+        assert_eq!(snapshot.components.len(), 2);
+        assert_eq!(snapshot.components[0].label, "CPU Package");
+        assert!(snapshot.components[0].temperature_c.is_some());
+        assert_eq!(snapshot.components[0].max_c, Some(68.0));
+        assert_eq!(snapshot.components[0].critical_c, Some(100.0));
+        assert_eq!(snapshot.components[1].label, "NVMe Composite");
+        assert!(snapshot.components[1].temperature_c.is_some());
+        assert_eq!(demo_snapshot(5).components, demo_snapshot(5).components);
+        assert_ne!(
+            demo_snapshot(5).components[0].temperature_c,
+            demo_snapshot(6).components[0].temperature_c
+        );
+    }
+
+    #[test]
     fn demo_probe_advances_ticks_and_is_read_only() {
         let mut probe = DemoProbe::new();
         let first = probe.sample().expect("demo sample");
