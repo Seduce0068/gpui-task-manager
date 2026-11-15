@@ -243,3 +243,14 @@
 - `cargo check -p gpui-task-manager -q`
 - `cargo check --manifest-path web/Cargo.toml -q`
 - `cargo test --manifest-path web/Cargo.toml -q`（7 passed）
+
+
+## 2026-11-15（概要カードの空センサーラベル表記を統一）
+
+- 概要カードでも空のコンポーネントラベルを `"センサー"` に統一（詳細パネルと整合）。
+
+### 検証
+
+- `cargo fmt --all`
+- `cargo test -p gpui-task-manager -q`（12 passed）
+- `cargo test --manifest-path web/Cargo.toml -q`（7 passed）

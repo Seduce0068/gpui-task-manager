@@ -827,7 +827,7 @@ impl TaskManagerApp {
         } else {
             for component in components.iter().take(3) {
                 let label = if component.label.is_empty() {
-                    "温度".to_string()
+                    "センサー".to_string()
                 } else {
                     component.label.clone()
                 };
