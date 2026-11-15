@@ -9,3 +9,4 @@ app/native-libs/
 !notes/assets/*.log
 !poc-crates/**/*.log
 .DS_Store
+packaging/linux/build/
