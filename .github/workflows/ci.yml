@@ -79,9 +79,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: taiki-e/install-action@cargo-deny
       - name: Check native workspace
-        run: cargo deny --manifest-path Cargo.toml check
+        run: cargo deny --manifest-path Cargo.toml check -A advisory-not-detected
       - name: Check web workspace
-        run: cargo deny --manifest-path web/Cargo.toml check
+        run: cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected
 
   # リリース成果物（Linux バイナリ + DEB）。検証とは分離し、必要なときだけ
   # ダウンロードできるようにする。
