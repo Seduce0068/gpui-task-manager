@@ -488,3 +488,25 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 要点: **変換中（`ime_composing=1`）は絞り込みが確定せず 28 件のまま**で、確定（`committed`）後に初めて `filter=日本語` となり 0 件へ絞り込まれる。Esc による変換中断（`composing-escape`）でも一覧が 28 件に戻る。IME 後も通常入力（`recovered` = 漢字）が機能する。
 - 証跡: `notes/assets/ime-0{1..10}-*.png`（1440x857）、`ime-05-composing-filter.png` / `ime-07-committed-filter.png`（1260x138、絞り込み欄の拡大）。詳細は `notes/ime.md`。
 - 制約: 実 IME（IBus/fcitx5）での手動確認ではなく、CDP による composition イベント再現。ネイティブ版は `TM_DEBUG_IME=1` のデバッグフックによる検証のみ。
+
+## 2026-11-16（ブラウザ版の設定永続化 CDP 再検証と検証スクリプトのスキーマ追随）
+
+`web/src/shell.rs` / `crates/tm-viewmodel` の変更後に設定永続化の再検証を行った。
+
+- 初回実行で **検証スクリプト側の不備** を検出: `web/scripts/cdp_verify_settings.py` の期待スキーマが
+  `{version, interval_ms, sort, details_visible}` のままで、実装に追加された `tree_view`
+  （`tm-viewmodel::Settings`、2026-11-15 のツリー表示対応）に追随していなかった
+  （実際に保存されるキー: `details_visible, interval_ms, sort, tree_view, version`）。
+- 修正: 期待スキーマに `tree_view` を追加し、復元経路で書き込む設定にも `tree_view: true` を含めた。
+- 再実行結果: **`{"passed": true, "failures": []}`**、ステップ `fresh → saved → saved_parsed → restored` すべて成功。
+
+| 項目 | 結果 |
+|---|---|
+| 保存された設定 | `version=1`, `interval_ms=1000`, `sort={Cpu, Ascending}`, `details_visible=true`, `tree_view=false` |
+| 復元後の状態フック | `sort=名前`, `dir=asc`, `rows=28`（`localStorage` に書いた設定が再読込で反映） |
+| トークン漏えい | `token` を含まないことを確認（プロセス情報・トークンは非保存） |
+
+- 証跡: `web/verification/web-settings-evidence.json`（更新）。
+- 検証後の Chrome / HTTP サーバは停止し、ポート 8091 / 9223 の解放を確認。
+- 教訓: 実装のスキーマ変更時に検証スクリプトの期待値が取り残される。スキーマ変更時は
+  `web/scripts/cdp_verify_settings.py` の期待キーも同時に更新する（今回の修正で解消）。

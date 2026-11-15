@@ -1,6 +1,6 @@
 {
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-15T12:35:40+0900",
+  "started_at": "2026-11-16T00:25:09+0900",
   "steps": [
     {
       "step": "fresh",
@@ -27,7 +27,7 @@
     },
     {
       "step": "saved",
-      "stored": "{\"version\":1,\"interval_ms\":1000,\"sort\":{\"key\":\"Cpu\",\"direction\":\"Ascending\"},\"details_visible\":true}"
+      "stored": "{\"version\":1,\"interval_ms\":1000,\"sort\":{\"key\":\"Cpu\",\"direction\":\"Ascending\"},\"details_visible\":true,\"tree_view\":false}"
     },
     {
       "step": "saved_parsed",
@@ -38,7 +38,8 @@
           "key": "Cpu",
           "direction": "Ascending"
         },
-        "details_visible": true
+        "details_visible": true,
+        "tree_view": false
       }
     },
     {
@@ -51,7 +52,7 @@
         "rows": "28",
         "total": "28",
         "filter": "",
-        "selected_pid": "2200",
+        "selected_pid": "2",
         "sort": "名前",
         "dir": "asc",
         "sampled": "1760000000",
@@ -79,5 +80,5 @@
   },
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-15T12:35:46+0900"
+  "finished_at": "2026-11-16T00:25:14+0900"
 }

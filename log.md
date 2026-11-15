@@ -323,3 +323,9 @@
 
 - `web/scripts/cdp_verify_ime.py` を再実行: 32 チェックすべて pass、console error / JS 例外 0、スクリーンショット 13 枚を更新。
 - 変換中は一覧 28 件のまま →「日本語」確定後に 0 件へ絞り込み、Esc で中断すると 28 件へ復帰、IME 後も通常入力が機能することを確認。証跡は `notes/assets/ime-*.png`。
+
+## 2026-11-16（ブラウザ版 設定永続化の再検証・検証スクリプト修正）
+
+- `web/scripts/cdp_verify_settings.py` の期待スキーマが実装（`tree_view` 追加後）に追随しておらず検証が失敗していたため、期待キーに `tree_view` を追加し復元用設定にも含めた。
+- 再実行: `{"passed": true, "failures": []}`（fresh / saved / saved_parsed / restored）。保存内容は `version/interval_ms/sort/details_visible/tree_view` のみでトークンを含まず、再読込で `sort=名前, dir=asc` が復元されることを確認。
+- 証跡 `web/verification/web-settings-evidence.json` を更新。検証用プロセスは停止しポート解放を確認。
