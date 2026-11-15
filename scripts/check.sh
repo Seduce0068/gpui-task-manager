@@ -40,4 +40,14 @@ else
   echo 'cargo-deny is not installed; skipping dependency policy check.'
 fi
 
+if command -v cargo-vet >/dev/null 2>&1; then
+  echo '==> cargo vet --locked (root / web)'
+  cargo vet --locked
+  if [ -f web/Cargo.toml ]; then
+    (cd web && cargo vet --locked)
+  fi
+else
+  echo 'cargo-vet is not installed; skipping supply-chain audit check.'
+fi
+
 echo 'All checks passed.'

@@ -385,3 +385,10 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 検証: `cargo vet --locked`（root: `Vetting Succeeded (804 exempted)` / web: `Vetting Succeeded (560 exempted)`）、`cargo vet fmt` で差分なし。`cargo vet suggest` は crates.io のソース取得（ネットワーク）が必要で制限環境では失敗（記録のみ）。
 - ドキュメント: `README.md` / `SECURITY.md` / `notes/cargo-vet-adoption.md` を現状に合わせて更新。
 - 未実施: CI ゲート化（共通ワークフロー側での検討を優先）、実レビューに基づく `certify`、外部 imports の評価・採用。
+
+## 2026-11-15（cargo-vet の CI / ローカルゲート追加）
+
+- CI: `Seduce0068/workflows` 共通 `rust-gates.yml@v1` の `extra_gates` 入力で `cargo install cargo-vet --version 0.10.3 --locked` → `cargo vet --locked`（root / web）を必須化。共通ワークフロー自体の変更は不要（`extra_gates` 既存入力の利用。taiki-e/install-action は cargo-vet 未対応のため cargo install）。
+- ローカル: `scripts/check.sh` に `cargo vet --locked`（root / web）の optional ゲートを追加（cargo-vet 未導入環境では skip、cargo-deny と同じパターン）。`shfmt -d -i 2` 準拠。
+- 検証: `bash -n` / `shellcheck`（check.sh）/ `shfmt -d -i 2`（差分なし）/ `ci.yml` の YAML パース。`bash scripts/check.sh` をローカル実行して結果確認。
+- CI 実行結果の確認は push 後に `gh run` で行う（初回 extra_gates の成否を含む）。
