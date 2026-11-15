@@ -5,14 +5,14 @@ description: gpui-task-manager における cargo-vet（supply-chain 監査）�
 tags: [supply-chain, cargo-vet, security, dependencies]
 status: draft
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T15:20:00+09:00
+verified: 2026-11-15T16:38:00+09:00
 ---
 
 ## 1. 現状（事実）
 
 - **導入状態**: 未導入。リポジトリに `supply-chain/` は存在せず、作業環境に `cargo-vet`（`cargo vet`）も未インストール（`cargo vet` 実行不可を確認）。
 - **代替/併用中の供給網対策**:
-  - `cargo audit` / `cargo-deny`（advisories/bans/licenses/sources、root/web）
+  - `cargo audit` / `cargo-deny`（advisories/bans/licenses/sources、root/web）。CI の deny ジョブは `-A advisory-not-detected` を指定し、root `deny.toml` の ignore が web グラフに現れない場合のノイズ警告を抑制（2026-11-15、`0ee7c37`）。
   - CycloneDX SBOM: [`scripts/generate-sbom.sh`](../scripts/generate-sbom.sh) と CI `sbom` ジョブ
   - Dependabot（Cargo root/web、GitHub Actions、週次）とセキュリティアラート
   - GPUI 系・主要依存の完全ピン運用と `Cargo.lock` コミット
