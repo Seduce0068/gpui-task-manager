@@ -37,6 +37,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - **ブラウザ版 / ネイティブ版の日本語 IME（composition）対応**。変換中は未確定文字列を
   入力欄にのみ表示し、確定文字列だけを絞り込みへ反映
 - `--demo` で決定的な合成データ起動（スクリーンショット・回帰用）
+- **設定の永続化**: 更新間隔・ソート列/方向・詳細パネルの表示を XDG 設定
+  (`~/.config/gpui-task-manager/settings.json`、Windows/macOS も対応パス) に保存し、
+  次回起動時に復元（原子的書き込み、0600、スキーマ版付き）
 - 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
@@ -134,6 +137,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `agent/` | ブラウザ用の読み取り専用ループバック HTTP エージェント |
 | `notes/` | 調査ノート・wasm スパイク・IME/クロスプラットフォーム検証・レビュー |
 | `scripts/` | ビルド補助（`dev-setup.sh`, `check.sh`） |
+| `packaging/linux/` | DEB パッケージ（`build-deb.sh`、`.desktop`、アイコン、`copyright`） |
 | `deny.toml` / `.github/dependabot.yml` | 依存ポリシー（ライセンス・脆弱性・自動更新） |
 
 ## セキュリティ方針（要約）
@@ -153,7 +157,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **131 passed / 0 failed**（core 49 / viewmodel 28 / platform 9 / agent 39 / app 6） |
+| `cargo test --workspace` | **138 passed / 0 failed**（core 49 / viewmodel 29 / platform 9 / agent 39 / app 12） |
 | web ユニットテスト | **4 passed / 0 failed**（`filter_input` のテストは共有化に伴い `tm-viewmodel` へ移動） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
@@ -170,7 +174,9 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 5 ジョブすべて成功（run 43616522864。gates / wasm / cargo-deny / native-windows / native-macos） |
+| CI | 7 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist） |
+| 設定の永続化 | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
+| DEB パッケージ | `bash packaging/linux/build-deb.sh` で 11 MB の `.deb` を生成、展開バイナリの `--version` と依存自動計算を確認 |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
 [notes/web-shell.md](notes/web-shell.md)、IME は [notes/ime.md](notes/ime.md)、
@@ -187,7 +193,9 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - ブラウザ版は読み取り専用（OS プロセスはブラウザから取得できないため）
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
-- プロセスツリー、優先度変更、GPU 監視、ライトテーマ、設定永続化は未実装
+- プロセスツリー、優先度変更、GPU 監視、ライトテーマは未実装
+- 設定の永続化はネイティブ版のみ（ブラウザ版は未対応）
+- DEB は未署名・リポジトリ未公開（ローカル生成のみ）
 - ブラウザ wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
