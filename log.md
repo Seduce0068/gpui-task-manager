@@ -125,7 +125,7 @@
   - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`
   - `cd web && cargo test -q`（7 passed）
 - 補足:
-  - ツリーは基本表示（折りたたみなし）、温度はベストエフォート収集/表示。詳細 GPU 利用率等は未実装。
+  - ツリーは基本表示に加えノード単位の折りたたみ/展開を実装（セッション内状態）。温度はベストエフォート収集/表示。詳細 GPU 利用率等は未実装。
 
 ## 2026-11-15（ツリー表示整合性と依存監査の確認）
 

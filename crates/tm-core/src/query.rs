@@ -286,9 +286,13 @@ pub struct ProcessTreeRow {
 /// to a PID present among `indices` in `processes`. If a parent is missing from
 /// the selected subset, the process becomes a root. Sibling order preserves the
 /// order of `indices` (typically the result of [`filter_and_sort`]).
+///
+/// When a process key is present in `collapsed`, its descendants are omitted from
+/// the returned rows while the node remains marked as having children.
 pub fn flatten_process_tree(
     processes: &[ProcessSnapshot],
     indices: &[usize],
+    collapsed: &std::collections::HashSet<crate::model::ProcessKey>,
 ) -> Vec<ProcessTreeRow> {
     use std::collections::{HashMap, HashSet};
 
@@ -319,25 +323,34 @@ pub fn flatten_process_tree(
     fn walk(
         idx: usize,
         depth: usize,
+        processes: &[ProcessSnapshot],
         children: &std::collections::HashMap<usize, Vec<usize>>,
+        collapsed: &std::collections::HashSet<crate::model::ProcessKey>,
         out: &mut Vec<ProcessTreeRow>,
     ) {
         let child_list = children.get(&idx);
+        let has_children = child_list.is_some_and(|c| !c.is_empty());
         out.push(ProcessTreeRow {
             index: idx,
             depth,
-            has_children: child_list.is_some_and(|c| !c.is_empty()),
+            has_children,
         });
-        if let Some(child_list) = child_list {
-            for &child in child_list {
-                walk(child, depth + 1, children, out);
+        if has_children
+            && !processes
+                .get(idx)
+                .is_some_and(|process| collapsed.contains(&process.key))
+        {
+            if let Some(child_list) = child_list {
+                for &child in child_list {
+                    walk(child, depth + 1, processes, children, collapsed, out);
+                }
             }
         }
     }
 
     let mut out = Vec::with_capacity(indices.len());
     for root in roots {
-        walk(root, 0, &children, &mut out);
+        walk(root, 0, processes, &children, collapsed, &mut out);
     }
     out
 }
@@ -478,7 +491,8 @@ mod tests {
         let mut other = process(4, "other", 0.0, 1);
         other.parent_pid = None;
         let processes = vec![parent, child, grandchild, other];
-        let rows = flatten_process_tree(&processes, &[0, 1, 2, 3]);
+        let rows =
+            flatten_process_tree(&processes, &[0, 1, 2, 3], &std::collections::HashSet::new());
         assert_eq!(
             rows,
             vec![
@@ -511,7 +525,7 @@ mod tests {
         let mut child = process(10, "child", 0.0, 1);
         child.parent_pid = Some(999);
         let processes = vec![child];
-        let rows = flatten_process_tree(&processes, &[0]);
+        let rows = flatten_process_tree(&processes, &[0], &std::collections::HashSet::new());
         assert_eq!(
             rows,
             vec![ProcessTreeRow {
@@ -529,7 +543,7 @@ mod tests {
         let mut b = process(2, "b", 0.0, 1);
         b.parent_pid = None;
         let processes = vec![a, b];
-        let rows = flatten_process_tree(&processes, &[1, 0]);
+        let rows = flatten_process_tree(&processes, &[1, 0], &std::collections::HashSet::new());
         assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 0]);
     }
 
@@ -540,7 +554,7 @@ mod tests {
         let mut parent = process(1, "parent", 0.0, 1);
         parent.parent_pid = None;
         let processes = vec![child, parent];
-        let rows = flatten_process_tree(&processes, &[0, 1]);
+        let rows = flatten_process_tree(&processes, &[0, 1], &std::collections::HashSet::new());
         assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 0]);
         assert_eq!(
             rows[0],
@@ -569,10 +583,39 @@ mod tests {
         let mut c2 = process(3, "c2", 0.0, 1);
         c2.parent_pid = Some(1);
         let processes = vec![root, c1, c2];
-        let rows = flatten_process_tree(&processes, &[0, 2, 1]);
+        let rows = flatten_process_tree(&processes, &[0, 2, 1], &std::collections::HashSet::new());
         assert_eq!(
             rows.iter().map(|r| r.index).collect::<Vec<_>>(),
             vec![0, 2, 1]
         );
+    }
+
+    #[test]
+    fn flatten_process_tree_hides_children_when_collapsed() {
+        let parent = ProcessKey::new(10, 1);
+        let child = ProcessKey::new(11, 2);
+        let processes = vec![
+            ProcessSnapshot {
+                key: parent,
+                parent_pid: None,
+                name: "root".to_string(),
+                command: "root".to_string(),
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: child,
+                parent_pid: Some(parent.pid),
+                name: "child".to_string(),
+                command: "child".to_string(),
+                ..ProcessSnapshot::default()
+            },
+        ];
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert(parent);
+        let rows = flatten_process_tree(&processes, &[0, 1], &collapsed);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].index, 0);
+        assert_eq!(rows[0].depth, 0);
+        assert!(rows[0].has_children);
     }
 }

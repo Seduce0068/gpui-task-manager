@@ -927,10 +927,21 @@ impl TaskManagerApp {
     }
 
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (key, name, command, cpu, memory, pid, user, status, threads, selected, depth) = {
+                let (key, name, command, cpu, memory, pid, user, status, threads, selected, depth, has_children) = {
             let snapshot = self.dashboard.snapshot()?;
             let row_index = *self.dashboard.visible_indices().get(index)?;
-            let depth = self.dashboard.visible_depths().get(index).copied().unwrap_or(0);
+            let depth = self
+                .dashboard
+                .visible_depths()
+                .get(index)
+                .copied()
+                .unwrap_or(0);
+            let has_children = self
+                .dashboard
+                .visible_has_children()
+                .get(index)
+                .copied()
+                .unwrap_or(false);
             let process = snapshot.processes.get(row_index)?;
             (
                 process.key,
@@ -944,12 +955,22 @@ impl TaskManagerApp {
                 process.threads.unwrap_or(0),
                 self.dashboard.selected_key() == Some(process.key),
                 depth,
+                has_children,
             )
         };
-        let display_name = if depth == 0 {
-            name
+        let tree_view = self.dashboard.tree_view();
+        let collapsed = self.dashboard.is_collapsed(key);
+        let marker = if tree_view && has_children {
+            if collapsed { "▸ " } else { "▾ " }
+        } else if tree_view && depth > 0 {
+            "  "
         } else {
-            format!("{}└ {}", "  ".repeat(depth.saturating_sub(1)), name)
+            ""
+        };
+        let display_name = if depth == 0 {
+            format!("{marker}{name}")
+        } else {
+            format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
         };
 
         Some(
@@ -966,7 +987,12 @@ impl TaskManagerApp {
                 .hover(|style| style.bg(rgb(C_MANTLE)))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
-                    this.handle_command(Command::Select(Some(key)), cx);
+                    if tree_view && has_children {
+                        this.handle_command(Command::Select(Some(key)), cx);
+                        this.handle_command(Command::ToggleTreeNode(key), cx);
+                    } else {
+                        this.handle_command(Command::Select(Some(key)), cx);
+                    }
                 }))
                 .child(
                     div()

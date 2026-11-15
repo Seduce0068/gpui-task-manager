@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use tm_core::format;
@@ -62,6 +63,8 @@ pub enum Command {
     ToggleTreeView,
     /// Set the process tree view explicitly (used when restoring settings).
     SetTreeView(bool),
+    /// Toggle collapse/expand state for a process node in tree view.
+    ToggleTreeNode(ProcessKey),
     /// Open the confirmation dialog for a signal.
     RequestSignal {
         /// Target process.
@@ -137,7 +140,9 @@ pub struct Dashboard {
     snapshot: Option<SystemSnapshot>,
     visible: Vec<usize>,
     visible_depths: Vec<usize>,
+    visible_has_children: Vec<bool>,
     tree_view: bool,
+    collapsed: HashSet<ProcessKey>,
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
@@ -160,7 +165,9 @@ impl Dashboard {
             snapshot: None,
             visible: Vec::new(),
             visible_depths: Vec::new(),
+            visible_has_children: Vec::new(),
             tree_view: false,
+            collapsed: HashSet::new(),
             history: MetricHistory::new(HISTORY_CAPACITY),
             sort: SortSpec::default(),
             filter: Filter::default(),
@@ -247,17 +254,26 @@ impl Dashboard {
         &self.visible_depths
     }
 
-    /// Visible rows with process indices and tree depth.
+    /// Returns visible child markers aligned with `visible_indices`.
+    pub fn visible_has_children(&self) -> &[bool] {
+        &self.visible_has_children
+    }
+
+    /// Returns whether a process node is collapsed in tree view.
+    pub fn is_collapsed(&self, key: ProcessKey) -> bool {
+        self.collapsed.contains(&key)
+    }
+
+    /// Visible rows with process indices, tree depth, and child marker.
     pub fn visible_rows(&self) -> impl Iterator<Item = ProcessTreeRow> + '_ {
-        self.visible.iter().enumerate().map(|(pos, &index)| {
-            let depth = self.visible_depths.get(pos).copied().unwrap_or(0);
-            let has_children = self.visible_depths.get(pos + 1).copied().unwrap_or(0) > depth;
-            ProcessTreeRow {
+        self.visible
+            .iter()
+            .enumerate()
+            .map(|(pos, &index)| ProcessTreeRow {
                 index,
-                depth,
-                has_children,
-            }
-        })
+                depth: self.visible_depths.get(pos).copied().unwrap_or(0),
+                has_children: self.visible_has_children.get(pos).copied().unwrap_or(false),
+            })
     }
 
     /// Number of rows after filtering.
@@ -373,6 +389,17 @@ impl Dashboard {
             Command::SetTreeView(tree_view) => {
                 self.tree_view = tree_view;
                 self.recompute_visible();
+                Vec::new()
+            }
+            Command::ToggleTreeNode(key) => {
+                if self.tree_view {
+                    if self.collapsed.contains(&key) {
+                        self.collapsed.remove(&key);
+                    } else {
+                        self.collapsed.insert(key);
+                    }
+                    self.recompute_visible();
+                }
                 Vec::new()
             }
             Command::RequestSignal { key, signal } => {
@@ -528,16 +555,19 @@ impl Dashboard {
         let Some(snapshot) = &self.snapshot else {
             self.visible.clear();
             self.visible_depths.clear();
+            self.visible_has_children.clear();
             return;
         };
         let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
         if self.tree_view {
-            let rows = flatten_process_tree(&snapshot.processes, &base);
+            let rows = flatten_process_tree(&snapshot.processes, &base, &self.collapsed);
             self.visible = rows.iter().map(|row| row.index).collect();
             self.visible_depths = rows.iter().map(|row| row.depth).collect();
+            self.visible_has_children = rows.iter().map(|row| row.has_children).collect();
         } else {
             self.visible = base;
             self.visible_depths = vec![0; self.visible.len()];
+            self.visible_has_children = vec![false; self.visible.len()];
         }
         self.ensure_selection_visible();
         self.sync_selection_hint();
@@ -926,5 +956,48 @@ mod tests {
         assert_eq!(dashboard.visible_depths(), &[0, 0]);
         dashboard.apply(Command::SetTreeView(true));
         assert_eq!(dashboard.visible_depths(), &[0, 1]);
+    }
+
+    #[test]
+    fn toggle_tree_node_collapses_children() {
+        let mut dashboard = dashboard();
+        let mut snapshot = demo_snapshot(0);
+        let parent = ProcessKey::new(100, 10);
+        let child = ProcessKey::new(101, 11);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: parent,
+                parent_pid: None,
+                name: "parent".to_string(),
+                command: "parent".to_string(),
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: child,
+                parent_pid: Some(parent.pid),
+                name: "child".to_string(),
+                command: "child".to_string(),
+                ..ProcessSnapshot::default()
+            },
+        ];
+        dashboard.ingest(snapshot);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Pid,
+            direction: SortDirection::Ascending,
+        }));
+        dashboard.apply(Command::SetTreeView(true));
+        assert_eq!(dashboard.visible_indices(), &[0, 1]);
+        assert!(dashboard.visible_rows().next().unwrap().has_children);
+
+        dashboard.apply(Command::ToggleTreeNode(parent));
+        assert!(dashboard.is_collapsed(parent));
+        assert_eq!(dashboard.visible_indices(), &[0]);
+        let row = dashboard.visible_rows().next().unwrap();
+        assert_eq!(row.index, 0);
+        assert!(row.has_children);
+
+        dashboard.apply(Command::ToggleTreeNode(parent));
+        assert!(!dashboard.is_collapsed(parent));
+        assert_eq!(dashboard.visible_indices(), &[0, 1]);
     }
 }

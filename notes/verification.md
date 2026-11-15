@@ -329,7 +329,7 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `cargo test -q -p gpui-task-manager`（12 passed）
   - `cd web && cargo test -q`（7 passed）
 - 制限/未検証:
-  - ツリー表示は折りたたみ UI なしの基本表示。フィルタ/ソート時は表示対象集合に対するフラット化。
+  - ツリー表示はノード単位の折りたたみ/展開 UI を実装（折りたたみ状態はセッション内）。フィルタ/ソート時は表示対象集合に対するフラット化。
   - 温度/コンポーネントはベストエフォート（環境によりセンサーなし）。GPU 利用率の詳細監視は未実装。
   - 実 IME 手動確認、Windows/macOS 実機、WebGPU 実機確認は未実施。
 
