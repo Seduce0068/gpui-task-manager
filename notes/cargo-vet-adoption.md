@@ -1,16 +1,16 @@
 ---
 type: Reference
-title: cargo-vet 導入準備メモ（未導入）
+title: cargo-vet 導入準備メモ（未導入・ツール導入済み）
 description: gpui-task-manager における cargo-vet（supply-chain 監査）の現状棚卸し、導入前に決める方針、段階的手順案。監査記録は未作成。
 tags: [supply-chain, cargo-vet, security, dependencies]
 status: draft
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T16:38:00+09:00
+verified: 2026-11-15T16:59:00+09:00
 ---
 
 ## 1. 現状（事実）
 
-- **導入状態**: 未導入。リポジトリに `supply-chain/` は存在せず、作業環境に `cargo-vet`（`cargo vet`）も未インストール（`cargo vet` 実行不可を確認）。
+- **導入状態**: リポジトリへの導入は未完了（`supply-chain/` 未作成、imports/trust/exempt/audit 記録なし）。作業環境には `cargo-vet 0.10.3` を導入済み（`cargo install cargo-vet --version 0.10.3 --locked`、2026-11-15、`/home/koppe/.cargo/bin/cargo-vet`、`cargo vet --version` 確認）。`cargo vet init` 等は方針未決定のため未実施。
 - **代替/併用中の供給網対策**:
   - `cargo audit` / `cargo-deny`（advisories/bans/licenses/sources、root/web）。CI の deny ジョブは `-A advisory-not-detected` を指定し、root `deny.toml` の ignore が web グラフに現れない場合のノイズ警告を抑制（2026-11-15、`0ee7c37`）。
   - CycloneDX SBOM: [`scripts/generate-sbom.sh`](../scripts/generate-sbom.sh) と CI `sbom` ジョブ
@@ -69,10 +69,10 @@ verified: 2026-11-15T16:38:00+09:00
 
 ## 6. 次の具体アクション候補（安全・小さく進める）
 
-- 開発環境への `cargo-vet` 導入可否（バージョン固定方針）を決める。導入時は `Cargo.lock` と同じコミットで再現できるようにする。
+- `cargo-vet 0.10.3` をローカル導入済み。運用/CI でのバージョン固定方針（`cargo install` 固定、CI 実行方法、将来更新手順）を明記する。
 - trust/imports の候補を比較し、採用基準を短く文書化する（信頼根拠・更新頻度・criteria 対応・自組織方針との整合）。
+- 方針決定後に `cargo vet init` / `supply-chain/` 作成を検討する（exempt/imports/audit の扱いを混同しない。実レビューなしに `audit` を作らない）。
 - `cargo metadata` から依存・git/path 依存の一覧を定期確認する手順を維持する（監査判断そのものは自動化しない）。
-- 初期導入を行う場合でも、未レビュー依存を `exempt` として明示し、`audit` と混同しない。
 
 ## 7. 棚卸し再取得手順（事実確認用）
 
