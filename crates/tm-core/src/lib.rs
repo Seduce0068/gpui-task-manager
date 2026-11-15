@@ -36,11 +36,13 @@ pub mod sanitize;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
-    CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot,
-    ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
+    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
 };
 pub use port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
-pub use query::{filter_and_sort, Filter, SortDirection, SortKey, SortSpec};
+pub use query::{
+    filter_and_sort, flatten_process_tree, Filter, ProcessTreeRow, SortDirection, SortKey, SortSpec,
+};
 
 /// Version of the JSON wire schema used between the native agent and the
 /// browser shell. Bump it whenever a field is removed or its meaning changes.

@@ -91,3 +91,22 @@
   web **7 passed**。`bash scripts/check.sh` 成功。
 - push 後の CI（run 43669677202）は 7 ジョブすべて成功
   （release-linux / web-dist artifact を含む）。
+
+## 2026-11-15（機能・運用拡張の安全な進捗）
+
+- CI: `wasm` / `cargo-deny` / `release-linux` / `web-dist` を `ubuntu-24.04` に固定、
+  `actions/upload-artifact` を `@v7` に更新、`sbom` ジョブを追加。
+  `scripts/generate-sbom.sh` を追加（`cargo-cyclonedx` があれば CycloneDX 生成、
+  未導入時は案内して exit 0）。
+- GitHub 運用: ラベル（`area:core/platform/agent/web/ui`, `ci`, `security`,
+  `packaging`, `supply-chain` 等）を作成。main の branch protection API は
+  private リポジトリのプラン制約で `403` のため、必須チェック/レビュー等の運用方針を
+  README/SECURITY/DESIGN に明記。
+- 温度/コンポーネント: `ComponentSnapshot` と `SystemSnapshot.components` を追加
+  （後方互換のため `serde(default)`）。`tm-platform` で sysinfo component 収集を有効化し
+  ベストエフォートで取得、demo にサンプル値を追加。
+- プロセスツリー基盤: `tm-core::query` に `ProcessTreeRow` / `flatten_process_tree`
+  を追加しテスト追加（`parent_pid` ベースの深さ優先フラット化）。
+- テスト: tm-core 52 / tm-platform 9 pass、tm-viewmodel/tm-agent/gpui-task-manager check pass。
+  `cargo-vet` は監査判断が必要なため未導入（将来検討）。
+

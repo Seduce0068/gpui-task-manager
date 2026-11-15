@@ -19,11 +19,17 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（現在 **private**）
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
   `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit）。
-  追加で wasm check / cargo-deny / native-windows / native-macos の 5 ジョブ構成。
-  初回実行（run 43612670190）は **5 ジョブすべて成功**（Windows 4m49s / macOS 1m11s /
-  cargo-deny 22s / wasm 1m47s / gates 2m28s）
+  追加で wasm / cargo-deny / native-windows / native-macos / release-linux /
+  web-dist / sbom を実行（Linux 系ジョブは再現性のため `ubuntu-24.04` に固定、
+  成果物は `actions/upload-artifact@v7`）。SBOM は
+  [`scripts/generate-sbom.sh`](scripts/generate-sbom.sh)（CycloneDX JSON、
+  root/web ワークスペース）で生成。
+- 運用: Dependabot（Cargo / web / GitHub Actions、週次）、セキュリティアラート、
+  プロジェクト用ラベル（`area:*` / `ci` / `security` / `packaging` / `supply-chain` 等）
+  を有効化。ブランチ保護は private リポジトリのプラン制約により API 上
+  `403`（GitHub Pro または public が必要）で未設定のため、保護ルール相当は
+  必須 CI / レビュー運用で補う。
 - 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
-- Dependabot（Cargo / web / GitHub Actions、週次）とセキュリティアラートを有効化済み。
 
 ## できること（MVP）
 

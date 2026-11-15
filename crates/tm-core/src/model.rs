@@ -268,6 +268,23 @@ impl DiskUsageSnapshot {
     }
 }
 
+/// Temperature reading from a hardware component (sensor), when available.
+///
+/// Platforms that cannot enumerate components report an empty list. Values are
+/// best-effort and may be missing on some drivers/virtual machines.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ComponentSnapshot {
+    /// Human-readable sensor/component label.
+    pub label: String,
+    /// Current temperature in degrees Celsius, when reported.
+    pub temperature_c: Option<f32>,
+    /// Maximum observed temperature in degrees Celsius, when reported.
+    pub max_c: Option<f32>,
+    /// Critical/halt threshold in degrees Celsius, when reported.
+    pub critical_c: Option<f32>,
+}
+
 /// A complete point-in-time view of the machine.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -290,6 +307,9 @@ pub struct SystemSnapshot {
     pub network: NetworkSnapshot,
     /// Mounted filesystems.
     pub disks: Vec<DiskUsageSnapshot>,
+    /// Hardware component temperatures, when the platform reports them.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub components: Vec<ComponentSnapshot>,
     /// PID of the application itself, used to protect it from being killed.
     pub self_pid: Option<u32>,
 }

@@ -29,7 +29,7 @@ Ubuntu 系デスクトップ（Kubuntu / KDE Plasma / Wayland を第一ターゲ
 - リモートホストの監視（SSH / Prometheus 連携）。ただし拡張点は設計に残す。
 - Windows / macOS の**物理実機**での検証（OS 別 cfg と GitHub Actions の
   windows-latest / macos-latest を実機相当の検証として使う）。
-- 設定の永続化、自動更新、多言語化（日本語 UI のみ）。
+- 設定の永続化（ネイティブ: ファイル、ブラウザ: localStorage）、自動更新、多言語化（日本語 UI のみ）。
 - ブラウザからのプロセス操作（安全側に倒して読み取り専用）。
 
 ### 1.3 品質特性と設計手段
@@ -684,8 +684,10 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   型検査・テストを実施する（Windows は Stop/Continue 非対応、Terminate/Kill は強制終了）。
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施。
 - Wayland 以外（X11 セッション）での表示は未検証。GPUI の x11 feature は有効。
-- プロセスのツリー表示、優先度変更、cgroup 表示、GPU 監視は未実装。
-- ライトテーマ、自動更新は未実装。設定の永続化はネイティブ版のみ実装（ブラウザ版は未対応）。
+- プロセスのツリー表示 UI、優先度変更、cgroup 表示、GPU 利用率の詳細監視は未実装。
+  ただし `parent_pid` に基づくツリー構造化ヘルパー（core）と、温度センサー等の
+  component 収集・データモデル（native/demo、ベストエフォート）は段階的に追加中。
+- ライトテーマ、自動更新は未実装。設定スキーマは `tm-viewmodel::Settings` で共有し、ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
 - ブラウザ版の wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は

@@ -70,13 +70,13 @@ use rustix::io::Errno;
 #[cfg(unix)]
 use rustix::process::{kill_process, Pid as RustixPid, Signal as RustixSignal};
 use sysinfo::{
-    CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
+    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
     ProcessStatus as SysinfoProcessStatus, ProcessesToUpdate, RefreshKind, System, ThreadKind,
     UpdateKind, Users,
 };
 use tm_core::model::{
-    CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot,
-    ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
+    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
 };
 use tm_core::port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 use tm_core::sanitize::{sanitize_display, MAX_COMMAND_CHARS, MAX_NAME_CHARS};
@@ -211,9 +211,25 @@ impl NativeProbe {
             processes,
             network: self.network_snapshot(),
             disks: self.disk_snapshots(),
+            components: self.component_snapshots(),
             self_pid: Some(std::process::id()),
         };
         (snapshot, next_cpu_ms)
+    }
+
+    fn component_snapshots(&self) -> Vec<ComponentSnapshot> {
+        let Ok(components) = Components::new_with_refreshed_list() else {
+            return Vec::new();
+        };
+        components
+            .iter()
+            .map(|component| ComponentSnapshot {
+                label: component.label().to_string(),
+                temperature_c: component.temperature(),
+                max_c: component.max(),
+                critical_c: component.critical(),
+            })
+            .collect()
     }
 
     fn cpu_snapshot(&self) -> CpuSnapshot {

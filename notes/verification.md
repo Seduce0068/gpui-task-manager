@@ -290,3 +290,22 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 
 - 既存の gates / wasm / cargo-deny / native-windows / native-macos と合わせて 7 ジョブ。
 - `taiki-e/install-action` は trunk に対応（TOOLS.md で確認）。
+
+## 2026-11-15（機能・運用拡張の安全な進捗）
+
+- CI/運用: `wasm` / `cargo-deny` / `release-linux` / `web-dist` を `ubuntu-24.04` に固定、
+  成果物 upload を `actions/upload-artifact@v7` に更新、SBOM 生成ジョブ
+  （`cargo-cyclonedx` + `scripts/generate-sbom.sh`）を追加。GitHub ラベル
+  （`area:*`, `ci`, `security`, `packaging`, `supply-chain` 等）を整備。
+  private リポジトリの branch protection API は `403`（プラン制約）のため、
+  必須 CI/レビュー等は運用で補う方針を文書化。
+- モデル/収集: `tm-core` に `ComponentSnapshot` と `SystemSnapshot.components`
+  （`serde(default)`）を追加。`tm-platform` で sysinfo `component` feature を有効化し、
+  ベストエフォートで温度センサー情報を収集（利用不可環境では空）。
+  demo スナップショットにもサンプル component を追加。
+- プロセスツリー基盤: `tm-core::query` に `ProcessTreeRow` /
+  `flatten_process_tree` を追加（`parent_pid` ベース、選択 subset の深さ優先）。
+- 検証: `cargo test -p tm-core -p tm-platform`、主要クレートの `cargo check`
+  （tm-viewmodel / tm-agent / gpui-task-manager）を確認。`cargo-vet` は未導入のため
+  SBOM/運用ドキュメントで将来検討として扱う。
+
