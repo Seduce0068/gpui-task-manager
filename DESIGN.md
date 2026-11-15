@@ -475,7 +475,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   fmt → check → test → clippy（`-D warnings`）等の標準ゲートを実行する。
 - 追加ジョブ: wasm check、cargo-deny（ルート / web）、native-windows
   （`windows-latest`）、native-macos（`macos-latest`）、sbom（CycloneDX）。
-- Actions は commit SHA にピン留めし、Dependabot（GitHub Actions 週次）で追従する。
+- Actions はバージョンタグで参照し、Dependabot（GitHub Actions 週次）で更新を追従する。必要に応じて commit SHA ピン留めへの移行を検討する。
   `ubuntu-latest` は使用しない。
 - GPUI の X11 依存は CI でも `libxkbcommon-x11-dev` を導入する。
 - GitHub ラベルで領域・運用課題を分類する。branch protection は現行の private
