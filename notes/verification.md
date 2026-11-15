@@ -344,3 +344,14 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `cargo test -q -p tm-core -p tm-platform -p tm-agent -p gpui-task-manager`
   - `cd web && cargo test -q`（7 passed）
   - `cargo deny check`（advisories ok, bans ok, licenses ok, sources ok）
+
+## 2026-11-15（詳細パネルへのセンサー/温度表示追加）
+
+- 変更:
+  - native/web の詳細パネルに「センサー / 温度」セクションを追加し、取得済みコンポーネントを全件表示（ラベル・現在/最大/危険温度、未取得時は「センサーなし」）。
+- 検証（ローカル）:
+  - `cargo fmt --all`
+  - `cargo check -q -p gpui-task-manager`
+  - `cd web && cargo check -q`
+  - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`
+  - `cd web && cargo test -q`（7 passed）
