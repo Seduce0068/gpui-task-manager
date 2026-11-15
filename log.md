@@ -254,3 +254,14 @@
 - `cargo fmt --all`
 - `cargo test -p gpui-task-manager -q`（12 passed）
 - `cargo test --manifest-path web/Cargo.toml -q`（7 passed）
+
+## 2026-11-15（cargo-deny 警告整理: 未使用 license allow の削除）
+
+- `deny.toml`: `[licenses].allow` から `NCSA` を削除。
+  - 根拠: `cargo deny list`（root / web いずれも）で NCSA ライセンス使用クレートは確認されず、`cargo deny check -A advisory-not-detected` 実行時に root 側で `license-not-encountered` 警告が出ていたため。現在の依存グラフに存在しない許可の整理であり、ポリシー緩和ではない（将来必要になった場合は根拠を確認して追加する）。
+- duplicate 警告（`multiple-versions = "warn"`）は既知の許容事項として変更なし。
+
+### 検証
+
+- `cargo deny --manifest-path Cargo.toml check -A advisory-not-detected`（pass、`license-not-encountered` 解消）
+- `cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected`（pass）
