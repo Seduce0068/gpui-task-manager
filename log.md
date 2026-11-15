@@ -341,3 +341,9 @@
 - 確認: compositor が `zwp_text_input_manager_v3` を公開、GPUI がバインドして `get_text_input(id 27, wl_seat#3)` を発行。text-input-v3 のセットアップは成功。依存 crate `gpui-pre-linux 0.3.12` が `enable()` / `disable()` / `commit_string` / `preedit_string` を実装していることもソースで確認。
 - 未到達: ウィンドウがキーボードフォーカスを取得しなかったため `enable()` が発行されず（`wl_keyboard.enter` count = 0）。実 IME 経路の完全検証には対話操作またはキー注入ツールが必要。
 - 証跡: `notes/assets/native-ime-wayland-trace.txt`（プロトコル関連 70 行の抜粋）。`notes/verification.md` に所見と限界を追記。
+
+## 2026-11-16（CI 起動失敗の原因特定: private リポジトリの課金枠）
+
+- 対照実験で原因を特定: 同一アカウントでも **public な `gpui-file-explorer` の CI は success（5m33s）**、**private な `gpui-task-manager` は全ジョブが 0 step で failure**。失敗アノテーションは "recent account payments have failed or your spending limit needs to be increased"。
+- 結論: private リポジトリの Actions は課金対象のため、支払い/spending limit の問題で起動しない。コードや workflow の問題ではない。
+- 対応案: ①public 化（「まだ公開しない」方針とは要調整）、②Billing & plans の修正、③ローカル検証の継続（現在実施中）。①②はユーザー操作が必要。
