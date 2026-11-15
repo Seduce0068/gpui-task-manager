@@ -311,3 +311,10 @@
 - `trunk build --release` 成功。wasm 7,635,554 B（gzip 3,042,856 B）/ JS 159,873 B / index.html 1,320 B を再計測。
 - CDP デモモード再検証: pass（failures 0、panic/JS 例外 0）。証跡（`web-shell-evidence-demo.json` とスクリーンショット 8 枚）を更新。
 - `README.md` / `DESIGN.md` / `web/README.md` / `notes/web-shell.md` / `notes/verification.md` の wasm サイズを現状値へ更新（旧値は履歴として保持）。
+
+## 2026-11-15（ブラウザ版ライブ / エラー時モードの CDP 再検証）
+
+- `cargo build -p tm-agent` で直前ビルドしたエージェントを `127.0.0.1:18787`（`--redact`）で起動し、`web/dist` を 8091 で配信、ヘッドレス Chrome 157 + CDP で再検証。
+- ライブ: **failures 0 / passed**（500 行、`fire` 絞り込みで 25 行、`live_error=0`、GET 14 回すべて `Authorization` 付き・URL にトークン無し、プリフライト 1 回）。エラー時（エージェント停止）: **failures 0 / passed**、`rows=0 / live_error=1` で UI に反映、panic 0。
+- 証跡（`web/verification/web-shell-evidence-live{,-error}.json`、`notes/assets/web-shell-*-live*.png`）を現行コードで更新。
+- 検証後の Chrome / HTTP サーバ / `tm-agent` は停止し、ポート 8091 / 9223 の解放を確認。

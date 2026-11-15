@@ -1,7 +1,7 @@
 {
   "label": "live",
   "url": "http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test",
-  "started_at": "2026-11-14T22:08:22+0900",
+  "started_at": "2026-11-15T22:25:43+0900",
   "layout": {
     "row0_center_y": 368.0,
     "header_y": 338.0,
@@ -21,59 +21,71 @@
       "step": "initial",
       "proof": {
         "mode": "live",
-        "tick": "3",
-        "cpu": "48.7",
-        "mem": "80.1",
+        "tick": "4",
+        "cpu": "26.0",
+        "mem": "28.4",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "1",
+        "selected_pid": "1894747",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661707",
+        "sampled": "1794749148",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       },
-      "title": "GPUI タスクマネージャー (Web) | mode=live tick=3 rows=500 selected=1 filter="
+      "title": "GPUI タスクマネージャー (Web) | mode=live tick=4 rows=500 selected=1894747 filter="
     },
     {
       "step": "after_ticks",
-      "tick_before": 3,
+      "tick_before": 4,
       "proof": {
         "mode": "live",
-        "tick": "5",
-        "cpu": "53.6",
-        "mem": "80.1",
+        "tick": "6",
+        "cpu": "24.3",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "1",
+        "selected_pid": "1894747",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661709",
+        "sampled": "1794749150",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "scroll_down",
       "proof": {
         "mode": "live",
-        "tick": "6",
-        "cpu": "51.5",
-        "mem": "80.1",
+        "tick": "7",
+        "cpu": "39.6",
+        "mem": "28.4",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "1",
+        "selected_pid": "1894747",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661711",
+        "sampled": "1794749152",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
@@ -81,140 +93,168 @@
       "row_y": 428.0,
       "proof": {
         "mode": "live",
-        "tick": "7",
-        "cpu": "75.3",
-        "mem": "80.1",
+        "tick": "8",
+        "cpu": "66.0",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1894783",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661712",
+        "sampled": "1794749154",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "filter_typed",
       "proof": {
         "mode": "live",
-        "tick": "9",
-        "cpu": "88.5",
-        "mem": "80.0",
-        "rows": "39",
+        "tick": "10",
+        "cpu": "82.0",
+        "mem": "28.3",
+        "rows": "25",
         "total": "500",
         "filter": "fire",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661717",
+        "sampled": "1794749157",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "fire",
+        "ime_marked": "-",
+        "ime_selection": "4:4"
       }
     },
     {
       "step": "filter_cleared",
       "proof": {
         "mode": "live",
-        "tick": "10",
-        "cpu": "68.1",
-        "mem": "79.9",
+        "tick": "11",
+        "cpu": "45.1",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661718",
+        "sampled": "1794749158",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "sort_cpu",
       "proof": {
         "mode": "live",
-        "tick": "10",
-        "cpu": "68.1",
-        "mem": "79.9",
+        "tick": "11",
+        "cpu": "45.1",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "CPU",
         "dir": "asc",
-        "sampled": "1794661718",
+        "sampled": "1794749158",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "sort_cpu_flip",
       "proof": {
         "mode": "live",
-        "tick": "11",
-        "cpu": "82.5",
-        "mem": "79.9",
+        "tick": "12",
+        "cpu": "70.0",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1794661720",
+        "sampled": "1794749159",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "sort_name",
       "proof": {
         "mode": "live",
-        "tick": "11",
-        "cpu": "82.5",
-        "mem": "79.9",
+        "tick": "13",
+        "cpu": "63.6",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1794661720",
+        "sampled": "1794749160",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       }
     },
     {
       "step": "final",
       "proof": {
         "mode": "live",
-        "tick": "12",
-        "cpu": "87.2",
-        "mem": "79.9",
+        "tick": "14",
+        "cpu": "52.6",
+        "mem": "28.3",
         "rows": "500",
         "total": "500",
         "filter": "",
-        "selected_pid": "8564",
+        "selected_pid": "1995347",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1794661722",
+        "sampled": "1794749162",
         "vw": "1440",
         "vh": "857",
-        "live_error": "0"
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       },
-      "title": "GPUI タスクマネージャー (Web) | mode=live tick=12 rows=500 selected=8564 filter="
+      "title": "GPUI タスクマネージャー (Web) | mode=live tick=14 rows=500 selected=1995347 filter="
     }
   ],
   "env": {
-    "title": "GPUI タスクマネージャー (Web) | mode=live tick=3 rows=500 selected=1 filter=",
-    "proof": "mode=live;tick=3;cpu=48.7;mem=80.1;rows=500;total=500;filter=;selected_pid=1;sort=CPU;dir=desc;sampled=1794661707;vw=1440;vh=857;live_error=0;",
+    "title": "GPUI タスクマネージャー (Web) | mode=live tick=4 rows=500 selected=1894747 filter=",
+    "proof": "mode=live;tick=4;cpu=26.0;mem=28.4;rows=500;total=500;filter=;selected_pid=1894747;sort=CPU;dir=desc;sampled=1794749148;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;",
     "canvas": {
       "width": 1440,
       "height": 857,
@@ -225,6 +265,11 @@
   },
   "network": {
     "snapshot_requests": [
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": true
+      },
       {
         "method": "OPTIONS",
         "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
@@ -297,7 +342,7 @@
       }
     ],
     "preflight_count": 1,
-    "get_count": 13,
+    "get_count": 14,
     "token_in_url": false,
     "authorization_header_seen": true
   },
@@ -355,22 +400,22 @@
     {
       "source": "log",
       "type": "warning",
-      "text": "[rendering] [.WebGL-0x35cc001d3e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      "text": "[rendering] [.WebGL-0x3bac001c8400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
     },
     {
       "source": "log",
       "type": "warning",
-      "text": "[rendering] [.WebGL-0x35cc001d3e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      "text": "[rendering] [.WebGL-0x3bac001c8400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
     },
     {
       "source": "log",
       "type": "warning",
-      "text": "[rendering] [.WebGL-0x35cc001d3e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      "text": "[rendering] [.WebGL-0x3bac001c8400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
     },
     {
       "source": "log",
       "type": "warning",
-      "text": "[rendering] [.WebGL-0x35cc001d3e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+      "text": "[rendering] [.WebGL-0x3bac001c8400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
     }
   ],
   "benign_console_count": 7,
@@ -378,5 +423,5 @@
   "panic_or_errors": [],
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-14T22:08:44+0900"
+  "finished_at": "2026-11-15T22:26:03+0900"
 }

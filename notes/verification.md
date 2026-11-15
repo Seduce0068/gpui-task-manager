@@ -421,4 +421,45 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - `trunk build --release`（`web/`）: 成功。生成物を再計測: wasm 7,635,554 B（gzip 3,042,856 B）、JS 159,873 B（gzip 24,504 B）、`index.html` 1,320 B（gzip 842 B）。旧記録（7,589,230 B / 3,024,986 B、JS 158,865 B）から微増。
 - CDP 再検証（デモモード、ヘッドレス Chrome 157 + CDP 9223、静的配信 8091）: **failures: [] / passed: true**、panic・JS 例外 0、benign console 7 件。状態フックの時系列は既存文書の表と同一挙動（tick 増加、行クリックで選択 PID 変化、`fire` で 28→1 行、Esc で復帰、CPU/名前ソート切替）。証跡を `web/verification/web-shell-evidence-demo.json` / `notes/assets/web-shell-0*-demo.png` に更新（現行コードは `ime_composing` / `ime_field` / `ime_marked` / `ime_selection` を状態フックに含むため、証跡にもこれらが記録される）。
 - 文書の現状合わせ: `README.md` / `DESIGN.md`（§8 性能、ADR-017、§14）/ `web/README.md` / `notes/web-shell.md` の wasm サイズ記載を 2026-11-15 計測値に更新（7.24 MiB → 7.28 MiB、gzip 2.89 → 2.90 MiB）。ADR-017 には再計測値を追記し、旧測定の履歴は保持。
-- 未実施: ライブモード（`tm-agent` 接続）とエラー時モードの CDP 再検証、実 GPU の WebGPU、Safari/Firefox。
+- 未実施: 実 GPU の WebGPU、Safari/Firefox。ライブ / エラー時モードは次節で再検証済み。
+
+## 2026-11-15（ブラウザ版ライブ / エラー時モードの CDP 再検証）
+
+前節（デモ再検証）に続き、CI で検証できない 2 モードをローカルで再検証した。実行は「`web/dist` を `python3 -m http.server 8091` で配信 → ヘッドレス Chrome 157（CDP 9223）→ `web/scripts/cdp_verify_web.py`」の手順。検証後は Chrome / HTTP サーバ / `tm-agent` の残留をすべて停止し、ポート 8091 / 9223 の解放を確認。
+
+### ライブモード（`tm-agent` 接続）
+
+`TM_AGENT_TOKEN=test ./target/debug/tm-agent --listen 127.0.0.1:18787 --redact`（`cargo build -p tm-agent` で直前ビルド）を起動し、
+`?agent=http://127.0.0.1:18787#token=test` で検証 → **failures: [] / passed: true**、panic・JS 例外 0 件。
+
+| step | tick | rows | filter | selected_pid | sort | dir | live_error |
+|---|---|---|---|---|---|---|---|
+| initial | 4 | 500 | (空) | 1894747 | CPU | desc | 0 |
+| after_ticks | 6 | 500 | (空) | 1894747 | CPU | desc | 0 |
+| scroll_down | 7 | 500 | (空) | 1894747 | CPU | desc | 0 |
+| row_click | 8 | 500 | (空) | 1894783 | CPU | desc | 0 |
+| filter_typed（`fire`） | 10 | 25 | fire | 1995347 | CPU | desc | 0 |
+| filter_cleared（Esc） | 11 | 500 | (空) | 1995347 | CPU | desc | 0 |
+| sort_cpu | 11 | 500 | (空) | 1995347 | CPU | asc | 0 |
+| sort_cpu_flip | 12 | 500 | (空) | 1995347 | CPU | desc | 0 |
+| sort_name | 13 | 500 | (空) | 1995347 | 名前 | asc | 0 |
+| final | 14 | 500 | (空) | 1995347 | 名前 | asc | 0 |
+
+- 実データで 500 行（`limit=500` = `DEFAULT_PROCESS_LIMIT`）、絞り込みで 25 行、`live_error=0` のまま全ステップ成功。デモ（28 行）と異なり実プロセス数を反映している。
+- ネットワーク証跡: `GET /api/v1/snapshot?limit=500` を **14 回**（`preflight_count: 1`）。全 GET に `Authorization` ヘッダあり、**URL にトークンなし**（`token_in_url: false`）。`--redact` によりホスト名は `host` に置換されている。
+
+### エラー時モード（エージェント未起動）
+
+`tm-agent` を停止した状態（ポート 18787 は connection refused）で同 URL を開いて検証 →
+**failures: [] / passed: true**、panic 0 件。状態フックは `mode=live;tick=0;rows=0;total=0;selected_pid=-;live_error=1` となり、
+**ライブ取得失敗が `live_error=1` として UI に反映される**ことを確認。エラーメッセージはネイティブ版と同じ形（接続拒否 / `net::ERR_CONNECTION_REFUSED` 相当）で、panic やコンソール未処理例外にはなっていない。
+
+### 証跡
+
+- `web/verification/web-shell-evidence-live.json` / `web-shell-evidence-live-error.json`（更新）
+- `notes/assets/web-shell-0{1..8}-*-live.png`、`notes/assets/web-shell-01-initial-live-error.png`、`web-shell-09-agent-error-live-error.png`（更新、1440x857 で整合）
+
+### 制約（変わりなし）
+
+- 実 GPU の WebGPU 描画は未確認（ヘッドレスは WebGL2 / SwiftShader へフォールバック）。Safari / Firefox も未検証。
+- 物理実機 Windows / macOS の GUI 操作は未検証。

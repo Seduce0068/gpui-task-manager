@@ -1,7 +1,7 @@
 {
   "label": "live-error",
   "url": "http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test",
-  "started_at": "2026-11-14T22:06:26+0900",
+  "started_at": "2026-11-15T22:57:44+0900",
   "layout": {
     "row0_center_y": 368.0,
     "header_y": 338.0,
@@ -28,12 +28,16 @@
         "total": "0",
         "filter": "",
         "selected_pid": "-",
-        "sort": "CPU",
-        "dir": "desc",
+        "sort": "名前",
+        "dir": "asc",
         "sampled": "0",
         "vw": "1440",
         "vh": "857",
-        "live_error": "1"
+        "live_error": "1",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       },
       "title": "GPUI タスクマネージャー (Web) | mode=live tick=0 rows=0 selected=- filter="
     },
@@ -48,19 +52,23 @@
         "total": "0",
         "filter": "",
         "selected_pid": "-",
-        "sort": "CPU",
-        "dir": "desc",
+        "sort": "名前",
+        "dir": "asc",
         "sampled": "0",
         "vw": "1440",
         "vh": "857",
-        "live_error": "1"
+        "live_error": "1",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
       },
       "title": "GPUI タスクマネージャー (Web) | mode=live tick=0 rows=0 selected=- filter="
     }
   ],
   "env": {
     "title": "GPUI タスクマネージャー (Web) | mode=live tick=0 rows=0 selected=- filter=",
-    "proof": "mode=live;tick=0;cpu=0.0;mem=0.0;rows=0;total=0;filter=;selected_pid=-;sort=CPU;dir=desc;sampled=0;vw=1440;vh=857;live_error=1;",
+    "proof": "mode=live;tick=0;cpu=0.0;mem=0.0;rows=0;total=0;filter=;selected_pid=-;sort=名前;dir=asc;sampled=0;vw=1440;vh=857;live_error=1;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;",
     "canvas": {
       "width": 1440,
       "height": 857,
@@ -77,7 +85,7 @@
         "has_authorization_header": false
       },
       {
-        "method": "GET",
+        "method": "OPTIONS",
         "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
         "has_authorization_header": false
       },
@@ -87,7 +95,7 @@
         "has_authorization_header": false
       },
       {
-        "method": "GET",
+        "method": "OPTIONS",
         "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
         "has_authorization_header": false
       },
@@ -97,13 +105,53 @@
         "has_authorization_header": false
       },
       {
+        "method": "OPTIONS",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
         "method": "GET",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "OPTIONS",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "OPTIONS",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "OPTIONS",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
+        "has_authorization_header": false
+      },
+      {
+        "method": "OPTIONS",
         "url": "http://127.0.0.1:18787/api/v1/snapshot?limit=500",
         "has_authorization_header": false
       }
     ],
-    "preflight_count": 0,
-    "get_count": 6,
+    "preflight_count": 7,
+    "get_count": 7,
     "token_in_url": false,
     "authorization_header_seen": false
   },
@@ -166,7 +214,7 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     },
     {
       "source": "log",
@@ -176,7 +224,7 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     },
     {
       "source": "log",
@@ -186,7 +234,7 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     },
     {
       "source": "log",
@@ -196,7 +244,7 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     },
     {
       "source": "log",
@@ -206,7 +254,7 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     },
     {
       "source": "log",
@@ -216,13 +264,23 @@
     {
       "source": "console",
       "type": "warning",
-      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:3165:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-19fb6f47f4e2102f.js:704:59)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch::__wbg_fetch_fd2ff81209e1d34c externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17827]:0x60e593)\n    at tm_web.wasm.gpui_web[3c4050c08227c1b]::http_client::global_fetch (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[12165]:0x5b9429)\n    at tm_web.wasm.<gpui_web[3c4050c08227c1b]::http_client::FetchHttpClient as http_client[da0a72e066348498]::HttpClient>::send::{closure#0}::{closure#0}::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[951]:0x1845dc)\n    at tm_web.wasm.<js_sys[b277c54fbe133c41]::futures::queue::Queue>::new::{closure#0} (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[3898]:0x430153)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[10940]:0x599cc6)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[17905]:0x60edee)\n    at tm_web.wasm.wasm_bindgen[e8d9c8dd22e9f9a6]::convert::closures::_::invoke::<wasm_bindgen[e8d9c8dd22e9f9a6]::JsValue, core[37ee0ce0c4cd57d5]::result::Result<(), wasm_bindgen[e8d9c8dd22e9f9a6]::JsError>, true> externref shim multivalue shim (http://127.0.0.1:8091/tm-web-cb2ed6872f205cb_bg.wasm:wasm-function[16483]:0x60355c))"
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
+    },
+    {
+      "source": "log",
+      "type": "error",
+      "text": "[network] Failed to load resource: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "source": "console",
+      "type": "warning",
+      "text": "[WARN] tm_web::agent: エージェントへの fetch に失敗: fetch failed: JsValue(TypeError: Failed to fetch\nTypeError: Failed to fetch\n    at http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:705:25\n    at handleError (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3179:18)\n    at __wbg_fetch_fd2ff81209e1d34c (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:704:59)\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[869]:0x112bdf\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[2565]:0x377ff0\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[5983]:0x4caa52\n    at http://127.0.0.1:8091/tm-web-75b236eff1e1c315_bg.wasm:wasm-function[9003]:0x532937\n    at wasm_bindgen_e8d9c8dd22e9f9a6___convert__closures_____invoke___wasm_bindgen_e8d9c8dd22e9f9a6___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_e8d9c8dd22e9f9a6___JsError___true_ (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:2875:22)\n    at real (http://127.0.0.1:8091/tm-web-e5aa6e8209b44941.js:3201:20))"
     }
   ],
-  "benign_console_count": 9,
+  "benign_console_count": 10,
   "panic_or_error_count": 0,
   "panic_or_errors": [],
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-14T22:06:34+0900"
+  "finished_at": "2026-11-15T22:57:52+0900"
 }
