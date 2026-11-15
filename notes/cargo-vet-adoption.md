@@ -157,3 +157,39 @@ GitHub API（一次情報）による確認結果。採用判断はこの調査�
 
 - cargo-vet には「cargo-vet Registry」の仕組みがあり、`mini-vet 2.0.0`（crates.io、説明: "A client for the cargo-vet registry. Fetches security reviews for Rust/Cargo crates."）がクライアントとして存在する。`cargo vet suggest` は registry 経由で公開 audits を参照する（2026-11-15 実行時に `zcash` の registry audits 取得を試行）。
 - 判断メモ: `safe-to-deploy` を主基準とする現行方針に対し、Mozilla/Google の audits は対象範囲が広く、`aggregated-from` の連鎖（信頼の委譲）を理解してからでないと採用できない。優先度は「自プロジェクトの主要依存がどの程度カバーされるか」の確認後に評価する（cover 確認にはネットワークが必要）。
+
+## 9. ネットワーク環境での cargo-vet 試行手順（Runbook・未実施）
+
+`cargo vet` の `suggest` / `inspect` / `diff` / `certify` / `import` / `trust` は crates.io・GitHub からの取得（ネットワーク）が必要。制限環境（本作業環境）では失敗するため、ネットワークが使える環境で次の順に試行する（2026-11-15 時点で未実施）。各サブコマンドの正確な引数は `cargo vet <command> --help` で確認すること。
+
+```bash
+cd <repo>/work/gpui-task-manager
+
+# 1. レビュー候補の一覧（registry 経由の公開 audits 参照も行う）
+cargo vet suggest
+
+# 2. 候補のソース確認・バージョン間差分（例: 直接依存・高リスク領域から）
+cargo vet inspect rustix 1.1.6
+cargo vet diff libc 0.2.171 libc 0.2.172
+
+# 3. 実レビューできた場合のみ記録する
+cargo vet certify rustix 1.1.6
+cargo vet fmt
+
+# 4. imports の評価試行（採用判断は §8.1 の評価軸で事前評価してから）
+git switch -c try-import-mozilla
+cargo vet import mozilla/supply-chain
+cargo vet --locked
+git --no-pager diff supply-chain/   # imports.lock / config.toml の差分を必ずレビュー
+# 不採用なら: git switch main && git branch -D try-import-mozilla
+
+# 5. 記録後の整合確認（root / web 両方）
+cargo vet --locked
+(cd web && cargo vet --locked)
+```
+
+注意:
+
+- `certify` は自分が実際にレビューした場合のみ使う。判断できない場合は理由を明記した `add-exemption` のまま残す（捏造しない）。
+- `import` は信頼の委譲。`imports.lock` への反映差分を必ずレビューし、採用時のみコミットする。
+- web クレートは別ストアのため、imports を採用する場合は root / web で方針を統一するか、差がある理由を本メモに記録する。

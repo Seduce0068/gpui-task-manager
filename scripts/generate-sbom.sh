@@ -32,11 +32,19 @@ if [ -f web/Cargo.toml ]; then
   )
 fi
 
-# Collect outputs in one place for CI artifacts.
-find . -maxdepth 3 -type f \( -name 'sbom-root*.cdx.json' -o -name 'sbom-web*.cdx.json' -o -name 'bom.json' \) \
+# Collect outputs in one place for CI artifacts. cargo-cyclonedx writes one
+# `<override-filename>.json` per workspace member next to its Cargo.toml, so
+# keep the member directory in the copy target to avoid basename collisions.
+find . -maxdepth 3 -type f \( -name 'sbom-root*.json' -o -name 'sbom-web*.json' -o -name 'bom.json' \) \
   -not -path "${out_dir}/*" -print0 | while IFS= read -r -d '' file; do
-  cp "${file}" "${out_dir}/$(basename "${file}")"
+  rel="${file#./}"
+  cp "${file}" "${out_dir}/${rel//\//__}"
 done
+
+# Remove the per-member originals (script-specific names only) so the working
+# tree stays clean; generic names like bom.json are left untouched.
+find . -maxdepth 3 -type f \( -name 'sbom-root*.json' -o -name 'sbom-web*.json' \) \
+  -not -path "${out_dir}/*" -delete
 
 echo "SBOM generation complete."
 ls -lh "${out_dir}" 2>/dev/null || true
