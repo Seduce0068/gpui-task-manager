@@ -229,3 +229,17 @@
 
 - コード変更なし（文書のみ）。`git diff` で変更内容を確認。
 - `gh label list --repo Seduce0068/gpui-task-manager --limit 50`、`gh api repos/Seduce0068/gpui-task-manager/branches/main/protection`（`403`）、`.github/workflows/ci.yml` / `.github/dependabot.yml` / `deny.toml` / `scripts/generate-sbom.sh` の存在と内容を確認。
+
+
+## 2026-11-15（詳細パネルの空センサーラベルフォールバック）
+
+- native/web の詳細パネルで、サニタイズ等により `component.label` が空文字の場合に `"センサー"` を表示するフォールバックを追加（概要カードの既存挙動と整合）。
+
+### 検証
+
+- `cargo fmt --all`
+- `cargo test -p tm-core -q`（56 passed）
+- `cargo test -p gpui-task-manager -q`（12 passed）
+- `cargo check -p gpui-task-manager -q`
+- `cargo check --manifest-path web/Cargo.toml -q`
+- `cargo test --manifest-path web/Cargo.toml -q`（7 passed）

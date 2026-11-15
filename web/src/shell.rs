@@ -1149,7 +1149,12 @@ impl TaskManagerApp {
                 if let Some(critical) = component.critical_c {
                     value.push_str(&format!(" / crit {critical:.0}°C"));
                 }
-                content = content.child(kv(component.label.clone(), value));
+                let label = if component.label.is_empty() {
+                    "センサー".to_string()
+                } else {
+                    component.label.clone()
+                };
+                content = content.child(kv(label, value));
             }
         }
 
