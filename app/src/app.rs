@@ -21,6 +21,7 @@ use tm_viewmodel::{
     Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
 };
 
+use crate::settings::Settings;
 use crate::theme::*;
 use crate::ui::{action_button, card, kv, metric_bar, pill, section_title, sparkline};
 
@@ -113,6 +114,12 @@ impl TaskManagerApp {
         if let Some(error) = init_error {
             dashboard.set_status(error, true);
         }
+        let settings = Settings::load();
+        let _ = dashboard.apply(Command::SetInterval(Duration::from_millis(
+            settings.interval_ms,
+        )));
+        let _ = dashboard.apply(Command::SetSortSpec(settings.sort));
+        let _ = dashboard.apply(Command::SetDetailsVisible(settings.details_visible));
         Self {
             dashboard,
             probe: Arc::new(Mutex::new(Some(probe))),
@@ -137,6 +144,32 @@ impl TaskManagerApp {
         self.start_timer(cx);
         self.handle_command(Command::Tick, cx);
         self.spawn_ime_debug_hook(cx);
+        self.debug_save_settings_once();
+    }
+
+    /// デバッグ専用: 設定の保存経路を GUI 操作なしで確認するフック。
+    /// `TM_DEBUG_SETTINGS=1` のときだけ動き、通常起動では無効。
+    fn debug_save_settings_once(&self) {
+        if std::env::var("TM_DEBUG_SETTINGS").as_deref() != Ok("1") {
+            return;
+        }
+        let settings = Settings {
+            version: crate::settings::CURRENT_VERSION,
+            interval_ms: self.dashboard.interval().as_millis() as u64,
+            sort: self.dashboard.sort_spec(),
+            details_visible: self.dashboard.details_visible(),
+        };
+        match settings.save() {
+            Ok(()) => eprintln!(
+                "TM_DEBUG_SETTINGS: saved interval_ms={} key={:?} direction={:?} details={} path={:?}",
+                settings.interval_ms,
+                settings.sort.key,
+                settings.sort.direction,
+                settings.details_visible,
+                crate::settings::config_path()
+            ),
+            Err(error) => eprintln!("TM_DEBUG_SETTINGS: save failed: {error}"),
+        }
     }
 
     fn start_timer(&self, cx: &mut Context<Self>) {
@@ -230,13 +263,39 @@ impl TaskManagerApp {
     }
 
     fn handle_command(&mut self, command: Command, cx: &mut Context<Self>) {
+        // Only presentation preferences are persisted; sampling ticks and
+        // process actions must not touch the disk.
+        let persist = matches!(
+            &command,
+            Command::SetInterval(_)
+                | Command::SetSortKey(_)
+                | Command::SetSortSpec(_)
+                | Command::ToggleDetails
+                | Command::SetDetailsVisible(_)
+        );
         let effects = self.dashboard.apply(command);
         self.execute_effects(effects, cx);
         if let Some(position) = self.dashboard.selected_visible_index() {
             self.scroll_handle
                 .scroll_to_item(position, ScrollStrategy::Nearest);
         }
+        if persist {
+            self.save_settings();
+        }
         cx.notify();
+    }
+
+    /// Persists the current presentation preferences.
+    fn save_settings(&self) {
+        let settings = Settings {
+            version: crate::settings::CURRENT_VERSION,
+            interval_ms: self.dashboard.interval().as_millis() as u64,
+            sort: self.dashboard.sort_spec(),
+            details_visible: self.dashboard.details_visible(),
+        };
+        if let Err(error) = settings.save() {
+            eprintln!("gpui-task-manager: 設定を保存できません: {error}");
+        }
     }
 
     /// 絞り込み編集を開始する。現在の確定文字列を入力欄へ引き継ぐ。

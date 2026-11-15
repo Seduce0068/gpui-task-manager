@@ -82,3 +82,55 @@ jobs:
         run: cargo deny --manifest-path Cargo.toml check
       - name: Check web workspace
         run: cargo deny --manifest-path web/Cargo.toml check
+
+  # リリース成果物（Linux バイナリ + DEB）。検証とは分離し、必要なときだけ
+  # ダウンロードできるようにする。
+  release-linux:
+    name: release artifacts (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            jq
+      - name: Build release binary
+        run: cargo build --release -p gpui-task-manager
+      - name: Build DEB
+        run: bash packaging/linux/build-deb.sh --skip-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-task-manager-linux
+          path: |
+            target/release/gpui-task-manager
+            packaging/linux/build/*.deb
+          if-no-files-found: error
+
+  # ブラウザ版の配布物（dist）。trunk を CI で導入してビルドする。
+  web-dist:
+    name: web dist artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Build web distribution
+        run: cd web && trunk build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-task-manager-web
+          path: web/dist
+          if-no-files-found: error

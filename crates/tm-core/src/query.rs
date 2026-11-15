@@ -11,6 +11,7 @@ use crate::model::{ProcessSnapshot, ProcessStatus};
 
 /// Column the process table is sorted by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SortKey {
     /// CPU usage.
     #[default]
@@ -57,6 +58,7 @@ impl SortKey {
 
 /// Sort direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SortDirection {
     /// Smallest first.
     #[default]
@@ -85,6 +87,7 @@ impl SortDirection {
 
 /// Which column and direction the table is sorted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SortSpec {
     /// Active column.
     pub key: SortKey,

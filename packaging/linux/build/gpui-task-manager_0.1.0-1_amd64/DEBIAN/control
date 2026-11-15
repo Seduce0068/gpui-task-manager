@@ -1,0 +1,12 @@
+Package: gpui-task-manager
+Version: 0.1.0-1
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Seduce0068 <32996406+Seduce0068@users.noreply.github.com>
+Installed-Size: 41888
+Depends: libc6,libgcc-s1,libvulkan1,libxau6,libxcb1,libxcb-xkb1,libxdmcp6,libxkbcommon0,libxkbcommon-x11-0
+Description: GPUI-based system task manager
+ Cross-platform system task manager for Ubuntu-family desktops.
+ Shows processes, CPU, memory, network and disk usage and allows
+ SIGTERM/SIGKILL/SIGSTOP/SIGCONT after an explicit confirmation.

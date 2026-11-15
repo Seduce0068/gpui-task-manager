@@ -496,6 +496,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | AC-13 | ブラウザ版 / ネイティブ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 + `TM_DEBUG_IME=1` |
 | AC-14 | Windows / macOS ターゲットでワークスペースが型検査できる | `cargo check --target` + CI |
 | AC-15 | cargo-deny がルート / web とも成功する | `cargo deny check` |
+| AC-16 | 表示設定が保存され、再起動後に復元される | 実機（`TM_DEBUG_SETTINGS=1` + 設定ファイル起動）
+| AC-17 | root 権限なしで DEB を生成でき、展開バイナリが起動する | `build-deb.sh` + `dpkg-deb -x` |
 
 ---
 
@@ -585,10 +587,19 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   コピーしていない（調査ノートのみ参照）。
 - 結果: 既存の AGPL プロジェクトへ統合する場合は別途ライセンス判断が必要。
 
-### ADR-012: 設定の永続化は MVP 外
+### ADR-012: 設定は表示設定のみを XDG に永続化（改訂）
 
-- 決定: 更新間隔・ソート・フィルタはセッション内のみ。将来 XDG 設定に保存する。
-- 理由: まず監視と安全な操作の完成度を優先する。
+- 決定: **更新間隔・ソート列/方向・詳細パネル表示**を
+  `$XDG_CONFIG_HOME/gpui-task-manager/settings.json`（Windows は `%APPDATA%`、
+  macOS は `~/Library/Application Support`）へ保存し、起動時に復元する。
+- 保存対象を表示設定に限定する理由: プロセス情報・フィルタ・トークン・ホスト名などの
+  機微情報や一時状態はディスクに残さない。フィルタは「その時の作業」であり、
+  起動時に勝手に絞り込まれると対象を見失うため保存しない。
+- 実装: 原子的書き込み（一時ファイル + rename）、Unix では `0600`、`version` で
+  スキーマ版を保持し、未知フィールドは無視する（前方互換）。値は view-model の
+  範囲へクランプする。
+- 検証: `TM_DEBUG_SETTINGS=1` のデバッグフックで保存経路を、設定ファイルを置いた
+  起動で復元経路を実機確認（`notes/assets/settings-restore.png`）。
 
 ### ADR-013: ブラウザ UI は gpui 素の div で構成
 
@@ -639,6 +650,16 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: 物理実機の GUI 操作・IME は未検証のまま残るが、型検査と単体テストは
   OS ごとに担保できる。
 
+### ADR-020: Linux 配布は root 不要の DEB 生成スクリプト
+
+- 決定: `packaging/linux/build-deb.sh` が release バイナリから `.deb` を生成する
+  （`dpkg-deb --root-owner-group`、`sudo` を一切呼ばない、ホストへインストールしない）。
+- 依存関係は `ldd` + `dpkg -S` から自動計算し、Vulkan ローダは `dlopen` のため
+  `libvulkan1` を明示追加する。
+- 収録物: バイナリ、`.desktop`（`StartupWMClass=gpui-task-manager`）、
+  hicolor アイコン（scalable + 256x256）、`README.md` / `NOTICE.md` / `copyright`。
+- 未実施: 署名、リポジトリ公開、AppImage/Flatpak、Windows/macOS パッケージ。
+
 ### ADR-019: ネイティブ IME は EntityInputHandler の最小実装
 
 - 状況: `gpui-pre-linux` は Wayland text-input-v3 / X11 XIM を実装しているが、
@@ -660,7 +681,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施。
 - Wayland 以外（X11 セッション）での表示は未検証。GPUI の x11 feature は有効。
 - プロセスのツリー表示、優先度変更、cgroup 表示、GPU 監視は未実装。
-- ライトテーマ、設定永続化、自動更新は未実装。
+- ライトテーマ、自動更新は未実装。設定の永続化はネイティブ版のみ実装（ブラウザ版は未対応）。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
 - ブラウザ版の wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は

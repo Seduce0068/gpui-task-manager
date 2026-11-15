@@ -41,6 +41,8 @@ pub enum Command {
     SelectRelative(i32),
     /// Sort by a column; clicking the active column flips the direction.
     SetSortKey(SortKey),
+    /// Set an exact sort spec (used when restoring persisted settings).
+    SetSortSpec(SortSpec),
     /// Replace the free-text filter.
     SetFilterText(String),
     /// Clear every filter field.
@@ -51,6 +53,8 @@ pub enum Command {
     SetPaused(bool),
     /// Show or hide the details panel.
     ToggleDetails,
+    /// Set the details panel visibility explicitly (used when restoring settings).
+    SetDetailsVisible(bool),
     /// Open the confirmation dialog for a signal.
     RequestSignal {
         /// Target process.
@@ -291,6 +295,11 @@ impl Dashboard {
                 self.recompute_visible();
                 Vec::new()
             }
+            Command::SetSortSpec(spec) => {
+                self.sort = spec;
+                self.recompute_visible();
+                Vec::new()
+            }
             Command::SetFilterText(text) => {
                 self.filter.text = text;
                 self.recompute_visible();
@@ -317,6 +326,10 @@ impl Dashboard {
             }
             Command::ToggleDetails => {
                 self.details_visible = !self.details_visible;
+                Vec::new()
+            }
+            Command::SetDetailsVisible(visible) => {
+                self.details_visible = visible;
                 Vec::new()
             }
             Command::RequestSignal { key, signal } => {
@@ -513,7 +526,7 @@ fn clamp_interval(interval: Duration) -> Duration {
 mod tests {
     use super::*;
     use tm_core::demo::{demo_snapshot, DemoProbe};
-    use tm_core::{ProcessSnapshot, SystemProbe};
+    use tm_core::{ProcessSnapshot, SortDirection, SystemProbe};
 
     fn dashboard() -> Dashboard {
         Dashboard::new(PlatformInfo::native("Linux"), DEFAULT_REFRESH_INTERVAL)
@@ -713,6 +726,22 @@ mod tests {
         }
         assert_eq!(dashboard.history().len(), 3);
         assert!(dashboard.cpu_label().ends_with('%'));
+    }
+
+    #[test]
+    fn sort_spec_and_details_can_be_restored_exactly() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let spec = SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        };
+        dashboard.apply(Command::SetSortSpec(spec));
+        assert_eq!(dashboard.sort_spec(), spec);
+        dashboard.apply(Command::SetDetailsVisible(false));
+        assert!(!dashboard.details_visible());
+        dashboard.apply(Command::SetDetailsVisible(true));
+        assert!(dashboard.details_visible());
     }
 
     #[test]

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod settings;
 mod theme;
 mod ui;
 

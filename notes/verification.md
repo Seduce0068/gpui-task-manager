@@ -24,7 +24,7 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **131 passed / 0 failed**（tm-core 49 / tm-viewmodel 28 / tm-platform 9 / tm-agent 39 / app 6） |
+| `cargo test --workspace` | **138 passed / 0 failed**（tm-core 49 / tm-viewmodel 29 / tm-platform 9 / tm-agent 39 / app 12） |
 | web ユニットテスト | **4 passed / 0 failed**（`filter_input` テストは共有化に伴い `tm-viewmodel` の 28 件へ移動） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -220,3 +220,60 @@ cd poc-wasm && trunk build --release
 - Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動
   （PATH ハイジャック回避）。Stop/Continue は非対応。
 - `thread_count` は 637 プロセスで `/proc/<pid>/status` の `Threads:` と照合し不一致 0。
+
+## 13. 設定の永続化（2026-11-15）
+
+保存対象は表示設定のみ（更新間隔・ソート列/方向・詳細パネル表示）。プロセス情報・
+フィルタ・ホスト名・トークンはディスクに書かない。
+
+### 13.1 保存経路（Runtime Proof）
+
+```text
+$ XDG_CONFIG_HOME=$(mktemp -d) TM_DEBUG_SETTINGS=1 ./target/debug/gpui-task-manager --demo --redact
+TM_DEBUG_SETTINGS: saved interval_ms=1000 key=Cpu direction=Descending details=true path=Some("/tmp/.../gpui-task-manager/settings.json")
+
+$ ls -l /tmp/.../gpui-task-manager/settings.json
+-rw------- 1 koppe koppe 133 ... settings.json        # 0600
+```
+
+- 一時ファイル（`settings.json.tmp`）は残らない（原子的 rename）。
+- JSON は `version` / `interval_ms` / `sort` / `details_visible` の 4 項目のみ。
+
+### 13.2 復元経路（Runtime Proof）
+
+`interval_ms=5000` / `sort=Name Ascending` / `details_visible=false` を書いた設定で起動:
+
+- ステータスバー **「更新間隔 5000 ms」**、ツールバー **「並び: 名前 ▲」**、
+  一覧は名前昇順（avahi-daemon, bash, bluetoothd, ...）、**詳細パネル非表示**。
+- 証拠: `notes/assets/settings-restore.png`。
+- 起動後も設定ファイルは変更されない（Tick では書き込まない設計）。
+
+### 13.3 自動テスト
+
+`app`（12 件）に往復・原子的書き込み・`0600` 権限・範囲クランプ・未知フィールド無視・
+NotFound/InvalidData の扱いを含む。
+
+## 14. Linux DEB パッケージング（2026-11-15）
+
+```bash
+bash packaging/linux/build-deb.sh              # release ビルド + .deb 生成（root 不要）
+bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パッケージ
+```
+
+- 出力: `packaging/linux/build/gpui-task-manager_0.1.0-1_amd64.deb`（**11 MB**）。
+- 依存は `ldd` + `dpkg -S` から自動生成し、`libvulkan1` を明示追加:
+  `libc6, libgcc-s1, libvulkan1, libxau6, libxcb1, libxcb-xkb1, libxdmcp6,
+  libxkbcommon0, libxkbcommon-x11-0`
+- `dpkg-deb -x` で展開したバイナリの `--version` → `gpui-task-manager 0.1.0`。
+- `desktop-file-validate` 成功。`sudo` を呼ばず、ホストへインストールしない。
+- 未実施: 署名、リポジトリ公開、AppImage/Flatpak、Windows/macOS パッケージ。
+
+## 15. CI ジョブ追加（2026-11-15）
+
+| ジョブ | 内容 |
+|---|---|
+| `release-linux` | release バイナリ + DEB を artifact として保存 |
+| `web-dist` | trunk でブラウザ版 dist をビルドし artifact として保存 |
+
+- 既存の gates / wasm / cargo-deny / native-windows / native-macos と合わせて 7 ジョブ。
+- `taiki-e/install-action` は trunk に対応（TOOLS.md で確認）。
