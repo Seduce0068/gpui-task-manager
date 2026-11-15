@@ -638,7 +638,11 @@ impl TaskManagerApp {
                 } else {
                     component.label.clone()
                 };
-                let value = match (component.temperature_c, component.max_c, component.critical_c) {
+                let value = match (
+                    component.temperature_c,
+                    component.max_c,
+                    component.critical_c,
+                ) {
                     (Some(t), Some(max), Some(crit)) => {
                         format!("{t:.0}°C (max {max:.0}°C / crit {crit:.0}°C)")
                     }
@@ -759,14 +763,26 @@ impl TaskManagerApp {
                             .cursor_pointer()
                             .border_1()
                             .border_color(rgb(C_SURFACE))
-                            .bg(rgb(if self.dashboard.tree_view() { C_SURFACE } else { C_MANTLE }))
-                            .text_color(rgb(if self.dashboard.tree_view() { C_BLUE } else { C_MUTED }))
+                            .bg(rgb(if self.dashboard.tree_view() {
+                                C_SURFACE
+                            } else {
+                                C_MANTLE
+                            }))
+                            .text_color(rgb(if self.dashboard.tree_view() {
+                                C_BLUE
+                            } else {
+                                C_MUTED
+                            }))
                             .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
                             .on_click(cx.listener(|this, _event, window, cx| {
                                 this.focus_handle.focus(window, cx);
                                 this.handle_command(Command::ToggleTreeView, cx);
                             }))
-                            .child(if self.dashboard.tree_view() { "ツリー: ON" } else { "ツリー" }),
+                            .child(if self.dashboard.tree_view() {
+                                "ツリー: ON"
+                            } else {
+                                "ツリー"
+                            }),
                     )
                     .child(
                         div()
@@ -927,7 +943,20 @@ impl TaskManagerApp {
     }
 
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-                let (key, name, command, cpu, memory, pid, user, status, threads, selected, depth, has_children) = {
+        let (
+            key,
+            name,
+            command,
+            cpu,
+            memory,
+            pid,
+            user,
+            status,
+            threads,
+            selected,
+            depth,
+            has_children,
+        ) = {
             let snapshot = self.dashboard.snapshot()?;
             let row_index = *self.dashboard.visible_indices().get(index)?;
             let depth = self
