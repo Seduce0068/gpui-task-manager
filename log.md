@@ -265,3 +265,9 @@
 
 - `cargo deny --manifest-path Cargo.toml check -A advisory-not-detected`（pass、`license-not-encountered` 解消）
 - `cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected`（pass）
+
+## 2026-11-15（cargo-vet ツール導入・準備メモ更新）
+
+- 作業環境に `cargo-vet 0.10.3` を導入（`cargo install cargo-vet --version 0.10.3 --locked`、`cargo vet --version` 確認、`/home/koppe/.cargo/bin/cargo-vet`）。
+- `notes/cargo-vet-adoption.md` を更新し、ツール導入済み・`supply-chain/` 未作成・init/imports/trust/exempt/audit 方針未決定の事実を反映。
+- `cargo vet init`、`supply-chain/` 作成、exempt/imports/audit 記録は未実施（未監査依存を監査済みとして記録していない）。
