@@ -18,8 +18,10 @@ use tm_core::{
 };
 
 pub mod filter_input;
+pub mod settings;
 
 pub use filter_input::{EditOutcome, FilterInput};
+pub use settings::{Settings, SETTINGS_VERSION};
 
 /// Lowest refresh interval the UI accepts (250 ms).
 pub const MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(250);

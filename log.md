@@ -78,3 +78,16 @@
 - CI run 43616522864: ネイティブ IME 変更後も 5 ジョブすべて成功
   （Windows 4m28s / macOS 1m10s / cargo-deny / wasm 1m49s / gates 3m55s）。
 - Windows/macOS 物理実機・クラウド検証の選択肢と費用を `notes/physical-verification.md` に整理。
+
+## 2026-11-15（設定スキーマ共通化とブラウザ永続化）
+
+- 設定スキーマを `tm-viewmodel::Settings` に集約（ネイティブとブラウザで共有）。
+  ネイティブは既存の XDG/APPDATA/Application Support ファイル保存を維持し、
+  ブラウザは `localStorage`（`gpui-task-manager.settings`）へ保存。
+- `web/src/settings.rs` と `web/scripts/cdp_verify_settings.py` を追加。
+  CDP 検証: 列クリックで保存、再読込で復元（`sort=名前;dir=asc`）を確認。
+  証拠: `web/verification/web-settings-evidence.json`（`passed: true`）。
+- テスト: workspace **143 passed**（core 49 / viewmodel 34 / platform 9 / agent 39 / app 12）、
+  web **7 passed**。`bash scripts/check.sh` 成功。
+- push 後の CI（run 43669677202）は 7 ジョブすべて成功
+  （release-linux / web-dist artifact を含む）。

@@ -1,0 +1,83 @@
+{
+  "url": "http://127.0.0.1:8091/",
+  "started_at": "2026-11-15T12:35:40+0900",
+  "steps": [
+    {
+      "step": "fresh",
+      "proof": {
+        "mode": "demo",
+        "tick": "1",
+        "cpu": "24.2",
+        "mem": "56.5",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "900",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000000",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
+      }
+    },
+    {
+      "step": "saved",
+      "stored": "{\"version\":1,\"interval_ms\":1000,\"sort\":{\"key\":\"Cpu\",\"direction\":\"Ascending\"},\"details_visible\":true}"
+    },
+    {
+      "step": "saved_parsed",
+      "settings": {
+        "version": 1,
+        "interval_ms": 1000,
+        "sort": {
+          "key": "Cpu",
+          "direction": "Ascending"
+        },
+        "details_visible": true
+      }
+    },
+    {
+      "step": "restored",
+      "proof": {
+        "mode": "demo",
+        "tick": "1",
+        "cpu": "24.2",
+        "mem": "56.5",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "2200",
+        "sort": "名前",
+        "dir": "asc",
+        "sampled": "1760000000",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0"
+      }
+    }
+  ],
+  "layout": {
+    "column_centers": {
+      "name": 110.0,
+      "cpu": 631.0,
+      "memory": 715.0,
+      "pid": 795.0,
+      "user": 881.0,
+      "status": 974.0,
+      "threads": 1051.0
+    },
+    "header_y": 338.0
+  },
+  "failures": [],
+  "passed": true,
+  "finished_at": "2026-11-15T12:35:46+0900"
+}

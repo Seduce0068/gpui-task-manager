@@ -8,4 +8,8 @@ license.workspace = true
 description = "UI-independent presentation state machine for the GPUI task manager"
 
 [dependencies]
-tm-core = { workspace = true }
+tm-core = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -112,7 +112,7 @@ impl TaskManagerApp {
             }
         };
 
-        let app = Self {
+        let mut app = Self {
             dashboard,
             filter_input: FilterInput::new(),
             source,
@@ -122,6 +122,7 @@ impl TaskManagerApp {
             live_error: None,
             ticks: 0,
         };
+        app.restore_settings();
         app.spawn_sampler(cx);
         app.sync_proof_dom();
         app
@@ -206,8 +207,48 @@ impl TaskManagerApp {
         self.sync_proof_dom();
     }
 
+    /// 保存された表示設定（更新間隔・ソート・詳細パネル）を復元する。
+    ///
+    /// 保存対象は表示設定だけで、プロセス情報・フィルタ・トークンは含まない。
+    fn restore_settings(&mut self) {
+        let settings = crate::settings::load();
+        for command in [
+            Command::SetInterval(Duration::from_millis(settings.interval_ms)),
+            Command::SetSortSpec(settings.sort),
+            Command::SetDetailsVisible(settings.details_visible),
+        ] {
+            for effect in self.dashboard.apply(command) {
+                if let Effect::Signal { .. } = effect {
+                    // Restoring settings never triggers process actions.
+                }
+            }
+        }
+    }
+
+    /// 表示設定だけを `localStorage` に保存する。
+    fn persist_settings(&self) {
+        let settings = tm_viewmodel::Settings {
+            version: tm_viewmodel::SETTINGS_VERSION,
+            interval_ms: self.dashboard.interval().as_millis() as u64,
+            sort: self.dashboard.sort_spec(),
+            details_visible: self.dashboard.details_visible(),
+        };
+        if let Err(message) = crate::settings::save(&settings) {
+            log::warn!("設定を保存できません: {message}");
+        }
+    }
+
     /// Applies a user intention and executes the effects the shell supports.
     fn handle_command(&mut self, command: Command, cx: &mut Context<Self>) {
+        // 表示設定の変更だけを永続化する（Tick や操作では書き込まない）。
+        let persist = matches!(
+            &command,
+            Command::SetInterval(_)
+                | Command::SetSortKey(_)
+                | Command::SetSortSpec(_)
+                | Command::ToggleDetails
+                | Command::SetDetailsVisible(_)
+        );
         for effect in self.dashboard.apply(command) {
             match effect {
                 // The sampling loop owns the cadence; a manual sample request is a no-op.
@@ -221,6 +262,9 @@ impl TaskManagerApp {
         if let Some(position) = self.dashboard.selected_visible_index() {
             self.scroll_handle
                 .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
+        if persist {
+            self.persist_settings();
         }
         self.sync_proof_dom();
         cx.notify();

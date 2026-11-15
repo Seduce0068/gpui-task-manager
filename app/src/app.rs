@@ -114,7 +114,7 @@ impl TaskManagerApp {
         if let Some(error) = init_error {
             dashboard.set_status(error, true);
         }
-        let settings = Settings::load();
+        let settings = crate::settings::load();
         let _ = dashboard.apply(Command::SetInterval(Duration::from_millis(
             settings.interval_ms,
         )));
@@ -159,7 +159,7 @@ impl TaskManagerApp {
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
         };
-        match settings.save() {
+        match crate::settings::save(&settings) {
             Ok(()) => eprintln!(
                 "TM_DEBUG_SETTINGS: saved interval_ms={} key={:?} direction={:?} details={} path={:?}",
                 settings.interval_ms,
@@ -293,7 +293,7 @@ impl TaskManagerApp {
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
         };
-        if let Err(error) = settings.save() {
+        if let Err(error) = crate::settings::save(&settings) {
             eprintln!("gpui-task-manager: 設定を保存できません: {error}");
         }
     }
