@@ -100,11 +100,12 @@ chmod 600 ~/.config/tm-agent.token
   `deny.toml` で理由付きに管理する。
 - **SBOM**: `scripts/generate-sbom.sh`（CycloneDX JSON, root/web）と CI の `sbom`
   ジョブで供給網可視性を確保する。
-- **cargo-vet**: 依存監査（`cargo vet` / `supply-chain/`）は導入候補だが、
-  現時点では未導入。trust root（監査者/インポート元）の選定、既存依存の棚卸し、
-  監査/免除の運用責任を文書化してから初期化する。未監査依存を「監査済み」と
-  して記録しない（cargo-vet の監査記録を捏造しない）。導入時は CI ゲート化と
-  更新手順（Dependabot/ピン更新時の vet 対応）も合わせて定義する。
+- **cargo-vet**: root / web とも初期化済み（`cargo-vet 0.10.3`、`supply-chain/`）。
+  初期状態は全依存を `exempt`（未監査の明示、root 804 / web 560）とし、外部
+  imports は未使用（盲目的な信頼委譲を避ける）。未監査依存を「監査済み」として
+  記録しない（監査記録の捏造をしない）。検証は `cargo vet --locked`（root / web）。
+  依存更新時は ①実レビュー後に `certify`、②レビュー前なら理由付き
+  `add-exemption` の順で対応する。CI ゲート化は共通ワークフロー側での対応を検討中。
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
   自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
 - 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
