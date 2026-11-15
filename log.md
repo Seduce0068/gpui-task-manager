@@ -305,3 +305,9 @@
 - `scripts/generate-sbom.sh`: cargo-cyclonedx 0.5.10 の実出力名（`sbom-root.json` 等、メンバーごと）と収集パターン（`sbom-root*.cdx.json`）の不一致により CI sbom ジョブが空成果物で失敗する問題を修正（パターン拡張・一意名収集・収集後の元ファイル除去）。
 - ローカル検証: `bash scripts/generate-sbom.sh target/sbom-local` で 6/6 の CycloneDX JSON を生成・収集（jq 検証）。sbom ジョブ自体は CI で未検証（最後の CI 成功後に追加されたため）で、課金問題解消後の CI 再実行で確認する。
 - `notes/cargo-vet-adoption.md` §9 にネットワーク環境での cargo-vet 試行手順（Runbook）を追加。
+
+## 2026-11-15（ブラウザ版の再ビルド・CDP 再検証・wasm サイズ更新）
+
+- `trunk build --release` 成功。wasm 7,635,554 B（gzip 3,042,856 B）/ JS 159,873 B / index.html 1,320 B を再計測。
+- CDP デモモード再検証: pass（failures 0、panic/JS 例外 0）。証跡（`web-shell-evidence-demo.json` とスクリーンショット 8 枚）を更新。
+- `README.md` / `DESIGN.md` / `web/README.md` / `notes/web-shell.md` / `notes/verification.md` の wasm サイズを現状値へ更新（旧値は履歴として保持）。

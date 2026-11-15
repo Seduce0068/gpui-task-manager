@@ -197,13 +197,13 @@ $ cd web && trunk build --release
 2026-11-14T12:28:20Z  INFO ✅ success
 ```
 
-生成物（release）:
+生成物（release、2026-11-15 再計測）:
 
 | ファイル | サイズ | gzip |
 |---|---|---|
-| `dist/*_bg.wasm` | 7,589,230 B（7.24 MiB） | 3,024,986 B（2.89 MiB） |
-| `dist/*.js` | 158,865 B（156 KiB） | 24,420 B |
-| `dist/index.html` | 1,318 B | - |
+| `dist/*_bg.wasm` | 7,635,554 B（7.28 MiB） | 3,042,856 B（2.90 MiB） |
+| `dist/*.js` | 159,873 B（156 KiB） | 24,504 B |
+| `dist/index.html` | 1,320 B | 842 B |
 
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用（14.8 MB → 7.6 MB）。
 
@@ -214,18 +214,18 @@ $ cd web && trunk build --release
 
 | step | tick | rows | filter | selected_pid | sort | dir |
 |---|---|---|---|---|---|---|
-| initial | 5 | 28 | (空) | 900 | CPU | desc |
-| after_ticks（2.5 秒後） | 8 | 28 | (空) | 900 | CPU | desc |
+| initial | 4 | 28 | (空) | 900 | CPU | desc |
+| after_ticks（2.5 秒後） | 7 | 28 | (空) | 900 | CPU | desc |
 | scroll_down | 8 | 28 | (空) | 900 | CPU | desc |
 | row_click（3 行目） | 10 | 28 | (空) | 4242 | CPU | desc |
-| filter_typed（`fire`） | 11 | 1 | fire | 800 | CPU | desc |
-| filter_cleared（Esc） | 12 | 28 | (空) | 800 | CPU | desc |
+| filter_typed（`fire`） | 12 | 1 | fire | 800 | CPU | desc |
+| filter_cleared（Esc） | 13 | 28 | (空) | 800 | CPU | desc |
 | sort_cpu | 13 | 28 | (空) | 800 | CPU | asc |
 | sort_cpu_flip | 14 | 28 | (空) | 800 | CPU | desc |
 | sort_name | 15 | 28 | (空) | 800 | 名前 | asc |
 | final | 16 | 28 | (空) | 800 | 名前 | asc |
 
-- 1 秒タイマーで tick が増加（5 → 8 → … → 16）。
+- 1 秒タイマーで tick が増加（4 → 7 → … → 16）。
 - 行クリックで選択 PID が 900 → 4242 に変わり、詳細パネルが切り替わる。
 - `fire` 入力で 28 行 → 1 行（firefox）に絞り込まれ、Esc で戻る。
 - CPU 列クリックで降順 → 昇順、再クリックで反転、名前列で名前順になる。
@@ -291,8 +291,8 @@ $ cd web && trunk build --release
 - headless Chrome は WebGL2（ANGLE + SwiftShader）へフォールバックする。
   WebGPU を強制すると device lost で描画停止（スパイクで確認）。実 GPU の
   WebGPU 描画、Safari / Firefox は未検証。
-- wasm が 7.24 MiB（gzip 2.89 MiB）と大きい（wasm-opt 適用済み）。初回ロード時間は未計測
-  （localhost のスパイクでは wasm 転送 46 ms だったが、実ネットワークでは
+- wasm が 7.28 MiB（gzip 2.90 MiB、2026-11-15 計測、wasm-opt 適用済み）と大きい。
+  初回ロード時間は未計測（localhost のスパイクでは wasm 転送 46 ms だったが、実ネットワークでは
   転送とコンパイルが支配的になる）。
 - 単一ウィンドウのみ。ポップアップ/ダイアログ/ファイルダイアログ不可。
 - CJK は Canvas フォールバック描画のため、折り返し・字間の品質はネイティブに劣る。

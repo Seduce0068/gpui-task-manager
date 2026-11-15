@@ -291,7 +291,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - CJK は `CanvasFontFallback::EmojiAndCjk` が必須。`gpui_platform::application()`
   では設定できないため、`gpui_web::WebPlatform` を直接構築して
   `fetch_http_client` を注入する。
-- wasm サイズは wasm-opt（-Oz）適用後 **7.24 MiB（gzip 2.89 MiB）**。
+- wasm サイズは wasm-opt（-Oz）適用後 **7.28 MiB（gzip 2.90 MiB、2026-11-15 計測）**。
   `web/index.html` の `data-wasm-opt="z"` で trunk が wasm-opt を自動適用する。
 
 ### 6.5 ブラウザ版シェルの実装結果（`web/`）
@@ -424,7 +424,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
 | エージェント 1 スナップショット | 約 250 ms（シリアル処理） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
-| wasm（release、wasm-opt -Oz） | 7.24 MiB / gzip 2.89 MiB |
+| wasm（release、wasm-opt -Oz） | 7.28 MiB / gzip 2.90 MiB（2026-11-15 計測） |
 
 ---
 
@@ -654,7 +654,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 決定: `web/index.html` の `data-wasm-opt="z"` で wasm-opt を有効化する。
 - 結果: wasm 14,799,786 B → 7,589,230 B（gzip 3,656,199 → 3,024,986 B）。
   適用後も CDP 検証（デモ / ライブ / エラー時）は pass。初回ビルドは wasm-opt を
-  自動ダウンロードする。
+  自動ダウンロードする。2026-11-15 の再計測では 7,635,554 B（gzip 3,042,856 B、
+  依存更新やコード追加により微増）。
 
 ### ADR-018: Windows / macOS は cfg + CI ランナーで検証
 
@@ -699,7 +700,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 温度センサー等の component 収集・データモデルは実装済みで、ネイティブ/ブラウザの概要カードに取得可能な範囲を表示する（取得不可時は「センサーなし」）。詳細 GPU 利用率・ファン回転数等の網羅的監視は未実装。
 - ライトテーマ、自動更新は未実装。設定スキーマは `tm-viewmodel::Settings` で共有し（更新間隔・ソート・詳細パネル・ツリー表示）、ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
-- ブラウザ版の wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）。
+- ブラウザ版の wasm は 7.28 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-15 計測）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での

@@ -105,7 +105,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | コンソール | panic / JS 例外 0（WebGL2 フォールバック等の想定内警告のみ） |
 
 - `cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml`: 成功
-- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB）
+- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B）
 - 証拠: `notes/assets/web-shell-*.png`（18 枚）、`web/verification/web-shell-evidence-*.json`
 
 ## 6. 既知の制限・未検証
@@ -415,3 +415,10 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 修正: 収集パターンを `sbom-root*.json` / `sbom-web*.json` に拡張、メンバーディレクトリを含む一意名（例: `crates__tm-core__sbom-root.json`）で収集、収集後はスクリプト固有名の元ファイルを除去（汎用名 `bom.json` は対象外）。
 - 検証（Runtime Proof）: `cargo-cyclonedx 0.5.10` 導入（`cargo install cargo-cyclonedx --locked`）→ `bash scripts/generate-sbom.sh target/sbom-local` → **6/6 ファイル収集、全件 `bomFormat == CycloneDX`（jq 検証）**、作業ツリーに残骸なし、`bash -n` / `shellcheck` / `shfmt -d -i 2 -bn -ci` OK。
 - 補足: `notes/cargo-vet-adoption.md` §9 にネットワーク環境での cargo-vet 試行手順（Runbook）を追加。
+
+## 2026-11-15（ブラウザ版の再ビルド・CDP 再検証と文書の現状合わせ）
+
+- `trunk build --release`（`web/`）: 成功。生成物を再計測: wasm 7,635,554 B（gzip 3,042,856 B）、JS 159,873 B（gzip 24,504 B）、`index.html` 1,320 B（gzip 842 B）。旧記録（7,589,230 B / 3,024,986 B、JS 158,865 B）から微増。
+- CDP 再検証（デモモード、ヘッドレス Chrome 157 + CDP 9223、静的配信 8091）: **failures: [] / passed: true**、panic・JS 例外 0、benign console 7 件。状態フックの時系列は既存文書の表と同一挙動（tick 増加、行クリックで選択 PID 変化、`fire` で 28→1 行、Esc で復帰、CPU/名前ソート切替）。証跡を `web/verification/web-shell-evidence-demo.json` / `notes/assets/web-shell-0*-demo.png` に更新（現行コードは `ime_composing` / `ime_field` / `ime_marked` / `ime_selection` を状態フックに含むため、証跡にもこれらが記録される）。
+- 文書の現状合わせ: `README.md` / `DESIGN.md`（§8 性能、ADR-017、§14）/ `web/README.md` / `notes/web-shell.md` の wasm サイズ記載を 2026-11-15 計測値に更新（7.24 MiB → 7.28 MiB、gzip 2.89 → 2.90 MiB）。ADR-017 には再計測値を追記し、旧測定の履歴は保持。
+- 未実施: ライブモード（`tm-agent` 接続）とエラー時モードの CDP 再検証、実 GPU の WebGPU、Safari/Firefox。
