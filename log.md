@@ -187,3 +187,15 @@
 ### 検証
 
 - コード変更なし（文書のみ）。`git diff` と記述整合を確認。
+
+## 2026-11-15（cargo-vet 導入準備メモ拡充）
+
+- `notes/cargo-vet-adoption.md` を拡充。
+  - 検証日時を更新し、`cargo metadata` による棚卸し再確認（total 809 / crates-io 804 / path workspace 5 / non-workspace path 0 / git 0）を反映。
+  - 棚卸し再取得手順（事実確認用コマンド）を追加。
+  - 導入判断チェックリストを追加（目的、trust/imports 評価、初期 exempt 方針、git/path 例外手順、CI/運用、証跡健全性）。
+  - 未レビュー依存を `audit` と混同しない方針を明示。
+
+### 検証
+
+- コード変更なし（文書のみ）。`cargo metadata` 再取得コマンドで棚卸し数値を確認し、`git diff` で記述整合を確認。

@@ -5,7 +5,7 @@ description: gpui-task-manager における cargo-vet（supply-chain 監査）�
 tags: [supply-chain, cargo-vet, security, dependencies]
 status: draft
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T14:50:00+09:00
+verified: 2026-11-15T15:08:00+09:00
 ---
 
 ## 1. 現状（事実）
@@ -69,6 +69,52 @@ verified: 2026-11-15T14:50:00+09:00
 
 ## 6. 次の具体アクション候補（安全・小さく進める）
 
-- 開発環境への `cargo-vet` 導入可否（バージョン固定方針）を決める。
-- trust/imports の候補を比較し、採用基準を短く文書化する。
-- `cargo metadata` から直接依存と git 依存の一覧を定期更新できるスクリプト化を検討する（監査は自動化しない）。
+- 開発環境への `cargo-vet` 導入可否（バージョン固定方針）を決める。導入時は `Cargo.lock` と同じコミットで再現できるようにする。
+- trust/imports の候補を比較し、採用基準を短く文書化する（信頼根拠・更新頻度・criteria 対応・自組織方針との整合）。
+- `cargo metadata` から依存・git/path 依存の一覧を定期確認する手順を維持する（監査判断そのものは自動化しない）。
+- 初期導入を行う場合でも、未レビュー依存を `exempt` として明示し、`audit` と混同しない。
+
+## 7. 棚卸し再取得手順（事実確認用）
+
+`Cargo.lock` 更新後や導入検討時に再実行し、数値を更新する。
+
+```bash
+cd /home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager
+cargo metadata --format-version 1 > /tmp/gpui-tm-metadata.json
+python3 - <<'PY'
+import json
+with open('/tmp/gpui-tm-metadata.json') as f:
+    d = json.load(f)
+pkgs = d['packages']
+ws = set(d['workspace_members'])
+kinds = {}
+path_ws = path_nonws = git = 0
+for p in pkgs:
+    src = p.get('source')
+    if src is None:
+        kinds['path'] = kinds.get('path', 0) + 1
+        if p['id'] in ws:
+            path_ws += 1
+        else:
+            path_nonws += 1
+    elif src.startswith('registry+'):
+        kinds['crates-io'] = kinds.get('crates-io', 0) + 1
+    elif src.startswith('git+'):
+        kinds['git'] = kinds.get('git', 0) + 1
+        git += 1
+    else:
+        kinds[src] = kinds.get(src, 0) + 1
+print('total', len(pkgs))
+print('kinds', kinds)
+print('path_workspace', path_ws, 'path_nonworkspace', path_nonws, 'git', git)
+PY
+```
+
+## 8. 導入判断チェックリスト（未決事項の具体化）
+
+- [ ] **目的**: cargo-vet で何を補完したいか（監査連鎖の可視化、更新時の差分確認補助、imports 活用など）を1文で定義する。
+- [ ] **trust/imports 評価**: 候補の公開 audits を採用する場合、運営主体・更新頻度・criteria の意味・自組織の受容範囲を確認し、採用/不採用理由を記録する（盲目的採用しない）。
+- [ ] **初期状態**: `init` 後の未監査依存をどう表現するか（exempt の粒度、優先順位、期限/見直し方針）を決める。
+- [ ] **git/path 方針**: 現時点 0 件だが、追加時の例外手順（固定リビジョン、差分レビュー、記録場所）を事前定義する。
+- [ ] **CI/ローカル運用**: `cargo vet` 実行タイミング、失敗時の対応、Dependabot/手動更新フローとの接続を決める。
+- [ ] **証跡の健全性**: 実レビューなしに `audit` を作らない。imports は委譲として扱い、採用根拠を残す。
