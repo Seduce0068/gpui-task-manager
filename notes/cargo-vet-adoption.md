@@ -5,7 +5,7 @@ description: gpui-task-manager における cargo-vet（supply-chain 監査）�
 tags: [supply-chain, cargo-vet, security, dependencies]
 status: draft
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T15:08:00+09:00
+verified: 2026-11-15T15:20:00+09:00
 ---
 
 ## 1. 現状（事実）
@@ -118,3 +118,28 @@ PY
 - [ ] **git/path 方針**: 現時点 0 件だが、追加時の例外手順（固定リビジョン、差分レビュー、記録場所）を事前定義する。
 - [ ] **CI/ローカル運用**: `cargo vet` 実行タイミング、失敗時の対応、Dependabot/手動更新フローとの接続を決める。
 - [ ] **証跡の健全性**: 実レビューなしに `audit` を作らない。imports は委譲として扱い、採用根拠を残す。
+
+
+## 8. 導入判断の比較軸（trust/imports 候補評価・未決）
+
+本節は導入時の判断材料であり、特定の trust root / imports 元の採用を決定・推奨するものではない。採用前に一次情報（各プロジェクトの公開 `supply-chain/`、criteria 定義、更新履歴、利用条件）を確認する。
+
+| 観点 | 確認項目 | 記録すべき判断 |
+|---|---|---|
+| 目的 | 何を保証したいか（既知脆弱性対応の補完、監査連鎖、供給網変更の可視性、リリース要件など） | `cargo-audit`/`cargo-deny`/SBOM/Dependabot と重複・補完する範囲 |
+| Trust root | 自組織/個人の audits を主とするか、外部 imports を併用するか | 信頼の根拠、責任主体、レビュー可能性 |
+| Imports 候補 | 公開 audits の有無、対象エコシステム、criteria（`safe-to-run`/`safe-to-deploy` 等）の意味、更新頻度、カバレッジ | 採用する場合のバージョン/コミット固定方針と更新確認手順。盲目的な委譲を避ける |
+| Criteria | 本プロジェクトに必要な基準（デスクトップ UI、ローカル loopback agent、wasm/web 配布物、プロセス制御を含む） | 使用する criteria と、`audit`/`exempt`/`unaudited` 相当の扱い |
+| 初期状態 | 全件 `exempt` から始めるか、直接依存・高リスク依存から段階的に記録するか | 期間、優先順位、レビュー担当、期限方針。`exempt` は未監査の明示であり監査済みではない |
+| 更新運用 | Dependabot/手動更新時の `cargo vet` 実行、差分確認、記録更新、CI 失敗時の対応 | PR チェック項目、緊急更新時の例外条件 |
+| git/path 依存 | 将来の git/path 依存追加時の扱い | 原則回避、必要時は固定リビジョン・差分レビュー・手動根拠記録 |
+| 証跡健全性 | 実レビューなしに `audit` を作らない、imports の意味を理解した上で採用する | 記録者、根拠、再確認トリガー |
+
+### 比較作業の最小手順（未実施）
+
+1. 候補ごとに一次情報の所在（公開 `supply-chain/config.toml`/audits、criteria 文書、更新実績）を確認する。
+2. 本プロジェクトの依存構成（registry/git/path、直接依存、高リスク領域）との適合を評価する。
+3. 採用する場合でも、`cargo-vet` ツールバージョン・imports 参照・自組織方針を固定/記録する。
+4. 初期導入 PR では `cargo vet init`/設定/運用文書/CI 方針を分離し、未レビュー依存の監査済み化を行わない。
+
+**2026-11-15 時点の状況**: trust/imports 候補の採否は未決。上記は判断を進めるための評価軸であり、導入・監査記録作成は未実施。

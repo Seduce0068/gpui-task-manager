@@ -212,3 +212,20 @@
 - `cargo test -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -q`（pass）
 - `cargo clippy -p tm-platform --all-targets -- -D warnings`（pass）
 - `cargo run -q -p tm-agent -- --demo --once` で components JSON 出力を確認
+
+
+## 2026-11-15（運用拡張項目の再確認・cargo-vet評価軸追記）
+
+- GitHub/CI 運用を再確認（事実）:
+  - ラベル整備済み（`area:*`, `ci`, `security`, `packaging`, `supply-chain` 等）。`gh label list` で確認。
+  - branch protection API は private プラン制約で `403`（未適用）。必須チェック強制の代替として CI/レビュー/ラベル運用を維持。
+  - `.github/workflows/ci.yml` に `ubuntu-latest` 不使用（`ubuntu-24.04` 等を明示）。Actions はバージョンタグ参照 + Dependabot（GitHub Actions 週次）で追従しており、文書の「SHA ピン留め」表記を実態に合わせて修正（`DESIGN.md`, `README.md`）。
+- 供給網/運用文書:
+  - `deny.toml` / `scripts/generate-sbom.sh` / CI `deny`・`sbom` ジョブ / Dependabot（Cargo root/web, GitHub Actions）を再確認。
+  - `notes/cargo-vet-adoption.md` に導入判断の比較軸（trust/imports 候補評価、criteria、初期 exempt 方針、更新運用、証跡健全性、最小手順）を追記。`verified` 更新。未導入・未監査依存を監査済みとしない方針は維持。
+  - `notes/verification.md` に再確認結果を追記。
+
+### 検証
+
+- コード変更なし（文書のみ）。`git diff` で変更内容を確認。
+- `gh label list --repo Seduce0068/gpui-task-manager --limit 50`、`gh api repos/Seduce0068/gpui-task-manager/branches/main/protection`（`403`）、`.github/workflows/ci.yml` / `.github/dependabot.yml` / `deny.toml` / `scripts/generate-sbom.sh` の存在と内容を確認。

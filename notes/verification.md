@@ -362,3 +362,16 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 方針: trust root（imports/audits）の選定、既存依存の棚卸し、exemptions/監査の運用責任を定義してから `cargo vet init` 相当の導入を行う。
 - 安全原則: 未監査依存を監査済みとして記録しない。Dependabot/依存更新時の vet 更新手順と CI ゲート化は導入時に合わせて整備する。
 - 当面の代替: `cargo audit`、`cargo-deny`、CycloneDX SBOM（`scripts/generate-sbom.sh` / CI `sbom` ジョブ）。
+
+
+## 2026-11-15（運用拡張項目の再確認・cargo-vet評価軸追記）
+
+- GitHub 運用（再確認）:
+  - ラベル: `gh label list` で標準ラベルに加え `area:*`, `ci`, `security`, `packaging`, `supply-chain`, `dependencies`, `github_actions` 等が存在することを確認。
+  - branch protection: `gh api repos/Seduce0068/gpui-task-manager/branches/main/protection` は `403 "Upgrade to GitHub Pro or make this repository public..."`（現行 private プラン制約）。必須チェック強制は未適用のため、CI 通過確認・PR/レビュー運用・ラベル運用で代替。
+  - Actions: `.github/workflows/ci.yml` に `ubuntu-latest` はなく、`ubuntu-24.04` / `windows-latest` / `macos-latest` を明示。Actions は現状バージョンタグ参照（例: `actions/checkout@v7`）で、Dependabot（GitHub Actions 週次）で更新追従する構成。文書中の「SHA ピン留め」表記は実態に合わせて修正。
+- 供給網/運用整備（確認）:
+  - `deny.toml`、`scripts/generate-sbom.sh`、CI `deny`/`sbom` ジョブ、`.github/dependabot.yml`（Cargo root/web + GitHub Actions 週次、GPUI 系は更新 ignore）が存在。
+  - `cargo-vet` は未導入（`supply-chain/` なし、ローカル `cargo vet` 未インストール）。`notes/cargo-vet-adoption.md` に導入判断の比較軸（trust/imports、criteria、exempt 初期方針、更新運用、証跡健全性）を追記。未レビュー依存を監査済みとして記録しない方針は維持。
+- 機能面（既存確認）:
+  - プロセスツリー表示/折りたたみ、`SystemSnapshot.components`（温度/センサー、`serde(default)`）、native/web のセンサー表示、`tm-agent` `schema_version: 1` での components シリアライズは既存実装・検証済み。詳細 GPU 利用率/プロセス別 GPU 指標は未実装。
