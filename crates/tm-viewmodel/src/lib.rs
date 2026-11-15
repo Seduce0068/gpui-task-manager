@@ -249,14 +249,15 @@ impl Dashboard {
 
     /// Visible rows with process indices and tree depth.
     pub fn visible_rows(&self) -> impl Iterator<Item = ProcessTreeRow> + '_ {
-        self.visible
-            .iter()
-            .enumerate()
-            .map(|(pos, &index)| ProcessTreeRow {
+        self.visible.iter().enumerate().map(|(pos, &index)| {
+            let depth = self.visible_depths.get(pos).copied().unwrap_or(0);
+            let has_children = self.visible_depths.get(pos + 1).copied().unwrap_or(0) > depth;
+            ProcessTreeRow {
                 index,
-                depth: self.visible_depths.get(pos).copied().unwrap_or(0),
-                has_children: false,
-            })
+                depth,
+                has_children,
+            }
+        })
     }
 
     /// Number of rows after filtering.
@@ -839,5 +840,91 @@ mod tests {
         dashboard.ingest(snapshot);
         assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(50, 10)));
         assert_eq!(dashboard.visible_count(), 1);
+    }
+
+    #[test]
+    fn tree_view_flattens_process_hierarchy() {
+        let mut dashboard = dashboard();
+        let mut snapshot = demo_snapshot(0);
+        let parent = ProcessKey::new(100, 10);
+        let child = ProcessKey::new(101, 11);
+        let grandchild = ProcessKey::new(102, 12);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: parent,
+                parent_pid: None,
+                name: "parent".to_string(),
+                command: "parent".to_string(),
+                cpu_percent: 1.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: child,
+                parent_pid: Some(parent.pid),
+                name: "child".to_string(),
+                command: "child".to_string(),
+                cpu_percent: 2.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: grandchild,
+                parent_pid: Some(child.pid),
+                name: "grandchild".to_string(),
+                command: "grandchild".to_string(),
+                cpu_percent: 3.0,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        dashboard.ingest(snapshot);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Pid,
+            direction: SortDirection::Ascending,
+        }));
+        dashboard.apply(Command::SetTreeView(true));
+        assert!(dashboard.tree_view());
+        assert_eq!(dashboard.visible_indices(), &[0, 1, 2]);
+        assert_eq!(dashboard.visible_depths(), &[0, 1, 2]);
+        let rows: Vec<_> = dashboard.visible_rows().collect();
+        assert_eq!(rows[0].index, 0);
+        assert!(rows[0].has_children);
+        assert_eq!(rows[1].index, 1);
+        assert!(rows[1].has_children);
+        assert_eq!(rows[2].index, 2);
+        assert!(!rows[2].has_children);
+
+        dashboard.apply(Command::ToggleTreeView);
+        assert!(!dashboard.tree_view());
+        assert_eq!(dashboard.visible_depths(), &[0, 0, 0]);
+        assert!(dashboard.visible_rows().all(|row| !row.has_children));
+    }
+
+    #[test]
+    fn set_tree_view_recomputes_visible_rows() {
+        let mut dashboard = dashboard();
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 1),
+                parent_pid: None,
+                name: "root".to_string(),
+                command: "root".to_string(),
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(11, 2),
+                parent_pid: Some(10),
+                name: "leaf".to_string(),
+                command: "leaf".to_string(),
+                ..ProcessSnapshot::default()
+            },
+        ];
+        dashboard.ingest(snapshot);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Pid,
+            direction: SortDirection::Ascending,
+        }));
+        assert_eq!(dashboard.visible_depths(), &[0, 0]);
+        dashboard.apply(Command::SetTreeView(true));
+        assert_eq!(dashboard.visible_depths(), &[0, 1]);
     }
 }

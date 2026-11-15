@@ -332,3 +332,15 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - ツリー表示は折りたたみ UI なしの基本表示。フィルタ/ソート時は表示対象集合に対するフラット化。
   - 温度/コンポーネントはベストエフォート（環境によりセンサーなし）。GPU 利用率の詳細監視は未実装。
   - 実 IME 手動確認、Windows/macOS 実機、WebGPU 実機確認は未実施。
+
+## 2026-11-15（ツリー表示の整合性テストと依存監査の再確認）
+
+- 実装/テスト:
+  - `tm-viewmodel` の `visible_rows().has_children` を表示順/深さから算出するよう修正。
+  - ツリー表示の viewmodel テストを追加（階層フラット化、深さ、`has_children`、トグル/明示設定時の再計算）。
+- 検証（ローカル）:
+  - `cargo fmt --all`
+  - `cargo test -q -p tm-viewmodel`（36 passed）
+  - `cargo test -q -p tm-core -p tm-platform -p tm-agent -p gpui-task-manager`
+  - `cd web && cargo test -q`（7 passed）
+  - `cargo deny check`（advisories ok, bans ok, licenses ok, sources ok）

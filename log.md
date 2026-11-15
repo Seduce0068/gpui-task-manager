@@ -126,3 +126,12 @@
   - `cd web && cargo test -q`（7 passed）
 - 補足:
   - ツリーは基本表示（折りたたみなし）、温度はベストエフォート収集/表示。詳細 GPU 利用率等は未実装。
+
+## 2026-11-15（ツリー表示整合性と依存監査の確認）
+
+- 変更:
+  - `tm-viewmodel` のツリー表示 `has_children` 算出を修正し、階層表示の挙動テストを追加。
+- 検証:
+  - `cargo fmt --all`
+  - `cargo test -q -p tm-viewmodel`（36 passed）/ `cargo test -q -p tm-core -p tm-platform -p tm-agent -p gpui-task-manager` / `cd web && cargo test -q`（7 passed）
+  - `cargo deny check` pass（ローカル）
