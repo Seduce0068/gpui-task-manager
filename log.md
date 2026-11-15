@@ -135,3 +135,11 @@
   - `cargo fmt --all`
   - `cargo test -q -p tm-viewmodel`（36 passed）/ `cargo test -q -p tm-core -p tm-platform -p tm-agent -p gpui-task-manager` / `cd web && cargo test -q`（7 passed）
   - `cargo deny check` pass（ローカル）
+
+## 2026-11-15（センサー/温度の詳細表示）
+
+- 変更:
+  - native/web 詳細パネルにセンサー/温度セクションを追加し、全コンポーネント情報を表示。
+- 検証:
+  - `cargo fmt --all`、`cargo check -q -p gpui-task-manager`、`cd web && cargo check -q`
+  - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`、`cd web && cargo test -q`

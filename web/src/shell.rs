@@ -1060,7 +1060,7 @@ impl TaskManagerApp {
             .map(|snapshot| snapshot.sampled_at.as_secs())
             .unwrap_or(0);
 
-        let content = match selected {
+        let mut content = match selected {
             Some(process) => self.details_content(&process, now),
             None => v_flex().gap_2().child(
                 div()
@@ -1069,6 +1069,34 @@ impl TaskManagerApp {
                     .child("行をクリックすると詳細を表示します"),
             ),
         };
+        content = content.child(section_title("センサー / 温度"));
+        let components = self
+            .dashboard
+            .snapshot()
+            .map(|s| s.components.as_slice())
+            .unwrap_or(&[]);
+        if components.is_empty() {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("センサーなし"),
+            );
+        } else {
+            for component in components {
+                let mut value = component
+                    .temperature_c
+                    .map(|t| format!("{t:.0}°C"))
+                    .unwrap_or_else(|| "—".to_string());
+                if let Some(max) = component.max_c {
+                    value.push_str(&format!(" / max {max:.0}°C"));
+                }
+                if let Some(critical) = component.critical_c {
+                    value.push_str(&format!(" / crit {critical:.0}°C"));
+                }
+                content = content.child(kv(component.label.clone(), value));
+            }
+        }
 
         v_flex()
             .w(px(DETAILS_WIDTH))
