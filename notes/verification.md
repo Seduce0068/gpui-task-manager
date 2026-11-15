@@ -463,3 +463,28 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 
 - 実 GPU の WebGPU 描画は未確認（ヘッドレスは WebGL2 / SwiftShader へフォールバック）。Safari / Firefox も未検証。
 - 物理実機 Windows / macOS の GUI 操作は未検証。
+
+## 2026-11-15（日本語 IME（composition）CDP 再検証）
+
+`web/scripts/cdp_verify_ime.py`（スクリプト自身が静的サーバと Chrome を起動・停止する自己完結型）を再実行し、`Input.imeSetComposition` / `Input.insertText` による変換・確定を再確認した。
+
+- 結果: **32 チェックすべて pass**、`console_errors: []` / `exceptions: []`、スクリーンショット 13 枚、ステップ 11。
+- 状態遷移（`filter` / `ime_composing` / `ime_field` / `ime_marked` / `rows`）:
+
+| step | filter | ime_composing | ime_field | ime_marked | rows |
+|---|---|---|---|---|---|
+| initial | (空) | 0 | (空) | - | 28 |
+| ascii-fire | fire | 0 | fire | - | 1 |
+| backspace | fir | 0 | fir | - | 1 |
+| escape-clear | (空) | 0 | (空) | - | 28 |
+| composing | (空) | **1** | **にほんご** | 0:4 | **28** |
+| composing-update | (空) | **1** | **日本語** | 0:3 | **28** |
+| committed | **日本語** | 0 | 日本語 | - | **0** |
+| escape-after-commit | (空) | 0 | (空) | - | 28 |
+| composing-escape | (空) | 0 | (空) | - | 28 |
+| recovered | 漢字 | 0 | 漢字 | - | 0 |
+| final | (空) | 0 | (空) | - | 28 |
+
+- 要点: **変換中（`ime_composing=1`）は絞り込みが確定せず 28 件のまま**で、確定（`committed`）後に初めて `filter=日本語` となり 0 件へ絞り込まれる。Esc による変換中断（`composing-escape`）でも一覧が 28 件に戻る。IME 後も通常入力（`recovered` = 漢字）が機能する。
+- 証跡: `notes/assets/ime-0{1..10}-*.png`（1440x857）、`ime-05-composing-filter.png` / `ime-07-committed-filter.png`（1260x138、絞り込み欄の拡大）。詳細は `notes/ime.md`。
+- 制約: 実 IME（IBus/fcitx5）での手動確認ではなく、CDP による composition イベント再現。ネイティブ版は `TM_DEBUG_IME=1` のデバッグフックによる検証のみ。

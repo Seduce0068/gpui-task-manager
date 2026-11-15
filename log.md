@@ -318,3 +318,8 @@
 - ライブ: **failures 0 / passed**（500 行、`fire` 絞り込みで 25 行、`live_error=0`、GET 14 回すべて `Authorization` 付き・URL にトークン無し、プリフライト 1 回）。エラー時（エージェント停止）: **failures 0 / passed**、`rows=0 / live_error=1` で UI に反映、panic 0。
 - 証跡（`web/verification/web-shell-evidence-live{,-error}.json`、`notes/assets/web-shell-*-live*.png`）を現行コードで更新。
 - 検証後の Chrome / HTTP サーバ / `tm-agent` は停止し、ポート 8091 / 9223 の解放を確認。
+
+## 2026-11-15（日本語 IME CDP 再検証）
+
+- `web/scripts/cdp_verify_ime.py` を再実行: 32 チェックすべて pass、console error / JS 例外 0、スクリーンショット 13 枚を更新。
+- 変換中は一覧 28 件のまま →「日本語」確定後に 0 件へ絞り込み、Esc で中断すると 28 件へ復帰、IME 後も通常入力が機能することを確認。証跡は `notes/assets/ime-*.png`。
