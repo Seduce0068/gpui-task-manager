@@ -356,12 +356,14 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`
   - `cd web && cargo test -q`（7 passed）
 
-## cargo-vet（未導入・方針）
+## cargo-vet（初期化済み・運用方針）
 
-- 現状: ローカルに `cargo-vet` 未インストール、リポジトリに `supply-chain/` なし（未導入）。
-- 方針: trust root（imports/audits）の選定、既存依存の棚卸し、exemptions/監査の運用責任を定義してから `cargo vet init` 相当の導入を行う。
-- 安全原則: 未監査依存を監査済みとして記録しない。Dependabot/依存更新時の vet 更新手順と CI ゲート化は導入時に合わせて整備する。
-- 当面の代替: `cargo audit`、`cargo-deny`、CycloneDX SBOM（`scripts/generate-sbom.sh` / CI `sbom` ジョブ）。
+- 現状: `cargo-vet 0.10.3` 導入済み。`supply-chain/` を root（804 exempt）/ web（560 exempt）に作成。`imports.lock` は空（外部 imports 未使用）、`audits.toml` は空（監査記録なし）。
+- 方針: trust root は自リポジトリのみ。全依存を `exempt`（未監査の明示）として出発し、実レビューできた依存から `audits.toml` に記録する。未監査依存を監査済みとして記録しない。
+- 更新手順: Dependabot/ピン更新でバージョンが変わったら `cargo vet --locked` が失敗する。実レビュー後に `certify`、レビュー前なら理由付き `add-exemption` で対応する。
+- 検証: `cargo vet --locked`（root: `Vetting Succeeded (804 exempted)` / web: `Vetting Succeeded (560 exempted)`、2026-11-15）。`cargo vet suggest` は crates.io のソース取得（ネットワーク）が必要で、制限環境では失敗する。
+- CI ゲート化: 未実施。共通ワークフロー（`Seduce0068/workflows` `rust-gates.yml@v1`）側での対応可否を先に検討する。
+- 当面の代替/併用: `cargo audit`、`cargo-deny`、CycloneDX SBOM（`scripts/generate-sbom.sh` / CI `sbom` ジョブ）。
 
 
 ## 2026-11-15（運用拡張項目の再確認・cargo-vet評価軸追記）
@@ -375,3 +377,11 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `cargo-vet` は未導入（`supply-chain/` なし、ローカル `cargo vet` 未インストール）。`notes/cargo-vet-adoption.md` に導入判断の比較軸（trust/imports、criteria、exempt 初期方針、更新運用、証跡健全性）を追記。未レビュー依存を監査済みとして記録しない方針は維持。
 - 機能面（既存確認）:
   - プロセスツリー表示/折りたたみ、`SystemSnapshot.components`（温度/センサー、`serde(default)`）、native/web のセンサー表示、`tm-agent` `schema_version: 1` での components シリアライズは既存実装・検証済み。詳細 GPU 利用率/プロセス別 GPU 指標は未実装。
+
+## 2026-11-15（cargo-vet 初期化・全依存 exempt ベースライン）
+
+- `cargo-vet 0.10.3` を `cargo install cargo-vet --version 0.10.3 --locked` で導入。
+- `cargo vet init` を root / web で実行し、`supply-chain/`（config/audits/imports.lock）を作成。imports は未使用、監査記録は空（全依存を `exempt` として明示、root 804 / web 560）。
+- 検証: `cargo vet --locked`（root: `Vetting Succeeded (804 exempted)` / web: `Vetting Succeeded (560 exempted)`）、`cargo vet fmt` で差分なし。`cargo vet suggest` は crates.io のソース取得（ネットワーク）が必要で制限環境では失敗（記録のみ）。
+- ドキュメント: `README.md` / `SECURITY.md` / `notes/cargo-vet-adoption.md` を現状に合わせて更新。
+- 未実施: CI ゲート化（共通ワークフロー側での検討を優先）、実レビューに基づく `certify`、外部 imports の評価・採用。

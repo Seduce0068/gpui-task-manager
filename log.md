@@ -271,3 +271,10 @@
 - 作業環境に `cargo-vet 0.10.3` を導入（`cargo install cargo-vet --version 0.10.3 --locked`、`cargo vet --version` 確認、`/home/koppe/.cargo/bin/cargo-vet`）。
 - `notes/cargo-vet-adoption.md` を更新し、ツール導入済み・`supply-chain/` 未作成・init/imports/trust/exempt/audit 方針未決定の事実を反映。
 - `cargo vet init`、`supply-chain/` 作成、exempt/imports/audit 記録は未実施（未監査依存を監査済みとして記録していない）。
+
+## 2026-11-15（cargo-vet 初期化・全依存 exempt ベースライン）
+
+- `cargo vet init` を root / web で実行し、`supply-chain/`（config.toml / audits.toml / imports.lock）を作成。初期状態は全依存を `exemptions`（`safe-to-deploy`）として記録（root 804 / web 560）。imports 未使用、監査記録なし（実レビューなしの `audit` は作成しない方針）。
+- `README.md` / `SECURITY.md` / `notes/verification.md` / `notes/cargo-vet-adoption.md` を現状に合わせて更新。
+- 検証: `cargo vet --locked`（root: `Vetting Succeeded (804 exempted)` / web: `Vetting Succeeded (560 exempted)`）、`cargo vet fmt` 差分なし。`cargo vet suggest` はネットワーク取得が必要で制限環境では失敗。
+- 未実施: CI ゲート化（`Seduce0068/workflows` 共通ワークフロー側での検討を優先）、実レビューに基づく `certify`、外部 imports の評価。

@@ -1,16 +1,16 @@
 ---
 type: Reference
-title: cargo-vet 導入準備メモ（未導入・ツール導入済み）
-description: gpui-task-manager における cargo-vet（supply-chain 監査）の現状棚卸し、導入前に決める方針、段階的手順案。監査記録は未作成。
+title: cargo-vet 導入メモ（初期化済み・全依存 exempt ベースライン）
+description: gpui-task-manager における cargo-vet（supply-chain 監査）の導入状況、運用方針、段階的レビュー計画。監査記録は未作成（全依存を exempt として明示）。
 tags: [supply-chain, cargo-vet, security, dependencies]
-status: draft
+status: adopted-initial
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T16:59:00+09:00
+verified: 2026-11-15T17:50:00+09:00
 ---
 
 ## 1. 現状（事実）
 
-- **導入状態**: リポジトリへの導入は未完了（`supply-chain/` 未作成、imports/trust/exempt/audit 記録なし）。作業環境には `cargo-vet 0.10.3` を導入済み（`cargo install cargo-vet --version 0.10.3 --locked`、2026-11-15、`/home/koppe/.cargo/bin/cargo-vet`、`cargo vet --version` 確認）。`cargo vet init` 等は方針未決定のため未実施。
+- **導入状態**: 初期化済み。`cargo-vet 0.10.3`（`cargo install cargo-vet --version 0.10.3 --locked`、2026-11-15）で `cargo vet init` を root / web に実行し、`supply-chain/`（`config.toml` / `audits.toml` / `imports.lock`）を作成。初期状態は全依存を `exemptions` として記録（root 804 / web 560、いずれも `criteria = "safe-to-deploy"`）。外部 imports は未使用（`imports.lock` 空）、監査記録なし（`audits.toml` 空）。exempt は「未監査の明示」であり監査済みを意味しない。
 - **代替/併用中の供給網対策**:
   - `cargo audit` / `cargo-deny`（advisories/bans/licenses/sources、root/web）。CI の deny ジョブは `-A advisory-not-detected` を指定し、root `deny.toml` の ignore が web グラフに現れない場合のノイズ警告を抑制（2026-11-15、`0ee7c37`）。
   - CycloneDX SBOM: [`scripts/generate-sbom.sh`](../scripts/generate-sbom.sh) と CI `sbom` ジョブ
@@ -43,19 +43,19 @@ verified: 2026-11-15T16:59:00+09:00
 - git/path 依存を追加する場合の扱い（原則避ける、必要時は固定リビジョン/タグ・差分レビュー・手動記録で補う等）
 - `Cargo.lock` 固定・ピン更新手順・差分レビュー責任の所在
 
-## 3. 導入前に決めるべき事項（未決）
+## 3. 導入方針（決定済みと残課題）
 
-- [ ] **trust root**: 自組織/個人の audits を置くか、信頼する imports 元（例: Mozilla, Google, Embark 等の公開 audits）を選ぶか。imports は「信頼の委譲」であり盲目的採用はしない。
-- [ ] **初期方針**: `cargo vet init` 後に全依存を一括 `exempt` するか、重要度/到達性で優先順位付けするか（exempt は「未監査の既知状態」であり「監査済み」ではない）。
-- [ ] **監査基準（criteria）**: `safe-to-run` / `safe-to-deploy` 等の基準をどう使い分けるか。デスクトップアプリ + ローカルエージェント + wasm の性質を反映する。
-- [ ] **更新運用**: Dependabot/手動更新時に `cargo vet` を通す担当・手順・CI 失敗時の対応（exempt 追加の可否とレビュー要件）。
-- [ ] **CI 統合**: どのジョブ/タイミングで `cargo vet` を必須化するか（ローカル未導入期間との整合）。
-- [ ] **git/path 依存ポリシー**: 将来追加時の扱い（原則回避、必要時のレビュー/固定手順）。
+- [x] **trust root**: 自リポジトリの `supply-chain/` を唯一の trust root とする。外部 imports（Mozilla/Google/Embark 等の公開 audits）は初期状態では使わない（`imports.lock` 空）。imports は「信頼の委譲」であり、将来採用する場合は §8 の評価軸で候補を確認してからにする。
+- [x] **初期方針**: `cargo vet init` により全依存を一括 `exempt` として記録（root 804 / web 560）。exempt は「未監査の明示」であり「監査済み」ではない。以後は実レビューできた依存から `audits.toml` に記録する。
+- [x] **監査基準（criteria）**: 既定の `safe-to-deploy` を使用（init 生成の exemptions のまま）。配布物（native/wasm/web）を扱うため、当面はデフォルト基準から始め、必要になった時点で criteria の追加/使い分けを見直す。
+- [x] **更新運用**: Dependabot/ピン更新でバージョンが変わると `cargo vet --locked` が失敗する。対応は ①実レビュー（`cargo vet inspect` / `diff`）後に `certify`、②レビュー前なら理由を明記した `add-exemption`。監査記録の捏造はしない。
+- [ ] **CI 統合**: 未実施。`Seduce0068/workflows` の共通 `rust-gates.yml@v1` 側で対応できるかを先に検討する（個人リポジトリ CI 方針）。
+- [x] **git/path 依存ポリシー**: 原則回避（現状 git 0 件 / 非workspace path 0 件）。追加時は固定リビジョン/タグ・差分レビュー・手動記録で補う。
 
-## 4. 段階的導入案（案・未実施）
+## 4. 段階的導入状況
 
-1. **準備**: `cargo-vet` を開発環境/CI に導入しバージョンを固定。`supply-chain/` 用ディレクトリ構成を決める。
-2. **初期化（方針確定後）**: `cargo vet init` 等で雛形生成。imports を採用する場合は採用元を明示して最小限から試行。
+1. [x] **準備**: `cargo-vet 0.10.3` を開発環境に導入（バージョン固定・`--locked`）。`supply-chain/` はリポジトリ管理（root / web）。
+2. [x] **初期化**: `cargo vet init`（root / web、2026-11-15）。imports は未採用。
 3. **棚卸し可視化**: `cargo vet` の未監査一覧をもとに、直接依存・高リスク領域（ネットワーク、プロセス制御、暗号、unsafe 相当の FFI 境界）から優先度付け。
 4. **記録**: 実際にレビューしたものだけ `audit` として記録。未レビューは `exempt`/保留として扱い、理由と期限方針を残す。**捏造しない**。
 5. **CI/運用**: `cargo-deny`/`cargo-audit` と並行運用し、更新フローに vet 確認を組み込む。
@@ -69,9 +69,9 @@ verified: 2026-11-15T16:59:00+09:00
 
 ## 6. 次の具体アクション候補（安全・小さく進める）
 
-- `cargo-vet 0.10.3` をローカル導入済み。運用/CI でのバージョン固定方針（`cargo install` 固定、CI 実行方法、将来更新手順）を明記する。
+- CI ゲート化: `Seduce0068/workflows` `rust-gates.yml@v1` で `cargo vet --locked`（root / web）を必須化できるか調査し、可能なら共通ワークフロー側で対応する。
+- 実レビューの最初の対象: 直接依存・高リスク領域（`rustix`、`sysinfo`、`libc`、`serde`、`tm-agent` の HTTP/サーバ系依存）から `cargo vet inspect` / `diff` で確認し、`certify` を記録する（ネットワークが必要なためレビュー環境で実施）。
 - trust/imports の候補を比較し、採用基準を短く文書化する（信頼根拠・更新頻度・criteria 対応・自組織方針との整合）。
-- 方針決定後に `cargo vet init` / `supply-chain/` 作成を検討する（exempt/imports/audit の扱いを混同しない。実レビューなしに `audit` を作らない）。
 - `cargo metadata` から依存・git/path 依存の一覧を定期確認する手順を維持する（監査判断そのものは自動化しない）。
 
 ## 7. 棚卸し再取得手順（事実確認用）
@@ -142,4 +142,4 @@ PY
 3. 採用する場合でも、`cargo-vet` ツールバージョン・imports 参照・自組織方針を固定/記録する。
 4. 初期導入 PR では `cargo vet init`/設定/運用文書/CI 方針を分離し、未レビュー依存の監査済み化を行わない。
 
-**2026-11-15 時点の状況**: trust/imports 候補の採否は未決。上記は判断を進めるための評価軸であり、導入・監査記録作成は未実施。
+**2026-11-15 時点の状況**: 導入は初期化済み（全依存 exempt ベースライン、imports 未使用、監査記録なし）。trust/imports 候補の採否は未決で、上記は将来の評価軸。実レビューなしの `audit` 作成は行わない。

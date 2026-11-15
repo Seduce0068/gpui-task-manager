@@ -28,9 +28,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
   プロジェクト用ラベル（`area:*` / `ci` / `security` / `packaging` / `supply-chain` 等）
   を有効化。ブランチ保護は private リポジトリのプラン制約により API 上
   `403`（GitHub Pro または public が必要）で未設定のため、保護ルール相当は
-  必須 CI / レビュー運用で補う。`cargo-vet` は trust/audit 方針と
-  `supply-chain/` の初期化・インポート・監査運用を定めてから導入する（現時点では
-  未導入、監査記録の捏造はしない）。SBOM（CycloneDX）は
+  必須 CI / レビュー運用で補う。`cargo-vet` は root / web とも初期化済み
+  （`supply-chain/`、現状は全依存を `exempt`＝未監査の明示として記録、外部
+  imports は未使用、監査記録の捏造はしない）。SBOM（CycloneDX）は
   `scripts/generate-sbom.sh` と CI で生成する。
 - 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
 
