@@ -284,3 +284,8 @@
 - CI: 共通 `rust-gates.yml@v1` の `extra_gates` で `cargo vet --locked`（root / web）を必須化（`cargo install cargo-vet --version 0.10.3 --locked` で導入、taiki-e/install-action は cargo-vet 未対応のため）。
 - ローカル: `scripts/check.sh` に `cargo vet --locked`（root / web）の optional ゲートを追加。
 - 検証: `bash -n` / `shellcheck` / `shfmt -d -i 2` / YAML パース / `bash scripts/check.sh` ローカル実行。CI 初回実行結果は push 後に `gh run` で確認。
+
+## 2026-11-15（CI 全ジョブの起動失敗: GitHub Actions 請求エラー）
+
+- 2026-11-15 07:11Z（16:11 JST）以降、GitHub Actions の請求エラー（payments failed / spending limit）により全 CI ジョブが起動失敗（最終成功: 12:55 JST）。コード/workflow 定義の問題ではない。
+- 対応はアカウントの Billing & plans 確認が必要（ユーザー操作）。期間中の変更はローカル `bash scripts/check.sh`（exit 0）で検証済み。

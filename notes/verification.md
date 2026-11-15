@@ -392,3 +392,10 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - ローカル: `scripts/check.sh` に `cargo vet --locked`（root / web）の optional ゲートを追加（cargo-vet 未導入環境では skip、cargo-deny と同じパターン）。`shfmt -d -i 2` 準拠。
 - 検証: `bash -n` / `shellcheck`（check.sh）/ `shfmt -d -i 2`（差分なし）/ `ci.yml` の YAML パース。`bash scripts/check.sh` をローカル実行して結果確認。
 - CI 実行結果の確認は push 後に `gh run` で行う（初回 extra_gates の成否を含む）。
+
+## 2026-11-15（CI 全ジョブの起動失敗: GitHub Actions 請求エラー）
+
+- 事実: 2026-11-15 07:11Z（16:11 JST）以降の push で CI 全ジョブが 3〜5 秒で失敗。アノテーション: `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings`。最終成功は `refactor: share settings schema and persist web preferences`（2026-11-15T03:55:29Z、12:55 JST）。
+- 影響: gates（fmt/check/test/clippy/audit/extra_gates の cargo vet 含む）/ wasm / native-windows / native-macos / deny / release-linux / web-dist / sbom の全ジョブが未起動。コードや workflow 定義の問題ではない（0 step で失敗）。
+- 対応: アカウントの Billing & plans（支払い方法 / spending limit）の確認・修正が必要（アカウント設定のためエージェントでは対応不可）。修正後に `gh workflow run` または再 push で再検証する。
+- 代替: 上記期間のリポジトリ変更はローカルの標準検証ループ（`bash scripts/check.sh`、exit 0）で検証済み。
