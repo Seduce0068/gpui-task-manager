@@ -17,28 +17,28 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 native_libs="${repo_root}/app/native-libs"
 
 if pkg-config --exists xkbcommon-x11 2>/dev/null; then
-	echo "xkbcommon-x11 development files found; no local shim needed."
-	rm -f "${native_libs}/libxkbcommon-x11.so"
-	rmdir "${native_libs}" 2>/dev/null || true
-	exit 0
+  echo "xkbcommon-x11 development files found; no local shim needed."
+  rm -f "${native_libs}/libxkbcommon-x11.so"
+  rmdir "${native_libs}" 2>/dev/null || true
+  exit 0
 fi
 
 runtime_lib=""
 for candidate in \
-	/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
-	/usr/lib/libxkbcommon-x11.so.0 \
-	/usr/lib64/libxkbcommon-x11.so.0 \
-	/usr/lib/aarch64-linux-gnu/libxkbcommon-x11.so.0; do
-	if [ -e "${candidate}" ]; then
-		runtime_lib="${candidate}"
-		break
-	fi
+  /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
+  /usr/lib/libxkbcommon-x11.so.0 \
+  /usr/lib64/libxkbcommon-x11.so.0 \
+  /usr/lib/aarch64-linux-gnu/libxkbcommon-x11.so.0; do
+  if [ -e "${candidate}" ]; then
+    runtime_lib="${candidate}"
+    break
+  fi
 done
 
 if [ -z "${runtime_lib}" ]; then
-	echo "error: libxkbcommon-x11.so.0 not found." >&2
-	echo "Install it system-wide instead: sudo apt install libxkbcommon-x11-dev" >&2
-	exit 1
+  echo "error: libxkbcommon-x11.so.0 not found." >&2
+  echo "Install it system-wide instead: sudo apt install libxkbcommon-x11-dev" >&2
+  exit 1
 fi
 
 mkdir -p "${native_libs}"

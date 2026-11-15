@@ -23,21 +23,21 @@ echo '==> cargo check --target wasm32-unknown-unknown (tm-core, tm-viewmodel)'
 cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
 
 if [ -f web/Cargo.toml ]; then
-	echo '==> cargo check --target wasm32-unknown-unknown (web shell)'
-	cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
+  echo '==> cargo check --target wasm32-unknown-unknown (web shell)'
+  cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
-	echo '==> cargo test --manifest-path web/Cargo.toml --lib'
-	cargo test --manifest-path web/Cargo.toml --lib
+  echo '==> cargo test --manifest-path web/Cargo.toml --lib'
+  cargo test --manifest-path web/Cargo.toml --lib
 fi
 
 if command -v cargo-deny >/dev/null 2>&1; then
-	echo '==> cargo deny check (root / web)'
-	cargo deny check
-	if [ -f web/Cargo.toml ]; then
-		cargo deny --manifest-path web/Cargo.toml check
-	fi
+  echo '==> cargo deny check (root / web)'
+  cargo deny check
+  if [ -f web/Cargo.toml ]; then
+    cargo deny --manifest-path web/Cargo.toml check
+  fi
 else
-	echo 'cargo-deny is not installed; skipping dependency policy check.'
+  echo 'cargo-deny is not installed; skipping dependency policy check.'
 fi
 
 echo 'All checks passed.'
