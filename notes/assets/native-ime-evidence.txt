@@ -1,0 +1,12 @@
+# Native IME debug-hook Runtime Proof (2026-11-16)
+command: timeout 25 env TM_DEBUG_IME=1 ./target/debug/gpui-task-manager
+exit: 124 (timeout, expected: GUI app runs until killed)
+
+TM_DEBUG_IME: composing field="にほんご" marked=Some(0..4) filter=""
+TM_DEBUG_IME: composing field="日本語" marked=Some(0..3) filter=""
+TM_DEBUG_IME: committed filter="日本語" composing=false field="日本語"
+
+Interpretation:
+- composing step1: field=にほんご, marked=0..4, dashboard filter stays "" (28 rows unfiltered)
+- composing step2: field=日本語, marked=0..3, dashboard filter stays "" (conversion updates, still not committed)
+- committed: filter=日本語, composing=false, field=日本語 (dashboard now reflects committed text)
