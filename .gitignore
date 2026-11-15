@@ -10,3 +10,7 @@ app/native-libs/
 !poc-crates/**/*.log
 .DS_Store
 packaging/linux/build/
+
+# Python bytecode from the CDP verification scripts
+__pycache__/
+*.pyc

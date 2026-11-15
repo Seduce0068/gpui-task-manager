@@ -347,3 +347,9 @@
 - 対照実験で原因を特定: 同一アカウントでも **public な `gpui-file-explorer` の CI は success（5m33s）**、**private な `gpui-task-manager` は全ジョブが 0 step で failure**。失敗アノテーションは "recent account payments have failed or your spending limit needs to be increased"。
 - 結論: private リポジトリの Actions は課金対象のため、支払い/spending limit の問題で起動しない。コードや workflow の問題ではない。
 - 対応案: ①public 化（「まだ公開しない」方針とは要調整）、②Billing & plans の修正、③ローカル検証の継続（現在実施中）。①②はユーザー操作が必要。
+
+## 2026-11-16（リポジトリ衛生: Python bytecode の ignore 追加）
+
+- CDP 検証スクリプト（`web/scripts/*.py`、`poc-wasm/scripts/cdp_verify.py`）の実行で `__pycache__/` が生成されるが、リポジトリの `.gitignore` には未登録で、**ユーザーのグローバル git 設定（`~/.config/git/ignore`）にのみ依存**していた（他環境では `.pyc` がコミットされ得る）。
+- `.gitignore` に `__pycache__/` と `*.pyc` を追加し、リポジトリ単体で再現性のある除外を確保（`git check-ignore -v` で `.gitignore:15` が適用されることを確認）。
+- 併せて Python スクリプト 4 本の構文検証（`python3 -m py_compile`）がすべて成功することを確認。
