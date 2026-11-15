@@ -289,3 +289,8 @@
 
 - 2026-11-15 07:11Z（16:11 JST）以降、GitHub Actions の請求エラー（payments failed / spending limit）により全 CI ジョブが起動失敗（最終成功: 12:55 JST）。コード/workflow 定義の問題ではない。
 - 対応はアカウントの Billing & plans 確認が必要（ユーザー操作）。期間中の変更はローカル `bash scripts/check.sh`（exit 0）で検証済み。
+
+## 2026-11-15（cargo-vet 外部 imports 候補の一次調査・採否未決）
+
+- `notes/cargo-vet-adoption.md` §8.1 に GitHub API 一次情報による候補調査を追記: `mozilla/supply-chain`（push 2026-11-10、audits.toml 約 509 KB）、`google/rust-crate-audits`（push 2026-11-10、criteria 定義 + 監査基準文書）、`zcash/rust-ecosystem`（push 2026-07-12、`cargo vet suggest` が registry 経由で参照を試行）、EmbarkStudios（該当なし・未確認）。
+- 採用はしない（`imports.lock` は空のまま）。criteria の意味・`aggregated-from` の信頼連鎖・主要依存へのカバレッジ評価後に `cargo vet import` / `trust` を検討する。
