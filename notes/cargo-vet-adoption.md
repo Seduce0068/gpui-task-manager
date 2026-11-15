@@ -71,7 +71,7 @@ verified: 2026-11-15T17:50:00+09:00
 
 - CI 統合は実施済み（`extra_gates` で `cargo vet --locked`、root / web）。初回 CI 実行結果を確認し、失敗があれば修正する。
 - 実レビューの最初の対象: 直接依存・高リスク領域（`rustix`、`sysinfo`、`libc`、`serde`、`tm-agent` の HTTP/サーバ系依存）から `cargo vet inspect` / `diff` で確認し、`certify` を記録する（ネットワークが必要なためレビュー環境で実施）。
-- trust/imports の候補を比較し、採用基準を短く文書化する（信頼根拠・更新頻度・criteria 対応・自組織方針との整合）。
+- trust/imports 候補の一次調査は実施済み（§8.1、採否未決）。次は主要依存へのカバレッジ確認（ネットワーク環境で `cargo vet suggest` / `import` を試行）と、criteria の意味・受容範囲の評価を行う。
 - `cargo metadata` から依存・git/path 依存の一覧を定期確認する手順を維持する（監査判断そのものは自動化しない）。
 
 ## 7. 棚卸し再取得手順（事実確認用）
@@ -143,3 +143,17 @@ PY
 4. 初期導入 PR では `cargo vet init`/設定/運用文書/CI 方針を分離し、未レビュー依存の監査済み化を行わない。
 
 **2026-11-15 時点の状況**: 導入は初期化済み（全依存 exempt ベースライン、imports 未使用、監査記録なし）。trust/imports 候補の採否は未決で、上記は将来の評価軸。実レビューなしの `audit` 作成は行わない。
+
+### 8.1 外部 imports 候補の一次調査（事実確認のみ・採否未決、2026-11-15）
+
+GitHub API（一次情報）による確認結果。採用判断はこの調査だけでは不十分で、criteria の意味・自プロジェクトの受容範囲・監査連鎖の評価後に `cargo vet import` / `trust` を検討する。当面は imports 未使用（`imports.lock` 空）のまま運用する。
+
+| 候補 | 実在性・活動（GitHub API 確認） | 構成 / criteria | 備考 |
+|---|---|---|---|
+| [mozilla/supply-chain](https://github.com/mozilla/supply-chain) | 最終 push 2026-11-10、非アーカイブ | ルートに `audits.toml`（約 509 KB の aggregated audits）+ `sources.list`、Apache-2.0/MIT。README に他インスタンスへの import 手順あり | cargo-vet 本家（Mozilla）の公開監査集約 |
+| [google/rust-crate-audits](https://github.com/google/rust-crate-audits) | 最終 push 2026-11-10、非アーカイブ | `audits.toml` に `crypto-safe` / `does-not-implement-crypto` / `safe-to-run` / `safe-to-deploy` / `ub-risk-*` 等の criteria 定義（ChromiumOS から `aggregated-from`）+ `auditing_standards.md`（criteria ごとの監査者要件） | 監査基準文書が充実。criteria 追加の参考になる |
+| [zcash/rust-ecosystem](https://github.com/zcash/rust-ecosystem) | 最終 push 2026-07-12 | `supply-chain/audits.toml` + `sources.txt` | `cargo vet suggest` が既定 registry 経由で参照を試行した実績あり（本環境ではネットワーク制約で取得失敗） |
+| EmbarkStudios | GitHub 検索で cargo-vet 用の公開 audits リポジトリを確認できず（個人 `ctrlaltf2/supply-chain` のみ該当） | — | 一次情報未確認。採用候補からは当面除外 |
+
+- cargo-vet には「cargo-vet Registry」の仕組みがあり、`mini-vet 2.0.0`（crates.io、説明: "A client for the cargo-vet registry. Fetches security reviews for Rust/Cargo crates."）がクライアントとして存在する。`cargo vet suggest` は registry 経由で公開 audits を参照する（2026-11-15 実行時に `zcash` の registry audits 取得を試行）。
+- 判断メモ: `safe-to-deploy` を主基準とする現行方針に対し、Mozilla/Google の audits は対象範囲が広く、`aggregated-from` の連鎖（信頼の委譲）を理解してからでないと採用できない。優先度は「自プロジェクトの主要依存がどの程度カバーされるか」の確認後に評価する（cover 確認にはネットワークが必要）。
