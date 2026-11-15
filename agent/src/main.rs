@@ -575,7 +575,10 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout");
         stream.write_all(raw.as_bytes()).expect("write request");
-        stream.shutdown(Shutdown::Write).expect("shutdown write");
+        // The server may close the connection immediately after rejecting a
+        // request (e.g. oversized headers), making half-close fail with
+        // NotConnected/BrokenPipe on some platforms and schedules.
+        let _ = stream.shutdown(Shutdown::Write);
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("read response");
         response
@@ -768,7 +771,8 @@ mod tests {
     fn empty_connection_is_ignored() {
         let (address, handle) = spawn_demo_server(1);
         let stream = TcpStream::connect(address).expect("connect");
-        stream.shutdown(Shutdown::Write).expect("shutdown");
+        // Half-close can race with server-side handling on some platforms.
+        let _ = stream.shutdown(Shutdown::Write);
         handle.join().expect("server thread");
     }
 
