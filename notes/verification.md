@@ -408,3 +408,10 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `notes/index.md` の cargo-vet-adoption.md の概要説明を更新。
   - `notes/verification.md` の日付付き過去エントリ（:120 / :309 / :377）は履歴として修正しない。
   - README の CI ジョブ数（8 ジョブ）は `.github/workflows/ci.yml` と一致を確認。
+
+## 2026-11-15（generate-sbom.sh のローカル検証・収集バグ修正）
+
+- 発見: `scripts/generate-sbom.sh` は `cargo-cyclonedx 0.5.10` の実出力名 `sbom-root.json`（メンバーごと）に対し、収集パターン `sbom-root*.cdx.json` が不一致のため成果物 0 件になり、CI `sbom` ジョブ（`if-no-files-found: error`）が失敗する。さらに basename の `cp` では root 側 5 ファイルが同名衝突で 1 件に潰れる。**sbom ジョブは最後の CI 成功（2026-11-15 12:55 JST）後の `306ed2b`（13:34 JST）で追加されており、CI で一度も検証されていなかった。**
+- 修正: 収集パターンを `sbom-root*.json` / `sbom-web*.json` に拡張、メンバーディレクトリを含む一意名（例: `crates__tm-core__sbom-root.json`）で収集、収集後はスクリプト固有名の元ファイルを除去（汎用名 `bom.json` は対象外）。
+- 検証（Runtime Proof）: `cargo-cyclonedx 0.5.10` 導入（`cargo install cargo-cyclonedx --locked`）→ `bash scripts/generate-sbom.sh target/sbom-local` → **6/6 ファイル収集、全件 `bomFormat == CycloneDX`（jq 検証）**、作業ツリーに残骸なし、`bash -n` / `shellcheck` / `shfmt -d -i 2 -bn -ci` OK。
+- 補足: `notes/cargo-vet-adoption.md` §9 にネットワーク環境での cargo-vet 試行手順（Runbook）を追加。

@@ -299,3 +299,9 @@
 
 - `cargo audit` 再実行: exit 0、既知 8 件の allowed warnings（unmaintained）のみ、新規アドバイザリなし。
 - ドキュメント整合: `DESIGN.md`（§7.2 / §15）と `notes/index.md` の「cargo-vet 未導入」記述を初期化済みの現状に更新。README の CI ジョブ数は ci.yml と一致。
+
+## 2026-11-15（generate-sbom.sh の収集バグ修正・cargo-vet Runbook 追加）
+
+- `scripts/generate-sbom.sh`: cargo-cyclonedx 0.5.10 の実出力名（`sbom-root.json` 等、メンバーごと）と収集パターン（`sbom-root*.cdx.json`）の不一致により CI sbom ジョブが空成果物で失敗する問題を修正（パターン拡張・一意名収集・収集後の元ファイル除去）。
+- ローカル検証: `bash scripts/generate-sbom.sh target/sbom-local` で 6/6 の CycloneDX JSON を生成・収集（jq 検証）。sbom ジョブ自体は CI で未検証（最後の CI 成功後に追加されたため）で、課金問題解消後の CI 再実行で確認する。
+- `notes/cargo-vet-adoption.md` §9 にネットワーク環境での cargo-vet 試行手順（Runbook）を追加。
