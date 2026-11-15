@@ -49,8 +49,9 @@ verified: 2026-11-14T22:35:00+09:00
 7. **秘密情報を保持しない**: 認証情報・DB を保存しない。トークンはメモリ上と
    起動ログ（1 回）のみ。永続化するのは**表示設定だけ**
    （更新間隔・ソート・詳細パネル）で、プロセス情報・フィルタ・ホスト名・
-   ユーザー名はディスクに書かない。設定ファイルは原子的に書き込み、
-   Unix では `0600` で作成する。
+   ユーザー名はディスクに書かない。ネイティブの設定ファイルは原子的に書き込み、
+   Unix では `0600` で作成する。ブラウザは同じスキーマを `localStorage` に保存し、
+   アクセスできない場合は既定値へ縮退する（パニックしない）。
 8. **公開物の衛生**: スクリーンショット・証拠 JSON は `--redact` を使い、ホスト名・
    ユーザー名・ホームパス・コマンド引数内のホスト名 / tailnet ドメインを伏せる。
 9. **入力（IME）**: ブラウザ版・ネイティブ版とも composition 中の未確定文字列を
@@ -120,7 +121,7 @@ chmod 600 ~/.config/tm-agent.token
 
 ```bash
 cd work/gpui-task-manager
-bash scripts/check.sh          # fmt / clippy / test 138 件 / web 4 件 / wasm / cargo-deny
+bash scripts/check.sh          # fmt / clippy / test 143 件 / web 7 件 / wasm / cargo-deny
 cargo audit
 ```
 

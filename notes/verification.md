@@ -24,8 +24,8 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **138 passed / 0 failed**（tm-core 49 / tm-viewmodel 29 / tm-platform 9 / tm-agent 39 / app 12） |
-| web ユニットテスト | **4 passed / 0 failed**（`filter_input` テストは共有化に伴い `tm-viewmodel` の 28 件へ移動） |
+| `cargo test --workspace` | **143 passed / 0 failed**（tm-core 49 / tm-viewmodel 34 / tm-platform 9 / tm-agent 39 / app 12） |
+| web ユニットテスト | **7 passed / 0 failed**（agent 4 + settings 3） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
@@ -233,7 +233,7 @@ $ XDG_CONFIG_HOME=$(mktemp -d) TM_DEBUG_SETTINGS=1 ./target/debug/gpui-task-mana
 TM_DEBUG_SETTINGS: saved interval_ms=1000 key=Cpu direction=Descending details=true path=Some("/tmp/.../gpui-task-manager/settings.json")
 
 $ ls -l /tmp/.../gpui-task-manager/settings.json
--rw------- 1 koppe koppe 133 ... settings.json        # 0600
+-rw------- 1 user user 133 ... settings.json        # 0600
 ```
 
 - 一時ファイル（`settings.json.tmp`）は残らない（原子的 rename）。
@@ -248,7 +248,20 @@ $ ls -l /tmp/.../gpui-task-manager/settings.json
 - 証拠: `notes/assets/settings-restore.png`。
 - 起動後も設定ファイルは変更されない（Tick では書き込まない設計）。
 
-### 13.3 自動テスト
+### 13.3 ブラウザ版（localStorage、CDP 検証）
+
+`web/scripts/cdp_verify_settings.py`（ヘッドレス Chrome + CDP）:
+
+| 手順 | 結果 |
+|---|---|
+| 初期化（保存削除 → 再読込） | `sort=CPU;dir=desc`（既定） |
+| CPU 列ヘッダをクリック | `localStorage` に保存。スキーマは `version` / `interval_ms` / `sort` / `details_visible` の 4 キーのみ（トークン等を含まない） |
+| `interval_ms=5000, Name/asc, details=false` を書いて再読込 | `sort=名前;dir=asc` に復元 |
+
+- 結果: `{"passed": true, "failures": []}`。証拠: `web/verification/web-settings-evidence.json`。
+- スキーマはネイティブと共通（`tm-viewmodel::Settings`）。
+
+### 13.4 自動テスト
 
 `app`（12 件）に往復・原子的書き込み・`0600` 権限・範囲クランプ・未知フィールド無視・
 NotFound/InvalidData の扱いを含む。

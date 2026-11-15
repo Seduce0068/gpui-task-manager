@@ -37,9 +37,11 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - **ブラウザ版 / ネイティブ版の日本語 IME（composition）対応**。変換中は未確定文字列を
   入力欄にのみ表示し、確定文字列だけを絞り込みへ反映
 - `--demo` で決定的な合成データ起動（スクリーンショット・回帰用）
-- **設定の永続化**: 更新間隔・ソート列/方向・詳細パネルの表示を XDG 設定
-  (`~/.config/gpui-task-manager/settings.json`、Windows/macOS も対応パス) に保存し、
-  次回起動時に復元（原子的書き込み、0600、スキーマ版付き）
+- **設定の永続化（ネイティブ / ブラウザ両方）**: 更新間隔・ソート列/方向・
+  詳細パネルの表示を保存し、次回起動時に復元。ネイティブは XDG 設定
+  (`~/.config/gpui-task-manager/settings.json`、Windows/macOS も対応パス、
+  原子的書き込み・0600・スキーマ版付き)、ブラウザは `localStorage`
+  (`gpui-task-manager.settings`)。スキーマは `tm-viewmodel::Settings` で共有
 - 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
@@ -132,7 +134,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `crates/tm-viewmodel/` | `Dashboard` reducer、`Command` / `Effect`、確認ダイアログ状態、選択追従 |
 | `crates/tm-platform/` | `NativeProbe`（sysinfo 収集、rustix シグナル、PID 再利用防御） |
 | `app/` | ネイティブ GPUI シェル（概要カード、仮想リスト、詳細パネル、ダイアログ） |
-| `web/` | wasm シェル（GPUI Web + デモ / エージェント接続、読み取り専用） |
+| `web/` | wasm シェル（GPUI Web + デモ / エージェント接続、読み取り専用、設定は localStorage） |
 | `poc-wasm/` | GPUI Web の最小スパイク（Runtime Proof・スクリーンショット） |
 | `agent/` | ブラウザ用の読み取り専用ループバック HTTP エージェント |
 | `notes/` | 調査ノート・wasm スパイク・IME/クロスプラットフォーム検証・レビュー |
@@ -157,8 +159,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **138 passed / 0 failed**（core 49 / viewmodel 29 / platform 9 / agent 39 / app 12） |
-| web ユニットテスト | **4 passed / 0 failed**（`filter_input` のテストは共有化に伴い `tm-viewmodel` へ移動） |
+| `cargo test --workspace` | **143 passed / 0 failed**（core 49 / viewmodel 34 / platform 9 / agent 39 / app 12） |
+| web ユニットテスト | **7 passed / 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
@@ -175,7 +177,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
 | CI | 7 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist） |
-| 設定の永続化 | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
+| 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
+| 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
 | DEB パッケージ | `bash packaging/linux/build-deb.sh` で 11 MB の `.deb` を生成、展開バイナリの `--version` と依存自動計算を確認 |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
@@ -194,7 +197,6 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - プロセスツリー、優先度変更、GPU 監視、ライトテーマは未実装
-- 設定の永続化はネイティブ版のみ（ブラウザ版は未対応）
 - DEB は未署名・リポジトリ未公開（ローカル生成のみ）
 - ブラウザ wasm は 7.24 MiB（gzip 2.89 MiB、wasm-opt -Oz 適用済み）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）

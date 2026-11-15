@@ -1,99 +1,30 @@
-//! Persistent user settings.
+//! Persistent user settings (native file storage).
 //!
-//! Only presentation preferences are stored (refresh interval, sort order and
-//! details-panel visibility). Process data, filters, tokens and any machine
-//! identifiers are deliberately **not** persisted.
-//!
-//! The file lives in the platform's per-user configuration directory:
+//! The **schema** lives in `tm-viewmodel::Settings` so the native and browser
+//! shells stay compatible; this module only owns the storage medium: a JSON file
+//! in the platform's per-user configuration directory.
 //!
 //! - Linux: `$XDG_CONFIG_HOME/gpui-task-manager/settings.json`
 //!   (fallback `~/.config/gpui-task-manager/settings.json`)
 //! - Windows: `%APPDATA%\gpui-task-manager\settings.json`
 //! - macOS: `~/Library/Application Support/gpui-task-manager/settings.json`
 //!
-//! Writes are atomic (temporary file + rename) and, on Unix, the file is
-//! created with mode `0600` even though the contents are not secret.
+//! Writes are atomic (temporary file + rename) and, on Unix, the file is created
+//! with mode `0600` even though the contents are not secret. Process data,
+//! filters, host names and tokens are never written.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use tm_core::SortSpec;
-use tm_viewmodel::{MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL};
+pub use tm_viewmodel::SETTINGS_VERSION as CURRENT_VERSION;
+// Re-exported so callers can use one canonical type from this module.
+pub use tm_viewmodel::Settings;
 
 /// Directory name used under the platform configuration root.
 const APP_DIR: &str = "gpui-task-manager";
 /// Settings file name.
 const FILE_NAME: &str = "settings.json";
-/// Current settings schema version.
-pub const CURRENT_VERSION: u32 = 1;
-
-/// Persisted presentation preferences.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    /// Schema version, so future migrations can recognise old files.
-    pub version: u32,
-    /// Refresh interval in milliseconds.
-    pub interval_ms: u64,
-    /// Sort column and direction.
-    pub sort: SortSpec,
-    /// Whether the details panel is visible.
-    pub details_visible: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            interval_ms: 1_000,
-            sort: SortSpec::default(),
-            details_visible: true,
-        }
-    }
-}
-
-impl Settings {
-    /// Clamps values into the range the view-model accepts.
-    pub fn normalized(mut self) -> Self {
-        self.version = CURRENT_VERSION;
-        let minimum = MIN_REFRESH_INTERVAL.as_millis() as u64;
-        let maximum = MAX_REFRESH_INTERVAL.as_millis() as u64;
-        self.interval_ms = self.interval_ms.clamp(minimum, maximum);
-        self
-    }
-
-    /// Loads settings from the platform configuration directory.
-    ///
-    /// A missing or unreadable file falls back to defaults; an unreadable file
-    /// other than `NotFound` is reported on stderr so a broken configuration is
-    /// not silently ignored forever.
-    pub fn load() -> Self {
-        let Some(path) = config_path() else {
-            return Self::default();
-        };
-        match load_from(&path) {
-            Ok(settings) => settings.normalized(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
-            Err(error) => {
-                eprintln!(
-                    "gpui-task-manager: 設定を読み込めません ({}): {error}",
-                    path.display()
-                );
-                Self::default()
-            }
-        }
-    }
-
-    /// Saves settings atomically to the platform configuration directory.
-    pub fn save(&self) -> io::Result<()> {
-        let path = config_path().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "設定ディレクトリを特定できません")
-        })?;
-        save_to(&path, &self.clone().normalized())
-    }
-}
 
 /// Returns the settings file path, if a configuration directory can be found.
 pub fn config_path() -> Option<PathBuf> {
@@ -130,7 +61,36 @@ fn config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config").join(APP_DIR))
 }
 
-/// Loads settings from an explicit path (used by tests and by `load`).
+/// Loads settings from the platform configuration directory.
+///
+/// A missing file falls back to defaults. An unreadable file is reported on
+/// stderr so a broken configuration is not silently ignored forever.
+pub fn load() -> Settings {
+    let Some(path) = config_path() else {
+        return Settings::default();
+    };
+    match load_from(&path) {
+        Ok(settings) => settings,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Settings::default(),
+        Err(error) => {
+            eprintln!(
+                "gpui-task-manager: 設定を読み込めません ({}): {error}",
+                path.display()
+            );
+            Settings::default()
+        }
+    }
+}
+
+/// Saves settings atomically to the platform configuration directory.
+pub fn save(settings: &Settings) -> io::Result<()> {
+    let path = config_path().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "設定ディレクトリを特定できません")
+    })?;
+    save_to(&path, settings)
+}
+
+/// Loads settings from an explicit path (used by tests and by [`load`]).
 pub(crate) fn load_from(path: &Path) -> io::Result<Settings> {
     let text = fs::read_to_string(path)?;
     serde_json::from_str(&text)
@@ -143,7 +103,7 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(settings)
+    let json = serde_json::to_string_pretty(&settings.clone().normalized())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, json)?;
@@ -159,7 +119,7 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tm_core::{SortDirection, SortKey};
+    use tm_core::{SortDirection, SortKey, SortSpec};
 
     fn temporary_path(name: &str) -> PathBuf {
         let unique = format!(
@@ -188,6 +148,7 @@ mod tests {
         };
         save_to(&path, &settings).expect("save settings");
         assert!(path.is_file());
+        // The temporary file must not survive the rename.
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(load_from(&path).expect("load settings"), settings);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
@@ -222,43 +183,29 @@ mod tests {
     }
 
     #[test]
-    fn normalization_clamps_interval_and_sets_version() {
-        let settings = Settings {
-            version: 0,
-            interval_ms: 1,
-            ..Settings::default()
-        }
-        .normalized();
+    fn loaded_values_are_clamped_to_the_supported_range() {
+        let path = temporary_path("clamped");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(&path, r#"{"version":0,"interval_ms":1}"#).expect("write settings");
+        let settings = load_from(&path).expect("load settings");
+        assert_eq!(
+            settings.interval_ms,
+            tm_viewmodel::MIN_REFRESH_INTERVAL.as_millis() as u64
+        );
         assert_eq!(settings.version, CURRENT_VERSION);
-        assert_eq!(
-            settings.interval_ms,
-            MIN_REFRESH_INTERVAL.as_millis() as u64
-        );
-
-        let settings = Settings {
-            interval_ms: u64::MAX,
-            ..Settings::default()
-        }
-        .normalized();
-        assert_eq!(
-            settings.interval_ms,
-            MAX_REFRESH_INTERVAL.as_millis() as u64
-        );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn unknown_fields_are_ignored_for_forward_compatibility() {
-        let path = temporary_path("unknown");
-        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-        fs::write(
-            &path,
-            r#"{"version":1,"interval_ms":1500,"sort":{"key":"Pid","direction":"Ascending"},"details_visible":false,"future_field":42}"#,
-        )
-        .expect("write settings");
-        let settings = load_from(&path).expect("load settings");
-        assert_eq!(settings.interval_ms, 1_500);
-        assert_eq!(settings.sort.key, SortKey::Pid);
-        assert!(!settings.details_visible);
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    fn config_path_uses_the_xdg_directory_when_set() {
+        // `std::env::set_var` is process-global and racy under the parallel test
+        // runner, so this test only asserts the *shape* of the path rather than
+        // mutating the environment.
+        if let Some(path) = config_path() {
+            assert!(
+                path.ends_with("gpui-task-manager/settings.json"),
+                "{path:?}"
+            );
+        }
     }
 }

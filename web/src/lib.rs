@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use gpui::{App, Application, WindowOptions, prelude::*};
 
 mod agent;
+mod settings;
 mod shell;
 mod theme;
 mod widgets;

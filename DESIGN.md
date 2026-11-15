@@ -496,7 +496,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | AC-13 | ブラウザ版 / ネイティブ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 + `TM_DEBUG_IME=1` |
 | AC-14 | Windows / macOS ターゲットでワークスペースが型検査できる | `cargo check --target` + CI |
 | AC-15 | cargo-deny がルート / web とも成功する | `cargo deny check` |
-| AC-16 | 表示設定が保存され、再起動後に復元される | 実機（`TM_DEBUG_SETTINGS=1` + 設定ファイル起動）
+| AC-16 | 表示設定が保存され、再起動後に復元される（ネイティブ / ブラウザ） | 実機 + CDP（`cdp_verify_settings.py`）
 | AC-17 | root 権限なしで DEB を生成でき、展開バイナリが起動する | `build-deb.sh` + `dpkg-deb -x` |
 
 ---
@@ -589,9 +589,11 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 ### ADR-012: 設定は表示設定のみを XDG に永続化（改訂）
 
-- 決定: **更新間隔・ソート列/方向・詳細パネル表示**を
-  `$XDG_CONFIG_HOME/gpui-task-manager/settings.json`（Windows は `%APPDATA%`、
-  macOS は `~/Library/Application Support`）へ保存し、起動時に復元する。
+- 決定: **更新間隔・ソート列/方向・詳細パネル表示**を保存し、起動時に復元する。
+  スキーマは `tm-viewmodel::Settings` に置き、ネイティブとブラウザで共有する
+  （保存媒体だけが違う: ネイティブは
+  `$XDG_CONFIG_HOME/gpui-task-manager/settings.json`、Windows は `%APPDATA%`、
+  macOS は `~/Library/Application Support`、ブラウザは `localStorage`）。
 - 保存対象を表示設定に限定する理由: プロセス情報・フィルタ・トークン・ホスト名などの
   機微情報や一時状態はディスクに残さない。フィルタは「その時の作業」であり、
   起動時に勝手に絞り込まれると対象を見失うため保存しない。
@@ -600,6 +602,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   範囲へクランプする。
 - 検証: `TM_DEBUG_SETTINGS=1` のデバッグフックで保存経路を、設定ファイルを置いた
   起動で復元経路を実機確認（`notes/assets/settings-restore.png`）。
+  ブラウザは `web/scripts/cdp_verify_settings.py` で保存（列クリック）と復元
+  （再読込後のソート）を CDP 検証（`web/verification/web-settings-evidence.json`）。
 
 ### ADR-013: ブラウザ UI は gpui 素の div で構成
 

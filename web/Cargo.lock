@@ -4505,6 +4505,7 @@ dependencies = [
 name = "tm-viewmodel"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "tm-core",
 ]
 
