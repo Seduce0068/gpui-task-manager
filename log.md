@@ -110,3 +110,19 @@
 - テスト: tm-core 52 / tm-platform 9 pass、tm-viewmodel/tm-agent/gpui-task-manager check pass。
   `cargo-vet` は監査判断が必要なため未導入（将来検討）。
 
+## 2026-11-15（ツリー表示と温度表示のUI反映・ローカル検証）
+
+- 変更:
+  - `tm-viewmodel::Settings` に `tree_view` を追加し、native/web の保存・復元・コマンド適用を拡張。
+  - `tm-viewmodel::Dashboard` にツリー表示状態（表示順/深さ）と `ToggleTreeView`/`SetTreeView` を追加。
+  - `tm-core::query` のツリー順序テストを追加。
+  - native/web のプロセス一覧に階層インデントとツリー切替 UI を追加。
+  - `SystemSnapshot.components` の温度情報を native/web 概要カードに表示（センサーなし時はフォールバック表示）。
+  - `app/src/ui.rs` / `web/src/widgets.rs` の `kv` ラベルを動的化。
+- 検証:
+  - `cargo fmt --all`
+  - `cargo check -p gpui-task-manager -p tm-agent -p tm-viewmodel` / `cd web && cargo check`
+  - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`
+  - `cd web && cargo test -q`（7 passed）
+- 補足:
+  - ツリーは基本表示（折りたたみなし）、温度はベストエフォート収集/表示。詳細 GPU 利用率等は未実装。

@@ -216,6 +216,7 @@ impl TaskManagerApp {
             Command::SetInterval(Duration::from_millis(settings.interval_ms)),
             Command::SetSortSpec(settings.sort),
             Command::SetDetailsVisible(settings.details_visible),
+            Command::SetTreeView(settings.tree_view),
         ] {
             for effect in self.dashboard.apply(command) {
                 if let Effect::Signal { .. } = effect {
@@ -232,6 +233,7 @@ impl TaskManagerApp {
             interval_ms: self.dashboard.interval().as_millis() as u64,
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
+            tree_view: self.dashboard.tree_view(),
         };
         if let Err(message) = crate::settings::save(&settings) {
             log::warn!("設定を保存できません: {message}");
@@ -248,6 +250,8 @@ impl TaskManagerApp {
                 | Command::SetSortSpec(_)
                 | Command::ToggleDetails
                 | Command::SetDetailsVisible(_)
+                | Command::ToggleTreeView
+                | Command::SetTreeView(_)
         );
         for effect in self.dashboard.apply(command) {
             match effect {
@@ -624,6 +628,28 @@ impl TaskManagerApp {
                     .child(metric_bar(percent, usage_color(percent))),
             );
         }
+        let components = snapshot.map(|s| s.components.as_slice()).unwrap_or(&[]);
+        if components.is_empty() {
+            system_body = system_body.child(kv("温度", "センサーなし".to_string()));
+        } else {
+            for component in components.iter().take(3) {
+                let label = if component.label.is_empty() {
+                    "温度".to_string()
+                } else {
+                    component.label.clone()
+                };
+                let value = match (component.temperature_c, component.max_c, component.critical_c) {
+                    (Some(t), Some(max), Some(crit)) => {
+                        format!("{t:.0}°C (max {max:.0}°C / crit {crit:.0}°C)")
+                    }
+                    (Some(t), Some(max), None) => format!("{t:.0}°C (max {max:.0}°C)"),
+                    (Some(t), None, Some(crit)) => format!("{t:.0}°C (crit {crit:.0}°C)"),
+                    (Some(t), None, None) => format!("{t:.0}°C"),
+                    _ => "—".to_string(),
+                };
+                system_body = system_body.child(kv(label, value));
+            }
+        }
         let system_card = card("システム", C_GREEN, system_body)
             .h_full()
             .flex_1()
@@ -723,6 +749,25 @@ impl TaskManagerApp {
                         sort.key.label(),
                         sort.direction.arrow()
                     )))
+                    .child(
+                        div()
+                            .id("toggle-tree-web")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(C_SURFACE))
+                            .bg(rgb(if self.dashboard.tree_view() { C_SURFACE } else { C_MANTLE }))
+                            .text_color(rgb(if self.dashboard.tree_view() { C_BLUE } else { C_MUTED }))
+                            .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.focus_handle.focus(window, cx);
+                                this.handle_command(Command::ToggleTreeView, cx);
+                            }))
+                            .child(if self.dashboard.tree_view() { "ツリー: ON" } else { "ツリー" }),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -882,9 +927,10 @@ impl TaskManagerApp {
     }
 
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (key, name, command, cpu, memory, pid, user, status, threads, selected) = {
+        let (key, name, command, cpu, memory, pid, user, status, threads, selected, depth) = {
             let snapshot = self.dashboard.snapshot()?;
             let row_index = *self.dashboard.visible_indices().get(index)?;
+            let depth = self.dashboard.visible_depths().get(index).copied().unwrap_or(0);
             let process = snapshot.processes.get(row_index)?;
             (
                 process.key,
@@ -897,7 +943,13 @@ impl TaskManagerApp {
                 process.status,
                 process.threads.unwrap_or(0),
                 self.dashboard.selected_key() == Some(process.key),
+                depth,
             )
+        };
+        let display_name = if depth == 0 {
+            name
+        } else {
+            format!("{}└ {}", "  ".repeat(depth.saturating_sub(1)), name)
         };
 
         Some(
@@ -938,7 +990,7 @@ impl TaskManagerApp {
                                 .text_sm()
                                 .text_color(rgb(if selected { C_TEXT } else { C_SUBTEXT }))
                                 .truncate()
-                                .child(name),
+                                .child(display_name),
                         ),
                 )
                 .child(

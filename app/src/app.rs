@@ -158,6 +158,7 @@ impl TaskManagerApp {
             interval_ms: self.dashboard.interval().as_millis() as u64,
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
+            tree_view: self.dashboard.tree_view(),
         };
         match crate::settings::save(&settings) {
             Ok(()) => eprintln!(
@@ -292,6 +293,7 @@ impl TaskManagerApp {
             interval_ms: self.dashboard.interval().as_millis() as u64,
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
+            tree_view: self.dashboard.tree_view(),
         };
         if let Err(error) = crate::settings::save(&settings) {
             eprintln!("gpui-task-manager: 設定を保存できません: {error}");
@@ -809,19 +811,47 @@ impl TaskManagerApp {
             })
             .collect();
 
-        let system_card = card(
-            "システム",
-            C_GREEN,
-            v_flex()
-                .gap_2()
-                .child(kv("ホスト", summary.hostname.clone()))
-                .child(kv("稼働時間", format::format_duration(summary.uptime_secs)))
-                .child(kv("プロセス", format::format_count(summary.process_count)))
-                .children(disk_rows),
-        )
-        .h(px(200.0))
-        .flex_1()
-        .min_w_0();
+        let mut system_body = v_flex()
+            .gap_2()
+            .child(kv("ホスト", summary.hostname.clone()))
+            .child(kv("稼働時間", format::format_duration(summary.uptime_secs)))
+            .child(kv("プロセス", format::format_count(summary.process_count)))
+            .children(disk_rows);
+        let components = self
+            .dashboard
+            .snapshot()
+            .map(|s| s.components.as_slice())
+            .unwrap_or(&[]);
+        if components.is_empty() {
+            system_body = system_body.child(kv("温度", "センサーなし".to_string()));
+        } else {
+            for component in components.iter().take(3) {
+                let label = if component.label.is_empty() {
+                    "温度".to_string()
+                } else {
+                    component.label.clone()
+                };
+                let value = match (
+                    component.temperature_c,
+                    component.max_c,
+                    component.critical_c,
+                ) {
+                    (Some(t), Some(max), Some(crit)) => {
+                        format!("{t:.0}°C (max {max:.0}°C / crit {crit:.0}°C)")
+                    }
+                    (Some(t), Some(max), None) => format!("{t:.0}°C (max {max:.0}°C)"),
+                    (Some(t), None, Some(crit)) => format!("{t:.0}°C (crit {crit:.0}°C)"),
+                    (Some(t), None, None) => format!("{t:.0}°C"),
+                    _ => "—".to_string(),
+                };
+                system_body = system_body.child(kv(&label, value));
+            }
+        }
+
+        let system_card = card("システム", C_GREEN, system_body)
+            .h(px(200.0))
+            .flex_1()
+            .min_w_0();
 
         h_flex().gap_3().px_4().py_3().items_start().children(vec![
             cpu_card,
@@ -977,6 +1007,37 @@ impl TaskManagerApp {
             )))
             .child(h_flex().items_center().gap_1().children(interval_buttons))
             .child(div().flex_1())
+            .child(
+                div()
+                    .id("toggle-tree")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(C_SURFACE))
+                    .bg(rgb(if self.dashboard.tree_view() {
+                        C_SURFACE
+                    } else {
+                        C_MANTLE
+                    }))
+                    .text_color(rgb(if self.dashboard.tree_view() {
+                        C_BLUE
+                    } else {
+                        C_MUTED
+                    }))
+                    .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.handle_command(Command::ToggleTreeView, cx);
+                    }))
+                    .child(if self.dashboard.tree_view() {
+                        "ツリー: ON"
+                    } else {
+                        "ツリー"
+                    }),
+            )
             .child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
                 "表示 {} / 全 {} 件",
                 summary.visible_count, summary.process_count
@@ -1069,9 +1130,15 @@ impl TaskManagerApp {
     }
 
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (key, name, command, cpu, memory, pid, user, status, threads, selected) = {
+        let (key, name, command, cpu, memory, pid, user, status, threads, selected, depth) = {
             let snapshot = self.dashboard.snapshot()?;
             let row_index = *self.dashboard.visible_indices().get(index)?;
+            let depth = self
+                .dashboard
+                .visible_depths()
+                .get(index)
+                .copied()
+                .unwrap_or(0);
             let process = snapshot.processes.get(row_index)?;
             (
                 process.key,
@@ -1084,11 +1151,17 @@ impl TaskManagerApp {
                 process.status,
                 process.threads,
                 self.dashboard.selected_key() == Some(process.key),
+                depth,
             )
         };
 
         let user = self.display(&user);
         let command = self.display(&command);
+        let display_name = if depth == 0 {
+            name
+        } else {
+            format!("{}└ {}", "  ".repeat(depth.saturating_sub(1)), name)
+        };
 
         Some(
             div()
@@ -1129,7 +1202,7 @@ impl TaskManagerApp {
                                 .text_color(rgb(if selected { C_TEXT } else { C_SUBTEXT }))
                                 .max_w(px(200.0))
                                 .truncate()
-                                .child(name),
+                                .child(display_name),
                         )
                         .child(
                             div()

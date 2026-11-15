@@ -309,3 +309,26 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   （tm-viewmodel / tm-agent / gpui-task-manager）を確認。`cargo-vet` は未導入のため
   SBOM/運用ドキュメントで将来検討として扱う。
 
+## 2026-11-15（ツリー表示基盤/UIと温度表示の追加・ローカル検証）
+
+- 実装:
+  - `tm-viewmodel::Settings` に `tree_view`（`serde(default)`）を追加し、native/web で復元・保存・コマンド反映。
+  - `tm-viewmodel::Dashboard` に `ToggleTreeView` / `SetTreeView`、`visible_depths`、ツリー時の表示順再計算を追加。
+  - native/web のプロセス一覧に階層インデント表示とツリー切替 UI を追加（`parent_pid` ベースの `flatten_process_tree` を表示順へ適用）。
+  - `tm-core::query` にツリー順序の回帰テストを追加（子が先に並ぶ入力、兄弟順維持）。
+  - `SystemSnapshot.components` の温度情報を native/web 概要カードに表示（取得不可時は「センサーなし」、最大/critical があれば併記）。
+  - `app/src/ui.rs` / `web/src/widgets.rs` の `kv` ラベルを動的文字列に拡張。
+- 検証（ローカル）:
+  - `cargo fmt --all`
+  - `cargo check -p gpui-task-manager -p tm-agent -p tm-viewmodel`
+  - `cd web && cargo check`
+  - `cargo test -q -p tm-core`（54 passed）
+  - `cargo test -q -p tm-viewmodel`（34 passed）
+  - `cargo test -q -p tm-platform`（9 passed）
+  - `cargo test -q -p tm-agent`
+  - `cargo test -q -p gpui-task-manager`（12 passed）
+  - `cd web && cargo test -q`（7 passed）
+- 制限/未検証:
+  - ツリー表示は折りたたみ UI なしの基本表示。フィルタ/ソート時は表示対象集合に対するフラット化。
+  - 温度/コンポーネントはベストエフォート（環境によりセンサーなし）。GPU 利用率の詳細監視は未実装。
+  - 実 IME 手動確認、Windows/macOS 実機、WebGPU 実機確認は未実施。

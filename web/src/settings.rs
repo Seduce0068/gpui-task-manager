@@ -71,6 +71,7 @@ mod tests {
                 direction: SortDirection::Ascending,
             },
             details_visible: false,
+            tree_view: false,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");

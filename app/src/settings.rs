@@ -145,6 +145,7 @@ mod tests {
                 direction: SortDirection::Descending,
             },
             details_visible: false,
+            tree_view: false,
         };
         save_to(&path, &settings).expect("save settings");
         assert!(path.is_file());
