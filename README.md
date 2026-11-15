@@ -185,7 +185,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 7 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist） |
+| CI | 8 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
 | 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
 | 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
 | DEB パッケージ | `bash packaging/linux/build-deb.sh` で 11 MB の `.deb` を生成、展開バイナリの `--version` と依存自動計算を確認 |
