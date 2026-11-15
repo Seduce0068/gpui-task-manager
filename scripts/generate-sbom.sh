@@ -14,9 +14,9 @@ out_dir="${1:-${repo_root}/target/sbom}"
 mkdir -p "${out_dir}"
 
 if ! command -v cargo-cyclonedx >/dev/null 2>&1; then
-	echo 'cargo-cyclonedx is not installed; skipping SBOM generation.'
-	echo 'Install with: cargo install cargo-cyclonedx'
-	exit 0
+  echo 'cargo-cyclonedx is not installed; skipping SBOM generation.'
+  echo 'Install with: cargo install cargo-cyclonedx'
+  exit 0
 fi
 
 echo "==> generating SBOMs in ${out_dir}"
@@ -26,16 +26,16 @@ cargo cyclonedx --format json --all --override-filename sbom-root
 
 # Web workspace (separate Cargo.toml)
 if [ -f web/Cargo.toml ]; then
-	(
-		cd web
-		cargo cyclonedx --format json --all --override-filename sbom-web
-	)
+  (
+    cd web
+    cargo cyclonedx --format json --all --override-filename sbom-web
+  )
 fi
 
 # Collect outputs in one place for CI artifacts.
 find . -maxdepth 3 -type f \( -name 'sbom-root*.cdx.json' -o -name 'sbom-web*.cdx.json' -o -name 'bom.json' \) \
-	-not -path "${out_dir}/*" -print0 | while IFS= read -r -d '' file; do
-	cp "${file}" "${out_dir}/$(basename "${file}")"
+  -not -path "${out_dir}/*" -print0 | while IFS= read -r -d '' file; do
+  cp "${file}" "${out_dir}/$(basename "${file}")"
 done
 
 echo "SBOM generation complete."
