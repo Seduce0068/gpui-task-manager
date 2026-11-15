@@ -355,3 +355,10 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
   - `cd web && cargo check -q`
   - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`
   - `cd web && cargo test -q`（7 passed）
+
+## cargo-vet（未導入・方針）
+
+- 現状: ローカルに `cargo-vet` 未インストール、リポジトリに `supply-chain/` なし（未導入）。
+- 方針: trust root（imports/audits）の選定、既存依存の棚卸し、exemptions/監査の運用責任を定義してから `cargo vet init` 相当の導入を行う。
+- 安全原則: 未監査依存を監査済みとして記録しない。Dependabot/依存更新時の vet 更新手順と CI ゲート化は導入時に合わせて整備する。
+- 当面の代替: `cargo audit`、`cargo-deny`、CycloneDX SBOM（`scripts/generate-sbom.sh` / CI `sbom` ジョブ）。

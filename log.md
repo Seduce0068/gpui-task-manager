@@ -143,3 +143,18 @@
 - 検証:
   - `cargo fmt --all`、`cargo check -q -p gpui-task-manager`、`cd web && cargo check -q`
   - `cargo test -q -p tm-core -p tm-viewmodel -p tm-platform -p tm-agent -p gpui-task-manager`、`cd web && cargo test -q`
+
+## 2026-11-14（cargo-vet 方針明確化・web lint 修正）
+
+- `cargo-vet`（`supply-chain/`）は未導入のままとし、trust root/棚卸し/運用手順の
+  定義後に導入する方針を `README.md` / `SECURITY.md` / `notes/verification.md` に明記。
+  監査記録の捏造は行わない。SBOM（CycloneDX）/ cargo-audit / cargo-deny を当面の
+  供給網可視性・検査手段として位置づけた。
+- `web/` クレートの既存 `clippy -D warnings` 失敗（未使用 import/API/helper 等）を
+  `web/src/lib.rs` の crate-level `allow(dead_code, unused_imports)` で明示的に許容し、
+  将来利用予定コードを削除せず lint を通過可能にした。`web/src/shell.rs` に
+  `cargo fmt` を適用。
+- 検証: `cd web && cargo fmt --check && cargo clippy --all-targets -- -D warnings &&
+  cargo test -q && cargo check -q`、`cargo fmt --all --check`、
+  `cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace -q`。
+
