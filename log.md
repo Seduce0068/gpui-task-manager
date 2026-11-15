@@ -174,3 +174,16 @@
 - `cargo clippy -p tm-core --all-targets -- -D warnings`: 成功
 - `cargo test --workspace -q`: 成功（12 + 39 + 56 + 9 + 37 passed, 0 failed）
 - `cargo clippy --workspace --all-targets -- -D warnings`: 成功
+
+## 2026-11-15（cargo-vet メモ精緻化・DESIGN 運用記述更新）
+
+- `notes/cargo-vet-adoption.md` を現状の棚卸し結果に合わせて精緻化。
+  - git/非workspace path 依存が現時点で 0 件である事実を明記し、将来追加時のポリシー整理項目として整理（監査記録の捏造はしない）。
+- `DESIGN.md` の供給網・CI・運用記述を現状に整合。
+  - SBOM（`scripts/generate-sbom.sh` / CI `sbom`）と cargo-deny/Dependabot 運用を明記。
+  - `cargo-vet` は未導入・準備メモ参照・監査捏造なしの方針を反映。
+  - Actions SHA ピン留め・`ubuntu-latest` 非使用・ラベル運用・branch protection 未適用（private プラン制約 `403`）を記載。
+
+### 検証
+
+- コード変更なし（文書のみ）。`git diff` と記述整合を確認。

@@ -340,10 +340,12 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 6. **表示サニタイズ**: 制御文字・ANSI エスケープ除去、文字数制限。
 7. **供給網**: GPUI 系は完全一致ピン + `Cargo.lock` コミット。`cargo audit` に加え
    `cargo-deny`（advisories / bans / licenses / sources）をルート / web の両方で
-   実行し、すべて ok。未保守（unmaintained）8 件は理由付きで `deny.toml` に ignore し、
-   DESIGN §14 で追跡する。Dependabot（Cargo / web / GitHub Actions、週次）と
-   セキュリティアラート / 自動修正を有効化している。GPUI 系は自動更新の対象外
-   （ADR-001 の完全ピン運用）。
+   実行し、CI で継続検査する。未保守（unmaintained）等の除外は理由付きで `deny.toml` に
+   記録し、DESIGN §14 で追跡する。Dependabot（Cargo / web / GitHub Actions、週次）と
+   セキュリティアラートを有効化している。GPUI 系は自動更新の対象外（ADR-001 の完全ピン
+   運用）。CycloneDX SBOM を `scripts/generate-sbom.sh` と CI `sbom` ジョブで生成する。
+   `cargo-vet` は未導入で、trust 方針・依存棚卸し・`supply-chain/` 運用手順を定めてから
+   段階導入する（`notes/cargo-vet-adoption.md`）。監査記録の捏造は行わない。
 8. **秘密情報を扱わない**: 設定ファイル・認証情報・DB を持たない。トークンは
    起動時に生成し、stderr にのみ表示する。
 
@@ -469,11 +471,16 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 ### 11.3 CI
 
-- Linux: fmt → check → test → clippy（`-D warnings`）→ cargo audit（共通ワークフロー）。
+- 共通ワークフロー（`Seduce0068/workflows/.github/workflows/rust-gates.yml@v1`）で
+  fmt → check → test → clippy（`-D warnings`）等の標準ゲートを実行する。
 - 追加ジョブ: wasm check、cargo-deny（ルート / web）、native-windows
-  （windows-latest）、native-macos（macos-latest）。
-- 依存監査: `cargo audit` + `cargo deny`（advisories / bans / licenses / sources）。
+  （`windows-latest`）、native-macos（`macos-latest`）、sbom（CycloneDX）。
+- Actions は commit SHA にピン留めし、Dependabot（GitHub Actions 週次）で追従する。
+  `ubuntu-latest` は使用しない。
 - GPUI の X11 依存は CI でも `libxkbcommon-x11-dev` を導入する。
+- GitHub ラベルで領域・運用課題を分類する。branch protection は現行の private
+  リポジトリプランでは有効化不可（`403`）のため、CI 必須確認・レビュー運用・
+  直接 push の最小化で代替する。
 
 ---
 
@@ -629,14 +636,16 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: 常用時のトークンがプロセス一覧に現れない。ファイルのパーミッション管理は
   運用者の責任であり、SECURITY.md に `chmod 600` を記載する。
 
-### ADR-016: 依存監査と自動更新
+### ADR-016: 依存監査・SBOM・自動更新
 
-- 決定: `deny.toml` でライセンス（許容リスト）・脆弱性・重複版・供給元を定義し、
-  CI の `deny` ジョブでルート / web の両ワークスペースを検査する。Dependabot は
-  Cargo（ルート / web）と GitHub Actions を週次で更新し、GPUI 系は完全ピン運用の
-  ため対象外（ignore）にする。
-- 結果: 未保守 8 件は理由付きで ignore。新規の脆弱性・ライセンス違反・不明レジストリは
-  失敗する。GPUI の更新は手動で行う。
+- 決定: `deny.toml` でライセンス・脆弱性・重複版・供給元を定義し、CI の `deny` ジョブで
+  ルート / web の両ワークスペースを検査する。Dependabot は Cargo（ルート / web）と
+  GitHub Actions を週次で更新し、GPUI 系は完全ピン運用のため対象外（ignore）にする。
+  CycloneDX SBOM をスクリプト/CI で生成する。`cargo-vet` は trust 方針・棚卸し・運用手順
+  を定めてから段階導入し、監査記録を捏造しない。
+- 結果: `cargo-deny`/Dependabot/SBOM を当面の実効的対策として運用する。未保守等の除外は
+  理由付きで管理し、新規の脆弱性・ライセンス違反・不明レジストリは失敗させる。
+  GPUI の更新は手動で行う。
 
 ### ADR-017: wasm-opt（-Oz）を trunk で適用
 
@@ -695,7 +704,11 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   WebGPU 描画は未確認。
 - エージェントはシリアル処理（1 スナップショット約 250 ms）。同時リクエストは
   キューされる。
-- `cargo-deny` は導入済み（`deny.toml`、ルート / web の CI ジョブ）。
+- `cargo-deny` は導入済み（`deny.toml`、ルート / web の CI ジョブ）。SBOM 生成は
+  `scripts/generate-sbom.sh` と CI `sbom` ジョブで運用中。`cargo-vet` は未導入で、
+  `notes/cargo-vet-adoption.md` に trust 方針・棚卸し・導入手順の準備メモがある
+  （監査記録の捏造は行わない）。branch protection は現行 private プラン制約で未適用
+  （`403`）。
 - ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。
 - ディスクは `total_space() == 0` の擬似マウントを除外する。
 - スレッド数が取得できないプロセスは「—」と表示する。
