@@ -531,3 +531,53 @@ TM_DEBUG_IME: committed filter="日本語" composing=false field="日本語"
 - 制約（変更なし）: これはデバッグフックによる `FilterInput` の状態遷移と Dashboard 反映の検証であり、
   **実 IME（IBus / fcitx5）の Wayland text-input-v3 / X11 XIM 経路は未検証**。
   実 IME での手動確認には日本語入力メソッドのインストールと対話操作が必要。
+
+
+## 2026-11-16（Wayland text-input-v3 プロトコルレベルの観察）
+
+実 IME 環境（fcitx5 + mozc が稼働、`XMODIFIERS=@im=fcitx5`、`GTK_IM_MODULE=fcitx5`）で、
+`WAYLAND_DEBUG=1 TM_DEBUG_IME=1 ./target/debug/gpui-task-manager` を実行し、
+wayland プロトコルの送受信ログ（3,055 行）を取得した。
+
+### 確認できたこと（正常）
+
+| 項目 | 観測 | 意味 |
+|---|---|---|
+| compositor の対応 | `wl_registry.global("zwp_text_input_manager_v3", 1)` | KWin が text-input-v3 を公開 |
+| GPUI のバインド | `wl_registry.bind(71, "zwp_text_input_manager_v3", 1, id 18)` | GPUI がプロトコルを使用 |
+| text_input 取得 | `zwp_text_input_manager_v3#18.get_text_input(id 27, wl_seat#3)` | シートに紐づけて取得 |
+| seat capabilities | `wl_seat#3.capabilities(7)` | キーボード・ポインタ等が利用可能 |
+| キーボード取得 | `wl_seat#3.get_keyboard(id 26)` | キーボードオブジェクト作成 |
+
+→ **GPUI は Wayland text-input-v3 を正しくセットアップしている**
+（依存 crate `gpui-pre-linux 0.3.12` の `src/linux/wayland/client.rs` で
+`zwp_text_input_v3` を使用し、`enable()` / `disable()` を実装していることもソースで確認）。
+
+### 観測されなかったこと（今回の実行条件による）
+
+| 項目 | 観測 | 原因 |
+|---|---|---|
+| `zwp_text_input_v3#27.enable()` | **0 回** | ウィンドウがアクティブでないため |
+| `wl_keyboard#26.enter` | **0 回** | 実行したウィンドウがキーボードフォーカスを得ていない |
+| `wl_pointer.enter` | 0 回 | 同上 |
+
+依存 crate の実装を読むと、`update_ime_enabled()` は
+`state.active == false` のとき早期 return し、
+`state.active` は `wl_keyboard.enter` 相当のフォーカスで `true` になる
+（`window.rs:1610` の `set_focused`、`client.rs:2097` の `wl_keyboard::Event::Enter`）。
+今回の実行ではフォーカスが発生しなかったため、`enable()` まで到達していない。
+
+### 結論（検証の限界と次に必要なこと）
+
+- **正常性の確認**: GPUI ↔ compositor 間で text-input-v3 のセットアップは成功している。
+  アプリ側も paint 中に `window.handle_input(...)` を呼び、`filter_editing` のときだけ
+  `accepts_text_input` が true を返す実装になっている（`app/src/app.rs`）。
+- **未到達**: 実際のキーボードフォーカス下で `enable()` → `preedit_string` /
+  `commit_string` が発行される経路は、実行環境でウィンドウをフォーカスして
+  キー入力する必要があり、今回の非対話的実行では到達しなかった。
+- **実 IME 経路を自動検証するには**、次のいずれかが必要:
+  1. キー注入ツール（`ydotool` / `wtype` 等）の導入（※追加インストールは要確認）
+  2. 対話セッションで手動操作し、`WAYLAND_DEBUG=1` のログと画面を確認
+  3. アプリ側にデバッグ用のバッチ（フォーカス強制＋合成イベント注入）を足す
+- 現状の実装・証跡の正直な位置づけ: **`FilterInput` の状態遷移と Dashboard 反映は
+  デバッグフックで検証済み**だが、**実 IME からの入力経路は未検証**（虚偽の主張はしない）。
