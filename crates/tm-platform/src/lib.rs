@@ -223,11 +223,14 @@ impl NativeProbe {
         };
         components
             .iter()
-            .map(|component| ComponentSnapshot {
-                label: component.label().to_string(),
-                temperature_c: component.temperature(),
-                max_c: component.max(),
-                critical_c: component.critical(),
+            .map(|component| {
+                let label = sanitize_display(component.label(), MAX_NAME_CHARS);
+                ComponentSnapshot {
+                    label,
+                    temperature_c: component.temperature(),
+                    max_c: component.max(),
+                    critical_c: component.critical(),
+                }
             })
             .collect()
     }

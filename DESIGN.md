@@ -337,7 +337,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
    `supports_process_control = false` としてボタンを無効化する。
 5. **ループバック限定**: エージェントは `127.0.0.1` にのみ bind。`Authorization:
    Bearer` 必須、`Host` ヘッダも loopback に限定。CORS は localhost オリジンのみ。
-6. **表示サニタイズ**: 制御文字・ANSI エスケープ除去、文字数制限。
+6. **表示サニタイズ**: プロセス名・コマンドライン・コンポーネントラベル等の表示文字列から制御文字・ANSI エスケープ・bidi 制御文字を除去し、文字数を制限する。
 7. **供給網**: GPUI 系は完全一致ピン + `Cargo.lock` コミット。`cargo audit` に加え
    `cargo-deny`（advisories / bans / licenses / sources）をルート / web の両方で
    実行し、CI で継続検査する。未保守（unmaintained）等の除外は理由付きで `deny.toml` に
