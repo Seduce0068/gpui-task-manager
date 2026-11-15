@@ -329,3 +329,8 @@
 - `web/scripts/cdp_verify_settings.py` の期待スキーマが実装（`tree_view` 追加後）に追随しておらず検証が失敗していたため、期待キーに `tree_view` を追加し復元用設定にも含めた。
 - 再実行: `{"passed": true, "failures": []}`（fresh / saved / saved_parsed / restored）。保存内容は `version/interval_ms/sort/details_visible/tree_view` のみでトークンを含まず、再読込で `sort=名前, dir=asc` が復元されることを確認。
 - 証跡 `web/verification/web-settings-evidence.json` を更新。検証用プロセスは停止しポート解放を確認。
+
+## 2026-11-16（ネイティブ版 IME デバッグフック再検証）
+
+- `cargo build -p gpui-task-manager` → `TM_DEBUG_IME=1` で起動し、`composing(にほんご, marked=0..4, filter="")` → `composing(日本語, marked=0..3, filter="")` → `committed(filter="日本語", composing=false)` を実機で再確認。
+- 証跡 `notes/assets/native-ime-evidence.txt` を追加。実 IME（IBus/fcitx5）経路は未検証のまま。

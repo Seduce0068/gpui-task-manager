@@ -510,3 +510,24 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 検証後の Chrome / HTTP サーバは停止し、ポート 8091 / 9223 の解放を確認。
 - 教訓: 実装のスキーマ変更時に検証スクリプトの期待値が取り残される。スキーマ変更時は
   `web/scripts/cdp_verify_settings.py` の期待キーも同時に更新する（今回の修正で解消）。
+
+## 2026-11-16（ネイティブ版 IME デバッグフックの再検証）
+
+`cargo build -p gpui-task-manager`（debug バイナリ、174 MB）をビルドし、`TM_DEBUG_IME=1` で
+起動して state 遷移ログを再取得した（Wayland セッション上、`timeout 25` で終了）。
+
+```text
+$ timeout 25 env TM_DEBUG_IME=1 ./target/debug/gpui-task-manager
+TM_DEBUG_IME: composing field="にほんご" marked=Some(0..4) filter=""
+TM_DEBUG_IME: composing field="日本語" marked=Some(0..3) filter=""
+TM_DEBUG_IME: committed filter="日本語" composing=false field="日本語"
+（exit 124 = timeout による終了。GUI アプリのため常駐が正常）
+```
+
+- 変換中（`composing`）はフィールドに未確定文字列（にほんご → 日本語）と marked range が入り、
+  **Dashboard の `filter` は空のまま**（一覧は絞り込まれない）。
+- 確定（`committed`）で初めて `filter="日本語"` となり、`composing=false` になる。
+- 証跡: `notes/assets/native-ime-evidence.txt`（ログ全文）、既存スクリーンショット `native-ime-0{1,2}-*.png`。
+- 制約（変更なし）: これはデバッグフックによる `FilterInput` の状態遷移と Dashboard 反映の検証であり、
+  **実 IME（IBus / fcitx5）の Wayland text-input-v3 / X11 XIM 経路は未検証**。
+  実 IME での手動確認には日本語入力メソッドのインストールと対話操作が必要。
