@@ -95,7 +95,7 @@ async def main() -> int:
         except json.JSONDecodeError as error:
             check(False, f"保存された設定が JSON ではない: {error}")
     check(
-        set(saved.keys()) == {"version", "interval_ms", "sort", "details_visible"},
+        set(saved.keys()) == {"version", "interval_ms", "sort", "details_visible", "tree_view"},
         f"保存スキーマが想定どおり（実際: {sorted(saved.keys())}）",
     )
     check("token" not in json.dumps(saved).lower(), "トークンが保存されていない")
@@ -107,6 +107,7 @@ async def main() -> int:
         "interval_ms": 5000,
         "sort": {"key": "Name", "direction": "Ascending"},
         "details_visible": False,
+        "tree_view": True,
     }
     await cdp.evaluate(
         f"localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(restored))});"
