@@ -581,3 +581,41 @@ wayland プロトコルの送受信ログ（3,055 行）を取得した。
   3. アプリ側にデバッグ用のバッチ（フォーカス強制＋合成イベント注入）を足す
 - 現状の実装・証跡の正直な位置づけ: **`FilterInput` の状態遷移と Dashboard 反映は
   デバッグフックで検証済み**だが、**実 IME からの入力経路は未検証**（虚偽の主張はしない）。
+
+## 2026-11-16（CI 全ジョブ起動失敗の原因特定: private リポジトリの課金枠）
+
+前節で「請求エラー」とだけ記録していた事象について、**対照実験により原因を特定**した。
+
+### 対照実験の結果
+
+同一アカウント（`Seduce0068`）の 2 リポジトリで、同時期の CI 実行結果が分かれた。
+
+| リポジトリ | 公開設定 | 直近の CI | 実行時間 | 結果 |
+|---|---|---|---|---|
+| `gpui-file-explorer` | **public** | `docs: update test count from 36 to 132`（2026-11-15T16:02:50Z） | 5 分 33 秒 | ✅ **success** |
+| `gpui-task-manager` | **private** | `docs: record wayland ...`（2026-11-15T15:57:27Z） | 4 秒 | ❌ failure（0 step） |
+
+失敗ジョブのアノテーション（GitHub API で取得）:
+
+```text
+The job was not started because recent account payments have failed or your
+spending limit needs to be increased. Please check the 'Billing & plans'
+section in your settings
+```
+
+### 結論
+
+- **原因は GitHub Actions の課金**: private リポジトリの Actions は課金対象（分数消費）であり、
+  支払い失敗 / spending limit 未設定のためジョブが開始されない。
+- public リポジトリ（`gpui-file-explorer`）は Actions が無料枠で動くため、同じアカウントでも成功する。
+- したがって本件はコード / workflow 定義の問題ではなく、**リポジトリ公開設定と課金設定の問題**。
+
+### 対応の選択肢（いずれもアカウント設定の変更が必要）
+
+1. **`gpui-task-manager` を public 化** — CI が無料枠で動き即解決。ただし「まだ公開しない」方針と衝突するため要判断。
+2. **Billing & plans で支払い方法を修正 / spending limit を設定** — private のまま CI を継続。
+3. **ローカル検証を継続** — 本セッションで実施してきたとおり、CI で検証できない分は
+   ローカルの Runtime Proof（fmt/check/test/clippy/deny/vet/CDP）で代替する。
+
+エージェントからは 1・2 を実行できないため（アカウント設定 / 公開操作）、**ユーザー判断が必要**。
+現状は 3 の方針で検証を継続している。
