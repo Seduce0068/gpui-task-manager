@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Browser (wasm) GPUI shell for the GPUI task manager.
 //!
 //! The shell is read-only by design: a browser cannot read `/proc`, so the data
