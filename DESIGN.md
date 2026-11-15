@@ -344,8 +344,10 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
    記録し、DESIGN §14 で追跡する。Dependabot（Cargo / web / GitHub Actions、週次）と
    セキュリティアラートを有効化している。GPUI 系は自動更新の対象外（ADR-001 の完全ピン
    運用）。CycloneDX SBOM を `scripts/generate-sbom.sh` と CI `sbom` ジョブで生成する。
-   `cargo-vet` は未導入で、trust 方針・依存棚卸し・`supply-chain/` 運用手順を定めてから
-   段階導入する（`notes/cargo-vet-adoption.md`）。監査記録の捏造は行わない。
+   `cargo-vet` は root / web とも初期化済み（全依存を `exempt`＝未監査の明示として記録、
+   外部 imports 未使用）。trust root は自リポジトリのみとし、実レビューできた依存から
+   `audits.toml` に記録する（`notes/cargo-vet-adoption.md`）。監査記録の捏造は行わない。
+   CI は共通 `rust-gates.yml@v1` の `extra_gates` で `cargo vet --locked` を必須化。
 8. **秘密情報を扱わない**: 設定ファイル・認証情報・DB を持たない。トークンは
    起動時に生成し、stderr にのみ表示する。
 
@@ -705,8 +707,9 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - エージェントはシリアル処理（1 スナップショット約 250 ms）。同時リクエストは
   キューされる。
 - `cargo-deny` は導入済み（`deny.toml`、ルート / web の CI ジョブ）。SBOM 生成は
-  `scripts/generate-sbom.sh` と CI `sbom` ジョブで運用中。`cargo-vet` は未導入で、
-  `notes/cargo-vet-adoption.md` に trust 方針・棚卸し・導入手順の準備メモがある
+  `scripts/generate-sbom.sh` と CI `sbom` ジョブで運用中。`cargo-vet` は初期化済み
+  （root / web の `supply-chain/`、全依存 exempt ベースライン、imports 未使用）で、
+  `notes/cargo-vet-adoption.md` に運用方針・imports 候補の一次調査がある
   （監査記録の捏造は行わない）。branch protection は現行 private プラン制約で未適用
   （`403`）。
 - ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。

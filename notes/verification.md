@@ -399,3 +399,12 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 影響: gates（fmt/check/test/clippy/audit/extra_gates の cargo vet 含む）/ wasm / native-windows / native-macos / deny / release-linux / web-dist / sbom の全ジョブが未起動。コードや workflow 定義の問題ではない（0 step で失敗）。
 - 対応: アカウントの Billing & plans（支払い方法 / spending limit）の確認・修正が必要（アカウント設定のためエージェントでは対応不可）。修正後に `gh workflow run` または再 push で再検証する。
 - 代替: 上記期間のリポジトリ変更はローカルの標準検証ループ（`bash scripts/check.sh`、exit 0）で検証済み。
+
+## 2026-11-15（cargo audit 再実行・ドキュメント整合監査）
+
+- `cargo audit`: exit 0、既知の 8 件 allowed warnings（unmaintained: instant / paste / rustls-pemfile / rustybuzz / ttf-parser / zbus_names / zvariant / zvariant_derive）のみで新規アドバイザリなし。
+- ドキュメント整合監査（本日の変更後）:
+  - `DESIGN.md` §7.2 供給網 / §15 残余リスクの「cargo-vet 未導入」記述を初期化済みの現状に更新。
+  - `notes/index.md` の cargo-vet-adoption.md の概要説明を更新。
+  - `notes/verification.md` の日付付き過去エントリ（:120 / :309 / :377）は履歴として修正しない。
+  - README の CI ジョブ数（8 ジョブ）は `.github/workflows/ci.yml` と一致を確認。

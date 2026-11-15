@@ -294,3 +294,8 @@
 
 - `notes/cargo-vet-adoption.md` §8.1 に GitHub API 一次情報による候補調査を追記: `mozilla/supply-chain`（push 2026-11-10、audits.toml 約 509 KB）、`google/rust-crate-audits`（push 2026-11-10、criteria 定義 + 監査基準文書）、`zcash/rust-ecosystem`（push 2026-07-12、`cargo vet suggest` が registry 経由で参照を試行）、EmbarkStudios（該当なし・未確認）。
 - 採用はしない（`imports.lock` は空のまま）。criteria の意味・`aggregated-from` の信頼連鎖・主要依存へのカバレッジ評価後に `cargo vet import` / `trust` を検討する。
+
+## 2026-11-15（cargo audit 再実行・ドキュメント整合監査）
+
+- `cargo audit` 再実行: exit 0、既知 8 件の allowed warnings（unmaintained）のみ、新規アドバイザリなし。
+- ドキュメント整合: `DESIGN.md`（§7.2 / §15）と `notes/index.md` の「cargo-vet 未導入」記述を初期化済みの現状に更新。README の CI ジョブ数は ci.yml と一致。
