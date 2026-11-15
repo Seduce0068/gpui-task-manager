@@ -95,11 +95,18 @@ chmod 600 ~/.config/tm-agent.token
 - GPUI 系（`gpui-kit` / `gpui-pre*`）、`sysinfo`、`rustix` は**完全一致ピン**。
   `Cargo.lock` をコミットする。
 - `rustix` は RUSTSEC-2026-0486 の修正版 `=1.1.6` に固定。
-- `cargo audit` と `cargo-deny`（advisories / bans / licenses / sources）を CI で
-  実行する。ルート / web の両ワークスペースで ok（未保守 8 件は理由付き ignore）。
+- `cargo audit` と `cargo-deny`（advisories / bans / licenses / sources）を CI と
+  ローカル `scripts/check.sh` で実行する（root / web）。既知の未保守・重複は
+  `deny.toml` で理由付きに管理する。
+- **SBOM**: `scripts/generate-sbom.sh`（CycloneDX JSON, root/web）と CI の `sbom`
+  ジョブで供給網可視性を確保する。`cargo-vet` による監査/import の本格導入は
+  trust 方針の策定と合わせて今後進める。
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
   自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
 - 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
+- **運用制約**: private リポジトリのプラン制約により GitHub ブランチ保護 API は
+  `403`（GitHub Pro または public が必要）で未設定。公開/プラン変更までは
+  必須 CI・レビュー運用で `main` を保護する。
 
 ## 7. 残余リスク
 

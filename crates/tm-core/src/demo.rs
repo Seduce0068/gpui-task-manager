@@ -10,8 +10,8 @@
 //! byte-for-byte identical and can be asserted in tests.
 
 use crate::model::{
-    CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot,
-    ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
+    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
 };
 use crate::port::{ControlError, PlatformInfo, ProbeError, SystemProbe};
 
@@ -399,6 +399,21 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
         ],
     };
 
+    let components = vec![
+        ComponentSnapshot {
+            label: "CPU Package".to_string(),
+            temperature_c: Some(42.0 + jitter(41) * 18.0),
+            max_c: Some(68.0),
+            critical_c: Some(100.0),
+        },
+        ComponentSnapshot {
+            label: "NVMe Composite".to_string(),
+            temperature_c: Some(38.0 + jitter(42) * 10.0),
+            max_c: Some(52.0),
+            critical_c: Some(85.0),
+        },
+    ];
+
     SystemSnapshot {
         sampled_at: Timestamp::from_secs(DEMO_BASE_UNIX_SECS + tick),
         hostname: Some("kubuntu-demo".to_string()),
@@ -438,6 +453,7 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 used_bytes: 640 * 1_024 * 1_024 * 1_024,
             },
         ],
+        components,
         self_pid: Some(4_242),
     }
 }

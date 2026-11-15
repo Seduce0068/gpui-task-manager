@@ -266,6 +266,82 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
+/// A row in a flattened process tree view.
+///
+/// `index` points into the original process slice. `depth` is 0 for root
+/// processes (no parent present in the selected snapshot subset).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessTreeRow {
+    /// Index into the source process slice.
+    pub index: usize,
+    /// Nesting depth from a root process.
+    pub depth: usize,
+    /// Whether this process has child processes in the flattened tree.
+    pub has_children: bool,
+}
+
+/// Flattens selected process indices into depth-first tree order.
+///
+/// Parent-child relationships are resolved by matching [`ProcessSnapshot::parent_pid`]
+/// to a PID present among `indices` in `processes`. If a parent is missing from
+/// the selected subset, the process becomes a root. Sibling order preserves the
+/// order of `indices` (typically the result of [`filter_and_sort`]).
+pub fn flatten_process_tree(
+    processes: &[ProcessSnapshot],
+    indices: &[usize],
+) -> Vec<ProcessTreeRow> {
+    use std::collections::{HashMap, HashSet};
+
+    let selected: HashSet<usize> = indices.iter().copied().collect();
+    let pid_to_index: HashMap<u32, usize> = indices
+        .iter()
+        .copied()
+        .filter_map(|idx| processes.get(idx).map(|p| (p.key.pid, idx)))
+        .collect();
+
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+
+    for &idx in indices {
+        let Some(process) = processes.get(idx) else {
+            continue;
+        };
+        let parent_idx = process
+            .parent_pid
+            .and_then(|ppid| pid_to_index.get(&ppid).copied())
+            .filter(|&pidx| pidx != idx && selected.contains(&pidx));
+        match parent_idx {
+            Some(pidx) => children.entry(pidx).or_default().push(idx),
+            None => roots.push(idx),
+        }
+    }
+
+    fn walk(
+        idx: usize,
+        depth: usize,
+        children: &std::collections::HashMap<usize, Vec<usize>>,
+        out: &mut Vec<ProcessTreeRow>,
+    ) {
+        let child_list = children.get(&idx);
+        out.push(ProcessTreeRow {
+            index: idx,
+            depth,
+            has_children: child_list.is_some_and(|c| !c.is_empty()),
+        });
+        if let Some(child_list) = child_list {
+            for &child in child_list {
+                walk(child, depth + 1, children, out);
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(indices.len());
+    for root in roots {
+        walk(root, 0, &children, &mut out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +465,71 @@ mod tests {
             ..Filter::default()
         }
         .is_active());
+    }
+
+    #[test]
+    fn flatten_process_tree_preserves_roots_and_children() {
+        let mut parent = process(1, "init", 0.0, 1);
+        parent.parent_pid = None;
+        let mut child = process(2, "bash", 0.0, 1);
+        child.parent_pid = Some(1);
+        let mut grandchild = process(3, "vim", 0.0, 1);
+        grandchild.parent_pid = Some(2);
+        let mut other = process(4, "other", 0.0, 1);
+        other.parent_pid = None;
+        let processes = vec![parent, child, grandchild, other];
+        let rows = flatten_process_tree(&processes, &[0, 1, 2, 3]);
+        assert_eq!(
+            rows,
+            vec![
+                ProcessTreeRow {
+                    index: 0,
+                    depth: 0,
+                    has_children: true
+                },
+                ProcessTreeRow {
+                    index: 1,
+                    depth: 1,
+                    has_children: true
+                },
+                ProcessTreeRow {
+                    index: 2,
+                    depth: 2,
+                    has_children: false
+                },
+                ProcessTreeRow {
+                    index: 3,
+                    depth: 0,
+                    has_children: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn flatten_process_tree_treats_missing_parent_as_root() {
+        let mut child = process(10, "child", 0.0, 1);
+        child.parent_pid = Some(999);
+        let processes = vec![child];
+        let rows = flatten_process_tree(&processes, &[0]);
+        assert_eq!(
+            rows,
+            vec![ProcessTreeRow {
+                index: 0,
+                depth: 0,
+                has_children: false
+            }]
+        );
+    }
+
+    #[test]
+    fn flatten_process_tree_respects_selected_order_for_roots() {
+        let mut a = process(1, "a", 0.0, 1);
+        a.parent_pid = None;
+        let mut b = process(2, "b", 0.0, 1);
+        b.parent_pid = None;
+        let processes = vec![a, b];
+        let rows = flatten_process_tree(&processes, &[1, 0]);
+        assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 0]);
     }
 }

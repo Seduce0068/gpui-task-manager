@@ -9,9 +9,10 @@ description = "Native SystemProbe implementation (sysinfo; rustix on Unix) for t
 
 [dependencies]
 tm-core = { workspace = true }
-# GPU/component 収集はタスクマネージャーに不要なので default features を絞り、
-# system（CPU/メモリ/プロセス）、disk、network、user だけを使う。
+# default features を絞りつつ、温度センサー等の component 収集も有効化する
+# （GPU 利用率の詳細収集は将来検討）。system/disk/network/user は基本機能。
 sysinfo = { version = "=0.40.3", default-features = false, features = [
+    "component",
     "system",
     "disk",
     "network",
