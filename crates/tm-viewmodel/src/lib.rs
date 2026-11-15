@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use tm_core::format;
 use tm_core::{
-    filter_and_sort, Filter, MetricHistory, NetworkCounters, PlatformInfo, ProcessKey,
-    ProcessSnapshot, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
+    filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
+    ProcessKey, ProcessSnapshot, ProcessTreeRow, Signal, SortKey, SortSpec, SystemSnapshot,
+    Timestamp,
 };
 
 pub mod filter_input;
@@ -57,6 +58,10 @@ pub enum Command {
     ToggleDetails,
     /// Set the details panel visibility explicitly (used when restoring settings).
     SetDetailsVisible(bool),
+    /// Show or hide the process tree view.
+    ToggleTreeView,
+    /// Set the process tree view explicitly (used when restoring settings).
+    SetTreeView(bool),
     /// Open the confirmation dialog for a signal.
     RequestSignal {
         /// Target process.
@@ -131,6 +136,8 @@ pub struct Dashboard {
     platform: PlatformInfo,
     snapshot: Option<SystemSnapshot>,
     visible: Vec<usize>,
+    visible_depths: Vec<usize>,
+    tree_view: bool,
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
@@ -152,6 +159,8 @@ impl Dashboard {
             platform,
             snapshot: None,
             visible: Vec::new(),
+            visible_depths: Vec::new(),
+            tree_view: false,
             history: MetricHistory::new(HISTORY_CAPACITY),
             sort: SortSpec::default(),
             filter: Filter::default(),
@@ -212,6 +221,11 @@ impl Dashboard {
         self.details_visible
     }
 
+    /// Whether the process table is shown as a tree.
+    pub fn tree_view(&self) -> bool {
+        self.tree_view
+    }
+
     /// Selected process identity.
     pub fn selected_key(&self) -> Option<ProcessKey> {
         self.selected
@@ -223,10 +237,26 @@ impl Dashboard {
         snapshot.process(self.selected?)
     }
 
-    /// Indices into `snapshot.processes` for the rows the table shows, already
-    /// filtered and sorted.
+    /// Indices into `snapshot.processes` for the rows the table shows, in display order.
     pub fn visible_indices(&self) -> &[usize] {
         &self.visible
+    }
+
+    /// Nesting depth for each visible row (0 for flat view and tree roots).
+    pub fn visible_depths(&self) -> &[usize] {
+        &self.visible_depths
+    }
+
+    /// Visible rows with process indices and tree depth.
+    pub fn visible_rows(&self) -> impl Iterator<Item = ProcessTreeRow> + '_ {
+        self.visible
+            .iter()
+            .enumerate()
+            .map(|(pos, &index)| ProcessTreeRow {
+                index,
+                depth: self.visible_depths.get(pos).copied().unwrap_or(0),
+                has_children: false,
+            })
     }
 
     /// Number of rows after filtering.
@@ -332,6 +362,16 @@ impl Dashboard {
             }
             Command::SetDetailsVisible(visible) => {
                 self.details_visible = visible;
+                Vec::new()
+            }
+            Command::ToggleTreeView => {
+                self.tree_view = !self.tree_view;
+                self.recompute_visible();
+                Vec::new()
+            }
+            Command::SetTreeView(tree_view) => {
+                self.tree_view = tree_view;
+                self.recompute_visible();
                 Vec::new()
             }
             Command::RequestSignal { key, signal } => {
@@ -486,9 +526,18 @@ impl Dashboard {
     fn recompute_visible(&mut self) {
         let Some(snapshot) = &self.snapshot else {
             self.visible.clear();
+            self.visible_depths.clear();
             return;
         };
-        self.visible = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        if self.tree_view {
+            let rows = flatten_process_tree(&snapshot.processes, &base);
+            self.visible = rows.iter().map(|row| row.index).collect();
+            self.visible_depths = rows.iter().map(|row| row.depth).collect();
+        } else {
+            self.visible = base;
+            self.visible_depths = vec![0; self.visible.len()];
+        }
         self.ensure_selection_visible();
         self.sync_selection_hint();
     }

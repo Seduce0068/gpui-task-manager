@@ -27,6 +27,8 @@ pub struct Settings {
     pub sort: SortSpec,
     /// Whether the details panel is visible.
     pub details_visible: bool,
+    /// Whether the process table is shown as a process tree.
+    pub tree_view: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             interval_ms: 1_000,
             sort: SortSpec::default(),
             details_visible: true,
+            tree_view: false,
         }
     }
 }
@@ -63,6 +66,7 @@ mod tests {
         assert_eq!(settings.interval_ms, 1_000);
         assert_eq!(settings.sort.key, SortKey::Cpu);
         assert!(settings.details_visible);
+        assert!(!settings.tree_view);
     }
 
     #[test]
@@ -100,6 +104,7 @@ mod tests {
                 direction: SortDirection::Descending,
             },
             details_visible: false,
+            tree_view: false,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(json.contains("\"interval_ms\":2000"), "{json}");

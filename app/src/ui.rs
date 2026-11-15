@@ -84,13 +84,13 @@ pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
 }
 
 /// A label/value row for the details panel.
-pub fn kv(label: &'static str, value: impl Into<SharedString>) -> Div {
+pub fn kv(label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
     h_flex()
         .justify_between()
         .items_center()
         .gap_2()
         .text_xs()
-        .child(div().text_color(rgb(C_MUTED)).child(label))
+        .child(div().text_color(rgb(C_MUTED)).child(label.into()))
         .child(
             div()
                 .text_color(rgb(C_SUBTEXT))

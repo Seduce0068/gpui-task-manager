@@ -532,4 +532,47 @@ mod tests {
         let rows = flatten_process_tree(&processes, &[1, 0]);
         assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 0]);
     }
+
+    #[test]
+    fn flatten_process_tree_handles_child_before_parent_in_input() {
+        let mut child = process(2, "child", 0.0, 1);
+        child.parent_pid = Some(1);
+        let mut parent = process(1, "parent", 0.0, 1);
+        parent.parent_pid = None;
+        let processes = vec![child, parent];
+        let rows = flatten_process_tree(&processes, &[0, 1]);
+        assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 0]);
+        assert_eq!(
+            rows[0],
+            ProcessTreeRow {
+                index: 1,
+                depth: 0,
+                has_children: true
+            }
+        );
+        assert_eq!(
+            rows[1],
+            ProcessTreeRow {
+                index: 0,
+                depth: 1,
+                has_children: false
+            }
+        );
+    }
+
+    #[test]
+    fn flatten_process_tree_preserves_sibling_order_from_indices() {
+        let mut root = process(1, "root", 0.0, 1);
+        root.parent_pid = None;
+        let mut c1 = process(2, "c1", 0.0, 1);
+        c1.parent_pid = Some(1);
+        let mut c2 = process(3, "c2", 0.0, 1);
+        c2.parent_pid = Some(1);
+        let processes = vec![root, c1, c2];
+        let rows = flatten_process_tree(&processes, &[0, 2, 1]);
+        assert_eq!(
+            rows.iter().map(|r| r.index).collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
+    }
 }
