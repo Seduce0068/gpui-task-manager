@@ -666,3 +666,12 @@
   （root 5 メンバー + web）を生成・収集。すべて `bomFormat=CycloneDX` /
   `specVersion=1.3` で jq パース成功。元ファイルの後始末も動作し、
   作業ツリーはクリーン。未使用依存削除後も SBOM 生成に影響なし。
+
+## 2026-11-17（unsafe lint をローカル検証ゲートへ明示）
+
+- 共通指示 §15 に従い、`scripts/check.sh` の clippy に
+  `-D clippy::undocumented_unsafe_blocks` を明示（root / web 両方）。
+  全 6 crate が `#![forbid(unsafe_code)]` のため実害はないが、
+  意図をゲートに表現し、将来の追加を検知できるようにした。
+- `bash -n` / `shellcheck` / `shfmt -d -i 2` 成功、`bash scripts/check.sh`
+  通し実行で `All checks passed.` を確認。
