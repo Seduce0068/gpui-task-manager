@@ -310,21 +310,27 @@ fn handle_connection(
         }
     };
 
-    if let Some(host) = request.header("host") {
-        if !http::is_allowed_host(host) {
-            let response = http::Response::json(
-                403,
-                "Forbidden",
-                error_body("Host ヘッダがループバックではありません"),
-            );
-            return http::write_response(stream, &response);
-        }
-    }
-
+    // Compute the allowed Origin before any early return so error responses
+    // (e.g. the Host check below) carry CORS headers too. Without this, the
+    // browser UI gets an opaque CORS failure instead of the 403 body.
     let origin = request.header("origin").map(str::to_string);
     let allowed_origin = origin
         .as_deref()
         .filter(|origin| http::is_allowed_origin(origin));
+
+    if let Some(host) = request.header("host") {
+        if !http::is_allowed_host(host) {
+            let mut response = http::Response::json(
+                403,
+                "Forbidden",
+                error_body("Host ヘッダがループバックではありません"),
+            );
+            if let Some(origin) = allowed_origin {
+                http::add_cors_headers(&mut response, origin);
+            }
+            return http::write_response(stream, &response);
+        }
+    }
 
     let mut response = route(&request);
     if let Some(origin) = allowed_origin {
@@ -734,6 +740,35 @@ mod tests {
         );
         handle.join().expect("server thread");
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    }
+
+    #[test]
+    fn forbidden_host_response_carries_cors_only_for_allowed_origins() {
+        // The browser UI must be able to read the 403 body; a foreign Origin
+        // must still never be reflected.
+        let (address, handle) = spawn_demo_server(2);
+        let allowed = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let foreign = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nOrigin: https://evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        handle.join().expect("server thread");
+
+        assert!(allowed.starts_with("HTTP/1.1 403"), "{allowed}");
+        assert!(
+            allowed.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"),
+            "{allowed}"
+        );
+        assert!(allowed.contains("Vary: Origin"), "{allowed}");
+
+        assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+        assert!(
+            !foreign.contains("Access-Control-Allow-Origin"),
+            "{foreign}"
+        );
     }
 
     #[test]
