@@ -1119,11 +1119,31 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
 
-        // Keep this loop well under READ_TIMEOUT (1 s): the idle worker threads
-        // must not time out before the 9th connection is admitted.
+        // Hold every slot with a partial request head. A peer that keeps
+        // sending bytes (without the final CRLF) never hits READ_TIMEOUT, so
+        // the counter cannot drop below MAX_CONNECTIONS mid-test — no reliance
+        // on finishing the whole loop within one second.
         let mut idle = Vec::with_capacity(MAX_CONNECTIONS);
+        let mut keepers = Vec::with_capacity(MAX_CONNECTIONS);
         for _ in 0..MAX_CONNECTIONS {
-            idle.push(TcpStream::connect(address).expect("connect idle"));
+            let peer = TcpStream::connect(address).expect("connect idle");
+            let mut keeper = peer.try_clone().expect("clone idle peer");
+            keepers.push(std::thread::spawn(move || {
+                // An incomplete head keeps `read_request` waiting for "\r\n\r\n".
+                // Send it once, then refresh only to stay under READ_TIMEOUT:
+                // the bytes must not accumulate past MAX_HEADER_BYTES (8 KiB).
+                if keeper
+                    .write_all(b"GET /healthz HTTP/1.1\r\nHost: x")
+                    .is_err()
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = keeper.write_all(b"\r\nX: keepalive");
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = keeper.shutdown(Shutdown::Write);
+            }));
+            idle.push(peer);
             accept_and_spawn(&listener, &state);
         }
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
@@ -1145,5 +1165,8 @@ mod tests {
         );
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
         drop(idle);
+        for keeper in keepers {
+            keeper.join().expect("keeper thread");
+        }
     }
 }
