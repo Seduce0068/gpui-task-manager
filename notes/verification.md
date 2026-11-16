@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **171 passed / 0 failed**（tm-core 65 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **173 passed / 0 failed**（tm-core 67 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1055,3 +1055,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - wasm 7,641,970 B（gzip 3,045,139 B、旧 7,641,445 B から微増）。
   README / DESIGN / web/README / current-state / web-shell の現状値を更新（旧値は履歴として保持）。
   検証用 HTTP サーバ / Chrome は停止し、ポート 8091 / 9223 の解放を確認。
+
+## 2026-11-17（ツリーサイクル回帰テストを拡充）
+
+- サイクル修正の検証を補強するため 2 テスト追加:
+  - 3 ノード cycle（`1→2→3→1`）で全メンバーが表示され、深さが 0/1/2 に収束（無限ループなし）。
+  - 通常ルート配下に別の 2 ノード cycle がある場合も、全プロセスが落ちずに表示される。
+- tm-core 65 → **67 tests**、workspace 173 passed / clippy 0 warning / fmt OK。

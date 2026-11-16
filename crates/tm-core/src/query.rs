@@ -600,6 +600,42 @@ mod tests {
     }
 
     #[test]
+    fn flatten_process_tree_survives_a_three_node_cycle() {
+        let mut a = process(1, "a", 0.0, 1);
+        a.parent_pid = Some(2);
+        let mut b = process(2, "b", 0.0, 1);
+        b.parent_pid = Some(3);
+        let mut c = process(3, "c", 0.0, 1);
+        c.parent_pid = Some(1);
+        let processes = vec![a, b, c];
+        let rows = flatten_process_tree(&processes, &[0, 1, 2], &std::collections::HashSet::new());
+        assert_eq!(rows.len(), 3, "all cycle members must be visible: {rows:?}");
+        let mut depths = rows.iter().map(|row| row.depth).collect::<Vec<_>>();
+        depths.sort_unstable();
+        assert_eq!(
+            depths,
+            vec![0, 1, 2],
+            "the walk must terminate without loops"
+        );
+    }
+
+    #[test]
+    fn flatten_process_tree_cycle_keeps_normal_subtree() {
+        let mut root = process(1, "root", 0.0, 1);
+        root.parent_pid = None;
+        let mut child = process(2, "child", 0.0, 1);
+        child.parent_pid = Some(1);
+        let mut x = process(3, "x", 0.0, 1);
+        x.parent_pid = Some(4);
+        let mut y = process(4, "y", 0.0, 1);
+        y.parent_pid = Some(3);
+        let processes = vec![root, child, x, y];
+        let rows =
+            flatten_process_tree(&processes, &[0, 1, 2, 3], &std::collections::HashSet::new());
+        assert_eq!(rows.len(), 4, "no process may be dropped: {rows:?}");
+    }
+
+    #[test]
     fn flatten_process_tree_respects_selected_order_for_roots() {
         let mut a = process(1, "a", 0.0, 1);
         a.parent_pid = None;
