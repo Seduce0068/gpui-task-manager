@@ -865,3 +865,9 @@
 - README / DESIGN の「CORS は localhost のみ」は不正確だった。
   実装 `is_allowed_origin` は `http://127.0.0.1[:port]` と `http://localhost[:port]`
   の両方を許可（DESIGN §7 の記述は正確）。各所を実装に合わせて修正。
+
+## 2026-11-17（現状サマリと実測の完全一致を確認）
+
+- `notes/current-state.md` の記載（test 182 passed / web 12 / wasm 7,642,794 B /
+  gzip 3,044,134 B / CI 8/8）が実測とすべて一致することを確認。新たな不整合なし。
+- CI run 43977476416 は直近 push の concurrency で cancelled（wasm/deny/sbom は success）。
