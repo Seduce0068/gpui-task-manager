@@ -17,7 +17,7 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 | `src/lib.rs` | エントリ（`WebPlatform` 直接構築、フォントロード、ウィンドウ生成） |
 | `src/shell.rs` | 画面（ヘッダー / 概要 / 表 / 詳細 / ステータスバー）、入力、データ経路 |
 | `src/agent.rs` | `tm-agent` クライアント（Authorization ヘッダ、JSON パース、エラー整形） |
-| `src/theme.rs` | Catppuccin Mocha 系の配色トークン（ネイティブ版と同系） |
+| `src/theme.rs` | Catppuccin Mocha / Latte の配色トークンと切替状態（ネイティブ版と同系） |
 | `src/widgets.rs` | card / metric_bar / sparkline / pill / kv などの小さな部品 |
 | `index.html` | trunk のエントリ（`data-trunk rel="rust"`） |
 | `Trunk.toml` | trunk 設定（serve ポート 8091） |
@@ -50,8 +50,8 @@ trunk build --release
 ```
 
 - 初回は依存 crate のコンパイル込みで 1〜2 分、2 回目以降は数秒です。
-- 生成物サイズ（release、2026-11-15 再計測）: wasm 7.28 MiB（7,635,554 B、
-  gzip 2.90 MiB）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
+- 生成物サイズ（release、2026-11-16 再計測）: wasm 7.29 MiB（7,641,445 B、
+  gzip 3,044,050 B）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
   trunk が wasm-opt（-Oz）を適用します（初回は wasm-opt を自動ダウンロード）。
 
 ## 起動（デモモード）
@@ -182,7 +182,7 @@ python3 cdp_verify_web.py \
   取得できず、GPUI が WebGL2（ANGLE + SwiftShader）へ自動フォールバックします。
   WebGPU を強制すると device lost で描画が停止します（スパイクで確認済み）。
   実 GPU の通常 Chrome での WebGPU 描画は未確認です。
-- **wasm サイズ**: 7.28 MiB（gzip 2.90 MiB、2026-11-15 計測）。wasm-opt（-Oz）適用後も大きいため、
+- **wasm サイズ**: 7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）。wasm-opt（-Oz）適用後も大きいため、
   初回ロードに時間がかかります。配信時は gzip/brotli を有効にしてください。
 - **単一ウィンドウ**: GPUI Web はトップレベルウィンドウ 1 個のみで、
   ポップアップ・ダイアログ・ファイルダイアログは使えません。

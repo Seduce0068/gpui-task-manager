@@ -197,11 +197,11 @@ $ cd web && trunk build --release
 2026-11-14T12:28:20Z  INFO ✅ success
 ```
 
-生成物（release、2026-11-15 再計測）:
+生成物（release、2026-11-16 再計測）:
 
 | ファイル | サイズ | gzip |
 |---|---|---|
-| `dist/*_bg.wasm` | 7,635,554 B（7.28 MiB） | 3,042,856 B（2.90 MiB） |
+| `dist/*_bg.wasm` | 7,641,445 B（7.29 MiB） | 3,044,050 B（2.90 MiB） |
 | `dist/*.js` | 159,873 B（156 KiB） | 24,504 B |
 | `dist/index.html` | 1,320 B | 842 B |
 
@@ -291,7 +291,7 @@ $ cd web && trunk build --release
 - headless Chrome は WebGL2（ANGLE + SwiftShader）へフォールバックする。
   WebGPU を強制すると device lost で描画停止（スパイクで確認）。実 GPU の
   WebGPU 描画、Safari / Firefox は未検証。
-- wasm が 7.28 MiB（gzip 2.90 MiB、2026-11-15 計測、wasm-opt 適用済み）と大きい。
+- wasm が 7.29 MiB（gzip 2.90 MiB、2026-11-16 計測、wasm-opt 適用済み）と大きい。
   初回ロード時間は未計測（localhost のスパイクでは wasm 転送 46 ms だったが、実ネットワークでは
   転送とコンパイルが支配的になる）。
 - 単一ウィンドウのみ。ポップアップ/ダイアログ/ファイルダイアログ不可。
