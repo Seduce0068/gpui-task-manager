@@ -611,3 +611,11 @@
   コンパイルしてテストするため）をコードコメント化。属性を外すと 30 件以上の
   警告が出ることを確認し、クレート全体の allow が妥当であることを検証。
   動作変更なし（web 11 tests / clippy / wasm check 成功）。
+
+## 2026-11-17（check.sh に未使用依存チェックを追加）
+
+- `scripts/check.sh` に `cargo machete`（root / web）のオプショナルゲートを追加。
+  cargo-deny / cargo-vet と同じパターンで、未インストール時は skip。
+- 検証: `bash -n` / `shellcheck` / `shfmt -d -i 2`（差分なし）および
+  `bash scripts/check.sh` を通しで実行し `All checks passed.` を確認。
+  root / web とも未使用依存 0 件。
