@@ -853,3 +853,9 @@
 
 - 空接続 Ok(None) と途中終了 Malformed を read_head ヘルパーで直接検証。
   テスト 2 件追加（tm-agent 48 → 50、workspace 182 passed）。
+
+## 2026-11-17（ループバック bind の記述を実装へ合わせる）
+
+- README / SECURITY / DESIGN の「`127.0.0.1` のみ bind」は不正確だった。
+  実装は `SocketAddr::ip().is_loopback()` で IPv4/IPv6 の全 loopback を許可
+  （`[::1]` も受け付けるテストあり）。各所「ループバックアドレスのみ（既定 127.0.0.1）」へ修正。

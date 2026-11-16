@@ -263,7 +263,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 ### 6.3 エージェント
 
-- 127.0.0.1 のみ bind。認証は `Authorization: Bearer` のみ受け付ける
+- ループバックアドレスのみ bind（既定 127.0.0.1、IPv4/IPv6 の loopback を許可）。認証は `Authorization: Bearer` のみ受け付ける
   （クエリ文字列のトークンは URL 漏洩対策として拒否する）。
 - トークンは起動時に `/dev/urandom` から生成して stderr に 1 回表示する。
   `--token-file PATH` または `TM_AGENT_TOKEN` で外部から渡せる（ファイル推奨）。
