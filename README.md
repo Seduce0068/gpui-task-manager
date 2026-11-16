@@ -112,7 +112,7 @@ cd poc-wasm && trunk build --release
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
 （`gpui-pre-web`、WebGPU → WebGL2 自動フォールバック）で描画します。
 `tm-agent` に接続しない場合は決定的なデモデータで動作します。プロセス操作は
-**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）**で、
+**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）**で、
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
 `EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
@@ -208,7 +208,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - 優先度変更、GPU 監視、テーマの自動更新（`prefers-color-scheme` 連動）は未実装
 - DEB は未署名・リポジトリ未公開（ローカル生成のみ）
-- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-16 計測）
+- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 計測）
 - エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。接続は最大 8 本まで並列処理し、超過は即座に 503（アイドル接続が他のリクエストを阻塞しない）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある

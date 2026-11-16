@@ -710,3 +710,9 @@
 - run 43943002461 は gates / wasm / windows / web-dist / release-linux / sbom /
   cargo-deny の 7 ジョブ success。macOS ジョブは長時間 queued の後 cancelled
   （コード失敗ではない）。直前 run 43941598447 では macOS を含む 8/8 success。
+
+## 2026-11-17（wasm サイズ表記の計測日を現状へ修正）
+
+- CDP 再検証時に再計測した wasm（7,641,970 B / gzip 3,045,139 B、7.29 MiB）に
+  伴い、README 2 箇所と web/README の計測日を 2026-11-16 → 2026-11-17 に修正
+  （サイズ値自体は既に現状値）。
