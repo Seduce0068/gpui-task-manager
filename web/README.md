@@ -50,8 +50,8 @@ trunk build --release
 ```
 
 - 初回は依存 crate のコンパイル込みで 1〜2 分、2 回目以降は数秒です。
-- 生成物サイズ（release、2026-11-17 再計測）: wasm 7.29 MiB（7,641,970 B、
-  gzip 3,045,139 B）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
+- 生成物サイズ（release、2026-11-17 再計測）: wasm 7.29 MiB（7,642,794 B、
+  gzip 3,044,134 B）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
   trunk が wasm-opt（-Oz）を適用します（初回は wasm-opt を自動ダウンロード）。
 
 ## 起動（デモモード）
