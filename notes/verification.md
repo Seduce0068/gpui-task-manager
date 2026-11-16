@@ -239,8 +239,10 @@ $ ls -l /tmp/.../gpui-task-manager/settings.json
 -rw------- 1 user user 133 ... settings.json        # 0600
 ```
 
-- 一時ファイル（`settings.json.tmp`）は残らない（原子的 rename）。
-- JSON は `version` / `interval_ms` / `sort` / `details_visible` の 4 項目のみ。
+- 一時ファイルは残らない（原子的 rename）。当時の名前は `settings.json.tmp` だったが、
+  2026-11-17 以降は PID 付き `settings.json.tmp.<pid>`（同時保存の競合回避）。
+- 当時の JSON は `version` / `interval_ms` / `sort` / `details_visible` の 4 項目のみ。
+  現行スキーマ v2 はこれに `tree_view` / `theme` を加えた 6 項目。
 
 ### 13.2 復元経路（Runtime Proof）
 
