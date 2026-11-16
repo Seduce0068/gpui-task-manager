@@ -226,33 +226,58 @@ fn serve(
     Ok(())
 }
 
+/// Decrements the live-connection counter on every exit path, including panic.
+struct ActiveConnection(Arc<SharedState>);
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Handles one accepted connection, enforcing [`MAX_CONNECTIONS`].
 fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) {
     let previous = state.active.fetch_add(1, Ordering::AcqRel);
     if previous >= MAX_CONNECTIONS {
-        state.active.fetch_sub(1, Ordering::AcqRel);
+        // Drop guard returns the slot even if writing the rejection panics.
+        let _slot = ActiveConnection(state);
         let response = http::Response::json(
             503,
             "Service Unavailable",
             error_body("同時接続数が上限に達しました"),
         );
+        // The 503 path bypasses `handle_connection`, so set the timeout here:
+        // a peer that stops reading must not block the accept loop.
+        if let Err(err) = stream.set_write_timeout(Some(http::WRITE_TIMEOUT)) {
+            eprintln!("tm-agent: 503 のタイムアウト設定に失敗: {err}");
+        }
         if let Err(err) = http::write_response(&mut stream, &response) {
             eprintln!("tm-agent: 503 応答に失敗: {err}");
         }
         return;
     }
 
+    let _slot = ActiveConnection(Arc::clone(&state));
     std::thread::spawn(move || {
+        // `_slot` is moved into the worker so the counter is released when the
+        // worker exits — or unwinds after a panic — never on the accept thread.
+        let _slot = _slot;
         let result = handle_connection(&mut stream, |request| {
             // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
             // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
-            let mut guard = state.probe.lock().unwrap_or_else(|err| err.into_inner());
+            // 回収した場合はログに残し、無ログの fail-open にならないようにする。
+            let mut guard = match state.probe.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
+                    err.into_inner()
+                }
+            };
             route(request, guard.as_mut(), &state.token, state.redact)
         });
         if let Err(err) = result {
             eprintln!("tm-agent: 接続処理に失敗: {err}");
         }
-        state.active.fetch_sub(1, Ordering::AcqRel);
     });
 }
 
@@ -983,6 +1008,31 @@ mod tests {
     }
 
     #[test]
+    fn active_counter_is_released_when_worker_panics() {
+        // Exercises the Drop guard: a panic inside the worker must not leak a
+        // connection slot (otherwise 8 panics would make the agent return 503
+        // forever).
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+        ));
+        assert_eq!(state.active.load(Ordering::Acquire), 0);
+        let worker = {
+            // Mirrors `spawn_connection`: increment on admission, then move the
+            // guard into the worker so it decrements even on unwind.
+            state.active.fetch_add(1, Ordering::AcqRel);
+            let _slot = ActiveConnection(Arc::clone(&state));
+            std::thread::spawn(move || {
+                let _slot = _slot;
+                panic!("simulated probe failure");
+            })
+        };
+        assert!(worker.join().is_err());
+        assert_eq!(state.active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn idle_connections_do_not_block_health_check() {
         let state = Arc::new(SharedState::new(
             Box::new(DemoProbe::new()),
@@ -1034,7 +1084,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
 
-        let mut idle = Vec::new();
+        // Keep this loop well under READ_TIMEOUT (1 s): the idle worker threads
+        // must not time out before the 9th connection is admitted.
+        let mut idle = Vec::with_capacity(MAX_CONNECTIONS);
         for _ in 0..MAX_CONNECTIONS {
             idle.push(TcpStream::connect(address).expect("connect idle"));
             accept_and_spawn(&listener, &state);

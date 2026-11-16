@@ -24,7 +24,7 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **164 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 41 / app 11、2026-11-17） |
+| `cargo test --workspace` | **165 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 42 / app 11、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -945,3 +945,19 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - テスト追加: なりすまし文字列（`pay\u{200b}pal...`）の除去、通常ラテン文字・CJK・
   結合文字の保持、プロパティテスト（500 ケース）への不可視文字注入。
   tm-core 59 → **61 tests**、workspace 合計 164 passed / clippy 0 warning / fmt OK / wasm check OK。
+
+## 2026-11-17（エージェント並列化の敵対的レビュー対応）
+
+- サブエージェントによる読み取り専用レビューで 2 件の構造的指摘を確認・修正:
+  1. **[高] パニック時の接続カウンタリーク**: `ActiveConnection`（Drop ガード）を導入し、
+     通常終了・パニックアンワインドの両方で `active` を確実に減算。8 回のパニックで
+     全接続が 503 になる fail-closed 状態を解消。回帰テスト 1 件追加。
+  2. **[中] 503 拒否経路の write timeout 未設定**: 拒否経路は `handle_connection` を
+     通らないため、`WRITE_TIMEOUT` を明示設定。受信ウィンドウ 0 のピアが
+     accept ループを再び阻塞する問題を防止。
+  3. **[中] Mutex poison 回収の無ログ化**: 回収時に `eprintln!` で記録し、
+     無ログの fail-open を解消。
+- その他の指摘（CORS ヘッダ欠落、8 スロット上限の設計制約、テスト経路の偏り）は
+  loopback・同一ユーザー脅威モデルの既知制約として記録し、今回は変更しない。
+- 検証: tm-agent 41 → **42 tests**、workspace 165 passed / clippy 0 warning / fmt OK / wasm check OK。
+  CI run 43897299713 は 8/8 success（修正前のコミット）。
