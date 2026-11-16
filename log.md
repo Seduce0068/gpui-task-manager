@@ -636,3 +636,9 @@
 
 - `MetricHistory::push` で非有限の CPU/メモリ率を 0 に置換（`clamp` は NaN を
   すり抜けるため）。テスト 1 件追加（tm-core 63 → 64、workspace 170 passed）。
+
+## 2026-11-17（build-deb.sh を shfmt 準拠へ整形）
+
+- 全シェルスクリプト（4 本）の `bash -n` / `shellcheck` / `shfmt -d -i 2` を
+  一括検証したところ、`packaging/linux/build-deb.sh` のみ shfmt 差分あり
+  （case 文のインデントとパイプ位置）。機能変更なしで整形し、3 検証すべて成功。

@@ -25,15 +25,15 @@ release="1"
 skip_build=false
 for argument in "$@"; do
   case "${argument}" in
-    --skip-build) skip_build=true ;;
-    -h | --help)
-      sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-      exit 0
-      ;;
-    *)
-      echo "error: unknown argument: ${argument}" >&2
-      exit 2
-      ;;
+  --skip-build) skip_build=true ;;
+  -h | --help)
+    sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "error: unknown argument: ${argument}" >&2
+    exit 2
+    ;;
   esac
 done
 
@@ -48,8 +48,8 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-version="$(cargo metadata --no-deps --format-version 1 \
-  | jq -r '.packages[] | select(.name == "gpui-task-manager") | .version')"
+version="$(cargo metadata --no-deps --format-version 1 |
+  jq -r '.packages[] | select(.name == "gpui-task-manager") | .version')"
 if [ -z "${version}" ] || [ "${version}" = "null" ]; then
   echo "error: could not determine the package version." >&2
   exit 1
