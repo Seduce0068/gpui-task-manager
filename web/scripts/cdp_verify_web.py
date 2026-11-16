@@ -251,8 +251,11 @@ def parse_proof(proof: str | None) -> dict:
     for part in proof.split(";"):
         if not part:
             continue
-        key, _, value = part.partition("=")
-        fields[key] = value
+        # Split at the first `=` only: an `=` inside a proof value (e.g. a
+        # filter string) must be preserved rather than treated as a separator.
+        key, sep, value = part.partition("=")
+        if sep:
+            fields[key] = value
     return fields
 
 
@@ -348,10 +351,11 @@ def column_centers(vw: float) -> dict:
     """src/shell.rs の列幅からヘッダーのクリック中心 x を計算する。"""
     table_width = vw - 2 * ROOT_PAD - DETAILS_W - GAP
     content_width = table_width - 2.0 - 24.0  # border 1px x2 + px_3 (12px x2)
-    command_width = (
+    command_width = max(
+        0.0,
         content_width
         - (COL_NAME + COL_CPU + COL_MEMORY + COL_PID + COL_USER + COL_STATUS + COL_THREADS)
-        - 7 * TABLE_GAP
+        - 7 * TABLE_GAP,
     )
     x = ROOT_PAD + 1.0 + 12.0
     centers = {"name": x + COL_NAME / 2.0}

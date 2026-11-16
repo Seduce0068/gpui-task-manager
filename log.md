@@ -740,3 +740,11 @@
 - CI に undocumented_unsafe_blocks と cargo machete を追加。
   CDP スクリプトとドキュメントの不整合を修正。
 - workspace 176 passed / clippy 0 warning / CDP 設定検証 pass。
+
+## 2026-11-17（監査残存指摘を追加修正）
+
+- app の args_os 化（非 UTF-8 引数で panic しないことを実機確認）、
+  selection_hint 退避、web 応答 8 MiB 上限、agent 境界テスト、
+  CDP スクリプトの堅牢化を実施。
+- parse_proof の `=` 指摘は誤検知と確認（元実装で値側 `=` は保持）。
+- workspace 177 passed / web 12 / clippy 0 warning。

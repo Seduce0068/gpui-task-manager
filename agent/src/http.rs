@@ -434,6 +434,15 @@ mod tests {
     }
 
     #[test]
+    fn accepts_the_maximum_number_of_headers() {
+        let mut head = String::from("GET / HTTP/1.1");
+        for index in 0..MAX_HEADERS {
+            head.push_str(&format!("\r\nX-{index}: v"));
+        }
+        assert!(parse_request(head.as_bytes()).is_ok());
+    }
+
+    #[test]
     fn rejects_too_many_headers() {
         let mut head = String::from("GET / HTTP/1.1");
         for index in 0..=MAX_HEADERS {
@@ -489,6 +498,7 @@ mod tests {
             "http://127.0.0.1:abc",
             "http://127.0.0.1/path",
             "http://user@127.0.0.1:80",
+            "http://127.0.0.1:8787\r\nX-Injected: 1",
             "null",
             "",
             "http://[::1]:8787",

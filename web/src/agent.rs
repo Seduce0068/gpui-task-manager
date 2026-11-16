@@ -28,12 +28,17 @@ use tm_core::{SystemSnapshot, WIRE_SCHEMA_VERSION};
 /// truncating, so the table always receives the busiest processes first.
 pub const SNAPSHOT_LIMIT: usize = 500;
 
+/// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
+/// heap from a broken or malicious loopback agent.
+pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Endpoint and token parsed from the page URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
     /// Base URL such as `http://127.0.0.1:18787` (no trailing slash).
     pub endpoint: String,
-    /// Optional token, passed as the `token` query parameter.
+    /// Optional token, read from the URL fragment and sent as an
+    /// `Authorization: Bearer` header (never as a query parameter).
     pub token: Option<String>,
 }
 
@@ -114,15 +119,24 @@ impl AgentClient {
         })?;
 
         let status = response.status();
-        let mut body = response.into_body();
+        let body = response.into_body();
         let mut buffer = Vec::new();
-        body.read_to_end(&mut buffer).await.map_err(|error| {
-            log::warn!(
-                "エージェント応答の読み取りに失敗: {}",
-                redact_token(&format!("{error:#}"), self.config.token.as_deref())
-            );
-            "応答の読み取りに失敗しました".to_string()
-        })?;
+        // A broken or hostile loopback agent must not be able to exhaust the
+        // wasm heap with an unbounded response. The normal 500-process payload
+        // is far below this cap; 8 MiB leaves ample headroom.
+        body.take(MAX_SNAPSHOT_BYTES)
+            .read_to_end(&mut buffer)
+            .await
+            .map_err(|error| {
+                log::warn!(
+                    "エージェント応答の読み取りに失敗: {}",
+                    redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                );
+                "応答の読み取りに失敗しました".to_string()
+            })?;
+        if buffer.len() as u64 >= MAX_SNAPSHOT_BYTES {
+            return Err("エージェント応答がサイズ上限を超えました".to_string());
+        }
 
         if !status.is_success() {
             return Err(format!(
@@ -178,6 +192,14 @@ fn encode_query_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_size_cap_leaves_room_for_a_full_snapshot() {
+        // A 500-process payload is ~140 KB on the development host; the cap
+        // must be comfortably above it while still bounding the wasm heap.
+        assert_eq!(MAX_SNAPSHOT_BYTES, 8 * 1024 * 1024);
+        assert!(MAX_SNAPSHOT_BYTES > 1_000_000);
+    }
 
     #[test]
     fn endpoint_is_normalized() {

@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **176 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 44 / app 12、2026-11-17） |
+| `cargo test --workspace` | **177 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 45 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1103,3 +1103,19 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   CI ジョブ列挙・audit/vet 記述を現状へ修正。
 
 検証: workspace 176 passed（agent 44）/ clippy 0 warning / fmt OK / YAML パース / CDP 設定検証 pass。
+
+## 2026-11-17（独立監査の残存指摘を追加修正）
+
+- **非 UTF-8 argv（app）**: `std::env::args()` → `args_os()` に変更し、
+  不正バイト引数でも `--version` / `--help` が panic しないことを実機確認
+  （`$'\xff\xfe' --version` で exit 0）。
+- **selection_hint（viewmodel）**: `recompute_visible()` が hint を再同期する前に
+  旧値を退避し、選択プロセス消滅時の行位置フォールバックに使用するよう修正。
+- **応答サイズ上限（web）**: `body.take(8 MiB).read_to_end` で wasm ヒープを保護。
+  定数テスト追加（web 11 → 12 tests）。
+- **境界テスト（agent）**: 64 個ヘッダの受理、CRLF 混入 Origin の拒否を追加。
+- **CDP スクリプト**: parse_proof は元々 `=` を値側で保持していたことを確認
+  （監査指摘は誤検知、誤修正を事実確認で回避）。column_centers の負値クランプ、
+  IME reader 例外伝播と子プロセスの確実な後始末を追加。
+- **doc**: `AgentConfig.token` が query 渡しと書かれていた箇所を Bearer ヘッダへ修正。
+- 検証: workspace 177 passed（agent 45）/ web 12 / clippy 0 warning / fmt OK / py_compile OK。
