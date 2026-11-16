@@ -651,3 +651,11 @@
   kill-overlay / help-overlay の両方に追加（no-op listener は残す）。
 - コンパイル・app 15 tests 成功。実機クリック注入は kdotool/xdotool が
   未インストールで未検証（コード上の保証として記録）。
+
+## 2026-11-17（現状サマリ文書を追加）
+
+- `notes/current-state.md` を新規作成（OKF 準拠・markdownlint 0 件）。
+  `log.md` は時系列、`verification.md` は個別証跡のため、現時点の到達点を
+  俯瞰する文書が欠けていたため。検証状況（170 passed / CI 8/8 ほか）、
+  対応済み事項、未解決候補、関連文書への導線を記載。
+  `notes/index.md` の「検証」節にリンクを追加。
