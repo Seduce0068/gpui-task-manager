@@ -20,7 +20,8 @@ tm-agent — 読み取り専用のループバック・スナップショット�
 オプション:
   --listen ADDR   待ち受けアドレス (既定: 127.0.0.1:8787、ループバックのみ)
   --token TOKEN   Bearer トークン (テスト用。argv は他プロセスから見える)
-  --token-file PATH  トークンをファイルから読む (末尾の改行は除去)
+  --token-file PATH  トークンをファイルから読む (末尾の改行は除去、推奨)
+  TM_AGENT_TOKEN  環境変数でもトークンを渡せる (--token/--token-file より後に解決)
   --demo          実機ではなく決定的なデモデータを返す
   --once          スナップショットを 1 回だけ stdout に JSON で出して終了（先頭 500 件）
   --redact        ホスト名・ユーザー名・ホームパスを伏せて返す（公開用スクリーンショット）
@@ -33,6 +34,8 @@ tm-agent — 読み取り専用のループバック・スナップショット�
 
 認証:
   Authorization: Bearer <token>（クエリ文字列のトークンは拒否）
+  トークン未指定時は起動時に生成して stderr に 1 回だけ表示する。
+  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。
 ";
 
 /// Parsed command-line configuration.

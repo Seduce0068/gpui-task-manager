@@ -597,3 +597,10 @@
   （v1 の設定ファイルには双方が存在しないため、既定値へ縮退することを明示）。
   新規テストではなく既存テストの補強（workspace 167 tests のまま）。
 - 検証: cargo test --workspace / clippy / wasm check 成功。
+
+## 2026-11-17（tm-agent の --help にトークン解決順を追記）
+
+- `agent/src/args.rs` の `USAGE` に `TM_AGENT_TOKEN` の説明と解決順
+  （`--token` または `--token-file` > `TM_AGENT_TOKEN` > 自動生成）を追加。
+  README には記載があったが `--help` 単独では分からなかったため。
+  実装（`agent/src/main.rs` の token 解決ロジック）と一致することを確認。
