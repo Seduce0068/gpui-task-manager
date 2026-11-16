@@ -480,3 +480,9 @@
   レビュー s9 の残存部分のうち、正当な名前を壊さない範囲を対策。
 - テスト 2 件追加（tm-core 59 → 61、workspace 164 passed）。
   README / DESIGN / SECURITY / notes/verification を現状に合わせて更新。
+
+## 2026-11-17（現状の検証数値をドキュメントへ反映）
+
+- `README.md` §検証状況 と `notes/verification.md` §2 のテスト件数が古く
+  （143 passed / web 7）実測（164 passed / web 11）と不一致だったため更新。
+  内訳: tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 41 / app 11。
