@@ -58,12 +58,19 @@ class CDP:
         self._reader = asyncio.create_task(self._read_loop())
 
     async def _read_loop(self) -> None:
-        while True:
-            message = json.loads(await self.ws.recv())
-            if "id" in message and message["id"] in self.pending:
-                self.pending.pop(message["id"]).set_result(message)
-            else:
-                self.events.append(message)
+        try:
+            while True:
+                message = json.loads(await self.ws.recv())
+                if "id" in message and message["id"] in self.pending:
+                    self.pending.pop(message["id"]).set_result(message)
+                else:
+                    self.events.append(message)
+        except Exception as error:  # noqa: BLE001 - verification harness
+            self.events.append({"method": "__reader_closed__", "error": repr(error)})
+            # Unblock any in-flight call instead of letting it wait 120 s.
+            for future in self.pending.values():
+                if not future.done():
+                    future.set_exception(error)
 
     async def call(self, method: str, params: dict | None = None):
         self._id += 1
@@ -476,10 +483,12 @@ async def main() -> int:
             await cdp.ws.close()
         except Exception:
             pass
-        chrome.send_signal(signal.SIGTERM)
-        http_server.send_signal(signal.SIGTERM)
-        chrome.wait(timeout=10)
-        http_server.wait(timeout=10)
+        for process in (chrome, http_server):
+            try:
+                process.send_signal(signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:  # noqa: BLE001 - always clean up both children
+                process.kill()
 
 
 if __name__ == "__main__":

@@ -20,7 +20,9 @@ fn main() {
     if handle_cli() {
         return;
     }
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // `args()` panics on non-UTF-8 arguments; use `args_os()` so a stray byte
+    // in argv cannot abort the GUI before it starts (flags are plain ASCII).
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let demo = arguments.iter().any(|argument| argument == "--demo");
     let redact = arguments.iter().any(|argument| argument == "--redact")
         || std::env::var("TM_REDACT").is_ok_and(|value| value == "1");
@@ -67,7 +69,7 @@ fn main() {
 ///
 /// Returns `true` when the process should exit without opening a window.
 fn handle_cli() -> bool {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if arguments
         .iter()
         .any(|argument| argument == "--version" || argument == "-V")

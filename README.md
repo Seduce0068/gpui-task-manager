@@ -167,7 +167,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **176 passed / 0 failed**（core 69 / viewmodel 37 / platform 14 / agent 44 / app 12） |
+| `cargo test --workspace` | **177 passed / 0 failed**（core 69 / viewmodel 37 / platform 14 / agent 45 / app 12） |
 | web ユニットテスト | **11 passed / 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |

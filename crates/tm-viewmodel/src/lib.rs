@@ -443,15 +443,15 @@ impl Dashboard {
         let selected_still_exists = self
             .selected
             .is_some_and(|key| snapshot.process(key).is_some());
+        // `recompute_visible()` re-syncs the hint against the *new* selection,
+        // so preserve the previous row position for the disappearance fallback.
+        let previous_hint = self.selection_hint;
         self.snapshot = Some(snapshot);
         self.recompute_visible();
         if !selected_still_exists {
             let fallback_index = self
                 .visible
-                .get(
-                    self.selection_hint
-                        .min(self.visible.len().saturating_sub(1)),
-                )
+                .get(previous_hint.min(self.visible.len().saturating_sub(1)))
                 .copied();
             let fallback_key = fallback_index.and_then(|index| {
                 self.snapshot
