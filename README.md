@@ -52,7 +52,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
-- **ライトテーマ（Catppuccin Latte）**: ヘッダーの「ライト/ダーク」ボタンで切替、設定に永続化
+- **ライトテーマ（Catppuccin Latte）**: ネイティブ版・ブラウザ版ともヘッダーの「ライト/ダーク」ボタンで切替、設定に永続化（ブラウザ版は `localStorage`）
 
 ## クイックスタート（Kubuntu / Wayland）
 
@@ -112,7 +112,7 @@ cd poc-wasm && trunk build --release
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
 （`gpui-pre-web`、WebGPU → WebGL2 自動フォールバック）で描画します。
 `tm-agent` に接続しない場合は決定的なデモデータで動作します。プロセス操作は
-**提供しません**（読み取り専用）。wasm サイズは **7.28 MiB（gzip 2.90 MiB、2026-11-15 計測）**で、
+**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）**で、
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
 `EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
@@ -179,7 +179,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions は現状バージョンタグ参照 + Dependabot 追従 |
-| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測では 7,635,554 B（gzip 3,042,856 B） |
+| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B） |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
@@ -187,6 +187,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | CI | 8 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
 | 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
 | 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
+| ライトテーマ（ブラウザ） | 状態フック `theme=dark` が既定、`theme=light` が復元され、切替ボタンで Dark ↔ Light と保存値が連動することを CDP で確認（[画像](notes/assets/web-shell-light-theme.png)、詳細は [notes/verification.md](notes/verification.md)） |
 | DEB パッケージ | `bash packaging/linux/build-deb.sh` で 11 MB の `.deb` を生成、展開バイナリの `--version` と依存自動計算を確認 |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は
@@ -204,9 +205,9 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - ブラウザ版は読み取り専用（OS プロセスはブラウザから取得できないため）
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
-- 優先度変更、GPU 監視、ブラウザ版のテーマ切替（ライトテーマはネイティブ版のみ実装）は未実装
+- 優先度変更、GPU 監視、テーマの自動更新（`prefers-color-scheme` 連動）は未実装
 - DEB は未署名・リポジトリ未公開（ローカル生成のみ）
-- ブラウザ wasm は 7.28 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み）
+- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-16 計測）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある

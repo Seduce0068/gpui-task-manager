@@ -206,6 +206,9 @@ impl TaskManagerApp {
     /// 保存対象は表示設定だけで、プロセス情報・フィルタ・トークンは含まない。
     fn restore_settings(&mut self) {
         let settings = crate::settings::load();
+        // パレットは Dashboard の状態ではなくシェル側の表示状態なので、
+        // 設定の復元時にここで直接切り替える（ネイティブ版と同じ手順）。
+        set_theme(settings.theme);
         for command in [
             Command::SetInterval(Duration::from_millis(settings.interval_ms)),
             Command::SetSortSpec(settings.sort),
@@ -228,7 +231,7 @@ impl TaskManagerApp {
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
             tree_view: self.dashboard.tree_view(),
-            theme: tm_viewmodel::Theme::Dark,
+            theme: theme(),
         };
         if let Err(message) = crate::settings::save(&settings) {
             log::warn!("設定を保存できません: {message}");
@@ -354,7 +357,7 @@ impl TaskManagerApp {
 
     // ---------------------------------------------------------------- header
 
-    fn header(&self) -> Div {
+    fn header(&self, cx: &mut Context<Self>) -> Div {
         let snapshot = self.dashboard.snapshot();
         let hostname = snapshot
             .and_then(|snapshot| snapshot.hostname.clone())
@@ -366,8 +369,8 @@ impl TaskManagerApp {
             .and_then(|snapshot| snapshot.kernel_version.clone())
             .unwrap_or_else(|| "—".to_string());
         let (mode_label, mode_color) = match &self.source {
-            DataSource::Demo(_) => ("デモ", C_YELLOW),
-            DataSource::Live(_) => ("ライブ", C_TEAL),
+            DataSource::Demo(_) => ("デモ", palette().yellow),
+            DataSource::Live(_) => ("ライブ", palette().teal),
         };
 
         h_flex()
@@ -387,9 +390,9 @@ impl TaskManagerApp {
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child("GPUI タスクマネージャー"),
                             )
-                            .child(pill("ブラウザ版", C_BASE, C_BLUE)),
+                            .child(pill("ブラウザ版", palette().base, palette().blue)),
                     )
-                    .child(div().text_xs().text_color(rgb(C_MUTED)).child(
+                    .child(div().text_xs().text_color(rgb(palette().muted)).child(
                         "gpui-pre 0.3.12 / wasm32-unknown-unknown / wgpu (WebGPU→WebGL2 fallback)",
                     )),
             )
@@ -400,16 +403,53 @@ impl TaskManagerApp {
                         v_flex()
                             .items_end()
                             .gap_1()
-                            .child(div().text_sm().text_color(rgb(C_TEXT)).child(hostname))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(palette().text))
+                                    .child(hostname),
+                            )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(C_MUTED))
+                                    .text_color(rgb(palette().muted))
                                     .child(format!("{os} / {kernel}")),
                             ),
                     )
-                    .child(pill(mode_label, C_BASE, mode_color))
-                    .child(pill("読み取り専用", C_BASE, C_RED)),
+                    .child(pill(mode_label, palette().base, mode_color))
+                    .child(pill("読み取り専用", palette().base, palette().red))
+                    .child(
+                        // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
+                        // （CDP 検証スクリプトがこのボタンをクリックする）。
+                        div()
+                            .id("toggle-theme-web")
+                            .w(px(56.0))
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(palette().surface))
+                            .bg(rgb(palette().surface_hi))
+                            .text_color(rgb(palette().text))
+                            .hover(|style| style.bg(rgb(palette().surface)))
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.focus_handle.focus(window, cx);
+                                let new_theme = match theme() {
+                                    tm_viewmodel::Theme::Dark => tm_viewmodel::Theme::Light,
+                                    tm_viewmodel::Theme::Light => tm_viewmodel::Theme::Dark,
+                                };
+                                set_theme(new_theme);
+                                this.persist_settings();
+                                this.sync_proof_dom();
+                                cx.notify();
+                            }))
+                            .child(if theme() == tm_viewmodel::Theme::Dark {
+                                "ライト"
+                            } else {
+                                "ダーク"
+                            }),
+                    ),
             )
     }
 
@@ -475,7 +515,7 @@ impl TaskManagerApp {
 
         let cpu_card = card(
             "CPU",
-            C_BLUE,
+            palette().blue,
             v_flex()
                 .gap_1()
                 .child(
@@ -489,13 +529,14 @@ impl TaskManagerApp {
                                 .text_color(rgb(usage_color(cpu_total)))
                                 .child(format::format_percent(cpu_total)),
                         )
-                        .child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
-                            "{} コア{}",
-                            cores.len(),
-                            frequency_label
-                        ))),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child(format!("{} コア{}", cores.len(), frequency_label)),
+                        ),
                 )
-                .child(sparkline(&cpu_history, 100.0, C_BLUE, 28.0))
+                .child(sparkline(&cpu_history, 100.0, palette().blue, 28.0))
                 .child(
                     h_flex().items_end().gap(px(2.0)).h(px(18.0)).children(
                         cores
@@ -513,7 +554,7 @@ impl TaskManagerApp {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(palette().muted))
                         .child(format!("Load {}", format::format_load_average(load))),
                 ),
         )
@@ -523,7 +564,7 @@ impl TaskManagerApp {
 
         let memory_card = card(
             "メモリ",
-            C_MAUVE,
+            palette().mauve,
             v_flex()
                 .gap_1()
                 .child(
@@ -540,7 +581,7 @@ impl TaskManagerApp {
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(C_MUTED))
+                                .text_color(rgb(palette().muted))
                                 .child(format::format_used_of_total(mem_used, mem_total)),
                         ),
                 )
@@ -549,16 +590,16 @@ impl TaskManagerApp {
                     h_flex()
                         .justify_between()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(palette().muted))
                         .child("スワップ")
                         .child(format::format_used_of_total(swap_used, swap_total)),
                 )
-                .child(metric_bar(swap_percent, C_PEACH))
-                .child(sparkline(&mem_history, 100.0, C_MAUVE, 18.0))
+                .child(metric_bar(swap_percent, palette().peach))
+                .child(sparkline(&mem_history, 100.0, palette().mauve, 18.0))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(palette().muted))
                         .child(format!("空き {}", format::format_bytes(mem_free))),
                 ),
         )
@@ -568,7 +609,7 @@ impl TaskManagerApp {
 
         let network_card = card(
             "ネットワーク",
-            C_TEAL,
+            palette().teal,
             v_flex()
                 .gap_1()
                 .child(
@@ -579,12 +620,17 @@ impl TaskManagerApp {
                             div()
                                 .text_xl()
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(rgb(C_TEAL))
+                                .text_color(rgb(palette().teal))
                                 .child(format::format_rate(rx_rate)),
                         )
-                        .child(div().text_xs().text_color(rgb(C_MUTED)).child("受信")),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child("受信"),
+                        ),
                 )
-                .child(sparkline(&rx_history, max_rate, C_TEAL, 20.0))
+                .child(sparkline(&rx_history, max_rate, palette().teal, 20.0))
                 .child(
                     h_flex()
                         .justify_between()
@@ -592,12 +638,17 @@ impl TaskManagerApp {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(C_PEACH))
+                                .text_color(rgb(palette().peach))
                                 .child(format::format_rate(tx_rate)),
                         )
-                        .child(div().text_xs().text_color(rgb(C_MUTED)).child("送信")),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child("送信"),
+                        ),
                 )
-                .child(sparkline(&tx_history, max_rate, C_PEACH, 12.0)),
+                .child(sparkline(&tx_history, max_rate, palette().peach, 12.0)),
         )
         .h_full()
         .flex_1()
@@ -616,7 +667,7 @@ impl TaskManagerApp {
                         h_flex()
                             .justify_between()
                             .text_xs()
-                            .text_color(rgb(C_MUTED))
+                            .text_color(rgb(palette().muted))
                             .child(mount)
                             .child(format!("{percent:.0}%")),
                     )
@@ -649,7 +700,7 @@ impl TaskManagerApp {
                 system_body = system_body.child(kv(label, value));
             }
         }
-        let system_card = card("システム", C_GREEN, system_body)
+        let system_card = card("システム", palette().green, system_body)
             .h_full()
             .flex_1()
             .min_w_0();
@@ -685,7 +736,7 @@ impl TaskManagerApp {
             if composing_active {
                 field_children.push(
                     div()
-                        .text_color(rgb(C_BLUE))
+                        .text_color(rgb(palette().blue))
                         .underline()
                         .child(composing.clone()),
                 );
@@ -696,11 +747,11 @@ impl TaskManagerApp {
         }
 
         let (hint, hint_color) = if composing_active {
-            ("変換中", C_BLUE)
+            ("変換中", palette().blue)
         } else if focused {
-            ("入力可", C_BLUE)
+            ("入力可", palette().blue)
         } else {
-            ("クリックで入力", C_MUTED)
+            ("クリックで入力", palette().muted)
         };
 
         let sort = self.dashboard.sort_spec();
@@ -713,15 +764,24 @@ impl TaskManagerApp {
             .h(px(30.0))
             .px_3()
             .rounded_md()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(palette().mantle))
             .border_1()
-            .border_color(rgb(if focused { C_BLUE } else { C_SURFACE }))
+            .border_color(rgb(if focused {
+                palette().blue
+            } else {
+                palette().surface
+            }))
             .cursor_pointer()
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 cx.notify();
             }))
-            .child(div().text_xs().text_color(rgb(C_MUTED)).child("検索"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("検索"),
+            )
             .child(
                 div()
                     .flex()
@@ -729,7 +789,11 @@ impl TaskManagerApp {
                     .flex_1()
                     .min_w_0()
                     .text_sm()
-                    .text_color(rgb(if field_is_empty { C_DIM } else { C_TEXT }))
+                    .text_color(rgb(if field_is_empty {
+                        palette().dim
+                    } else {
+                        palette().text
+                    }))
                     .truncate()
                     .children(field_children),
             )
@@ -743,11 +807,16 @@ impl TaskManagerApp {
             .child(
                 h_flex()
                     .gap_3()
-                    .child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
-                        "ソート: {} {}",
-                        sort.key.label(),
-                        sort.direction.arrow()
-                    )))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(palette().muted))
+                            .child(format!(
+                                "ソート: {} {}",
+                                sort.key.label(),
+                                sort.direction.arrow()
+                            )),
+                    )
                     .child(
                         div()
                             .id("toggle-tree-web")
@@ -757,18 +826,22 @@ impl TaskManagerApp {
                             .text_xs()
                             .cursor_pointer()
                             .border_1()
-                            .border_color(rgb(C_SURFACE))
+                            .border_color(rgb(palette().surface))
                             .bg(rgb(if self.dashboard.tree_view() {
-                                C_SURFACE
+                                palette().surface
                             } else {
-                                C_MANTLE
+                                palette().mantle
                             }))
                             .text_color(rgb(if self.dashboard.tree_view() {
-                                C_BLUE
+                                palette().blue
                             } else {
-                                C_MUTED
+                                palette().muted
                             }))
-                            .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                            .hover(|style| {
+                                style
+                                    .bg(rgb(palette().surface))
+                                    .text_color(rgb(palette().text))
+                            })
                             .on_click(cx.listener(|this, _event, window, cx| {
                                 this.focus_handle.focus(window, cx);
                                 this.handle_command(Command::ToggleTreeView, cx);
@@ -782,7 +855,7 @@ impl TaskManagerApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(C_MUTED))
+                            .text_color(rgb(palette().muted))
                             .child(format!("表示 {} 件", self.dashboard.visible_count())),
                     ),
             )
@@ -815,11 +888,11 @@ impl TaskManagerApp {
         .track_scroll(&self.scroll_handle);
 
         let overlay = if self.dashboard.snapshot().is_none() {
-            Some(overlay_text(self.empty_message(), C_MUTED))
+            Some(overlay_text(self.empty_message(), palette().muted))
         } else if count == 0 {
             Some(overlay_text(
                 "一致するプロセスがありません".to_string(),
-                C_MUTED,
+                palette().muted,
             ))
         } else {
             None
@@ -833,9 +906,9 @@ impl TaskManagerApp {
             .h_full()
             .rounded_md()
             .border_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(palette().surface))
             .overflow_hidden()
-            .bg(rgb(C_BASE))
+            .bg(rgb(palette().base))
             .child(self.table_header(cx))
             .child(
                 div()
@@ -861,9 +934,9 @@ impl TaskManagerApp {
             .h(px(30.0))
             .px_3()
             .flex_shrink_0()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(palette().mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(palette().surface))
             .child(
                 self.sort_cell("sort-name", "名前", SortKey::Name, cx)
                     .w(px(COL_NAME))
@@ -874,7 +947,7 @@ impl TaskManagerApp {
                     .flex_1()
                     .min_w_0()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(palette().muted))
                     .child("コマンド"),
             )
             .child(
@@ -929,8 +1002,12 @@ impl TaskManagerApp {
             .items_center()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(if active { C_BLUE } else { C_MUTED }))
-            .hover(|style| style.text_color(rgb(C_TEXT)))
+            .text_color(rgb(if active {
+                palette().blue
+            } else {
+                palette().muted
+            }))
+            .hover(|style| style.text_color(rgb(palette().text)))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.handle_command(Command::SetSortKey(key), cx);
             }))
@@ -1007,8 +1084,8 @@ impl TaskManagerApp {
                 .px_3()
                 .gap_2()
                 .cursor_pointer()
-                .when(selected, |this| this.bg(rgb(C_SURFACE)))
-                .hover(|style| style.bg(rgb(C_MANTLE)))
+                .when(selected, |this| this.bg(rgb(palette().surface)))
+                .hover(|style| style.bg(rgb(palette().mantle)))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
                     if tree_view && has_children {
@@ -1038,7 +1115,11 @@ impl TaskManagerApp {
                             div()
                                 .min_w_0()
                                 .text_sm()
-                                .text_color(rgb(if selected { C_TEXT } else { C_SUBTEXT }))
+                                .text_color(rgb(if selected {
+                                    palette().text
+                                } else {
+                                    palette().subtext
+                                }))
                                 .truncate()
                                 .child(display_name),
                         ),
@@ -1048,7 +1129,7 @@ impl TaskManagerApp {
                         .flex_1()
                         .min_w_0()
                         .text_xs()
-                        .text_color(rgb(C_DIM))
+                        .text_color(rgb(palette().dim))
                         .truncate()
                         .child(command),
                 )
@@ -1065,7 +1146,7 @@ impl TaskManagerApp {
                         .w(px(COL_MEMORY))
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(palette().subtext))
                         .child(format::format_bytes(memory)),
                 )
                 .child(
@@ -1073,7 +1154,7 @@ impl TaskManagerApp {
                         .w(px(COL_PID))
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(palette().muted))
                         .child(pid.to_string()),
                 )
                 .child(
@@ -1081,21 +1162,21 @@ impl TaskManagerApp {
                         .w(px(COL_USER))
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(palette().subtext))
                         .truncate()
                         .child(user),
                 )
                 .child(div().w(px(COL_STATUS)).flex_shrink_0().child(pill(
                     status.label(),
                     status_color(status),
-                    C_SURFACE,
+                    palette().surface,
                 )))
                 .child(
                     div()
                         .w(px(COL_THREADS))
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(palette().muted))
                         .child(threads.to_string()),
                 )
                 .into_any_element(),
@@ -1115,7 +1196,7 @@ impl TaskManagerApp {
             None => v_flex().gap_2().child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(palette().muted))
                     .child("行をクリックすると詳細を表示します"),
             ),
         };
@@ -1129,7 +1210,7 @@ impl TaskManagerApp {
             content = content.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(palette().muted))
                     .child("センサーなし"),
             );
         } else {
@@ -1157,9 +1238,9 @@ impl TaskManagerApp {
             .w(px(DETAILS_WIDTH))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(palette().mantle))
             .border_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(palette().surface))
             .rounded_md()
             .p_4()
             .gap_3()
@@ -1200,12 +1281,12 @@ impl TaskManagerApp {
                     .child(pill(
                         process.status.label(),
                         status_color(process.status),
-                        C_SURFACE,
+                        palette().surface,
                     ))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(C_MUTED))
+                            .text_color(rgb(palette().muted))
                             .child(format!("PID {}", process.key.pid)),
                     ),
             )
@@ -1226,16 +1307,16 @@ impl TaskManagerApp {
                 "起動から",
                 format::format_process_age(now, process.key.start_time_secs),
             ))
-            .child(div().h(px(1.0)).w_full().bg(rgb(C_SURFACE)))
+            .child(div().h(px(1.0)).w_full().bg(rgb(palette().surface)))
             .child(section_title("コマンド"))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(palette().subtext))
                     .child(process.command.clone()),
             )
-            .child(div().h(px(1.0)).w_full().bg(rgb(C_SURFACE)))
-            .child(div().text_xs().text_color(rgb(C_YELLOW)).child(
+            .child(div().h(px(1.0)).w_full().bg(rgb(palette().surface)))
+            .child(div().text_xs().text_color(rgb(palette().yellow)).child(
                 "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。",
             ))
     }
@@ -1283,19 +1364,19 @@ impl TaskManagerApp {
             .h(px(STATUS_HEIGHT))
             .flex_shrink_0()
             .rounded_md()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(palette().mantle))
             .border_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(palette().surface))
             .child(
                 h_flex()
                     .gap_2()
                     .flex_shrink_0()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(palette().muted))
                     .child(source_label)
-                    .child(div().text_color(rgb(C_DIM)).child("|"))
+                    .child(div().text_color(rgb(palette().dim)).child("|"))
                     .child(last_update)
-                    .child(div().text_color(rgb(C_DIM)).child("|"))
+                    .child(div().text_color(rgb(palette().dim)).child("|"))
                     .child(counts),
             )
             .child(
@@ -1303,7 +1384,11 @@ impl TaskManagerApp {
                     .flex_1()
                     .min_w_0()
                     .text_xs()
-                    .text_color(rgb(if is_error { C_RED } else { C_DIM }))
+                    .text_color(rgb(if is_error {
+                        palette().red
+                    } else {
+                        palette().dim
+                    }))
                     .truncate()
                     .text_right()
                     .child(message),
@@ -1379,12 +1464,16 @@ impl TaskManagerApp {
             .map(|value| value as u32)
             .unwrap_or(0);
         let rows = self.dashboard.visible_count();
+        let theme_label = match theme() {
+            tm_viewmodel::Theme::Dark => "dark",
+            tm_viewmodel::Theme::Light => "light",
+        };
         let proof = format!(
             "mode={mode};tick={};cpu={cpu:.1};mem={mem:.1};rows={rows};total={total};\
              filter={filter};selected_pid={selected};sort={};dir={direction};\
              sampled={sampled};vw={viewport_width};vh={viewport_height};live_error={};\
              ime_composing={ime_composing};ime_field={ime_field};ime_marked={ime_marked};\
-             ime_selection={ime_selection};",
+             ime_selection={ime_selection};theme={theme_label};",
             self.ticks,
             sort.key.label(),
             if self.live_error.is_some() { 1 } else { 0 },
@@ -1536,7 +1625,7 @@ impl EntityInputHandler for TaskManagerApp {
 impl Render for TaskManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
-        let header = self.header();
+        let header = self.header(cx);
         let overview = self.overview();
         let toolbar = self.toolbar(focused, cx);
         let main_area = self.main_area(cx);
@@ -1574,8 +1663,8 @@ impl Render for TaskManagerApp {
             .flex_col()
             .gap(px(GAP))
             .p(px(ROOT_PAD))
-            .bg(rgb(C_BASE))
-            .text_color(rgb(C_TEXT))
+            .bg(rgb(palette().base))
+            .text_color(rgb(palette().text))
             .font_family(FONT_SANS)
             .child(header)
             .child(overview)
@@ -1590,13 +1679,13 @@ impl Render for TaskManagerApp {
 
 fn status_color(status: ProcessStatus) -> u32 {
     match status {
-        ProcessStatus::Running => C_GREEN,
-        ProcessStatus::Sleeping => C_SUBTEXT,
-        ProcessStatus::Idle => C_MUTED,
-        ProcessStatus::Stopped => C_YELLOW,
-        ProcessStatus::Zombie => C_RED,
-        ProcessStatus::Tracing => C_MAUVE,
-        ProcessStatus::Unknown => C_DIM,
+        ProcessStatus::Running => palette().green,
+        ProcessStatus::Sleeping => palette().subtext,
+        ProcessStatus::Idle => palette().muted,
+        ProcessStatus::Stopped => palette().yellow,
+        ProcessStatus::Zombie => palette().red,
+        ProcessStatus::Tracing => palette().mauve,
+        ProcessStatus::Unknown => palette().dim,
     }
 }
 

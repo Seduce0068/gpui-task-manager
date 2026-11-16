@@ -1,6 +1,6 @@
 {
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-16T15:56:41+0900",
+  "started_at": "2026-11-16T23:10:20+0900",
   "steps": [
     {
       "step": "fresh",
@@ -22,7 +22,8 @@
         "ime_composing": "0",
         "ime_field": "",
         "ime_marked": "-",
-        "ime_selection": "0:0"
+        "ime_selection": "0:0",
+        "theme": "dark"
       }
     },
     {
@@ -63,7 +64,56 @@
         "ime_composing": "0",
         "ime_field": "",
         "ime_marked": "-",
-        "ime_selection": "0:0"
+        "ime_selection": "0:0",
+        "theme": "light"
+      }
+    },
+    {
+      "step": "toggled_dark",
+      "proof": {
+        "mode": "demo",
+        "tick": "2",
+        "cpu": "35.1",
+        "mem": "57.4",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "2",
+        "sort": "名前",
+        "dir": "asc",
+        "sampled": "1760000001",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "toggled_light",
+      "proof": {
+        "mode": "demo",
+        "tick": "3",
+        "cpu": "45.9",
+        "mem": "58.4",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "2",
+        "sort": "名前",
+        "dir": "asc",
+        "sampled": "1760000002",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "light"
       }
     }
   ],
@@ -81,5 +131,5 @@
   },
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-16T15:56:46+0900"
+  "finished_at": "2026-11-16T23:10:28+0900"
 }

@@ -7,6 +7,8 @@
 3. 保存される JSON は `tm-viewmodel::Settings` のスキーマ（version / interval_ms /
    sort / details_visible / tree_view / theme）に一致し、プロセス情報やトークンを
    含まない。
+4. ヘッダーのテーマ切替ボタンで Dark ↔ Light が切り替わり、状態フックの `theme=`
+   と localStorage の両方に反映される（復元経路も `theme=light` を確認する）。
 
 前提（別シェルで起動しておく）:
     cd work/gpui-task-manager/web/dist && python3 -m http.server 8091 --bind 127.0.0.1
@@ -30,6 +32,17 @@ import time
 import cdp_verify_web as helper
 
 STORAGE_KEY = "gpui-task-manager.settings"
+
+# ヘッダー右端のテーマ切替ボタン（src/shell.rs のレイアウト定数と同期）。
+# ボタンは右グループの最後の子で固定幅 56 px、ヘッダー高さ 52 px。
+ROOT_PAD = 12.0
+HEADER_H = 52.0
+THEME_BTN_W = 56.0
+THEME_BTN_CENTER_Y = ROOT_PAD + HEADER_H / 2.0
+
+
+def theme_button_x(viewport_width: float) -> float:
+    return viewport_width - ROOT_PAD - THEME_BTN_W / 2.0
 
 
 async def wait_for_proof(cdp: helper.CDP, timeout: float = 20.0) -> dict:
@@ -77,6 +90,7 @@ async def main() -> int:
     await cdp.call("Page.reload", {"ignoreCache": True})
     proof = await wait_for_proof(cdp)
     check(bool(proof), "状態フックが取得できる")
+    check(proof.get("theme") == "dark", f"既定テーマが dark（実際: {proof.get('theme')}）")
     evidence["steps"].append({"step": "fresh", "proof": proof})
 
     # 2) 保存経路: 列ヘッダをクリックして localStorage に書かれることを確認する。
@@ -101,6 +115,7 @@ async def main() -> int:
         f"保存スキーマが想定どおり（実際: {sorted(saved.keys())}）",
     )
     check("token" not in json.dumps(saved).lower(), "トークンが保存されていない")
+    check(saved.get("theme") == "Dark", f"保存されたテーマが Dark（実際: {saved.get('theme')}）")
     evidence["steps"].append({"step": "saved_parsed", "settings": saved})
 
     # 3) 復元経路: 設定を書いて再読込し、ソートが反映されることを確認する。
@@ -120,6 +135,25 @@ async def main() -> int:
     evidence["steps"].append({"step": "restored", "proof": proof})
     check(proof.get("sort") == "名前", f"ソート列が復元される（実際: {proof.get('sort')}）")
     check(proof.get("dir") == "asc", f"ソート方向が復元される（実際: {proof.get('dir')}）")
+    check(proof.get("theme") == "light", f"テーマが復元される（実際: {proof.get('theme')}）")
+
+    # 4) 切替ボタン: Light → Dark → Light と状態フックと保存値の両方を確認する。
+    theme_x = theme_button_x(viewport_width)
+    for expected, stored in (("dark", "Dark"), ("light", "Light")):
+        await helper.click(cdp, theme_x, THEME_BTN_CENTER_Y)
+        await asyncio.sleep(0.8)
+        proof = await wait_for_proof(cdp)
+        evidence["steps"].append({"step": f"toggled_{expected}", "proof": proof})
+        check(
+            proof.get("theme") == expected,
+            f"切替ボタンで theme={expected}（実際: {proof.get('theme')}）",
+        )
+        raw = await cdp.evaluate(f"localStorage.getItem({json.dumps(STORAGE_KEY)})")
+        current = json.loads(raw) if isinstance(raw, str) and raw else {}
+        check(
+            current.get("theme") == stored,
+            f"切替後の保存テーマが {stored}（実際: {current.get('theme')}）",
+        )
 
     evidence["failures"] = failures
     evidence["passed"] = not failures

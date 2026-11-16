@@ -295,7 +295,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - CJK は `CanvasFontFallback::EmojiAndCjk` が必須。`gpui_platform::application()`
   では設定できないため、`gpui_web::WebPlatform` を直接構築して
   `fetch_http_client` を注入する。
-- wasm サイズは wasm-opt（-Oz）適用後 **7.28 MiB（gzip 2.90 MiB、2026-11-15 計測）**。
+- wasm サイズは wasm-opt（-Oz）適用後 **7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）**。
   `web/index.html` の `data-wasm-opt="z"` で trunk が wasm-opt を自動適用する。
 
 ### 6.5 ブラウザ版シェルの実装結果（`web/`）
@@ -428,7 +428,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
 | エージェント 1 スナップショット | 約 250 ms（シリアル処理） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
-| wasm（release、wasm-opt -Oz） | 7.28 MiB / gzip 2.90 MiB（2026-11-15 計測） |
+| wasm（release、wasm-opt -Oz） | 7.29 MiB / gzip 2.90 MiB（2026-11-16 計測） |
 
 ---
 
@@ -443,8 +443,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - **エージェント API**: `WIRE_SCHEMA_VERSION` で版管理。Glances / node_exporter
   互換アダプタは「別のプローブ実装」として追加できる。
 - **テーマ**: `theme.rs` のパレット（Dark = Catppuccin Mocha / Light = Catppuccin Latte）を
-  実行時に切り替える。ネイティブ版はツールバーの切替ボタンと `Settings.theme` の永続化まで
-  実装済み。ブラウザ版は未実装（保存値が `Dark` 固定）。
+  実行時に切り替える。ネイティブ版・ブラウザ版ともヘッダーの切替ボタンと
+  `Settings.theme` の永続化まで実装済み（ブラウザ版は `localStorage`）。
 
 ---
 
@@ -661,7 +661,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: wasm 14,799,786 B → 7,589,230 B（gzip 3,656,199 → 3,024,986 B）。
   適用後も CDP 検証（デモ / ライブ / エラー時）は pass。初回ビルドは wasm-opt を
   自動ダウンロードする。2026-11-15 の再計測では 7,635,554 B（gzip 3,042,856 B、
-  依存更新やコード追加により微増）。
+  依存更新やコード追加により微増）。2026-11-16 の再計測では 7,641,445 B
+  （gzip 3,044,050 B、ブラウザ版テーマ追加による微増）。
 
 ### ADR-018: Windows / macOS は cfg + CI ランナーで検証
 
@@ -704,13 +705,14 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - Wayland 以外（X11 セッション）での表示は未検証。GPUI の x11 feature は有効。
 - プロセスツリーはツリー表示トグル・階層インデント・ノード単位の折りたたみ/展開（`tm-core` のフラット化 + `tm-viewmodel` の折りたたみ状態、native/web で親ノードクリック時に選択+トグル）と `tree_view` 設定の永続化を実装済み（`parent_pid` ベース、表示対象内でのフラット化）。折りたたみ状態の永続化、優先度変更、cgroup 表示、GPU 利用率の詳細監視は未実装。
 - 温度センサー等の component 収集・データモデルは実装済みで、ネイティブ/ブラウザの概要カードに取得可能な範囲を表示する（取得不可時は「センサーなし」）。詳細 GPU 利用率・ファン回転数等の網羅的監視は未実装。
-- ライトテーマは**ネイティブ版のみ実装済み**（切替ボタン + `Settings.theme` の永続化、
-  `SETTINGS_VERSION = 2`）。ブラウザ版のテーマ切替は未実装で、`localStorage` には
-  `theme: "Dark"` が固定で書かれる。自動更新は未実装。設定スキーマは
+- ライトテーマは**ネイティブ版・ブラウザ版とも実装済み**（切替ボタン + `Settings.theme` の
+  永続化、`SETTINGS_VERSION = 2`）。ブラウザ版のパレットは `web/src/theme.rs` にあり、
+  `prefers-color-scheme` 連動などの自動更新は未実装。設定スキーマは
   `tm-viewmodel::Settings` で共有し（更新間隔・ソート・詳細パネル・ツリー表示・テーマ）、
-  ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。
+  ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。ブラウザ版の
+  状態フックは `theme=dark|light` を公開し、CDP で切替・復元を検証する。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
-- ブラウザ版の wasm は 7.28 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-15 計測）。
+- ブラウザ版の wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-16 計測）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での

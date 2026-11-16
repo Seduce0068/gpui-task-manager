@@ -390,3 +390,24 @@
 - ネイティブ版のライトテーマ（Catppuccin Latte）実装（`b1a6f85`）を受け、`DESIGN.md` §10 / §14 と `README.md` の「ライトテーマは未実装」記述を実態に合わせて更新（ネイティブ版は切替ボタン + `Settings.theme` 永続化まで実装、ブラウザ版は未実装で `"Dark"` 固定。`SETTINGS_VERSION = 2`）。
 - `web/scripts/cdp_verify_settings.py` の期待スキーマに `theme` を追加し、復元用設定も `version: 2` / `theme: "Light"` に更新。再検証は pass（`{"passed": true, "failures": []}`）、証跡を更新。
 - ブラウザ版の状態フック（`data-gpui-proof`）に `theme` が無いため、CDP ではテーマ復元を検証できない。web 側のテーマ実装と状態フック追加を次回候補として `notes/verification.md` に記録。
+
+## 2026-11-16（ブラウザ版ライトテーマの実装・CDP 検証）
+
+- 前回の「次回候補」だった web 版テーマを実装。`web/src/theme.rs` をネイティブ版と同じ
+  `Palette` / `DARK`（Mocha）/ `LIGHT`（Latte）/ `theme()` / `set_theme()` / `palette()` 構成へ拡張し、
+  `shell.rs` / `widgets.rs` の色参照 93 箇所を `palette().*` に置換。`C_*` 定数は廃止。
+- ヘッダー右端に `toggle-theme-web` ボタン（幅 56 px 固定、CDP から座標を決め打ち可能）を追加。
+  クリックで Dark ↔ Light を切替えて `persist_settings()` で保存し、
+  `restore_settings()` は `set_theme(settings.theme)` で復元。共有スキーマにより
+  ネイティブ版と web 版で同じ `theme` 値をやり取りできるようになった（旧挙動は web が常に `Dark` 固定保存）。
+- `data-gpui-proof` に `theme=dark|light` を追加。`web/scripts/cdp_verify_settings.py` に
+  既定値・保存値・復元・ボタン切替（Light → Dark → Light）のチェックを追加し再検証:
+  `{"passed": true, "failures": []}`。証跡 `web/verification/web-settings-evidence.json` 更新。
+  light 状態の画面は `notes/assets/web-shell-light-theme.png`。
+- 検証: `cargo test -p tm-web` 11 passed / 0 failed（テーマ 4 件追加）、
+  `cargo check --target wasm32-unknown-unknown` 成功、`trunk build --release` 成功。
+  wasm 7,641,445 B（gzip 3,044,050 B、旧 7,635,554 B から微増）。
+- 文書更新: `README.md` / `DESIGN.md` / `web/README.md` / `notes/verification.md` /
+  `notes/web-shell.md`。未実装項目から「ブラウザ版のテーマ切替」を削除し、
+  `prefers-color-scheme` 連動のみ未実装として残す。
+- CI は今回も未対応（全 8 ジョブが 0 step で failure、public 化後も継続）。

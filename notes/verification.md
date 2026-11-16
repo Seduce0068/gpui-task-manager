@@ -105,7 +105,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | コンソール | panic / JS 例外 0（WebGL2 フォールバック等の想定内警告のみ） |
 
 - `cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml`: 成功
-- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B）
+- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B。2026-11-16 再計測: 7,641,445 B / gzip 3,044,050 B、JS 157 KiB）
 - 証拠: `notes/assets/web-shell-*.png`（18 枚）、`web/verification/web-shell-evidence-*.json`
 
 ## 6. 既知の制限・未検証
@@ -855,16 +855,27 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   トークン・プロセス情報を含まないことを確認。証跡を
   `web/verification/web-settings-evidence.json` に更新。
 
-### web 版ライトテーマの現状（未実装・非対称）
+### web 版ライトテーマの実装と検証（2026-11-16）
 
-- **ネイティブ版**: 切替ボタン（`toggle-theme`）・起動時の復元（`set_theme(settings.theme)`）・
-  保存（`save_settings` で `theme: crate::theme::theme()`）まで実装済み。
-- **web 版**: `web/src/shell.rs:231` が `theme: tm_viewmodel::Theme::Dark` を**固定値**で保存しており、
-  切替 UI もパレット切替も未実装。
-  → 設定スキーマ（`tm-viewmodel::Settings`）は両者で共有されているため、
-  **web 版の設定ファイルには常に `"Dark"` が書かれる**。ネイティブで選んだ Light は
-  web に引き継がれず、web の設定をネイティブで読むと Dark に戻る。
-- 影響: データ破損ではないが、共有スキーマの意図（両シェルで同じ設定）と一致しない。
-  状態フック（`data-gpui-proof`）にも `theme` が無いため、CDP では復元を検証できない。
-- 次の対応候補: web 側にテーマ切替（または `prefers-color-scheme` 連動）と
-  `theme` の保存・復元を実装し、状態フックへ `theme=` を追加して CDP で検証する。
+- **実装**: `web/src/theme.rs` をネイティブ版と同じ `Palette` / `DARK`（Mocha）/
+  `LIGHT`（Latte）/ `theme()` / `set_theme()` / `palette()` 構成へ拡張。`shell.rs` と
+  `widgets.rs` の色参照 93 箇所を `palette().*` へ切り替え、ヘッダー右端に
+  `toggle-theme-web` ボタン（固定幅 56 px）を追加。クリックで Dark ↔ Light を切り替え、
+  `persist_settings()` で `theme` を保存する。`restore_settings()` は
+  `set_theme(settings.theme)` で起動時に復元する。共有スキーマ
+  （`tm-viewmodel::Settings`）により、ネイティブ版と web 版で同じ `theme` 値をやり取りできる。
+- **状態フック**: `data-gpui-proof` に `theme=dark|light` を追加（CDP 検証用）。
+- **単体テスト**: `cargo test -p tm-web` は **11 passed / 0 failed**（旧 7 件 + テーマ 4 件）。
+  `cargo check --target wasm32-unknown-unknown` 成功。
+- **CDP 検証**（`web/scripts/cdp_verify_settings.py`、`--evidence web/verification/web-settings-evidence.json`）:
+  `{"passed": true, "failures": []}`。
+  - fresh: `theme=dark`（既定）
+  - saved: 保存 JSON のキーは `version/interval_ms/sort/details_visible/tree_view/theme` のみで
+    `theme="Dark"`、トークン不含
+  - restored: `{"theme": "Light"}` を書いて再読込 → `theme=light` と `sort=名前` を復元
+  - 切替ボタン: Light → Dark → Light の 2 クリックで `theme=` と保存値が連動
+  - 画面: `notes/assets/web-shell-light-theme.png`（light 状態のスクリーンショット）
+- 旧状態（web が `theme: "Dark"` を固定保存していた非対称）は解消。
+  `prefers-color-scheme` 連動などの自動更新は未実装。
+- 再ビルド: `trunk build --release` 成功。wasm 7,641,445 B（gzip 3,044,050 B）、
+  JS 159,873 B、`index.html` 1,320 B（2026-11-16 計測、旧 7,635,554 B から微増）。
