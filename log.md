@@ -675,3 +675,9 @@
   意図をゲートに表現し、将来の追加を検知できるようにした。
 - `bash -n` / `shellcheck` / `shfmt -d -i 2` 成功、`bash scripts/check.sh`
   通し実行で `All checks passed.` を確認。
+
+## 2026-11-17（現状サマリを直近の変更へ追随）
+
+- `notes/current-state.md` を更新: clippy 行に `undocumented_unsafe_blocks` を反映、
+  SBOM 生成検証（6 件 CycloneDX 1.3）を検証表へ追加、
+  「check.sh に追加したゲート」に machete と unsafe lint の両方を明記。

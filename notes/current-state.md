@@ -30,7 +30,7 @@ status: verified
 | --- | --- |
 | `cargo test --workspace` | 170 passed / 0 failed（core 64 / viewmodel 37 / platform 14 / agent 43 / app 15） |
 | web ユニットテスト | 11 passed / 0 failed |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
+| `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
 | `trunk build --release` | 成功（wasm 7,641,445 B / gzip 3,044,050 B、2026-11-16 計測） |
@@ -38,6 +38,7 @@ status: verified
 | CI | 全 8 ジョブ success を反復確認（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
 | CDP ブラウザ検証 | 設定・デモ・IME（32/32）すべて pass |
 | シェル静的検証 | 4 本すべて `bash -n` / `shellcheck` / `shfmt -d -i 2` 成功 |
+| SBOM 生成 | `generate-sbom.sh` で 6 件の CycloneDX 1.3 JSON を生成・jq 検証（2026-11-17） |
 
 ## 主な対応済み事項
 
@@ -52,7 +53,8 @@ status: verified
 - **UI 安全性**: 確認ダイアログは Enter = キャンセル / Ctrl+Enter = 確定。
   モーダル overlay に `occlude()` を追加し背景クリックを遮断。
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
-  未使用依存を削除し、`check.sh` に machete ゲートを追加。
+  未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
+  ゲートを追加（root / web とも）。
 - **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 170）。
 
 ## 未解決・今後の候補
