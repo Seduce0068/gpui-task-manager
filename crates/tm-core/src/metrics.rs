@@ -224,9 +224,19 @@ impl MetricHistory {
     }
 
     /// Appends one aligned sample.
+    ///
+    /// Percentages are clamped to 0..=100; non-finite values (which `clamp`
+    /// would pass through as `NaN`) become zero so charts never see `NaN`.
     pub fn push(&mut self, cpu_percent: f32, memory_percent: f32, rx_rate: u64, tx_rate: u64) {
-        self.cpu_percent.push(cpu_percent.clamp(0.0, 100.0));
-        self.memory_percent.push(memory_percent.clamp(0.0, 100.0));
+        let clamp = |value: f32| {
+            if value.is_finite() {
+                value.clamp(0.0, 100.0)
+            } else {
+                0.0
+            }
+        };
+        self.cpu_percent.push(clamp(cpu_percent));
+        self.memory_percent.push(clamp(memory_percent));
         self.network_rx_rate.push(rx_rate);
         self.network_tx_rate.push(tx_rate);
     }
@@ -356,5 +366,17 @@ mod tests {
         assert_eq!(history.cpu_percent.latest(), Some(&100.0));
         assert_eq!(history.memory_percent.latest(), Some(&0.0));
         assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn history_rejects_non_finite_percentages() {
+        let mut history = MetricHistory::new(4);
+        history.push(f32::NAN, f32::INFINITY, 1, 2);
+        assert_eq!(history.cpu_percent.latest(), Some(&0.0));
+        assert_eq!(history.memory_percent.latest(), Some(&0.0));
+        assert!(
+            history.cpu_percent.iter().all(|value| value.is_finite()),
+            "no NaN may enter the chart history"
+        );
     }
 }

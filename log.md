@@ -631,3 +631,8 @@
 - `NetworkCounters::rate_since` の下限を f64::EPSILON → 1 ms へ引き上げ、
   不正な微小タイムスタンプによる u64 saturate（虚偽のスパイク）を防止。
   テスト 1 件追加（tm-core 62 → 63、workspace 169 passed）。
+
+## 2026-11-17（履歴グラフの NaN 混入を防御）
+
+- `MetricHistory::push` で非有限の CPU/メモリ率を 0 に置換（`clamp` は NaN を
+  すり抜けるため）。テスト 1 件追加（tm-core 63 → 64、workspace 170 passed）。
