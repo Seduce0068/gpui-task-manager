@@ -681,3 +681,9 @@
 - `notes/current-state.md` を更新: clippy 行に `undocumented_unsafe_blocks` を反映、
   SBOM 生成検証（6 件 CycloneDX 1.3）を検証表へ追加、
   「check.sh に追加したゲート」に machete と unsafe lint の両方を明記。
+
+## 2026-11-17（プロセスツリーのサイクル耐性を修正）
+
+- `flatten_process_tree` が親子サイクルでプロセスを落としていた問題を修正。
+  visited ガードと到達不能ノードの追加処理を導入（折りたたみ挙動は維持）。
+  テスト 1 件追加（tm-core 64 → 65、workspace 171 passed）。

@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **170 passed / 0 failed**（tm-core 64 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **171 passed / 0 failed**（tm-core 65 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1033,3 +1033,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   非有限値を 0 に置換するよう修正（前節の format 防御と同じ方針）。
 - テスト追加: `history_rejects_non_finite_percentages`。
   tm-core 63 → **64 tests**、workspace 170 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（ツリー平坦化のサイクル耐性を修正）
+
+- `crates/tm-core/src/query.rs` の `flatten_process_tree` は、親子関係に循環が
+  あるとサイクル参加プロセスが root にならず表示から消えていた
+  （再現テストで `rows = []` を確認）。visited ガード付きの walk に変更し、
+  root 到達後も未訪問のノードを呼び出し順に追加するよう修正。
+  折りたたみ時は子を visited に登録しつつ emit のみ抑制するため、
+  隠れた子が再表示される回帰はない（既存テストで確認）。
+- テスト追加: `flatten_process_tree_survives_a_parent_cycle`。
+  tm-core 64 → **65 tests**、workspace 171 passed / clippy 0 warning / fmt OK。
