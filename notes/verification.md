@@ -24,8 +24,8 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **177 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 45 / app 12、2026-11-17） |
-| web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
+| `cargo test --workspace` | **177 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 11 / tm-agent 45 / app 15、2026-11-17） |
+| web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
@@ -940,7 +940,7 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `/healthz` の応答時間は アイドル 0 本 **0.24 ms** / アイドル 3 本 **3.04 ms**
   / アイドル 13 本（上限超過）**0.03 ms + 503**。旧実装のアイドル 3 本 2,059 ms から
   大幅に改善。検証後はプロセスを停止しポート 18793 の解放を確認。
-- 全検証: `cargo test --workspace` 162 passed / web 11 passed / clippy 警告 0 /
+- 全検証: `cargo test --workspace` 162 passed / web 12 passed / clippy 警告 0 /
   fmt OK / wasm check OK。
 
 ## 2026-11-17（表示サニタイズ: ゼロ幅・不可視書式文字を追加除去）
