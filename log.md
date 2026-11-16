@@ -801,3 +801,10 @@
 - README / verification / current-state のテスト内訳が
   `platform 14 / app 12` となっていたが、実測は `platform 11 / app 15`
   （合計 177 は一致）。web も 11 → 12 passed に修正。
+
+## 2026-11-17（全体健全性の最終確認）
+
+- デモデータの温度センサー（2 件・決定論的）がテスト済みであること、
+  ADR 番号（001〜020）と DESIGN 章番号（1〜15）が連続していることを確認。
+- キーハンドリング（app/src/app.rs）と viewmodel reducer のテスト範囲を再確認し、
+  新たな不具合なし。workspace 177 passed / clippy 0 warning / CI 8/8 success。
