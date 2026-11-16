@@ -182,7 +182,7 @@ python3 cdp_verify_web.py \
   取得できず、GPUI が WebGL2（ANGLE + SwiftShader）へ自動フォールバックします。
   WebGPU を強制すると device lost で描画が停止します（スパイクで確認済み）。
   実 GPU の通常 Chrome での WebGPU 描画は未確認です。
-- **wasm サイズ**: 7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）。wasm-opt（-Oz）適用後も大きいため、
+- **wasm サイズ**: 7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）。wasm-opt（-Oz）適用後も大きいため、
   初回ロードに時間がかかります。配信時は gzip/brotli を有効にしてください。
 - **単一ウィンドウ**: GPUI Web はトップレベルウィンドウ 1 個のみで、
   ポップアップ・ダイアログ・ファイルダイアログは使えません。
