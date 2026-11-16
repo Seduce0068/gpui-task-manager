@@ -444,3 +444,17 @@
   concurrency 設定でのキャンセルであり、コードの失敗ではない（一部ジョブは success）。
 - 先の原因推定は private リポジトリの Actions 課金/spending limit だったが、
   public 化後に解消した模様。請求設定の詳細はエージェントから確認できないため未確認。
+
+## 2026-11-16（エージェントを並列接続化・s1 解消）
+
+- `agent/src/main.rs`: `SharedState`（Mutex で共有する `SystemProbe`、トークン、
+  接続数カウンタ）を導入し、接続ごとにスレッドを spawn。ロックは `route()` の間だけ。
+  上限 `MAX_CONNECTIONS = 8` を超える接続には即 503。
+- 回帰テスト 2 件追加（アイドル接続下のヘルス応答、上限超過の 503）。
+  tm-agent 39 → 41 tests、workspace 合計 162 passed / clippy 0 warning / fmt OK。
+- Runtime Proof: 実エージェントで `/healthz` 0.24 ms（通常）、3.04 ms（アイドル 3 本）、
+  503 を 0.03 ms（アイドル 13 本）。旧 2,059 ms から改善。プロセス停止・ポート解放確認済み。
+- 検証中に誤って既存の OpenClaw gateway（ port 18789）を停止したが、systemd user service
+  `openclaw-gateway.service` が自動再起動し ready を確認（復旧済み）。原因は
+  `cmd1 && cmd2 &` が cmd1 ごとバックグラウンド化する bash 構文の誤用。
+  以降は `setsid` + 実 PID の確認を使用。

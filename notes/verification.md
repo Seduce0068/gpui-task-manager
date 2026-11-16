@@ -116,7 +116,8 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 - IME による日本語入力は未対応。
 - KWin D-Bus の `queryWindowInfo` は本環境で `NoReply`。ウィンドウ確認は Spectacle で代替。
 - WebGPU の実 GPU 描画、Safari / Firefox、日本語 IME は未検証。
-- エージェントはシリアル処理のため 1 スナップショット約 250 ms。同時リクエストはキューされる。
+- エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。
+  接続は最大 8 本まで並列で、超過分は即 503（後述の 2026-11-16 エントリ参照）。
 - `cargo-deny` は未導入（ライセンス・重複版チェックは今後の CI 課題）。
 - ライセンス/帰属は `NOTICE.md` に記載。
 
@@ -911,3 +912,24 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   release-linux / web-dist / sbom の **8/8 success** を確認（2026-11-16 23:33 JST 完了）。
 - 直前 run の `cancelled` は同ブランチ連続 push による concurrency キャンセル。
   ローカルの `cargo test --workspace`（160 passed）/ clippy / fmt / web 11 tests と整合。
+
+## 2026-11-16（エージェントの並列接続化: s1 の解消）
+
+- 外部レビュー s1 で実測されていた「アイドル接続が `/healthz` を最大 2 秒阻塞する」
+  問題を解消した。`agent/src/main.rs` に `SharedState`（`Arc<Mutex<Box<dyn SystemProbe>>>`
+  ＋トークン＋`AtomicUsize` の接続数）を導入し、accept ごとにスレッドを spawn。
+  共有プローブのロックは完全なリクエストヘッダ読み取り後の `route()` 呼び出し時だけに
+  限定し、`read_request()` 中のアイドル待ちは他の接続をブロックしない。
+- `MAX_CONNECTIONS = 8`。上限超過分は accept 直後に 503 を返して閉じる
+  （loopback 限定だが、無制限のスレッド生成はローカルリソース枯渇のベクタになるため）。
+- 回帰テスト 2 件追加（tm-agent 39 → **41 tests**）:
+  - `idle_connections_do_not_block_health_check`: アイドル接続 2 本を保持しても
+    `/healthz` が 800 ms 以内に応答（旧実装では約 2 秒）。
+  - `excess_connections_are_rejected_immediately`: 8 本保持中の 9 本目が 503 を受け取り、
+    接続数カウンタが 8 に戻ることを確認。
+- **Runtime Proof**（実プロセス、`--demo --listen 127.0.0.1:18793 --token test`）:
+  `/healthz` の応答時間は アイドル 0 本 **0.24 ms** / アイドル 3 本 **3.04 ms**
+  / アイドル 13 本（上限超過）**0.03 ms + 503**。旧実装のアイドル 3 本 2,059 ms から
+  大幅に改善。検証後はプロセスを停止しポート 18793 の解放を確認。
+- 全検証: `cargo test --workspace` 162 passed / web 11 passed / clippy 警告 0 /
+  fmt OK / wasm check OK。
