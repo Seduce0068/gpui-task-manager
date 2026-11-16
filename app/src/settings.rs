@@ -152,8 +152,11 @@ mod tests {
         };
         save_to(&path, &settings).expect("save settings");
         assert!(path.is_file());
-        // The temporary file must not survive the rename.
-        assert!(!path.with_extension("json.tmp").exists());
+        // The temporary file must not survive the rename (same PID-scoped name
+        // used by `save_to`).
+        assert!(!path
+            .with_extension(format!("json.tmp.{}", std::process::id()))
+            .exists());
         assert_eq!(load_from(&path).expect("load settings"), settings);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }

@@ -580,3 +580,12 @@
 - `app/src/settings.rs`: 一時ファイル名 `settings.json.tmp` を
   `settings.json.tmp.<pid>` に変更し、同時保存時の上書き競合を回避。
   回帰テスト 1 件追加（app 11 → 12、workspace 167 passed）。
+
+## 2026-11-17（設定テストと履歴記述の整合性を修正）
+
+- 前回の PID 付き一時ファイル名変更（`068adb2`）に対し、
+  `round_trips_settings_atomically` が旧名 `settings.json.tmp` を確認していたため、
+  PID 付き名を確認するよう修正（テストの意図を復元）。
+- `notes/verification.md` §13 の履歴記述に、現行の一時ファイル名
+  `settings.json.tmp.<pid>` とスキーマ v2（6 項目）の注記を追加。
+- app 15 tests / clippy 0 warning / markdownlint（件数同一 120）。
