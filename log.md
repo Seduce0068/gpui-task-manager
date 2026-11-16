@@ -486,3 +486,12 @@
 - `README.md` §検証状況 と `notes/verification.md` §2 のテスト件数が古く
   （143 passed / web 7）実測（164 passed / web 11）と不一致だったため更新。
   内訳: tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 41 / app 11。
+
+## 2026-11-17（エージェント並列化のレビュー指摘を修正）
+
+- 敵対的レビューで指摘された 3 点を修正:
+  - Drop ガード `ActiveConnection` でパニック時のカウンタリークを解消（回帰テスト追加）。
+  - 503 拒否経路にも `WRITE_TIMEOUT` を設定し accept ループの阻塞を防止。
+  - Mutex poison 回収時にログを出力（無ログ fail-open の解消）。
+- tm-agent 41 → 42 tests、workspace 165 passed / clippy 0 warning / fmt OK。
+- サブエージェント: agent-1（読み取り専用・コード変更なし）。採用 3 件、既知制約として記録 3 件。
