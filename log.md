@@ -604,3 +604,10 @@
   （`--token` または `--token-file` > `TM_AGENT_TOKEN` > 自動生成）を追加。
   README には記載があったが `--help` 単独では分からなかったため。
   実装（`agent/src/main.rs` の token 解決ロジック）と一致することを確認。
+
+## 2026-11-17（web/src/lib.rs の allow 属性に理由を明記）
+
+- `#![allow(dead_code, unused_imports)]` の理由（wasm 専用アイテムを native でも
+  コンパイルしてテストするため）をコードコメント化。属性を外すと 30 件以上の
+  警告が出ることを確認し、クレート全体の allow が妥当であることを検証。
+  動作変更なし（web 11 tests / clippy / wasm check 成功）。

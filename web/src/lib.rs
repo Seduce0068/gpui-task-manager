@@ -1,3 +1,7 @@
+// The shell modules are compiled on native hosts too so their unit tests run in
+// CI, but almost all of their items are only used under `target_family = "wasm"`.
+// Allowing dead code at crate level keeps `cargo test` (native) warning-free
+// without littering every wasm-only item with `#[cfg]`.
 #![allow(dead_code, unused_imports)]
 //! Browser (wasm) GPUI shell for the GPUI task manager.
 //!
