@@ -116,6 +116,17 @@ mod tests {
     }
 
     #[test]
+    fn extreme_values_do_not_panic_or_overflow() {
+        // Display helpers must stay total: a corrupt probe could hand them any
+        // u64, and a panic in a render loop would take down the shell.
+        let bytes = format_bytes(u64::MAX);
+        assert!(bytes.ends_with(" PiB"), "{bytes}");
+        assert!(format_duration(u64::MAX).ends_with('h'));
+        assert_eq!(format_process_age(0, u64::MAX), "0s");
+        assert!(format_count(u64::MAX as usize).contains(','));
+    }
+
+    #[test]
     fn rates_append_per_second() {
         assert_eq!(format_rate(2_048), "2.0 KiB/s");
     }

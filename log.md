@@ -871,3 +871,8 @@
 - `notes/current-state.md` の記載（test 182 passed / web 12 / wasm 7,642,794 B /
   gzip 3,044,134 B / CI 8/8）が実測とすべて一致することを確認。新たな不整合なし。
 - CI run 43977476416 は直近 push の concurrency で cancelled（wasm/deny/sbom は success）。
+
+## 2026-11-17（表示フォーマットの極端値テストを追加）
+
+- u64::MAX を format_bytes/duration/process_age/count に渡しても panic しないことを検証。
+  tm-core 69 → 70、workspace 183 passed。
