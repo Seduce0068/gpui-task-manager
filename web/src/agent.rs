@@ -147,16 +147,22 @@ impl AgentClient {
 
         let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer)
             .map_err(|error| format!("スナップショット JSON の解析に失敗しました: {error}"))?;
-        if envelope.schema_version != WIRE_SCHEMA_VERSION {
-            return Err(format!(
-                "スキーマバージョンが一致しません (agent={}, web={})",
-                envelope.schema_version, WIRE_SCHEMA_VERSION
-            ));
-        }
+        check_schema_version(envelope.schema_version)?;
         Ok(SnapshotResponse {
             snapshot: envelope.snapshot,
             total_process_count: envelope.total_process_count,
         })
+    }
+}
+
+/// Rejects a wire schema version this client does not understand.
+fn check_schema_version(version: u32) -> Result<(), String> {
+    if version == WIRE_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "スキーマバージョンが一致しません (agent={version}, web={WIRE_SCHEMA_VERSION})"
+        ))
     }
 }
 
@@ -192,6 +198,14 @@ fn encode_query_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_wire_schema_version_is_rejected() {
+        assert!(check_schema_version(WIRE_SCHEMA_VERSION).is_ok());
+        let error = check_schema_version(WIRE_SCHEMA_VERSION + 1).expect_err("must reject");
+        assert!(error.contains("スキーマバージョン"));
+        assert!(error.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
+    }
 
     #[test]
     fn response_size_cap_leaves_room_for_a_full_snapshot() {
