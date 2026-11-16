@@ -838,3 +838,8 @@
   taskkill.exe の絶対パス呼び出し（PATH ハイジャック対策）、CREATE_NO_WINDOW、
   Stop/Continue の Unsupported 判定が実装されている。CI native-windows 通過と整合。
   新たな不具合なし。
+
+## 2026-11-17（HTTP 8 KiB 境界テストを追加）
+
+- read_request の 8 KiB 境界（ちょうどは受理、超過は 431）をループバックソケットで検証。
+  テスト 2 件追加（tm-agent 45 → 47、workspace 179 passed）。

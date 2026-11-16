@@ -433,6 +433,52 @@ mod tests {
         );
     }
 
+    /// Feeds `head` to `read_request` over a loopback socket and returns its result.
+    fn read_head(head: &[u8]) -> Result<Option<Request>, ParseError> {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let client = std::net::TcpStream::connect(address).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        let mut client = client;
+        client.write_all(head).expect("write head");
+        drop(client);
+        let mut server = server;
+        read_request(&mut server)
+    }
+
+    #[test]
+    fn accepts_a_head_at_the_byte_limit() {
+        // A single padded header: the terminating CRLF ends exactly at
+        // MAX_HEADER_BYTES, exercising only the byte limit (not MAX_HEADERS).
+        let mut head = String::from("GET / HTTP/1.1\r\nX: ");
+        let padding = MAX_HEADER_BYTES - head.len() - 4; // + final "\r\n\r\n"
+        head.push_str(&"a".repeat(padding));
+        head.push_str("\r\n\r\n");
+        assert_eq!(head.len(), MAX_HEADER_BYTES);
+        let result = read_head(head.as_bytes());
+        assert!(
+            result.is_ok(),
+            "a head exactly at the byte limit must be accepted: {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_head_over_the_byte_limit() {
+        let mut head = String::from("GET / HTTP/1.1\r\n");
+        while head.len() < MAX_HEADER_BYTES + 32 {
+            head.push_str("X: 0123456789\r\n");
+        }
+        head.push_str("\r\n");
+        assert_eq!(
+            read_head(head.as_bytes()).err(),
+            Some(ParseError::TooLarge),
+            "a head over the byte limit must be rejected"
+        );
+    }
+
     #[test]
     fn accepts_the_maximum_number_of_headers() {
         let mut head = String::from("GET / HTTP/1.1");

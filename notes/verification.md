@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **177 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 11 / tm-agent 45 / app 15、2026-11-17） |
+| `cargo test --workspace` | **179 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 11 / tm-agent 47 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1139,3 +1139,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 最初にエラー時モードをフラグ無しで実行し 4 件 FAIL が出たが、
   スクリプトの期待モード指定漏れが原因と確認し正しいフラグで再実行して解消。
 - 検証用プロセスを停止し、全ポート（8091 / 9223 / 18787）の解放を確認。
+
+## 2026-11-17（HTTP ヘッダ 8 KiB 境界の受理テストを追加）
+
+- `read_request` はヘッダ終端位置が `MAX_HEADER_BYTES`（8 KiB）を超えた場合のみ
+  `TooLarge` を返す仕様。431 側（超過拒否）は既存テストでカバーされていたが、
+  境界値ちょうどの受理が未検証だった。
+- ループバックソケット経由で `read_request` を呼ぶヘルパーを追加し、
+  8 KiB ちょうどのヘッダが受理されること／8 KiB 超が `TooLarge` になることを検証。
+  途中で不正に切り詰めたテストデータが `Malformed` になったが、実装ではなく
+  テストデータの問題と修正。
+- tm-agent 45 → **47 tests**、workspace 179 passed / clippy 0 warning / fmt OK。
