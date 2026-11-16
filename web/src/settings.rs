@@ -29,7 +29,14 @@ pub fn load() -> Settings {
     let Ok(Some(raw)) = storage.get_item(STORAGE_KEY) else {
         return Settings::default();
     };
-    match serde_json::from_str::<Settings>(&raw) {
+    parse_saved(&raw)
+}
+
+/// Parses a persisted settings string, falling back to defaults on bad JSON.
+///
+/// Kept pure so the fallback path can be tested without a browser context.
+fn parse_saved(raw: &str) -> Settings {
+    match serde_json::from_str::<Settings>(raw) {
         Ok(settings) => settings.normalized(),
         Err(error) => {
             log::warn!("保存された設定を読み込めません（既定値を使います）: {error}");
@@ -77,6 +84,14 @@ mod tests {
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, settings);
+    }
+
+    #[test]
+    fn corrupt_json_falls_back_to_defaults() {
+        let settings = parse_saved("{ not json");
+        assert_eq!(settings.interval_ms, 1_000);
+        assert_eq!(settings.version, tm_viewmodel::SETTINGS_VERSION);
+        assert!(settings.details_visible);
     }
 
     #[test]

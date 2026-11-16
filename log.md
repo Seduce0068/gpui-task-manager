@@ -888,3 +888,8 @@
   既存テスト `snapshot_body_uses_the_wire_schema` で固定されていることを確認。
   `PlatformInfo` の capability 意味論（native / read_only / demo）もテスト済みで
   新たな不具合なし。
+
+## 2026-11-17（web 設定の破損 JSON フォールバックを検証）
+
+- parse_saved 純粋関数を導入し、破損 JSON が既定値へ縮退することを検証。
+  web 13 → 14 tests。
