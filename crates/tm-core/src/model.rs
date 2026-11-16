@@ -245,6 +245,51 @@ impl NetworkSnapshot {
             )
         })
     }
+
+    /// Sums the counters of the interfaces that carry real network traffic.
+    ///
+    /// Loopback and virtual interfaces are excluded: their traffic is already
+    /// counted on the physical interface underneath, so adding them would
+    /// double-count the overview rate (Runtime Proof: `tailscale0` reported
+    /// 79.9 MB received while `enp4s0` reported 124.6 GB, i.e. the VPN traffic
+    /// was counted twice).
+    pub fn physical_totals(&self) -> (u64, u64) {
+        self.interfaces
+            .iter()
+            .filter(|iface| !is_virtual_interface(&iface.name))
+            .fold((0, 0), |(rx, tx), iface| {
+                (
+                    rx.saturating_add(iface.received_bytes),
+                    tx.saturating_add(iface.transmitted_bytes),
+                )
+            })
+    }
+}
+
+/// Returns `true` for loopback, bridge, container and VPN interfaces whose
+/// counters duplicate traffic already seen on the physical interface.
+///
+/// The list is name-based because it has to work identically across the native
+/// and browser probes, and deliberately errs towards treating an unknown
+/// interface as physical (a missing interface in the summary is worse than a
+/// rarely over-counted one).
+pub fn is_virtual_interface(name: &str) -> bool {
+    const VIRTUAL_PREFIXES: [&str; 8] = [
+        "br-",
+        "docker",
+        "veth",
+        "virbr",
+        "lxcbr",
+        "tailscale",
+        "tun",
+        "tap",
+    ];
+    if name == "lo" {
+        return true;
+    }
+    VIRTUAL_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// Disk usage for one mounted filesystem.
@@ -326,8 +371,11 @@ impl SystemSnapshot {
     }
 
     /// Cumulative network totals for the whole machine.
+    ///
+    /// Excludes loopback and virtual interfaces so the overview rate is not
+    /// double-counted (see [`NetworkSnapshot::physical_totals`]).
     pub fn network_totals(&self) -> (u64, u64) {
-        self.network.totals()
+        self.network.physical_totals()
     }
 }
 
@@ -383,5 +431,59 @@ mod tests {
             ],
         };
         assert_eq!(network.totals(), (u64::MAX, 3));
+    }
+
+    #[test]
+    fn virtual_interfaces_are_detected_by_name() {
+        for name in [
+            "lo",
+            "docker0",
+            "br-19b60f1f19dc",
+            "veth1234",
+            "virbr0",
+            "lxcbr0",
+            "tailscale0",
+            "tun0",
+            "tap0",
+        ] {
+            assert!(is_virtual_interface(name), "{name} must be virtual");
+        }
+        for name in ["enp4s0", "eth0", "wlan0", "wlp3s0", "en0", "wlan1"] {
+            assert!(!is_virtual_interface(name), "{name} must be physical");
+        }
+    }
+
+    #[test]
+    fn physical_totals_exclude_loopback_and_virtual_interfaces() {
+        // Mirrors the development host: the VPN interface duplicates traffic
+        // that is also counted on enp4s0.
+        let network = NetworkSnapshot {
+            interfaces: vec![
+                NetworkInterfaceSnapshot {
+                    name: "enp4s0".into(),
+                    received_bytes: 124_641_412_687,
+                    transmitted_bytes: 28_381_393_862,
+                },
+                NetworkInterfaceSnapshot {
+                    name: "tailscale0".into(),
+                    received_bytes: 79_901_838,
+                    transmitted_bytes: 35_192_774,
+                },
+                NetworkInterfaceSnapshot {
+                    name: "docker0".into(),
+                    received_bytes: 0,
+                    transmitted_bytes: 0,
+                },
+                NetworkInterfaceSnapshot {
+                    name: "lo".into(),
+                    received_bytes: 1_000,
+                    transmitted_bytes: 2_000,
+                },
+            ],
+        };
+        assert_eq!(network.physical_totals(), (124_641_412_687, 28_381_393_862));
+        // The all-interface total still double-counts, which is why the
+        // overview uses physical_totals().
+        assert_eq!(network.totals(), (124_721_315_525, 28_416_588_636));
     }
 }

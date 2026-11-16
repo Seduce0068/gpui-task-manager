@@ -652,3 +652,44 @@ UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容�
 - `cargo test --workspace`: **155 passed / 0 failed**（app 12 / tm-agent 39 / tm-core 56 / tm-platform 11 / tm-viewmodel 37）。
 - `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
 - `cargo fmt --all` 適用済み。
+
+## 2026-11-16（ネットワーク集計から仮想 IF を除外: 二重計上の修正）
+
+外部レビュー a6（「ネットワーク集計が lo / 仮想 IF を含む」）を実測で確認したところ、
+**VPN インターフェースによる二重計上**が実際に発生していた。
+
+### 実測（Runtime Proof）
+
+```text
+enp4s0      rx=124,641,412,687  tx=28,381,393,862   ← 物理 NIC
+tailscale0  rx=    79,901,838   tx=    35,192,774   ← 同じ通信が NIC 上も流れる
+docker0 / br-* / lxcbr0 / virbr0  rx=0 tx=0         ← アイドルだが合算対象だった
+
+合計（修正前の overview）: rx=124,721,314,525（tailscale 分を二重計上）
+物理のみ（修正後）        : rx=124,641,412,687
+```
+
+`lo` は `tm-platform` 側で既に除外されていたが、`tm-platform` のフィルタは `lo` だけで、
+`tailscale0` / `docker0` / `br-*` / `lxcbr0` / `virbr0` は集計に含まれていた。
+
+### 修正
+
+- `crates/tm-core/src/model.rs`:
+  - `NetworkSnapshot::physical_totals()` を追加（loopback と仮想 IF を除外して合算）。
+  - `is_virtual_interface(name)` を追加（`lo`、および `br-` / `docker` / `veth` / `virbr` /
+    `lxcbr` / `tailscale` / `tun` / `tap` 接頭辞）。未知の名前は物理として扱う
+    （表示から消える方が、稀な過大計上より有害なため）。
+  - `SystemSnapshot::network_totals()` を `physical_totals()` に切り替え（overview の
+    レート計算・履歴がこの関数を使う）。`totals()` は全 IF 合算として残す。
+- 回帰テストを 2 件追加（`tm-core` 56 → **58 件**）:
+  仮想 IF 名の判定（正例 9 / 負例 6）、物理 IF のみの合算と全 IF 合算の差。
+- 既存テスト `tm-viewmodel::ingest_fills_history_and_rates` は旧挙動（`lo` を合算した
+  1_238_663）を期待値に固定していたため、正しい値（1_234_567）に更新した。
+
+### 検証（Runtime Proof）
+
+- `cargo test --workspace`: **157 passed / 0 failed**
+  （app 12 / tm-agent 39 / tm-core 58 / tm-platform 11 / tm-viewmodel 37）。
+- `cd web && cargo test`: **7 passed / 0 failed**。
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
+- `cargo fmt --all` 適用済み。
