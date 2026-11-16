@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **174 passed / 0 failed**（tm-core 68 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **175 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1071,3 +1071,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   無視して全 cycle メンバーを表示するよう修正（深さは有限のまま）。
 - テスト追加: `flatten_process_tree_cycle_honours_collapsed_nodes`。
   tm-core 67 → **68 tests**、workspace 174 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（ツリー平坦化の大規模チェーン回帰テスト）
+
+- サイクル修正で追加したフォールバックパスが計算量に悪影響を与えていないことを
+  確認するため、1,000 プロセスの親子チェーンを平坦化するテストを追加。
+  全プロセスが 1 回だけ現れ、深さが 0..999 で収束することを検証（0.01 秒で完了）。
+- tm-core 68 → **69 tests**、workspace 175 passed / clippy 0 warning / fmt OK。
