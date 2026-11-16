@@ -1,6 +1,6 @@
 {
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-16T00:25:09+0900",
+  "started_at": "2026-11-16T15:56:41+0900",
   "steps": [
     {
       "step": "fresh",
@@ -27,19 +27,20 @@
     },
     {
       "step": "saved",
-      "stored": "{\"version\":1,\"interval_ms\":1000,\"sort\":{\"key\":\"Cpu\",\"direction\":\"Ascending\"},\"details_visible\":true,\"tree_view\":false}"
+      "stored": "{\"version\":2,\"interval_ms\":1000,\"sort\":{\"key\":\"Cpu\",\"direction\":\"Ascending\"},\"details_visible\":true,\"tree_view\":false,\"theme\":\"Dark\"}"
     },
     {
       "step": "saved_parsed",
       "settings": {
-        "version": 1,
+        "version": 2,
         "interval_ms": 1000,
         "sort": {
           "key": "Cpu",
           "direction": "Ascending"
         },
         "details_visible": true,
-        "tree_view": false
+        "tree_view": false,
+        "theme": "Dark"
       }
     },
     {
@@ -80,5 +81,5 @@
   },
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-16T00:25:14+0900"
+  "finished_at": "2026-11-16T15:56:46+0900"
 }

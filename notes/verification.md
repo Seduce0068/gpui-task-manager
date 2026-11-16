@@ -832,3 +832,39 @@ API で明確にした。
 2. 同時接続数に上限（例: 8）を設け、超過分は即座に `503` を返して閉じる。
 3. あるいは `accept` 直後だけ短い読み取りタイムアウト（例: 250 ms）を使い、
    ヘッダ受信後は通常の 1 秒に切り替える。
+
+## 2026-11-16（ライトテーマ追加後の設定検証スクリプト追随・web 版との差の記録）
+
+並行セッションが **ネイティブ版のライトテーマ（Catppuccin Latte）** を実装した
+（commit `b1a6f85`: `app/src/app.rs` に切替ボタン、`app/src/theme.rs` のパレット切替、
+`crates/tm-viewmodel/src/settings.rs` の `Settings.theme` と `SETTINGS_VERSION = 2`）。
+
+### 検証スクリプトの追随（前回と同じ種類の不具合を再発見）
+
+設定スキーマに `theme` が加わったため、`web/scripts/cdp_verify_settings.py` の期待キーが
+古くなり、検証が失敗した（前回 `tree_view` で同じ問題を経験済み）。
+
+```text
+FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interval_ms','sort','theme','tree_view','version']）
+```
+
+- 修正: 期待キーに `theme` を追加し、復元用の設定も `version: 2` / `theme: "Light"` に更新。
+  冒頭の doc comment（スキーマ一覧）も同期。
+- 再検証: **`{"passed": true, "failures": []}`**、保存内容は
+  `version=2, interval_ms, sort, details_visible, tree_view, theme("Dark")` で
+  トークン・プロセス情報を含まないことを確認。証跡を
+  `web/verification/web-settings-evidence.json` に更新。
+
+### web 版ライトテーマの現状（未実装・非対称）
+
+- **ネイティブ版**: 切替ボタン（`toggle-theme`）・起動時の復元（`set_theme(settings.theme)`）・
+  保存（`save_settings` で `theme: crate::theme::theme()`）まで実装済み。
+- **web 版**: `web/src/shell.rs:231` が `theme: tm_viewmodel::Theme::Dark` を**固定値**で保存しており、
+  切替 UI もパレット切替も未実装。
+  → 設定スキーマ（`tm-viewmodel::Settings`）は両者で共有されているため、
+  **web 版の設定ファイルには常に `"Dark"` が書かれる**。ネイティブで選んだ Light は
+  web に引き継がれず、web の設定をネイティブで読むと Dark に戻る。
+- 影響: データ破損ではないが、共有スキーマの意図（両シェルで同じ設定）と一致しない。
+  状態フック（`data-gpui-proof`）にも `theme` が無いため、CDP では復元を検証できない。
+- 次の対応候補: web 側にテーマ切替（または `prefers-color-scheme` 連動）と
+  `theme` の保存・復元を実装し、状態フックへ `theme=` を追加して CDP で検証する。

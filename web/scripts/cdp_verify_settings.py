@@ -5,7 +5,8 @@
 1. 列ヘッダをクリックすると `localStorage` に表示設定が保存される（保存経路）。
 2. `localStorage` に設定を書いてから再読込すると、ソートが復元される（復元経路）。
 3. 保存される JSON は `tm-viewmodel::Settings` のスキーマ（version / interval_ms /
-   sort / details_visible）に一致し、プロセス情報やトークンを含まない。
+   sort / details_visible / tree_view / theme）に一致し、プロセス情報やトークンを
+   含まない。
 
 前提（別シェルで起動しておく）:
     cd work/gpui-task-manager/web/dist && python3 -m http.server 8091 --bind 127.0.0.1
@@ -95,7 +96,8 @@ async def main() -> int:
         except json.JSONDecodeError as error:
             check(False, f"保存された設定が JSON ではない: {error}")
     check(
-        set(saved.keys()) == {"version", "interval_ms", "sort", "details_visible", "tree_view"},
+        set(saved.keys())
+        == {"version", "interval_ms", "sort", "details_visible", "tree_view", "theme"},
         f"保存スキーマが想定どおり（実際: {sorted(saved.keys())}）",
     )
     check("token" not in json.dumps(saved).lower(), "トークンが保存されていない")
@@ -103,11 +105,12 @@ async def main() -> int:
 
     # 3) 復元経路: 設定を書いて再読込し、ソートが反映されることを確認する。
     restored = {
-        "version": 1,
+        "version": 2,
         "interval_ms": 5000,
         "sort": {"key": "Name", "direction": "Ascending"},
         "details_visible": False,
         "tree_view": True,
+        "theme": "Light",
     }
     await cdp.evaluate(
         f"localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(restored))});"
