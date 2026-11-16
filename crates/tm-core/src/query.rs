@@ -329,6 +329,7 @@ pub fn flatten_process_tree(
         collapsed: &std::collections::HashSet<crate::model::ProcessKey>,
         visited: &mut HashSet<usize>,
         emit: bool,
+        ignore_collapsed: bool,
         out: &mut Vec<ProcessTreeRow>,
     ) {
         // A malformed snapshot can contain a parent cycle; never visit a node
@@ -349,9 +350,10 @@ pub fn flatten_process_tree(
         // or this is a marking-only pass) so `visited` accurately reflects
         // reachability. Only emission is suppressed for collapsed children.
         if let Some(child_list) = child_list {
-            let is_collapsed = processes
-                .get(idx)
-                .is_some_and(|process| collapsed.contains(&process.key));
+            let is_collapsed = !ignore_collapsed
+                && processes
+                    .get(idx)
+                    .is_some_and(|process| collapsed.contains(&process.key));
             for &child in child_list {
                 walk(
                     child,
@@ -361,6 +363,7 @@ pub fn flatten_process_tree(
                     collapsed,
                     visited,
                     emit && !is_collapsed,
+                    ignore_collapsed,
                     out,
                 );
             }
@@ -378,12 +381,14 @@ pub fn flatten_process_tree(
             collapsed,
             &mut visited,
             true,
+            false,
             &mut out,
         );
     }
     // Processes trapped in a cycle have no root and would otherwise vanish.
     // Everything reachable from a root is already visited, so only those
-    // stranded nodes are emitted here (collapsed descendants stay hidden).
+    // stranded nodes are emitted here. Collapse is ignored on this pass:
+    // a collapsed cycle member must not hide its partner from the table.
     for &idx in indices {
         walk(
             idx,
@@ -392,6 +397,7 @@ pub fn flatten_process_tree(
             &children,
             collapsed,
             &mut visited,
+            true,
             true,
             &mut out,
         );
@@ -633,6 +639,25 @@ mod tests {
         let rows =
             flatten_process_tree(&processes, &[0, 1, 2, 3], &std::collections::HashSet::new());
         assert_eq!(rows.len(), 4, "no process may be dropped: {rows:?}");
+    }
+
+    #[test]
+    fn flatten_process_tree_cycle_honours_collapsed_nodes() {
+        // A cycle with one collapsed member: both members must stay visible,
+        // and the fallback pass must not create an unbounded depth chain.
+        let mut a = process(1, "a", 0.0, 1);
+        a.parent_pid = Some(2);
+        let mut b = process(2, "b", 0.0, 1);
+        b.parent_pid = Some(1);
+        let processes = vec![a, b];
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert(processes[0].key);
+        let rows = flatten_process_tree(&processes, &[0, 1], &collapsed);
+        assert_eq!(rows.len(), 2, "cycle members remain visible: {rows:?}");
+        assert!(
+            rows.iter().all(|row| row.depth <= 1),
+            "collapsed cycle must not create deep chains: {rows:?}"
+        );
     }
 
     #[test]

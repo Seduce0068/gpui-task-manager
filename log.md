@@ -698,3 +698,15 @@
 
 - 3 ノード cycle と通常サブツリー併存ケースのテストを追加（tm-core 65 → 67、
   workspace 173 passed）。
+
+## 2026-11-17（折りたたみ＋サイクル併存の表示バグを修正）
+
+- フォールバックパスで collapse を無視する `ignore_collapsed` を導入し、
+  折りたたみ済みサイクルメンバーの相手が消える問題を修正。
+  テスト 1 件追加（tm-core 67 → 68、workspace 174 passed）。
+
+## 2026-11-17（CI run 43943002461 の macOS キュー待ち）
+
+- run 43943002461 は gates / wasm / windows / web-dist / release-linux / sbom /
+  cargo-deny の 7 ジョブ success。macOS ジョブは長時間 queued の後 cancelled
+  （コード失敗ではない）。直前 run 43941598447 では macOS を含む 8/8 success。

@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **173 passed / 0 failed**（tm-core 67 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **174 passed / 0 failed**（tm-core 68 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1062,3 +1062,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   - 3 ノード cycle（`1→2→3→1`）で全メンバーが表示され、深さが 0/1/2 に収束（無限ループなし）。
   - 通常ルート配下に別の 2 ノード cycle がある場合も、全プロセスが落ちずに表示される。
 - tm-core 65 → **67 tests**、workspace 173 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（折りたたみ＋親子サイクルの併存を修正）
+
+- サイクル修正のフォールバックパスで collapsed フラグが効いてしまい、
+  折りたたみ済みノードがサイクルに含まれると相手側が表示から消えていた。
+  `walk` に `ignore_collapsed` を追加し、フォールバックパスでは collapse を
+  無視して全 cycle メンバーを表示するよう修正（深さは有限のまま）。
+- テスト追加: `flatten_process_tree_cycle_honours_collapsed_nodes`。
+  tm-core 67 → **68 tests**、workspace 174 passed / clippy 0 warning / fmt OK。
