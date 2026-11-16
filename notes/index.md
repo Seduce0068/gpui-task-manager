@@ -8,7 +8,7 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
   活発度・ライセンス・Web 対応・採用判断、ブラウザ監視プロトコル、GPUI 先行事例
 - [crates-survey.md](crates-survey.md) — 収集系 crate の評価（sysinfo / procfs /
   rustix / heim など）、RUSTSEC、sysinfo の制約、実測ログ全文
-- [ime.md](ime.md) — 日本語 IME（ブラウザ版の実装と Runtime Proof、ネイティブ設計案）
+- [ime.md](ime.md) — 日本語 IME（ブラウザ版・ネイティブ版の実装と Runtime Proof、実 IME 未検証）
 - [physical-verification.md](physical-verification.md) — Windows/macOS 物理実機・クラウド検証の選択肢と費用・手順
 - [cargo-vet-adoption.md](cargo-vet-adoption.md) — cargo-vet 導入（初期化済み・全依存 exempt ベースライン、運用方針、imports 候補一次調査、監査捏造なし）
 - [cross-platform.md](cross-platform.md) — Windows/macOS 対応（cfg 分岐・CI マトリクス・cross-check）
@@ -20,11 +20,13 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 - [verification.md](verification.md) — ビルド・テスト・clippy・ネイティブ起動・
   エージェント・wasm の Runtime Proof と既知の制限
 - [web-shell.md](web-shell.md) — ブラウザ版シェル（`web/`）の実装と検証
-
 - [review-2026-11-14.md](review-2026-11-14.md) — 独立レビュー（セキュリティ・アーキテクチャ・運用）
 
 ## 証拠画像
 
-- `assets/task-manager-native-wayland.png` — ネイティブ版（実データ、Wayland）
+- `assets/task-manager-native-wayland.png` — ネイティブ版（実データ、Wayland、`--redact` 適用）
 - `assets/wasm-spike-*.png` — GPUI Web スパイク（描画・スクロール・入力・fetch）
-- `assets/web-shell-*.png` — ブラウザ版シェル（実装後）
+- `assets/web-shell-*.png` — ブラウザ版シェル（デモ／ライブ／エラー時）
+- `assets/web-shell-light-theme.png` — ブラウザ版ライトテーマ（Catppuccin Latte）
+- `assets/ime-*.png` / `assets/native-ime-*.png` — 日本語 IME の composition 検証
+- `assets/wasmopt-*.png` — wasm-opt 適用後の描画確認
