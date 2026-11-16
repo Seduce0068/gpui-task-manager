@@ -384,3 +384,9 @@
 - レビュー s1 を実測: 無送信接続 1 本で `/healthz` 49 ms、3 本同時保持で 2,059 ms（1 本あたり `READ_TIMEOUT`=1 秒を直列待ち）。
 - 影響はエージェントの可用性のみで、接続元は loopback に限定。UI は同時 1 リクエスト方式のため通常運用では競合しない。
 - 並列化は `SystemProbe` の `Send` 境界・probe の共有方法・同時接続上限を同時に変える設計判断のため、今回は文書化に留め改善案を `notes/verification.md` に記録。
+
+## 2026-11-16（ライトテーマ追加に伴う文書・検証の追随）
+
+- ネイティブ版のライトテーマ（Catppuccin Latte）実装（`b1a6f85`）を受け、`DESIGN.md` §10 / §14 と `README.md` の「ライトテーマは未実装」記述を実態に合わせて更新（ネイティブ版は切替ボタン + `Settings.theme` 永続化まで実装、ブラウザ版は未実装で `"Dark"` 固定。`SETTINGS_VERSION = 2`）。
+- `web/scripts/cdp_verify_settings.py` の期待スキーマに `theme` を追加し、復元用設定も `version: 2` / `theme: "Light"` に更新。再検証は pass（`{"passed": true, "failures": []}`）、証跡を更新。
+- ブラウザ版の状態フック（`data-gpui-proof`）に `theme` が無いため、CDP ではテーマ復元を検証できない。web 側のテーマ実装と状態フック追加を次回候補として `notes/verification.md` に記録。
