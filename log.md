@@ -721,3 +721,13 @@
 
 - 1,000 プロセスのチェーンで重複なく O(n) に平坦化されることを検証。
   tm-core 68 → 69、workspace 175 passed。
+
+## 2026-11-17（運用スクリプトと証跡の健全性確認）
+
+- `scripts/dev-setup.sh` を実行: pkg-config で開発ファイルが見つかる環境では
+  旧 shim (`app/native-libs/libxkbcommon-x11.so`) と空ディレクトリを削除し、
+  exit 0・作業ツリークリーンを確認（冪等）。
+- `web/verification/*.json` 6 件を確認: 5 件は `passed: true / failures: 0`、
+  IME は `checks: 32`（形式が異なるが整合）。
+- CI の macOS キュー待ちは GitHub ランナー供給の問題で、ワークフローの
+  `timeout-minutes` 等では緩和できないため設定変更なし。
