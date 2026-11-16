@@ -820,3 +820,14 @@
 - §8.1「入力状態 ... 28 件」と §6「FilterInput 28 件 / web 4 件」が古く、
   実測は FilterInput 13 件（viewmodel 全体 37 件）/ web 12 件だったため修正。
   IME 32 チェック・CDP 検証は据え置き。
+
+## 2026-11-17（WM 識別子と .desktop の整合を確認）
+
+- `packaging/linux/gpui-task-manager.desktop` は `StartupWMClass=gpui-task-manager`。
+- app 起動コード（app/src/main.rs:51）は `app_id: Some("gpui-task-manager")` を設定。
+  gpui-pre-linux 0.3.12 の Wayland 実装はこれを xdg toplevel の app_id に、
+  X11 実装は instance/class の両方に設定するため、いずれの経路でも
+  `.desktop` の宣言と一致する。
+- 本環境は Wayland ネイティブ描画で xwininfo にウィンドウが出ず、
+  kdotool も未インストールのため実 Window プロパティの直接取得は未検証
+  （ソースロジックによる確認）。
