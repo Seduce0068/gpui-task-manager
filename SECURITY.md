@@ -43,7 +43,7 @@ generated: 2026-11-14T22:35:00+09:00
    - トークンは起動時生成（`/dev/urandom`）または `--token-file` / `TM_AGENT_TOKEN`。
      `--token` は argv 経由で他プロセスから見えるため警告を出す。
 6. **表示の安全性**: OS 由来の文字列（プロセス名・コマンド・ユーザー名・ホスト名・
-   マウントポイント等）は制御文字・ANSI エスケープ・Unicode bidi 制御文字を除去し、
+   マウントポイント等）は制御文字・ANSI エスケープ・Unicode bidi／ゼロ幅の不可視書式文字を除去し、
    文字数で切り詰める。
 7. **秘密情報を保持しない**: 認証情報・DB を保存しない。トークンはメモリ上と
    起動ログ（1 回）のみ。永続化するのは**表示設定だけ**
@@ -141,7 +141,7 @@ cargo audit
 - `tm-viewmodel`: 確認前は Effect を出さない、確認後にのみ Signal を出す、PID 1/self の拒否、
   Kill シグナルの保持、対象の identity 捕捉。
 - `gpui-task-manager`: Enter=キャンセル / Ctrl+Enter=確定、その他キーの無視。
-- `tm-core`: 制御文字・ANSI・bidi の除去、500 ケースの決定論的サニタイズ検査。
+- `tm-core`: 制御文字・ANSI・bidi／ゼロ幅不可視文字の除去、500 ケースの決定論的サニタイズ検査。
 - `tm-agent`: クエリトークン拒否、Host 検証、Bearer 認証、CORS、`--token-file`、
   `--redact`（コマンド引数内ホスト名・tailnet ドメインを含む）。
 - `tm-viewmodel`: `FilterInput` の UTF-16 / selection / marked range の状態機械

@@ -11,9 +11,9 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// Maximum number of characters kept from a command line.
 pub const MAX_COMMAND_CHARS: usize = 240;
 
-/// Removes ANSI escape sequences, control characters and Unicode bidi control
-/// characters, collapses whitespace and truncates to `max_chars` characters
-/// (not bytes).
+/// Removes ANSI escape sequences, control characters, Unicode bidi control
+/// characters and zero-width / invisible format characters, collapses whitespace
+/// and truncates to `max_chars` characters (not bytes).
 ///
 /// Truncation happens on a character boundary and appends `…`, so CJK process
 /// names are never cut in the middle of a code point.
@@ -25,7 +25,7 @@ pub fn sanitize_display(input: &str, max_chars: usize) -> String {
     let mut truncated = false;
 
     for ch in stripped.chars() {
-        let ch = if ch.is_control() || is_bidi_control(ch) {
+        let ch = if ch.is_control() || is_bidi_control(ch) || is_invisible_format(ch) {
             ' '
         } else {
             ch
@@ -63,6 +63,35 @@ fn is_bidi_control(ch: char) -> bool {
     matches!(
         ch,
         '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Returns `true` for invisible format characters that can be used to spoof
+/// process names (zero-width joiners/non-joiners, word joiners, and replacement
+/// characters).
+///
+/// These are valid characters in some scripts, but replacing them with a space
+/// is safe here: process names are shown for identification and always paired
+/// with the numeric PID, so dropping a zero-width modifier cannot change the
+/// meaning of a legitimate name in a way that matters for the UI. Combining
+/// marks (e.g. U+0300..U+036F) are intentionally kept so accented names render
+/// correctly.
+fn is_invisible_format(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00ad}' // SOFT HYPHEN
+            | '\u{034f}' // COMBINING GRAPHEME JOINER
+            | '\u{061c}' // ARABIC LETTER MARK (also bidi)
+            | '\u{115f}'..='\u{1160}' // HANGUL CHOSEONG/KYEOONG FILLER
+            | '\u{17b4}'..='\u{17b5}' // KHMER VOWEL INHERENT AQ/AA
+            | '\u{180b}'..='\u{180f}' // MONGOLIAN FREE VARIATION SELECTORS
+            | '\u{200b}'..='\u{200f}' // ZWSP, ZWNJ, ZWJ, LRM, RLM
+            | '\u{202a}'..='\u{202e}' // bidi embedding controls
+            | '\u{2060}'..='\u{206f}' // WORD JOINER .. NOMINAL DIGIT SHAPES
+            | '\u{3164}' // HANGUL FILLER
+            | '\u{fe00}'..='\u{fe0f}' // VARIATION SELECTOR-1..16
+            | '\u{feff}' // ZERO WIDTH NO-BREAK SPACE (BOM)
+            | '\u{ffa0}' // HALFWIDTH HANGUL FILLER
     )
 }
 
@@ -126,6 +155,25 @@ mod tests {
     }
 
     #[test]
+    fn zero_width_and_invisible_characters_are_removed() {
+        // ZWSP / ZWNJ / ZWJ / word joiner / BOM / variation selector.
+        let spoofed = "pay\u{200b}pal\u{200d}\u{fe0f}\u{2060}com";
+        assert_eq!(sanitize_display(spoofed, 64), "pay pal com");
+        assert_eq!(sanitize_display("\u{feff}visible", 64), "visible");
+        assert_eq!(sanitize_display("a\u{00ad}b", 64), "a b");
+    }
+
+    #[test]
+    fn legitimate_unicode_text_is_preserved() {
+        // Combining marks and ordinary CJK remain intact.
+        assert_eq!(
+            sanitize_display("cafe\u{0301}日本語", 64),
+            "cafe\u{0301}日本語"
+        );
+        assert_eq!(sanitize_display("PowerShell", 64), "PowerShell");
+    }
+
+    #[test]
     fn whitespace_is_collapsed_and_trimmed() {
         assert_eq!(sanitize_display("  a    b  ", 64), "a b");
     }
@@ -166,14 +214,15 @@ mod tests {
             input.push('\u{1b}');
             input.push_str("[31mred\u{202e}");
             input.push('\u{7}');
+            input.push_str("\u{200b}\u{feff}\u{2060}");
 
             let output = sanitize_display(&input, 32);
             assert!(output.chars().count() <= 33, "bounded length");
             assert!(
-                !output
-                    .chars()
-                    .any(|ch| ch.is_control() || is_bidi_control(ch)),
-                "no control/bidi characters may reach the renderer"
+                !output.chars().any(|ch| {
+                    ch.is_control() || is_bidi_control(ch) || is_invisible_format(ch)
+                }),
+                "no control/bidi/invisible characters may reach the renderer"
             );
         }
     }
