@@ -8,7 +8,9 @@
 //! - binds to a loopback address only (validated before `bind`),
 //! - every snapshot request must present a bearer token (header or query),
 //! - the API is **read-only**: there is no endpoint that signals a process,
-//! - one request per connection, 5 s read/write timeouts, 8 KiB request head,
+//! - one request per connection, 1 s read / 5 s write timeouts, 8 KiB request head,
+//! - connections are handled concurrently (up to 8) so an idle peer cannot stall
+//!   the whole agent,
 //! - CORS is limited to `http://127.0.0.1:<port>` / `http://localhost:<port>`.
 //!
 //! `--demo` serves deterministic data for UI development; `--once` prints one
@@ -22,6 +24,8 @@ mod http;
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -45,6 +49,11 @@ const DEFAULT_PROCESS_LIMIT: usize = 500;
 
 /// Hard upper bound for `?limit=` (a larger value is clamped, not rejected).
 const MAX_PROCESS_LIMIT: usize = 2000;
+
+/// Maximum concurrent connections. The extra ones get an immediate 503 instead
+/// of waiting behind idle peers; the agent is loopback-only, but an unbounded
+/// thread-per-connection server would still be a local resource exhaustion vector.
+const MAX_CONNECTIONS: usize = 8;
 
 /// Wire envelope returned by `/api/v1/snapshot` and by `--once`.
 #[derive(Serialize)]
@@ -122,7 +131,7 @@ fn run() -> Result<(), String> {
         config.demo,
         tm_core::WIRE_SCHEMA_VERSION
     );
-    serve(&listener, probe.as_mut(), &token, config.redact)
+    serve(&listener, probe, &token, config.redact)
 }
 
 /// Reads a bearer token from a file, trimming the trailing newline.
@@ -173,40 +182,92 @@ fn print_once(probe: &mut dyn SystemProbe, redact: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// State shared by connection threads.
+///
+/// `SystemProbe` is `Send`, so one probe can be shared behind a mutex. Sampling
+/// stays serial (a snapshot costs ~250 ms), but reading a request head no longer
+/// blocks other connections: the lock is taken only while routing a full request.
+struct SharedState {
+    probe: Mutex<Box<dyn SystemProbe>>,
+    token: String,
+    redact: bool,
+    active: AtomicUsize,
+}
+
+impl SharedState {
+    fn new(probe: Box<dyn SystemProbe>, token: &str, redact: bool) -> Self {
+        Self {
+            probe: Mutex::new(probe),
+            token: token.to_string(),
+            redact,
+            active: AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Accepts connections until the process is terminated.
 ///
-/// Connections are handled one at a time: the agent serves a single local UI,
-/// and serial handling keeps the code free of shared mutable state.
+/// One thread per connection. An idle peer waiting for the read timeout can no
+/// longer stall `/healthz` or another snapshot (review item s1); the probe mutex
+/// is held only during routing, not while reading the request head.
 fn serve(
     listener: &TcpListener,
-    probe: &mut dyn SystemProbe,
+    probe: Box<dyn SystemProbe>,
     token: &str,
     redact: bool,
 ) -> Result<(), String> {
+    let state = Arc::new(SharedState::new(probe, token, redact));
     for incoming in listener.incoming() {
         match incoming {
-            Ok(stream) => {
-                if let Err(err) = handle_connection(stream, probe, token, redact) {
-                    eprintln!("tm-agent: 接続処理に失敗: {err}");
-                }
-            }
+            Ok(stream) => spawn_connection(Arc::clone(&state), stream),
             Err(err) => eprintln!("tm-agent: accept に失敗: {err}"),
         }
     }
     Ok(())
 }
 
+/// Handles one accepted connection, enforcing [`MAX_CONNECTIONS`].
+fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) {
+    let previous = state.active.fetch_add(1, Ordering::AcqRel);
+    if previous >= MAX_CONNECTIONS {
+        state.active.fetch_sub(1, Ordering::AcqRel);
+        let response = http::Response::json(
+            503,
+            "Service Unavailable",
+            error_body("同時接続数が上限に達しました"),
+        );
+        if let Err(err) = http::write_response(&mut stream, &response) {
+            eprintln!("tm-agent: 503 応答に失敗: {err}");
+        }
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let result = handle_connection(&mut stream, |request| {
+            // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
+            // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
+            let mut guard = state.probe.lock().unwrap_or_else(|err| err.into_inner());
+            route(request, guard.as_mut(), &state.token, state.redact)
+        });
+        if let Err(err) = result {
+            eprintln!("tm-agent: 接続処理に失敗: {err}");
+        }
+        state.active.fetch_sub(1, Ordering::AcqRel);
+    });
+}
+
 /// Handles exactly one HTTP request on `stream`.
+///
+/// The caller supplies `route` so the shared probe is locked only after a
+/// complete request head has been read.
 fn handle_connection(
-    mut stream: TcpStream,
-    probe: &mut dyn SystemProbe,
-    token: &str,
-    redact: bool,
+    stream: &mut TcpStream,
+    mut route: impl FnMut(&http::Request) -> http::Response,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
     stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
 
-    let request = match http::read_request(&mut stream) {
+    let request = match http::read_request(stream) {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
         Err(http::ParseError::TooLarge) => {
@@ -215,12 +276,12 @@ fn handle_connection(
                 "Request Header Fields Too Large",
                 error_body("リクエストヘッダが大きすぎます"),
             );
-            return http::write_response(&mut stream, &response);
+            return http::write_response(stream, &response);
         }
         Err(http::ParseError::Malformed) => {
             let response =
                 http::Response::json(400, "Bad Request", error_body("リクエストを解釈できません"));
-            return http::write_response(&mut stream, &response);
+            return http::write_response(stream, &response);
         }
     };
 
@@ -231,7 +292,7 @@ fn handle_connection(
                 "Forbidden",
                 error_body("Host ヘッダがループバックではありません"),
             );
-            return http::write_response(&mut stream, &response);
+            return http::write_response(stream, &response);
         }
     }
 
@@ -240,11 +301,11 @@ fn handle_connection(
         .as_deref()
         .filter(|origin| http::is_allowed_origin(origin));
 
-    let mut response = route(&request, probe, token, redact);
+    let mut response = route(&request);
     if let Some(origin) = allowed_origin {
         http::add_cors_headers(&mut response, origin);
     }
-    http::write_response(&mut stream, &response)
+    http::write_response(stream, &response)
 }
 
 /// Routes a parsed request to its handler.
@@ -549,7 +610,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{Shutdown, SocketAddr};
     use std::thread::JoinHandle;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     const TEST_TOKEN: &str = "test-token";
 
@@ -560,9 +621,11 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut probe = DemoProbe::new();
             for _ in 0..connections {
-                let (stream, _) = listener.accept().expect("accept");
-                handle_connection(stream, &mut probe, TEST_TOKEN, false)
-                    .expect("handle connection");
+                let (mut stream, _) = listener.accept().expect("accept");
+                handle_connection(&mut stream, |request| {
+                    route(request, &mut probe, TEST_TOKEN, false)
+                })
+                .expect("handle connection");
             }
         });
         (address, handle)
@@ -910,5 +973,90 @@ mod tests {
         assert!(invalid.starts_with("HTTP/1.1 400 Bad Request"), "{invalid}");
 
         handle.join().expect("server thread");
+    }
+
+    /// Accepts one connection from `listener` and hands it to the production
+    /// dispatcher, so tests exercise the same shared-state path as `serve()`.
+    fn accept_and_spawn(listener: &TcpListener, state: &Arc<SharedState>) {
+        let (stream, _) = listener.accept().expect("accept");
+        spawn_connection(Arc::clone(state), stream);
+    }
+
+    #[test]
+    fn idle_connections_do_not_block_health_check() {
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+
+        // Idle peers that connect but never send a request head. Under the old
+        // serial server each one stalled the loop for READ_TIMEOUT (1 s), so
+        // /healthz took about 2 s behind two of them.
+        let idle = [
+            TcpStream::connect(address).expect("connect idle 1"),
+            TcpStream::connect(address).expect("connect idle 2"),
+        ];
+        for _ in 0..idle.len() {
+            accept_and_spawn(&listener, &state);
+        }
+
+        let start = Instant::now();
+        let mut client = TcpStream::connect(address).expect("connect health client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        client
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .expect("write request");
+        accept_and_spawn(&listener, &state);
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        let elapsed = start.elapsed();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "health check waited {elapsed:?} behind idle peers"
+        );
+        drop(idle);
+    }
+
+    #[test]
+    fn excess_connections_are_rejected_immediately() {
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+
+        let mut idle = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            idle.push(TcpStream::connect(address).expect("connect idle"));
+            accept_and_spawn(&listener, &state);
+        }
+        assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
+
+        let mut client = TcpStream::connect(address).expect("connect extra client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        client
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .expect("write request");
+        accept_and_spawn(&listener, &state);
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "{response}"
+        );
+        assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
+        drop(idle);
     }
 }
