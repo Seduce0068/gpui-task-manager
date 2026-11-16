@@ -92,7 +92,7 @@ curl -s -H 'Authorization: Bearer test' \
 ```
 
 エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
-CORS は localhost オリジンのみ許可します。`--token` はテスト専用です（argv は
+CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:port]`）のみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
 を使ってください。
 
