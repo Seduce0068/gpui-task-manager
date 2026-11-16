@@ -201,7 +201,7 @@ $ cd web && trunk build --release
 
 | ファイル | サイズ | gzip |
 |---|---|---|
-| `dist/*_bg.wasm` | 7,641,445 B（7.29 MiB） | 3,044,050 B（2.90 MiB） |
+| `dist/*_bg.wasm` | 7,641,970 B（7.29 MiB） | 3,045,139 B（2.90 MiB） |
 | `dist/*.js` | 159,873 B（156 KiB） | 24,504 B |
 | `dist/index.html` | 1,320 B | 842 B |
 

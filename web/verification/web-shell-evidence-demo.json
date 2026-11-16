@@ -1,7 +1,7 @@
 {
   "label": "demo",
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-17T01:49:26+0900",
+  "started_at": "2026-11-17T04:28:27+0900",
   "layout": {
     "row0_center_y": 442.0,
     "header_y": 412.0,
@@ -21,16 +21,16 @@
       "step": "initial",
       "proof": {
         "mode": "demo",
-        "tick": "4",
-        "cpu": "21.8",
-        "mem": "56.2",
+        "tick": "5",
+        "cpu": "32.6",
+        "mem": "57.2",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000003",
+        "sampled": "1760000004",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -40,23 +40,23 @@
         "ime_selection": "0:0",
         "theme": "light"
       },
-      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=28 selected=2 filter="
+      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=28 selected=2 filter="
     },
     {
       "step": "after_ticks",
-      "tick_before": 4,
+      "tick_before": 5,
       "proof": {
         "mode": "demo",
-        "tick": "7",
-        "cpu": "28.1",
-        "mem": "59.2",
+        "tick": "8",
+        "cpu": "30.2",
+        "mem": "57.0",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000006",
+        "sampled": "1760000007",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -96,16 +96,16 @@
       "row_y": 502.0,
       "proof": {
         "mode": "demo",
-        "tick": "9",
-        "cpu": "41.0",
-        "mem": "58.0",
+        "tick": "10",
+        "cpu": "46.0",
+        "mem": "58.9",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2200",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000008",
+        "sampled": "1760000009",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -263,8 +263,8 @@
     }
   ],
   "env": {
-    "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=28 selected=2 filter=",
-    "proof": "mode=demo;tick=4;cpu=21.8;mem=56.2;rows=28;total=28;filter=;selected_pid=2;sort=名前;dir=asc;sampled=1760000003;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=light;",
+    "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=28 selected=2 filter=",
+    "proof": "mode=demo;tick=5;cpu=32.6;mem=57.2;rows=28;total=28;filter=;selected_pid=2;sort=名前;dir=asc;sampled=1760000004;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=light;",
     "canvas": {
       "width": 1440,
       "height": 857,
@@ -330,32 +330,12 @@
       "source": "log",
       "type": "warning",
       "text": "[rendering] []Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content."
-    },
-    {
-      "source": "log",
-      "type": "warning",
-      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
-    },
-    {
-      "source": "log",
-      "type": "warning",
-      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
-    },
-    {
-      "source": "log",
-      "type": "warning",
-      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
-    },
-    {
-      "source": "log",
-      "type": "warning",
-      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
     }
   ],
-  "benign_console_count": 7,
+  "benign_console_count": 3,
   "panic_or_error_count": 0,
   "panic_or_errors": [],
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-17T01:49:47+0900"
+  "finished_at": "2026-11-17T04:28:48+0900"
 }
