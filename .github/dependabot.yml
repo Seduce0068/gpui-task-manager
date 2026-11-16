@@ -7,6 +7,9 @@
 #   by accident. Security updates still arrive through Dependabot alerts.
 # - The browser shell is a separate Cargo workspace (web/) and is configured
 #   separately.
+# - Historical PoC workspaces (poc-wasm/, poc-crates/*) are intentionally NOT
+#   updated: they are frozen Runtime Proof artifacts, not shipped code. Their
+#   lockfiles are kept only to reproduce the original spikes.
 version: 2
 
 updates:
