@@ -848,3 +848,8 @@
 
 - 終端 CRLF が 1024 バイト境界をまたぐケースを検証（tm-agent 47 → 48、
   workspace 180 passed）。
+
+## 2026-11-17（空接続の read_request 挙動を直接検証）
+
+- 空接続 Ok(None) と途中終了 Malformed を read_head ヘルパーで直接検証。
+  テスト 2 件追加（tm-agent 48 → 50、workspace 182 passed）。

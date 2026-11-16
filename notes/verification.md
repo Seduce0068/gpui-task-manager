@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **180 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 11 / tm-agent 48 / app 15、2026-11-17） |
+| `cargo test --workspace` | **182 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1157,3 +1157,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   バッファ全体を走査する。終端 CRLF がチャンク境界（1023-1024）をまたぐケースを
   ループバックソケットで明示検証（CRLF の配置をアサーションで固定）。
 - tm-agent 47 → **48 tests**、workspace 180 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（空接続の read_request 挙動を直接検証）
+
+- `read_request` は peer が何も送らずに閉じた場合 `Ok(None)` を返す仕様。
+  main.rs の `empty_connection_is_ignored` は接続が処理されることのみを確認して
+  いたため、http.rs の `read_head` ヘルパーで戻り値を直接検証するテストを追加:
+  - 空接続 → `Ok(None)`
+  - 途中まで送って閉じた場合 → `Err(Malformed)`
+- tm-agent 48 → **50 tests**、workspace 182 passed / clippy 0 warning / fmt OK。
