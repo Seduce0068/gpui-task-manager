@@ -433,3 +433,14 @@
 - CI: この間の新規 run では 8 ジョブが実際に起動（6m21s 実行）。先の run は同ブランチへの
   連続 push による concurrency で macOS ジョブが cancelled になったもので、
   コード失敗ではない。最新 run の完了は未確認。
+
+## 2026-11-16（CI の全ジョブ成功を確認・起動失敗状態の解消）
+
+- 2026-11-15 07:11Z 以降、8 ジョブすべてが 0 step・数秒で failure だった CI が復旧した。
+- 最新 run [43885904734](https://github.com/Seduce0068/gpui-task-manager/actions/runs/43885904734)
+  （commit `9e2cdae`、2026-11-16 23:33 JST 完了）は gates / wasm check / cargo-deny /
+  native-windows / native-macos / release-linux / web-dist / sbom の **8 ジョブすべて success**。
+- 直前の 2 件の run が `cancelled` になっているのは、同ブランチへの連続 push による
+  concurrency 設定でのキャンセルであり、コードの失敗ではない（一部ジョブは success）。
+- 先の原因推定は private リポジトリの Actions 課金/spending limit だったが、
+  public 化後に解消した模様。請求設定の詳細はエージェントから確認できないため未確認。

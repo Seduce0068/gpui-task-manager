@@ -902,3 +902,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
     `web/verification/ime-evidence.json` に初めてリポジトリへ保存（旧 runs は /tmp のみ）。
   - 目視: `notes/assets/web-shell-light-theme.png` で重なりが解消していることを確認。
     トレードオフとして表の表示行数が約 13 → 11 行に減少（カード内容を切らずに収める優先）。
+
+## 2026-11-16（CI 全ジョブ成功の Runtime Proof）
+
+- 長期間 continuum だった CI 起動失敗（8 ジョブが 0 step で数秒 failure）が解消。
+  run [43885904734](https://github.com/Seduce0068/gpui-task-manager/actions/runs/43885904734)
+  （commit `9e2cdae`）で gates / wasm / cargo-deny / native-windows / native-macos /
+  release-linux / web-dist / sbom の **8/8 success** を確認（2026-11-16 23:33 JST 完了）。
+- 直前 run の `cancelled` は同ブランチ連続 push による concurrency キャンセル。
+  ローカルの `cargo test --workspace`（160 passed）/ clippy / fmt / web 11 tests と整合。
