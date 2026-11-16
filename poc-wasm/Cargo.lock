@@ -1921,15 +1921,12 @@ name = "gpui-web-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "console_error_panic_hook",
  "futures",
  "gpui-pre",
  "gpui-pre-platform",
  "gpui-pre-web",
- "js-sys",
  "log",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "web-sys",
 ]
 

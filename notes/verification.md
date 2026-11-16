@@ -979,3 +979,17 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   503（accept 直後でリクエストを読んでいない）は CORS なしのまま。UI 側は
   fetch エラーとして検知できるため、セキュリティ境界を緩める理由はない。
 - 検証: tm-agent 42 → **43 tests**、workspace 166 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（未使用依存を削除・ADR-009 の徹底）
+
+- `cargo machete` で検出された未使用依存を 3 クレートから削除:
+  - `web/`: `console_error_panic_hook` / `js-sys` / `wasm-bindgen-futures`
+  - `poc-wasm/`: 同上
+  - `app/`: `serde`（`serde_json` は利用中のため残す）
+  - 各 `Cargo.lock` も再生成。削除後 `cargo machete` は 0 件。
+- 検証: workspace 166 passed / clippy 0 warning / fmt OK / wasm check（tm-core,
+  tm-viewmodel, web, poc-wasm すべて）成功。`trunk build --release` 成功。
+  wasm サイズは不変（7,641,445 B / gzip 3,044,050 B）。
+  CDP 設定検証・デモ検証とも `passed: true / failures: []`。証跡は
+  `web/verification/*.json` と `notes/assets/web-shell-*.png` に再出力。
+  検証用 HTTP サーバ / Chrome は停止し、ポート 8091 / 9223 の解放を確認。
