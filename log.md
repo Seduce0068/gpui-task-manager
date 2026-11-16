@@ -831,3 +831,10 @@
 - 本環境は Wayland ネイティブ描画で xwininfo にウィンドウが出ず、
   kdotool も未インストールのため実 Window プロパティの直接取得は未検証
   （ソースロジックによる確認）。
+
+## 2026-11-17（Windows シグナル分岐のロジックを確認）
+
+- `crates/tm-platform/src/lib.rs` の `#[cfg(windows)] control_process` を精査:
+  taskkill.exe の絶対パス呼び出し（PATH ハイジャック対策）、CREATE_NO_WINDOW、
+  Stop/Continue の Unsupported 判定が実装されている。CI native-windows 通過と整合。
+  新たな不具合なし。
