@@ -619,3 +619,36 @@ section in your settings
 
 エージェントからは 1・2 を実行できないため（アカウント設定 / 公開操作）、**ユーザー判断が必要**。
 現状は 3 の方針で検証を継続している。
+
+## 2026-11-16（ディスク一覧の表示順を修正: 容量の大きい順）
+
+外部レビュー a7（「ディスクの擬似マウントが未フィルタ」）を確認したところ、`total_space() > 0`
+フィルタは既にあり `tmpfs` / `overlay` は除外されていたが、**別の実害**が見つかった。
+
+### 発見（Runtime Proof）
+
+実機のディスク一覧は**マウントポイント名の昇順**でソートされていたため、
+UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容量データ領域が隠れていた**。
+
+```text
+修正前（tm-agent /api/v1/snapshot の disks 順）
+  0: /                        586 GiB
+  1: /boot/efi                  0 GiB   ← 96 MB の EFI パーティションが 2 番目
+  2: /mnt/timeshift           439 GiB   ← 表示されない
+  3: /run/media/<user>/Windows 333 GiB  ← 表示されない
+```
+
+### 修正
+
+- `crates/tm-platform/src/lib.rs`: ディスクを**容量の降順**（同容量はマウントポイント昇順）で
+  ソートする `sort_disks_for_display` を追加。UI の表示枠を小さなシステムパーティションが
+  占有しないようにする。
+- 回帰テストを 2 件追加（容量順の並び、同容量時のタイブレーク）。
+  `tm-platform` のテストは 9 → **11 件**。
+
+### 検証（Runtime Proof）
+
+- 修正後（実機）: `/`(586 GiB) → `/mnt/timeshift`(439 GiB) → `/run/media/<user>/Windows`(333 GiB) → `/boot/efi`。UI の `take(2)` で `/` と `/mnt/timeshift` が表示される。
+- `cargo test --workspace`: **155 passed / 0 failed**（app 12 / tm-agent 39 / tm-core 56 / tm-platform 11 / tm-viewmodel 37）。
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
+- `cargo fmt --all` 適用済み。
