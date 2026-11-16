@@ -378,3 +378,9 @@
 
 - Ctrl+K がシェル側で `is_protected` を先に確認していたため、保護プロセスでは何も起きずメッセージも出なかった（ボタン経路と不一致）。常に `Command::RequestSignal` を投げ、判定とメッセージを view model に一本化。
 - `cargo test --workspace` 158 passed / clippy 警告 0 / fmt 適用。
+
+## 2026-11-16（エージェントのシリアル処理を実測・制約として記録）
+
+- レビュー s1 を実測: 無送信接続 1 本で `/healthz` 49 ms、3 本同時保持で 2,059 ms（1 本あたり `READ_TIMEOUT`=1 秒を直列待ち）。
+- 影響はエージェントの可用性のみで、接続元は loopback に限定。UI は同時 1 リクエスト方式のため通常運用では競合しない。
+- 並列化は `SystemProbe` の `Send` 境界・probe の共有方法・同時接続上限を同時に変える設計判断のため、今回は文書化に留め改善案を `notes/verification.md` に記録。

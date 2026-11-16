@@ -12,8 +12,16 @@ use tm_core::SortSpec;
 
 use crate::{MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL};
 
+/// Available colour themes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Current settings schema version.
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 
 /// Persisted presentation preferences.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,6 +37,8 @@ pub struct Settings {
     pub details_visible: bool,
     /// Whether the process table is shown as a process tree.
     pub tree_view: bool,
+    /// Colour theme.
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -39,6 +49,7 @@ impl Default for Settings {
             sort: SortSpec::default(),
             details_visible: true,
             tree_view: false,
+            theme: Theme::Dark,
         }
     }
 }
@@ -67,6 +78,7 @@ mod tests {
         assert_eq!(settings.sort.key, SortKey::Cpu);
         assert!(settings.details_visible);
         assert!(!settings.tree_view);
+        assert_eq!(settings.theme, Theme::Dark);
     }
 
     #[test]
@@ -105,6 +117,7 @@ mod tests {
             },
             details_visible: false,
             tree_view: false,
+            theme: Theme::Light,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(json.contains("\"interval_ms\":2000"), "{json}");
