@@ -442,17 +442,18 @@ impl TaskManagerApp {
         match (control, key.as_str()) {
             (true, "f") => self.begin_filter_editing(window, cx),
             (true, "k") => {
+                // Protection (PID 1 / self) is decided by the view model, so the
+                // shell must always forward the request: that way the user gets
+                // the same "protected" message as the button path instead of a
+                // silently ignored shortcut.
                 if let Some(process) = self.dashboard.selected_process() {
-                    let key = process.key;
-                    if !self.dashboard.is_protected(key) {
-                        self.handle_command(
-                            Command::RequestSignal {
-                                key,
-                                signal: Signal::Terminate,
-                            },
-                            cx,
-                        );
-                    }
+                    self.handle_command(
+                        Command::RequestSignal {
+                            key: process.key,
+                            signal: Signal::Terminate,
+                        },
+                        cx,
+                    );
                 }
             }
             (false, "up") => self.handle_command(Command::SelectRelative(-1), cx),
