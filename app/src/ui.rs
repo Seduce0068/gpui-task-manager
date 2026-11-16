@@ -136,6 +136,7 @@ pub fn action_button(
             .hover(|style| style.opacity(0.88))
             .on_click(on_click)
     } else {
-        base.bg(rgb(palette().surface)).text_color(rgb(palette().muted))
+        base.bg(rgb(palette().surface))
+            .text_color(rgb(palette().muted))
     }
 }
