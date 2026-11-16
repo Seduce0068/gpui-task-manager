@@ -495,3 +495,11 @@
   - Mutex poison 回収時にログを出力（無ログ fail-open の解消）。
 - tm-agent 41 → 42 tests、workspace 165 passed / clippy 0 warning / fmt OK。
 - サブエージェント: agent-1（読み取り専用・コード変更なし）。採用 3 件、既知制約として記録 3 件。
+
+## 2026-11-17（CI 最終 run の状況: macOS ランナーのキュー待ち）
+
+- run 43899207540（commit `f430a7f`）は wasm / windows / web-dist / release-linux /
+  gates / sbom / cargo-deny の **7 ジョブ success**。macOS ジョブは約 14 分間
+  queued のまま実行されず、run 全体は完了していない（コード失敗ではない）。
+- 直前 run 43897299713 では macOS を含む 8/8 が success であり、
+  ランナー可用性の問題と判断。監視ジョブはタイムアウト前に停止した。
