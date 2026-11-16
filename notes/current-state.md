@@ -29,7 +29,7 @@ status: verified
 | 項目 | 結果 |
 | --- | --- |
 | `cargo test --workspace` | 183 passed / 0 failed（core 70 / viewmodel 37 / platform 11 / agent 50 / app 15） |
-| web ユニットテスト | 13 passed / 0 failed |
+| web ユニットテスト | 14 passed / 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
