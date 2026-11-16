@@ -92,7 +92,9 @@ while IFS= read -r library; do
   [ -n "${library}" ] || continue
   resolved="$(readlink -f "${library}" 2>/dev/null || true)"
   [ -n "${resolved}" ] || continue
-  owner="$(dpkg -S "${resolved}" 2>/dev/null | head -n 1 | cut -d: -f1)"
+  # `sed -n '1p'` reads the whole stream, unlike `head -n 1` which closes the
+  # pipe early and can abort this script via SIGPIPE under `set -o pipefail`.
+  owner="$(dpkg -S "${resolved}" 2>/dev/null | sed -n '1p' | cut -d: -f1)"
   if [ -n "${owner}" ]; then
     dependency_set["${owner}"]=1
   fi
