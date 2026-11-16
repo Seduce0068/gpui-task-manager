@@ -659,3 +659,10 @@
   俯瞰する文書が欠けていたため。検証状況（170 passed / CI 8/8 ほか）、
   対応済み事項、未解決候補、関連文書への導線を記載。
   `notes/index.md` の「検証」節にリンクを追加。
+
+## 2026-11-17（SBOM 生成のローカル再現）
+
+- `bash scripts/generate-sbom.sh target/sbom-r24` を実行し、6 件の CycloneDX JSON
+  （root 5 メンバー + web）を生成・収集。すべて `bomFormat=CycloneDX` /
+  `specVersion=1.3` で jq パース成功。元ファイルの後始末も動作し、
+  作業ツリーはクリーン。未使用依存削除後も SBOM 生成に影響なし。
