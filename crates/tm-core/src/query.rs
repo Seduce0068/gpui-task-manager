@@ -320,37 +320,81 @@ pub fn flatten_process_tree(
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         idx: usize,
         depth: usize,
         processes: &[ProcessSnapshot],
         children: &std::collections::HashMap<usize, Vec<usize>>,
         collapsed: &std::collections::HashSet<crate::model::ProcessKey>,
+        visited: &mut HashSet<usize>,
+        emit: bool,
         out: &mut Vec<ProcessTreeRow>,
     ) {
+        // A malformed snapshot can contain a parent cycle; never visit a node
+        // twice so the walk terminates and every process stays visible.
+        if !visited.insert(idx) {
+            return;
+        }
         let child_list = children.get(&idx);
         let has_children = child_list.is_some_and(|c| !c.is_empty());
-        out.push(ProcessTreeRow {
-            index: idx,
-            depth,
-            has_children,
-        });
-        if has_children
-            && !processes
+        if emit {
+            out.push(ProcessTreeRow {
+                index: idx,
+                depth,
+                has_children,
+            });
+        }
+        // Always traverse the full hierarchy (even when the node is collapsed
+        // or this is a marking-only pass) so `visited` accurately reflects
+        // reachability. Only emission is suppressed for collapsed children.
+        if let Some(child_list) = child_list {
+            let is_collapsed = processes
                 .get(idx)
-                .is_some_and(|process| collapsed.contains(&process.key))
-        {
-            if let Some(child_list) = child_list {
-                for &child in child_list {
-                    walk(child, depth + 1, processes, children, collapsed, out);
-                }
+                .is_some_and(|process| collapsed.contains(&process.key));
+            for &child in child_list {
+                walk(
+                    child,
+                    depth + 1,
+                    processes,
+                    children,
+                    collapsed,
+                    visited,
+                    emit && !is_collapsed,
+                    out,
+                );
             }
         }
     }
 
     let mut out = Vec::with_capacity(indices.len());
+    let mut visited = HashSet::with_capacity(indices.len());
     for root in roots {
-        walk(root, 0, processes, &children, collapsed, &mut out);
+        walk(
+            root,
+            0,
+            processes,
+            &children,
+            collapsed,
+            &mut visited,
+            true,
+            &mut out,
+        );
+    }
+    // Processes trapped in a cycle have no root and would otherwise vanish.
+    // Everything reachable from a root is already visited, so only those
+    // stranded nodes are emitted here (collapsed descendants stay hidden).
+    for &idx in indices {
+        walk(
+            idx,
+            0,
+            processes,
+            &children,
+            collapsed,
+            &mut visited,
+            true,
+            &mut out,
+        );
     }
     out
 }
@@ -533,6 +577,25 @@ mod tests {
                 depth: 0,
                 has_children: false
             }]
+        );
+    }
+
+    #[test]
+    fn flatten_process_tree_survives_a_parent_cycle() {
+        // Malformed data (a hand-crafted agent response or a kernel race) can
+        // describe two processes as each other's parent. Neither becomes a
+        // root, so without a fallback both would silently disappear from the
+        // tree view.
+        let mut a = process(1, "a", 0.0, 1);
+        a.parent_pid = Some(2);
+        let mut b = process(2, "b", 0.0, 1);
+        b.parent_pid = Some(1);
+        let processes = vec![a, b];
+        let rows = flatten_process_tree(&processes, &[0, 1], &std::collections::HashSet::new());
+        assert_eq!(
+            rows.len(),
+            2,
+            "both processes must remain visible: {rows:?}"
         );
     }
 
