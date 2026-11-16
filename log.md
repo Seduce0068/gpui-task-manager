@@ -881,3 +881,10 @@
 
 - 未知スキーマバージョン拒否を check_schema_version 純粋関数として切り出し検証。
   web 12 → 13 tests。
+
+## 2026-11-17（wire schema 設定と PlatformInfo 意味論の再確認）
+
+- agent の envelope / healthz が `tm_core::WIRE_SCHEMA_VERSION` を参照し、
+  既存テスト `snapshot_body_uses_the_wire_schema` で固定されていることを確認。
+  `PlatformInfo` の capability 意味論（native / read_only / demo）もテスト済みで
+  新たな不具合なし。
