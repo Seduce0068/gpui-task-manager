@@ -105,7 +105,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | コンソール | panic / JS 例外 0（WebGL2 フォールバック等の想定内警告のみ） |
 
 - `cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml`: 成功
-- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B。2026-11-16 再計測: 7,641,445 B / gzip 3,044,050 B、JS 157 KiB）
+- `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B。2026-11-16 再計測: 7,641,445 B / gzip 3,044,050 B、JS 159,873 B）
 - 証拠: `notes/assets/web-shell-*.png`（18 枚）、`web/verification/web-shell-evidence-*.json`
 
 ## 6. 既知の制限・未検証
@@ -113,12 +113,14 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 - Windows / macOS の実機ビルド・実行は未検証。
 - X11 セッションでの表示は未検証。
 - 合成入力によるキーボード E2E は未実施（手動・スクリーンショット確認のみ）。
-- IME による日本語入力は未対応。
 - KWin D-Bus の `queryWindowInfo` は本環境で `NoReply`。ウィンドウ確認は Spectacle で代替。
-- WebGPU の実 GPU 描画、Safari / Firefox、日本語 IME は未検証。
+- WebGPU の実 GPU 描画、Safari / Firefox は未検証。
+- 日本語 IME（composition）はブラウザ版・ネイティブ版とも実装済み。ブラウザ版は CDP
+  32 チェック pass、ネイティブ版は `TM_DEBUG_IME=1` で状態遷移を確認（詳細は `notes/ime.md`）。
+  実 IME（IBus/fcitx5）の手動確認は未実施。
 - エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。
   接続は最大 8 本まで並列で、超過分は即 503（後述の 2026-11-16 エントリ参照）。
-- `cargo-deny` は未導入（ライセンス・重複版チェックは今後の CI 課題）。
+- `cargo-deny` / `cargo audit` は CI ゲート化済み（ルート / web とも ok、理由付き ignore あり）。
 - ライセンス/帰属は `NOTICE.md` に記載。
 
 ## 7. 再現手順（要約）
