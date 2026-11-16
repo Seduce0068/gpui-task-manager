@@ -91,7 +91,7 @@ curl -s -H 'Authorization: Bearer test' \
   'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | jq .
 ```
 
-エージェントは `127.0.0.1` のみ bind、`Authorization: Bearer` 必須、読み取り専用、
+エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
 CORS は localhost オリジンのみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
 を使ってください。
@@ -158,7 +158,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - シグナル操作は確認ダイアログ必須。PID 1 / 自分自身は拒否。PID + 起動時刻の
   一致を送信直前に再確認
 - ブラウザ / デモは**読み取り専用**（操作ボタン無効、エージェントに操作 API なし）
-- エージェントは `127.0.0.1` のみ bind、トークン必須、CORS は localhost のみ
+- エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、トークン必須、CORS は loopback origin のみ
 - OS 由来の文字列は制御文字・ANSI エスケープ・bidi／ゼロ幅の不可視書式文字を除去して表示
 - GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて
   `cargo-deny`（ライセンス・脆弱性・重複版）を CI で実行（ルート / web とも ok）
