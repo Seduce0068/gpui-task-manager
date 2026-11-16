@@ -758,3 +758,38 @@ API で明確にした。
 - `cargo test --workspace`: **158 passed / 0 failed**。
 - `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
 - `cargo fmt --all` 適用済み。
+
+## 2026-11-16（外部レビュー指摘の棚卸し: 多くが対応済みであることを確認）
+
+`notes/review-2026-11-14.md` の指摘を 1 件ずつ現行コードと突き合わせ、**未対応とされていた項目の
+大半が既に修正・設計変更されている**ことを確認した（虚偽の「対応済み」主張を避けるため、
+根拠となるコード・文書の位置を記録する）。
+
+| 指摘 | 現状 | 根拠 |
+|---|---|---|
+| a3 保護判定の重複 | **今回修正** | `app/src/app.rs` の Ctrl+K を view model 委譲に統一（commit `dd11ab0`） |
+| a5 capability が実態より強い | **今回対応** | `PlatformInfo::native_read_only` 追加と意味の明文化（commit `f16c9b2`） |
+| a6 ネットワーク二重計上 | **対応済み** | `NetworkSnapshot::physical_totals` と `is_virtual_interface`（commit `931c7a7`） |
+| a7 ディスクの擬似マウント | **対応済み** | `total_space() > 0` フィルタ + 容量降順ソート（commit `67748a3`） |
+| a9 wire schema 版管理 | **対応済み** | `web/src/agent.rs` が `schema_version != WIRE_SCHEMA_VERSION` を検証 |
+| a13 bidi 記述の不一致 | **対応済み** | `DESIGN.md` §7.1 が「bidi 制御文字を除去」と実装一致 |
+| a14 古い測定値 | **対応済み** | `DESIGN.md` / `RESEARCH.md` に「旧測定 2.24 MB」と注記 |
+| M3 Enter で即確定（安全側既定でない） | **対応済み** | `dialog_command`: `enter` → `CancelKill`、`ctrl+enter` → `ConfirmKill`。`DESIGN.md:237-239` も一致 |
+| M6c デモデータに実ユーザー名 | **対応済み** | `crates/tm-core/src/demo.rs` は `user` / `/home/user/...` に匿名化済み |
+| s4 トークンの argv 露出 | **対応済み** | `--token-file` を追加し、`--token` の usage に「argv は他プロセスから見える」と明記 |
+| s6 Authorization fallback バグ | **設計変更で解消** | クエリトークンを廃止し `Authorization` ヘッダのみ受理。不正ヘッダのテストあり |
+| s7 PID 再利用の残余（秒精度/TOCTOU） | **文書化済み** | `DESIGN.md:367-369` に残余リスクとして明記（`pidfd` は将来課題） |
+
+### 今回追加で修正した衛生項目
+
+- `notes/cargo-vet-adoption.md` §7 の棚卸し手順に含まれていた**作業環境の絶対パス**
+  （`/home/<user>/...`）を `work/gpui-task-manager` に置き換えた（M6 の方針:
+  公開物に個人環境のパスを残さない）。
+- `log.md` は追記専用の履歴のため、過去記録として保持（本方針は `~/.agents/AGENTS.md` §8 と整合）。
+
+### 未対応として残るもの
+
+- M5（過去のスクリーンショットと `verification.md` の数値差）: 動的な値のため、
+  該当箇所は「画像参照」に寄せて再取得時に更新する方針（画像と文章を同時更新）。
+- s1（シリアル処理によるローカル可用性）・s2（Host ヘッダ検証）・s3（CORS 範囲の記述差）:
+  エージェントの設計判断が必要なため、次回以降に検討する。
