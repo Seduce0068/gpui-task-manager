@@ -935,3 +935,13 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   大幅に改善。検証後はプロセスを停止しポート 18793 の解放を確認。
 - 全検証: `cargo test --workspace` 162 passed / web 11 passed / clippy 警告 0 /
   fmt OK / wasm check OK。
+
+## 2026-11-17（表示サニタイズ: ゼロ幅・不可視書式文字を追加除去）
+
+- レビュー s9 のうち、過剰除去を避けられる「不可視書式文字」を対策した。
+  `crates/tm-core/src/sanitize.rs` の `is_invisible_format()` で
+  ZWSP/ZWNJ/ZWJ、word joiner、BOM、variation selector、hangul filler 等を
+  空白へ置換（結合文字は保持してアクセント付き名前を壊さない）。
+- テスト追加: なりすまし文字列（`pay\u{200b}pal...`）の除去、通常ラテン文字・CJK・
+  結合文字の保持、プロパティテスト（500 ケース）への不可視文字注入。
+  tm-core 59 → **61 tests**、workspace 合計 164 passed / clippy 0 warning / fmt OK / wasm check OK。

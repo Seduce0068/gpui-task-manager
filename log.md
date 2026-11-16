@@ -472,3 +472,11 @@
   日本語 IME は未検証」が残っていた。実装状況に合わせて修正
   （IME は両版実装済み・実 IME 手動確認のみ未実施、`cargo-deny` / `cargo audit` は CI ゲート化済み）。
   あわせて 2026-11-16 再計測の JS サイズ表記を実測 159,873 B に訂正。
+
+## 2026-11-17（ゼロ幅・不可視書式文字のサニタイズを追加）
+
+- `crates/tm-core/src/sanitize.rs` に `is_invisible_format()` を追加し、
+  ゼロ幅文字・単語結合子・BOM・variation selector 等を空白化（結合文字は保持）。
+  レビュー s9 の残存部分のうち、正当な名前を壊さない範囲を対策。
+- テスト 2 件追加（tm-core 59 → 61、workspace 164 passed）。
+  README / DESIGN / SECURITY / notes/verification を現状に合わせて更新。

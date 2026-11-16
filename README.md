@@ -159,7 +159,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
   一致を送信直前に再確認
 - ブラウザ / デモは**読み取り専用**（操作ボタン無効、エージェントに操作 API なし）
 - エージェントは `127.0.0.1` のみ bind、トークン必須、CORS は localhost のみ
-- OS 由来の文字列は制御文字・ANSI エスケープを除去して表示
+- OS 由来の文字列は制御文字・ANSI エスケープ・bidi／ゼロ幅の不可視書式文字を除去して表示
 - GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて
   `cargo-deny`（ライセンス・脆弱性・重複版）を CI で実行（ルート / web とも ok）
 
