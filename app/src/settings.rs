@@ -15,6 +15,8 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub use tm_viewmodel::SETTINGS_VERSION as CURRENT_VERSION;
@@ -108,12 +110,22 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
     // Include the PID so two processes saving at once cannot clobber the same
     // temporary file before either rename completes.
     let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    fs::write(&temporary, json)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+        // Create with 0600 from the start: `fs::write` would use the process
+        // umask (typically 0644), leaving a window where group/other could
+        // read the file before the explicit chmod below.
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(json.as_bytes())?;
     }
+    #[cfg(not(unix))]
+    fs::write(&temporary, json)?;
     fs::rename(&temporary, path)?;
     Ok(())
 }

@@ -63,7 +63,7 @@ bash scripts/dev-setup.sh
 # 2. ビルドとテスト
 cargo build -p gpui-task-manager
 cargo test --workspace
-bash scripts/check.sh        # fmt + clippy + test + wasm コンパイル確認を一括実行
+bash scripts/check.sh        # fmt + clippy + test + wasm + deny + vet + machete を一括実行
 
 # 3. 起動（実データ / 合成データ）
 ./target/debug/gpui-task-manager
@@ -101,8 +101,8 @@ CORS は localhost オリジンのみ許可します。`--token` はテスト専
 ```bash
 # ブラウザ版シェル（読み取り専用）
 cd web && trunk build --release && trunk serve
-# デモ表示:  http://127.0.0.1:8080/
-# ライブ表示: http://127.0.0.1:8080/?agent=http://127.0.0.1:18787#token=<token>
+# デモ表示:  http://127.0.0.1:8091/
+# ライブ表示: http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=<token>
 #   （トークンは URL フラグメントで渡し、fetch の Authorization ヘッダで送る）
 
 # GPUI Web の最小スパイク（Runtime Proof）
@@ -167,7 +167,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **175 passed / 0 failed**（core 69 / viewmodel 37 / platform 14 / agent 43 / app 12） |
+| `cargo test --workspace` | **176 passed / 0 failed**（core 69 / viewmodel 37 / platform 14 / agent 44 / app 12） |
 | web ユニットテスト | **11 passed / 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |

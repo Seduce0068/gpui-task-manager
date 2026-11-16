@@ -118,6 +118,21 @@ mod tests {
     }
 
     #[test]
+    fn presented_tokens_are_trimmed_before_comparison() {
+        // All token sources store a trimmed value; the request side trims too,
+        // so extra whitespace in the header must not break authentication.
+        let request = parse_request(
+            b"GET /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer   secret   \r\n",
+        )
+        .expect("valid request");
+        assert_eq!(request_token(&request).as_deref(), Some("secret"));
+        assert!(constant_time_eq(
+            "secret",
+            &request_token(&request).unwrap()
+        ));
+    }
+
+    #[test]
     fn constant_time_eq_matches_only_equal_inputs() {
         assert!(constant_time_eq("abc", "abc"));
         assert!(!constant_time_eq("abc", "abd"));

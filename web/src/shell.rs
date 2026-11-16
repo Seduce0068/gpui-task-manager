@@ -125,7 +125,7 @@ impl TaskManagerApp {
         app
     }
 
-    /// Starts the 1 s sampling loop.
+    /// Starts the sampling loop at the currently configured interval.
     ///
     /// One task handles both modes. It awaits the current sample before sleeping,
     /// so at most one fetch is in flight (no request pile-up if the agent stalls).
@@ -134,6 +134,9 @@ impl TaskManagerApp {
             DataSource::Live(client) => Some(client.clone()),
             DataSource::Demo(_) => None,
         };
+        // `restore_settings()` runs before this, so a persisted interval is
+        // honoured rather than silently falling back to the default 1 s.
+        let interval_ms = self.dashboard.interval().as_millis() as u64;
         cx.spawn(async move |this, cx| {
             loop {
                 match &live {
@@ -158,9 +161,7 @@ impl TaskManagerApp {
                     }
                 }
                 cx.background_executor()
-                    .timer(Duration::from_millis(
-                        DEFAULT_REFRESH_INTERVAL.as_millis() as u64
-                    ))
+                    .timer(Duration::from_millis(interval_ms))
                     .await;
             }
         })
@@ -1467,6 +1468,7 @@ impl TaskManagerApp {
             .map(|value| value as u32)
             .unwrap_or(0);
         let rows = self.dashboard.visible_count();
+        let interval_ms = self.dashboard.interval().as_millis() as u64;
         let theme_label = match theme() {
             tm_viewmodel::Theme::Dark => "dark",
             tm_viewmodel::Theme::Light => "light",
@@ -1476,7 +1478,7 @@ impl TaskManagerApp {
              filter={filter};selected_pid={selected};sort={};dir={direction};\
              sampled={sampled};vw={viewport_width};vh={viewport_height};live_error={};\
              ime_composing={ime_composing};ime_field={ime_field};ime_marked={ime_marked};\
-             ime_selection={ime_selection};theme={theme_label};",
+             ime_selection={ime_selection};theme={theme_label};interval={interval_ms};",
             self.ticks,
             sort.key.label(),
             if self.live_error.is_some() { 1 } else { 0 },

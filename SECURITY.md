@@ -97,9 +97,9 @@ chmod 600 ~/.config/tm-agent.token
 - GPUI 系（`gpui-kit` / `gpui-pre*`）、`sysinfo`、`rustix` は**完全一致ピン**。
   `Cargo.lock` をコミットする。
 - `rustix` は RUSTSEC-2026-0486 の修正版 `=1.1.6` に固定。
-- `cargo audit` と `cargo-deny`（advisories / bans / licenses / sources）を CI と
-  ローカル `scripts/check.sh` で実行する（root / web）。既知の未保守・重複は
-  `deny.toml` で理由付きに管理する。
+- `cargo audit` と `cargo-deny`（advisories / bans / licenses / sources）を CI で
+  実行する。ローカルは `scripts/check.sh`（deny / vet / machete）と別途
+  `cargo audit`（root / web）。既知の未保守・重複は `deny.toml` で理由付きに管理する。
 - **SBOM**: `scripts/generate-sbom.sh`（CycloneDX JSON, root/web）と CI の `sbom`
   ジョブで供給網可視性を確保する。
 - **cargo-vet**: root / web とも初期化済み（`cargo-vet 0.10.3`、`supply-chain/`）。
@@ -107,7 +107,8 @@ chmod 600 ~/.config/tm-agent.token
   imports は未使用（盲目的な信頼委譲を避ける）。未監査依存を「監査済み」として
   記録しない（監査記録の捏造をしない）。検証は `cargo vet --locked`（root / web）。
   依存更新時は ①実レビュー後に `certify`、②レビュー前なら理由付き
-  `add-exemption` の順で対応する。CI ゲート化は共通ワークフロー側での対応を検討中。
+  `add-exemption` の順で対応する。CI ゲート化は共通ワークフローの `extra_gates`
+  で実装済み（`cargo vet --locked`、root / web）。
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
   自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
 - 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
@@ -133,7 +134,7 @@ chmod 600 ~/.config/tm-agent.token
 
 ```bash
 cd work/gpui-task-manager
-bash scripts/check.sh          # fmt / clippy / test 143 件 / web 7 件 / wasm / cargo-deny
+bash scripts/check.sh          # fmt / clippy / test 175 件 / web 11 件 / wasm / deny / vet / machete
 cargo audit
 ```
 

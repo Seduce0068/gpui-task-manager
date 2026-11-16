@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Runs the standard verification loop for this repository:
-#   fmt -> clippy -> tests -> wasm compile checks
+#   fmt -> clippy -> tests -> wasm -> deny -> vet -> machete
 #
 # Usage: bash scripts/check.sh
 set -euo pipefail

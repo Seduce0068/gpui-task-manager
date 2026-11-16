@@ -106,11 +106,13 @@ fn run() -> Result<(), String> {
             eprintln!(
                 "tm-agent: 警告: --token の値は /proc/<pid>/cmdline から同一ユーザーに読まれ得ます。常用時は --token-file か TM_AGENT_TOKEN を使ってください。"
             );
-            token
+            // `request_token` trims the presented value, so store the trimmed
+            // token for every source (the file path already does this).
+            token.trim().to_string()
         }
         (None, Some(path)) => read_token_file(path)?,
         (None, None) => match std::env::var("TM_AGENT_TOKEN") {
-            Ok(token) if !token.trim().is_empty() => token,
+            Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
             _ => {
                 let token = auth::generate_token();
                 // The operator needs the token to talk to the agent; this is the

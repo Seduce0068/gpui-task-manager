@@ -31,13 +31,19 @@ jobs:
         libwayland-dev
         libx11-xcb-dev
       audit: true
+      # §15: unsafe は forbid(unsafe_code) で禁止し、lint でも検知する。
+      clippy_args: "-D clippy::undocumented_unsafe_blocks"
       # cargo-vet: supply-chain/ ストア（root / web）の整合確認。
       # バージョンは notes/cargo-vet-adoption.md の固定方針に合わせる。
       # taiki-e/install-action が cargo-vet 未対応のため cargo install で導入する。
       extra_gates: |
         cargo install cargo-vet --version 0.10.3 --locked
         cargo vet --locked
-        cd web && cargo vet --locked
+        (cd web && cargo vet --locked)
+        # ADR-009: detect newly introduced unused dependencies.
+        cargo install cargo-machete --locked
+        cargo machete
+        (cd web && cargo machete)
 
   wasm:
     name: wasm check (tm-core / tm-viewmodel / web)

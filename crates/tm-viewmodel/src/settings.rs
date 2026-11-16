@@ -118,11 +118,12 @@ mod tests {
                 direction: SortDirection::Descending,
             },
             details_visible: false,
-            tree_view: false,
+            tree_view: true,
             theme: Theme::Light,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(json.contains("\"interval_ms\":2000"), "{json}");
+        assert!(json.contains("\"tree_view\":true"), "{json}");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, settings);
     }

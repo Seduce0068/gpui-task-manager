@@ -230,6 +230,14 @@ pub fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result
     Ok(())
 }
 
+/// Validates the port part of a `Host` header (digits only, never empty).
+///
+/// [`Iterator::all`] returns `true` for an empty slice, so an explicit
+/// non-empty check is required to reject `Host: localhost:` and similar.
+fn valid_port_suffix(port: &str) -> bool {
+    !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit())
+}
+
 /// Returns `true` when the `Host` header names the loopback interface.
 ///
 /// This is a defence-in-depth measure against DNS rebinding: a page on an
@@ -239,15 +247,22 @@ pub fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result
 pub fn is_allowed_host(host: &str) -> bool {
     let host = host.trim();
     let hostname = if let Some(rest) = host.strip_prefix('[') {
-        // IPv6 literal: [::1]:port
+        // IPv6 literal: [::1]:port — validate everything after `]` as a port.
         match rest.split_once(']') {
-            Some((address, _)) => address,
+            Some((address, suffix)) => match suffix.strip_prefix(':') {
+                Some(port) if valid_port_suffix(port) => address,
+                None if suffix.is_empty() => address,
+                _ => return false,
+            },
             None => return false,
         }
     } else {
         match host.rsplit_once(':') {
-            Some((address, port)) if port.chars().all(|ch| ch.is_ascii_digit()) => address,
-            _ => host,
+            Some((address, port)) if valid_port_suffix(port) => address,
+            // A stray colon that is not a valid port makes the whole Host
+            // malformed; do not silently treat it as a hostname.
+            Some(_) => return false,
+            None => host,
         }
     };
     hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "::1"
@@ -434,6 +449,7 @@ mod tests {
             "127.0.0.1:18787",
             "localhost",
             "localhost:18787",
+            "[::1]",
             "[::1]:18787",
         ] {
             assert!(is_allowed_host(allowed), "{allowed} should be allowed");
@@ -443,6 +459,11 @@ mod tests {
             "evil.example:80",
             "10.0.0.1:18787",
             "[::1",
+            "localhost:",
+            "127.0.0.1:",
+            "[::1]:",
+            "[::1]:garbage",
+            "localhost:80:80",
             "",
         ] {
             assert!(!is_allowed_host(rejected), "{rejected} should be rejected");

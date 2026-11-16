@@ -731,3 +731,12 @@
   IME は `checks: 32`（形式が異なるが整合）。
 - CI の macOS キュー待ちは GitHub ランナー供給の問題で、ワークフローの
   `timeout-minutes` 等では緩和できないため設定変更なし。
+
+## 2026-11-17（独立監査の指摘を修正：実バグ 5 件 + ゲート/ドキュメント）
+
+- サブエージェント 4 並列の独立調査で見つかった指摘を裏取りし修正:
+  tree_view 復元/保存（app）、トークン trim 統一・Host 空ポート拒否（agent）、
+  更新間隔の実効化（web）、設定一時ファイル 0600 生成（app）。
+- CI に undocumented_unsafe_blocks と cargo machete を追加。
+  CDP スクリプトとドキュメントの不整合を修正。
+- workspace 176 passed / clippy 0 warning / CDP 設定検証 pass。
