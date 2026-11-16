@@ -146,6 +146,7 @@ mod tests {
             },
             details_visible: false,
             tree_view: false,
+            theme: tm_viewmodel::Theme::Dark,
         };
         save_to(&path, &settings).expect("save settings");
         assert!(path.is_file());

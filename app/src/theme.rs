@@ -7,21 +7,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Supported colour themes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Theme {
-    Dark = 0,
-    Light = 1,
-}
-
-impl Theme {
-    pub fn from_u8(value: u8) -> Self {
-        match value {
-            1 => Theme::Light,
-            _ => Theme::Dark,
-        }
-    }
-}
+use tm_viewmodel::Theme;
 
 /// Full colour palette for one theme variant.
 #[derive(Clone, Copy, Debug)]
@@ -85,12 +71,19 @@ static CURRENT_THEME: AtomicU8 = AtomicU8::new(0);
 
 /// Returns the currently active theme.
 pub fn theme() -> Theme {
-    Theme::from_u8(CURRENT_THEME.load(Ordering::Relaxed))
+    match CURRENT_THEME.load(Ordering::Relaxed) {
+        1 => Theme::Light,
+        _ => Theme::Dark,
+    }
 }
 
 /// Switches the active theme at runtime.
 pub fn set_theme(t: Theme) {
-    CURRENT_THEME.store(t as u8, Ordering::Relaxed);
+    let value = match t {
+        Theme::Dark => 0u8,
+        Theme::Light => 1u8,
+    };
+    CURRENT_THEME.store(value, Ordering::Relaxed);
 }
 
 /// Returns the palette for the currently active theme.
@@ -102,40 +95,8 @@ pub fn palette() -> &'static Palette {
 }
 
 // ---------------------------------------------------------------------------
-// Backward-compatible constants (dark theme).  New code should prefer
-// `palette()` so it follows the runtime theme selection.
+// Backward-compatible constants removed: use `palette()` for theme-aware colours.
 // ---------------------------------------------------------------------------
-
-/// Window background.
-pub const C_BASE: u32 = DARK.base;
-/// Card / panel background.
-pub const C_MANTLE: u32 = DARK.mantle;
-/// Raised surface (hover, inactive buttons).
-pub const C_SURFACE: u32 = DARK.surface;
-/// Brighter raised surface.
-pub const C_SURFACE_HI: u32 = DARK.surface_hi;
-/// Primary text.
-pub const C_TEXT: u32 = DARK.text;
-/// Secondary text.
-pub const C_SUBTEXT: u32 = DARK.subtext;
-/// Muted labels.
-pub const C_MUTED: u32 = DARK.muted;
-/// Dim text / separators.
-pub const C_DIM: u32 = DARK.dim;
-/// Accent blue.
-pub const C_BLUE: u32 = DARK.blue;
-/// Accent green.
-pub const C_GREEN: u32 = DARK.green;
-/// Accent yellow.
-pub const C_YELLOW: u32 = DARK.yellow;
-/// Accent red.
-pub const C_RED: u32 = DARK.red;
-/// Accent mauve.
-pub const C_MAUVE: u32 = DARK.mauve;
-/// Accent teal.
-pub const C_TEAL: u32 = DARK.teal;
-/// Accent peach.
-pub const C_PEACH: u32 = DARK.peach;
 
 /// Height of one process table row, shared by the virtual list and the header.
 pub const ROW_HEIGHT: f32 = 30.0;
@@ -191,11 +152,9 @@ mod tests {
 
     #[test]
     fn set_theme_switches_palette() {
-        set_theme(Theme::Light);
+        set_theme(tm_viewmodel::Theme::Light);
         assert_eq!(palette().base, LIGHT.base);
-        set_theme(Theme::Dark);
+        set_theme(tm_viewmodel::Theme::Dark);
         assert_eq!(palette().base, DARK.base);
     }
 }
-file_path">
-/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager/app/src/theme.rs
