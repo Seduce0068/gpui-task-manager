@@ -16,9 +16,9 @@ pub fn card(title: impl Into<SharedString>, accent: u32, body: impl IntoElement)
         .gap_2()
         .p_4()
         .rounded_lg()
-        .bg(rgb(C_MANTLE))
+        .bg(rgb(palette().mantle))
         .border_1()
-        .border_color(rgb(C_SURFACE))
+        .border_color(rgb(palette().surface))
         .child(
             h_flex()
                 .gap_2()
@@ -28,7 +28,7 @@ pub fn card(title: impl Into<SharedString>, accent: u32, body: impl IntoElement)
                     div()
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(palette().subtext))
                         .child(title.into()),
                 ),
         )
@@ -44,7 +44,7 @@ pub fn metric_bar(percent: f32, color: u32) -> Div {
         .rounded_full()
         .overflow_hidden()
         .flex()
-        .bg(rgb(C_SURFACE))
+        .bg(rgb(palette().surface))
         .child(div().h_full().bg(rgb(color)).flex_grow(percent.max(0.5)))
         .child(div().h_full().flex_grow((100.0 - percent).max(0.5)))
 }
@@ -90,10 +90,10 @@ pub fn kv(label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div
         .items_center()
         .gap_2()
         .text_xs()
-        .child(div().text_color(rgb(C_MUTED)).child(label.into()))
+        .child(div().text_color(rgb(palette().muted)).child(label.into()))
         .child(
             div()
-                .text_color(rgb(C_SUBTEXT))
+                .text_color(rgb(palette().subtext))
                 .truncate()
                 .child(value.into()),
         )
@@ -104,7 +104,7 @@ pub fn section_title(title: &'static str) -> Div {
     div()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(C_MUTED))
+        .text_color(rgb(palette().muted))
         .child(title)
 }
 
@@ -131,11 +131,11 @@ pub fn action_button(
         .child(label);
     if enabled {
         base.bg(rgb(color))
-            .text_color(rgb(C_BASE))
+            .text_color(rgb(palette().base))
             .cursor_pointer()
             .hover(|style| style.opacity(0.88))
             .on_click(on_click)
     } else {
-        base.bg(rgb(C_SURFACE)).text_color(rgb(C_MUTED))
+        base.bg(rgb(palette().surface)).text_color(rgb(palette().muted))
     }
 }

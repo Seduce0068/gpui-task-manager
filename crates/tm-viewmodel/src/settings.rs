@@ -15,8 +15,10 @@ use crate::{MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL};
 /// Available colour themes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
+    /// Dark theme (Catppuccin Mocha).
     #[default]
     Dark,
+    /// Light theme (Catppuccin Latte).
     Light,
 }
 

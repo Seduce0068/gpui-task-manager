@@ -228,6 +228,7 @@ impl TaskManagerApp {
             sort: self.dashboard.sort_spec(),
             details_visible: self.dashboard.details_visible(),
             tree_view: self.dashboard.tree_view(),
+            theme: tm_viewmodel::Theme::Dark,
         };
         if let Err(message) = crate::settings::save(&settings) {
             log::warn!("設定を保存できません: {message}");
