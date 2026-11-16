@@ -1760,6 +1760,10 @@ impl TaskManagerApp {
                 .items_center()
                 .justify_center()
                 .bg(rgba(0x000000A6))
+                // Guarantee that clicks never reach the process table behind
+                // the modal (review s10): `occlude` is GPUI's explicit
+                // hitbox-blocking API, unlike the no-op listener alone.
+                .occlude()
                 .on_click(cx.listener(|_this, _event, _window, _cx| {}))
                 .child(
                     v_flex()
@@ -1896,6 +1900,7 @@ impl TaskManagerApp {
                 .items_center()
                 .justify_center()
                 .bg(rgba(0x000000A6))
+                .occlude()
                 .on_click(cx.listener(|_this, _event, _window, _cx| {}))
                 .child(
                     v_flex()
