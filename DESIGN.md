@@ -160,11 +160,15 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 `Dashboard` は UI 非依存の reducer である。
 
-- 入力: `Command`（Tick, Select, SelectRelative, SetSortKey, SetFilterText,
-  SetInterval, SetPaused, ToggleDetails, RequestSignal, ConfirmKill, CancelKill）。
+- 入力: `Command`（Tick, Select, SelectRelative, SetSortKey, SetSortSpec,
+  SetFilterText, ClearFilter, SetInterval, SetPaused, ToggleDetails,
+  SetDetailsVisible, ToggleTreeView, SetTreeView, ToggleTreeNode,
+  RequestSignal, ConfirmKill, CancelKill）。
 - 出力: `Effect`（SampleNow, Signal { key, signal }）。
 - 保持状態: 最新スナップショット、フィルタ後ソート済みインデックス、履歴、
-  選択キー、確認待ちシグナル、ステータスメッセージ、更新間隔、一時停止。
+  選択キー、確認待ちシグナル、ステータスメッセージ、更新間隔、一時停止、
+  ツリー表示の折りたたみ集合（セッションローカル。永続化するのは
+  `tree_view` のオン/オフ設定のみ）。
 - 表示順は常に「フィルタ → ソート → PID 昇順のタイブレーク」で決定的。
 - 選択はキーで保持するため、再ソートやサンプル更新で行が動いても追従する。
   消えた場合は直前の位置に近い行へフォールバックする。

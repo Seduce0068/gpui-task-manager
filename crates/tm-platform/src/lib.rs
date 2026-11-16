@@ -403,9 +403,24 @@ impl NativeProbe {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        disks.sort_by(|left, right| left.mount_point.cmp(&right.mount_point));
+        sort_disks_for_display(&mut disks);
         disks
     }
+}
+
+/// Orders disks for display: largest capacity first, then by mount point.
+///
+/// The summary cards only show the first few entries, so sorting by mount point
+/// alone would hide a large data volume behind a small system partition such as
+/// `/boot/efi` (Runtime Proof: on the development host `/boot/efi` sorted before
+/// `/mnt/timeshift` and the 439 GiB volume was never displayed).
+fn sort_disks_for_display(disks: &mut [DiskUsageSnapshot]) {
+    disks.sort_by(|left, right| {
+        right
+            .total_bytes
+            .cmp(&left.total_bytes)
+            .then_with(|| left.mount_point.cmp(&right.mount_point))
+    });
 }
 
 impl SystemProbe for NativeProbe {
@@ -915,5 +930,38 @@ mod tests {
             child.wait_for_exit(Duration::from_secs(5)),
             "child did not exit after SIGTERM"
         );
+    }
+    #[test]
+    fn disks_are_ordered_by_capacity_for_the_summary_card() {
+        let disk = |mount_point: &str, total_bytes: u64| DiskUsageSnapshot {
+            mount_point: mount_point.to_string(),
+            total_bytes,
+            available_bytes: total_bytes / 2,
+            used_bytes: total_bytes - total_bytes / 2,
+        };
+        // Mirrors the development host: /boot/efi is tiny and would otherwise
+        // sort first (before /mnt/timeshift) and hide the large data volume.
+        let mut disks = vec![
+            disk("/boot/efi", 96 * 1_024 * 1_024),
+            disk("/", 587 * 1_024 * 1_024 * 1_024),
+            disk("/mnt/timeshift", 440 * 1_024 * 1_024 * 1_024),
+        ];
+        sort_disks_for_display(&mut disks);
+        let order: Vec<&str> = disks.iter().map(|d| d.mount_point.as_str()).collect();
+        assert_eq!(order, vec!["/", "/mnt/timeshift", "/boot/efi"]);
+    }
+
+    #[test]
+    fn disks_with_equal_capacity_are_ordered_by_mount_point() {
+        let disk = |mount_point: &str| DiskUsageSnapshot {
+            mount_point: mount_point.to_string(),
+            total_bytes: 1_024,
+            available_bytes: 512,
+            used_bytes: 512,
+        };
+        let mut disks = vec![disk("/z"), disk("/a"), disk("/m")];
+        sort_disks_for_display(&mut disks);
+        let order: Vec<&str> = disks.iter().map(|d| d.mount_point.as_str()).collect();
+        assert_eq!(order, vec!["/a", "/m", "/z"]);
     }
 }

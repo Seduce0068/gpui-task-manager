@@ -353,3 +353,10 @@
 - CDP 検証スクリプト（`web/scripts/*.py`、`poc-wasm/scripts/cdp_verify.py`）の実行で `__pycache__/` が生成されるが、リポジトリの `.gitignore` には未登録で、**ユーザーのグローバル git 設定（`~/.config/git/ignore`）にのみ依存**していた（他環境では `.pyc` がコミットされ得る）。
 - `.gitignore` に `__pycache__/` と `*.pyc` を追加し、リポジトリ単体で再現性のある除外を確保（`git check-ignore -v` で `.gitignore:15` が適用されることを確認）。
 - 併せて Python スクリプト 4 本の構文検証（`python3 -m py_compile`）がすべて成功することを確認。
+
+## 2026-11-16（ディスク一覧の表示順を容量降順に修正）
+
+- 実機で `/boot/efi`(96 MB) が 2 番目に並び、UI の `take(2)` のため `/mnt/timeshift`(439 GiB) と Windows ドライブ(333 GiB) が表示されない実害を確認。
+- `tm-platform` のディスクソートを容量降順（同容量はマウントポイント順）に変更し、回帰テスト 2 件を追加（tm-platform 9 → 11 tests）。
+- `cargo test --workspace` 155 passed / clippy 警告 0 / fmt 適用。
+- あわせて `DESIGN.md` §4 の `Command` 一覧を実装に合わせて更新（`ClearFilter` / `SetSortSpec` / `SetDetailsVisible` / `ToggleTreeView` / `SetTreeView` / `ToggleTreeNode` を追記、保持状態に折りたたみ集合を明記）。
