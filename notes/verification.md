@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **166 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 11、2026-11-17） |
+| `cargo test --workspace` | **167 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -993,3 +993,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   CDP 設定検証・デモ検証とも `passed: true / failures: []`。証跡は
   `web/verification/*.json` と `notes/assets/web-shell-*.png` に再出力。
   検証用 HTTP サーバ / Chrome は停止し、ポート 8091 / 9223 の解放を確認。
+
+## 2026-11-17（設定の一時ファイル名に PID を付与）
+
+- `app/src/settings.rs` の `save_to` は一時ファイル名を固定
+  （`settings.json.tmp`）にしていたため、2 プロセスが同時保存すると
+  同じ一時ファイルを上書きし合う可能性があった。`settings.json.tmp.<pid>` に
+  変更して競合を回避（原子的 rename と 0600 は従来どおり）。
+- テスト追加: 保存後に一時ファイルが残らず、最終ファイルが存在することを確認。
+  app 11 → **12 tests**、workspace 167 passed / clippy 0 warning / fmt OK。

@@ -574,3 +574,9 @@
 - `notes/verification.md` の `verified` を 2026-11-14 から現在日時に更新し、
   `status` を `draft` → `verified` へ変更（多数の Runtime Proof を記録済みのため）。
   `generated` は作成日として保持。OKF 形式・markdownlint 検証成功。
+
+## 2026-11-17（設定保存の一時ファイル名を PID 付きへ）
+
+- `app/src/settings.rs`: 一時ファイル名 `settings.json.tmp` を
+  `settings.json.tmp.<pid>` に変更し、同時保存時の上書き競合を回避。
+  回帰テスト 1 件追加（app 11 → 12、workspace 167 passed）。

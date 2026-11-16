@@ -105,7 +105,9 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
     }
     let json = serde_json::to_string_pretty(&settings.clone().normalized())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let temporary = path.with_extension("json.tmp");
+    // Include the PID so two processes saving at once cannot clobber the same
+    // temporary file before either rename completes.
+    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
     fs::write(&temporary, json)?;
     #[cfg(unix)]
     {
@@ -165,6 +167,20 @@ mod tests {
         let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "settings must not be world readable");
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn temporary_file_is_pid_scoped_and_removed_after_save() {
+        let path = temporary_path("tmp-name");
+        let parent = path.parent().expect("parent");
+        save_to(&path, &Settings::default()).expect("save settings");
+        let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+        assert!(
+            !temporary.exists(),
+            "the temporary file must be renamed away, not left behind"
+        );
+        assert!(path.exists(), "the final settings file must exist");
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
