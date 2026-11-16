@@ -1,7 +1,7 @@
 {
   "label": "demo",
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-16T23:21:17+0900",
+  "started_at": "2026-11-17T01:49:26+0900",
   "layout": {
     "row0_center_y": 442.0,
     "header_y": 412.0,
@@ -21,16 +21,16 @@
       "step": "initial",
       "proof": {
         "mode": "demo",
-        "tick": "5",
-        "cpu": "32.6",
-        "mem": "57.2",
+        "tick": "4",
+        "cpu": "21.8",
+        "mem": "56.2",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000004",
+        "sampled": "1760000003",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -40,23 +40,23 @@
         "ime_selection": "0:0",
         "theme": "light"
       },
-      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=28 selected=2 filter="
+      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=28 selected=2 filter="
     },
     {
       "step": "after_ticks",
-      "tick_before": 5,
+      "tick_before": 4,
       "proof": {
         "mode": "demo",
-        "tick": "8",
-        "cpu": "30.2",
-        "mem": "57.0",
+        "tick": "7",
+        "cpu": "28.1",
+        "mem": "59.2",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000007",
+        "sampled": "1760000006",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -96,16 +96,16 @@
       "row_y": 502.0,
       "proof": {
         "mode": "demo",
-        "tick": "10",
-        "cpu": "46.0",
-        "mem": "58.9",
+        "tick": "9",
+        "cpu": "41.0",
+        "mem": "58.0",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "2200",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000009",
+        "sampled": "1760000008",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -120,16 +120,16 @@
       "step": "filter_typed",
       "proof": {
         "mode": "demo",
-        "tick": "12",
-        "cpu": "38.6",
-        "mem": "57.8",
+        "tick": "11",
+        "cpu": "27.7",
+        "mem": "56.8",
         "rows": "1",
         "total": "28",
         "filter": "fire",
         "selected_pid": "800",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000011",
+        "sampled": "1760000010",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -144,16 +144,16 @@
       "step": "filter_cleared",
       "proof": {
         "mode": "demo",
-        "tick": "13",
-        "cpu": "49.4",
-        "mem": "58.7",
+        "tick": "12",
+        "cpu": "38.6",
+        "mem": "57.8",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "800",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000012",
+        "sampled": "1760000011",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -168,16 +168,16 @@
       "step": "sort_cpu",
       "proof": {
         "mode": "demo",
-        "tick": "14",
-        "cpu": "25.3",
-        "mem": "56.6",
+        "tick": "13",
+        "cpu": "49.4",
+        "mem": "58.7",
         "rows": "28",
         "total": "28",
         "filter": "",
         "selected_pid": "800",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1760000013",
+        "sampled": "1760000012",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -192,6 +192,30 @@
       "step": "sort_cpu_flip",
       "proof": {
         "mode": "demo",
+        "tick": "14",
+        "cpu": "25.3",
+        "mem": "56.6",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "asc",
+        "sampled": "1760000013",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "light"
+      }
+    },
+    {
+      "step": "sort_name",
+      "proof": {
+        "mode": "demo",
         "tick": "15",
         "cpu": "36.1",
         "mem": "57.5",
@@ -199,7 +223,7 @@
         "total": "28",
         "filter": "",
         "selected_pid": "800",
-        "sort": "CPU",
+        "sort": "名前",
         "dir": "asc",
         "sampled": "1760000014",
         "vw": "1440",
@@ -213,7 +237,7 @@
       }
     },
     {
-      "step": "sort_name",
+      "step": "final",
       "proof": {
         "mode": "demo",
         "tick": "16",
@@ -234,37 +258,13 @@
         "ime_marked": "-",
         "ime_selection": "0:0",
         "theme": "light"
-      }
-    },
-    {
-      "step": "final",
-      "proof": {
-        "mode": "demo",
-        "tick": "17",
-        "cpu": "22.8",
-        "mem": "56.3",
-        "rows": "28",
-        "total": "28",
-        "filter": "",
-        "selected_pid": "800",
-        "sort": "名前",
-        "dir": "asc",
-        "sampled": "1760000016",
-        "vw": "1440",
-        "vh": "857",
-        "live_error": "0",
-        "ime_composing": "0",
-        "ime_field": "",
-        "ime_marked": "-",
-        "ime_selection": "0:0",
-        "theme": "light"
       },
-      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=17 rows=28 selected=800 filter="
+      "title": "GPUI タスクマネージャー (Web) | mode=demo tick=16 rows=28 selected=800 filter="
     }
   ],
   "env": {
-    "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=28 selected=2 filter=",
-    "proof": "mode=demo;tick=5;cpu=32.6;mem=57.2;rows=28;total=28;filter=;selected_pid=2;sort=名前;dir=asc;sampled=1760000004;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=light;",
+    "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=28 selected=2 filter=",
+    "proof": "mode=demo;tick=4;cpu=21.8;mem=56.2;rows=28;total=28;filter=;selected_pid=2;sort=名前;dir=asc;sampled=1760000003;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=light;",
     "canvas": {
       "width": 1440,
       "height": 857,
@@ -330,12 +330,32 @@
       "source": "log",
       "type": "warning",
       "text": "[rendering] []Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content."
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+    },
+    {
+      "source": "log",
+      "type": "warning",
+      "text": "[rendering] [.WebGL-0xd44001c7800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
     }
   ],
-  "benign_console_count": 3,
+  "benign_console_count": 7,
   "panic_or_error_count": 0,
   "panic_or_errors": [],
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-16T23:21:37+0900"
+  "finished_at": "2026-11-17T01:49:47+0900"
 }

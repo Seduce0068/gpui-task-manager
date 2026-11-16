@@ -545,3 +545,26 @@
 
 - `README.md` §検証状況のエージェント行に、2026-11-16 の Runtime Proof
   （アイドル 3 本下で `/healthz` 3.04 ms、上限超過で即 503）と 403 の CORS 付与を追記。
+
+## 2026-11-17（未使用依存を削除）
+
+- `cargo machete` が検出した `web/` / `poc-wasm/` / `app/` の未使用依存
+  （console_error_panic_hook / js-sys / wasm-bindgen-futures / serde）を削除。
+  各 Cargo.lock を再生成し、再検出 0 件を確認。
+- 全検証（166 tests / clippy / wasm / trunk build / CDP 設定・デモ）成功。
+  wasm サイズ不変。検証プロセスの停止・ポート解放済み。
+
+## 2026-11-17（CDP 検証の証跡出力先を修正）
+
+- 依存削除後の CDP 再検証で `cdp_verify_web.py` を `web/` から実行したため、
+  デモ証跡がリポジトリルートの `verification/` に誤出力された。
+  スクリプトを `web/scripts/` から実行し直して `web/verification/` と
+  `notes/assets/web-shell-*.png` に正しく再出力し、誤出力ディレクトリを削除。
+  検証用プロセスの停止・ポート解放も確認済み。
+
+## 2026-11-17（CI run 43910499314 の macOS キュー待ち）
+
+- run 43910499314（commit `7291885`）は wasm / windows / web-dist / release-linux /
+  gates / sbom / cargo-deny の 7 ジョブ success。macOS ジョブのみ約 10 分間
+  queued の後 cancelled（コード失敗ではない）。直前 run 43907783410 では
+  macOS を含む 8/8 success を確認済みで、ランナー可用性の問題と判断。
