@@ -89,13 +89,25 @@ impl NetworkCounters {
         }
     }
 
+    /// Minimum elapsed interval for which a rate is reported (1 ms).
+    ///
+    /// Shorter gaps are treated as a bad timestamp: dividing a large byte delta
+    /// by a few nanoseconds would saturate the `u64` rate and draw a bogus spike.
+    /// The sampler ticks once per second, so a legitimate sample is never this
+    /// close to the previous one.
+    const MIN_ELAPSED: Duration = Duration::from_millis(1);
+
     /// Computes `(rx, tx)` bytes-per-second rates since `previous`.
     ///
-    /// The result is saturating and returns zeros for a zero or non-finite
-    /// elapsed time, so a bad timestamp can never produce a wild spike.
+    /// The result is saturating and returns zeros for a zero, non-finite, or
+    /// sub-millisecond elapsed time, so a bad timestamp can never produce a
+    /// wild spike.
     pub fn rate_since(self, previous: Self, elapsed: Duration) -> (u64, u64) {
+        if elapsed < Self::MIN_ELAPSED {
+            return (0, 0);
+        }
         let seconds = elapsed.as_secs_f64();
-        if !seconds.is_finite() || seconds <= f64::EPSILON {
+        if !seconds.is_finite() {
             return (0, 0);
         }
         let rx = self.received.saturating_sub(previous.received);
@@ -297,6 +309,23 @@ mod tests {
         let previous = NetworkCounters::new(1, 1);
         let current = NetworkCounters::new(2, 2);
         assert_eq!(current.rate_since(previous, Duration::ZERO), (0, 0));
+    }
+
+    #[test]
+    fn network_rate_ignores_sub_millisecond_gaps() {
+        // A bogus 1 ns timestamp with a large byte delta would saturate u64.
+        let previous = NetworkCounters::new(0, 0);
+        let current = NetworkCounters::new(u64::MAX, u64::MAX);
+        assert_eq!(
+            current.rate_since(previous, Duration::from_nanos(1)),
+            (0, 0)
+        );
+        // At or above the lower bound the rate is computed normally.
+        let small = NetworkCounters::new(1_000, 2_000);
+        assert_eq!(
+            small.rate_since(NetworkCounters::new(0, 0), Duration::from_millis(1)),
+            (1_000_000, 2_000_000)
+        );
     }
 
     #[test]

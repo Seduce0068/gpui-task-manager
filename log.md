@@ -625,3 +625,9 @@
 - `format_percent` / `format_cpu_percent` / `format_load_average` で
   NaN / 無限大を 0 として表示するよう修正（`NaN%` 等の描画を防止）。
   テスト 1 件追加（tm-core 61 → 62、workspace 168 passed）。
+
+## 2026-11-17（ネットワークレートの微小 elapsed を防御）
+
+- `NetworkCounters::rate_since` の下限を f64::EPSILON → 1 ms へ引き上げ、
+  不正な微小タイムスタンプによる u64 saturate（虚偽のスパイク）を防止。
+  テスト 1 件追加（tm-core 62 → 63、workspace 169 passed）。
