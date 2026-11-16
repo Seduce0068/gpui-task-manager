@@ -673,16 +673,6 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 結果: 物理実機の GUI 操作・IME は未検証のまま残るが、型検査と単体テストは
   OS ごとに担保できる。
 
-### ADR-020: Linux 配布は root 不要の DEB 生成スクリプト
-
-- 決定: `packaging/linux/build-deb.sh` が release バイナリから `.deb` を生成する
-  （`dpkg-deb --root-owner-group`、`sudo` を一切呼ばない、ホストへインストールしない）。
-- 依存関係は `ldd` + `dpkg -S` から自動計算し、Vulkan ローダは `dlopen` のため
-  `libvulkan1` を明示追加する。
-- 収録物: バイナリ、`.desktop`（`StartupWMClass=gpui-task-manager`）、
-  hicolor アイコン（scalable + 256x256）、`README.md` / `NOTICE.md` / `copyright`。
-- 未実施: 署名、リポジトリ公開、AppImage/Flatpak、Windows/macOS パッケージ。
-
 ### ADR-019: ネイティブ IME は EntityInputHandler の最小実装
 
 - 状況: `gpui-pre-linux` は Wayland text-input-v3 / X11 XIM を実装しているが、
@@ -694,6 +684,16 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   実 IME の無い環境向けに `TM_DEBUG_IME=1` のデバッグフックを用意する。
 - 結果: ブラウザ版と同じ `FilterInput` を共有しつつ、ネイティブでも変換中表示と
   確定反映を実装。実 IME の候補ウィンドウ・予測変換は未検証。
+
+### ADR-020: Linux 配布は root 不要の DEB 生成スクリプト
+
+- 決定: `packaging/linux/build-deb.sh` が release バイナリから `.deb` を生成する
+  （`dpkg-deb --root-owner-group`、`sudo` を一切呼ばない、ホストへインストールしない）。
+- 依存関係は `ldd` + `dpkg -S` から自動計算し、Vulkan ローダは `dlopen` のため
+  `libvulkan1` を明示追加する。
+- 収録物: バイナリ、`.desktop`（`StartupWMClass=gpui-task-manager`）、
+  hicolor アイコン（scalable + 256x256）、`README.md` / `NOTICE.md` / `copyright`。
+- 未実施: 署名、リポジトリ公開、AppImage/Flatpak、Windows/macOS パッケージ。
 
 ---
 

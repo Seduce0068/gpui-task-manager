@@ -359,7 +359,7 @@ snapshot json bytes=2241066 (processes=3549)
 2. 全件 JSON は 2.24MB。プロセス表はページング、ストリームはサマリのみ、が必須。
 3. ディスク一覧は overlay/lxcfs 等の擬似マウントを除外するフィルタが必要。
 4. hidepid が有効な環境では他ユーザーのプロセスが見えない。起動時に `/proc/mounts` を確認して UI に注記する。
-5. `start_time` は起動からの秒（u64）。`(pid, start_time)` を同一性キーにする。
+5. `start_time` は Unix epoch 秒（u64、`sysinfo 0.40.3` の `Process::start_time()`）。`(pid, start_time)` を同一性キーにする。
 6. ゾンビは再 reap されるまで sysinfo 上に残る（実測: kill 後 300ms の時点で `still_in_sysinfo=true`）。プロセス操作後の表示は「消えたこと」を待つポーリングが必要。
 
 ## 7. 未確認事項
