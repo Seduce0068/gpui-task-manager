@@ -133,6 +133,9 @@ mod tests {
         assert_eq!(restored.interval_ms, 3_000);
         assert_eq!(restored.sort, SortSpec::default());
         assert!(restored.details_visible);
+        // Fields added in schema v2 must fall back too (v1 files have neither).
+        assert!(!restored.tree_view);
+        assert_eq!(restored.theme, Theme::Dark);
     }
 
     #[test]
