@@ -1044,3 +1044,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   隠れた子が再表示される回帰はない（既存テストで確認）。
 - テスト追加: `flatten_process_tree_survives_a_parent_cycle`。
   tm-core 64 → **65 tests**、workspace 171 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（最新コードでの CDP 再検証と wasm サイズ更新）
+
+- ツリーサイクル修正ほか直近の変更を反映するため `trunk build --release` を
+  再実行し、CDP 検証を通しで再実施:
+  - 設定永続化: `{"passed": true, "failures": []}`
+  - デモモード: `{"failures": [], "passed": true}`
+  - IME: 32/32 OK
+- wasm 7,641,970 B（gzip 3,045,139 B、旧 7,641,445 B から微増）。
+  README / DESIGN / web/README / current-state / web-shell の現状値を更新（旧値は履歴として保持）。
+  検証用 HTTP サーバ / Chrome は停止し、ポート 8091 / 9223 の解放を確認。
