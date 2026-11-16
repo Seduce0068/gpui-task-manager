@@ -24,7 +24,7 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **165 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 42 / app 11、2026-11-17） |
+| `cargo test --workspace` | **166 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 11、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -961,3 +961,16 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   loopback・同一ユーザー脅威モデルの既知制約として記録し、今回は変更しない。
 - 検証: tm-agent 41 → **42 tests**、workspace 165 passed / clippy 0 warning / fmt OK / wasm check OK。
   CI run 43897299713 は 8/8 success（修正前のコミット）。
+
+## 2026-11-17（Host 検証 403 への CORS 付与）
+
+- レビューで既知制約として記録されていた「エラー応答の CORS 欠落」のうち、
+  Host 検証 403 を改善。`agent/src/main.rs` の `handle_connection` で Origin 判定を
+  早期 return より前に移動し、許可された loopback Origin に限り 403 にも
+  `Access-Control-Allow-Origin` / `Vary: Origin` を付与する。不正 Origin は従来どおり反射しない。
+- 回帰テスト追加: 許可 Origin + 不正 Host の 403 に CORS が付くこと、
+  不正 Origin + 不正 Host の 403 には付かないこと。
+- 未対応: 431 / 400（リクエストヘッダが parse できないため Origin 不明）と
+  503（accept 直後でリクエストを読んでいない）は CORS なしのまま。UI 側は
+  fetch エラーとして検知できるため、セキュリティ境界を緩める理由はない。
+- 検証: tm-agent 42 → **43 tests**、workspace 166 passed / clippy 0 warning / fmt OK。
