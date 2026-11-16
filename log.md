@@ -876,3 +876,8 @@
 
 - u64::MAX を format_bytes/duration/process_age/count に渡しても panic しないことを検証。
   tm-core 69 → 70、workspace 183 passed。
+
+## 2026-11-17（wire schema 拒否のテストを追加）
+
+- 未知スキーマバージョン拒否を check_schema_version 純粋関数として切り出し検証。
+  web 12 → 13 tests。

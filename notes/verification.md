@@ -940,7 +940,7 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `/healthz` の応答時間は アイドル 0 本 **0.24 ms** / アイドル 3 本 **3.04 ms**
   / アイドル 13 本（上限超過）**0.03 ms + 503**。旧実装のアイドル 3 本 2,059 ms から
   大幅に改善。検証後はプロセスを停止しポート 18793 の解放を確認。
-- 全検証: `cargo test --workspace` 162 passed / web 12 passed / clippy 警告 0 /
+- 全検証: `cargo test --workspace` 162 passed / web 13 passed / clippy 警告 0 /
   fmt OK / wasm check OK。
 
 ## 2026-11-17（表示サニタイズ: ゼロ幅・不可視書式文字を追加除去）
@@ -1174,3 +1174,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   パニック・オーバーフローせず有限の文字列を返すことを検証。
   壊れた probe が極端値を渡しても描画ループが落ちないことを担保。
 - tm-core 69 → **70 tests**、workspace 183 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（wire schema 拒否のテストを追加）
+
+- 監査 a9 で「web 側が未知スキーマを拒否」と対応済みと記録されていたが、
+  その拒否経路にテストが無かった。`check_schema_version` を純粋関数に切り出し、
+  現行バージョンは受理／未知バージョン（+1）はエラーになることを検証。
+- web 12 → **13 tests**、workspace 183 passed（ルート側は不変）/ clippy 0 warning / fmt OK。
