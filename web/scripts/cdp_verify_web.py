@@ -27,7 +27,7 @@
         --out ../../notes/assets --evidence-out ../verification --prefix web-shell --label live
 
 クリック座標は src/shell.rs のレイアウト定数から計算する（ウィンドウ幅 vw は
-状態フックから取得）。表の行の y 座標は固定高さ（header 52 / overview 186 /
+状態フックから取得）。表の行の y 座標は固定高さ（header 52 / overview 260 /
 toolbar 36 / gap 12 / root padding 12 / table header 30 / row 30）から決まる。
 """
 
@@ -47,7 +47,7 @@ import websockets
 ROOT_PAD = 12.0
 GAP = 12.0
 HEADER_H = 52.0
-OVERVIEW_H = 186.0
+OVERVIEW_H = 260.0
 TOOLBAR_H = 36.0
 TABLE_HEADER_H = 30.0
 ROW_H = 30.0

@@ -879,3 +879,26 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `prefers-color-scheme` 連動などの自動更新は未実装。
 - 再ビルド: `trunk build --release` 成功。wasm 7,641,445 B（gzip 3,044,050 B）、
   JS 159,873 B、`index.html` 1,320 B（2026-11-16 計測、旧 7,635,554 B から微増）。
+
+## 2026-11-16（ブラウザ版: 概要カードの内容オーバーフローを修正）
+
+- 現象: ライトテーマのスクリーンショット（`notes/assets/web-shell-light-theme.png`）で、
+  システムカードの温度行（「CPU Packages」「NVMe Composite」）とツールバー
+  （「ソート」「ツリー: ON」「表示 N 件」）が重なっていた。原因は概要エリアの
+  固定高さ `OVERVIEW_HEIGHT = 186` に対し、システムカードが最大で
+  3 行の基本情報 + ディスク 2 件（ラベル+バー）+ 温度 3 件を並べるため。
+- 修正: `web/src/shell.rs` の `OVERVIEW_HEIGHT` を 260 px へ変更（3 件の温度でも
+  カード内に収まる高さ）。CDP スクリプトの座標定数
+  （`cdp_verify_web.py` / `cdp_verify_ime.py` の `OVERVIEW_H`）と
+  `notes/web-shell.md` の記載も 260 に追随。
+- 再検証（Runtime Proof）:
+  - `cargo test -p tm-web` 11 passed / 0 failed、`cargo clippy --all-targets -- -D warnings` 成功、
+    `trunk build --release` 成功。wasm サイズは不変（7,641,445 B / gzip 3,044,050 B）。
+  - CDP デモモード: `{"failures": [], "passed": true}`。座標計算を更新した
+    行クリック・列ソート・スクロールがすべて成功。証跡
+    `web/verification/web-shell-evidence-demo.json` とスクリーンショット 8 枚を更新。
+  - CDP 設定永続化: `{"passed": true, "failures": []}`（テーマ切替を含む）。
+  - CDP IME: **32/32 OK**、Runtime 例外・コンソールエラー 0 件。証跡を
+    `web/verification/ime-evidence.json` に初めてリポジトリへ保存（旧 runs は /tmp のみ）。
+  - 目視: `notes/assets/web-shell-light-theme.png` で重なりが解消していることを確認。
+    トレードオフとして表の表示行数が約 13 → 11 行に減少（カード内容を切らずに収める優先）。

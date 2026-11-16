@@ -411,3 +411,14 @@
   `notes/web-shell.md`。未実装項目から「ブラウザ版のテーマ切替」を削除し、
   `prefers-color-scheme` 連動のみ未実装として残す。
 - CI は今回も未対応（全 8 ジョブが 0 step で failure、public 化後も継続）。
+
+## 2026-11-16（ブラウザ版: 概要カードとツールバーの重なりを修正）
+
+- ライトテーマの画面でシステムカードの温度行とツールバーが重なっていたため、
+  `OVERVIEW_HEIGHT` を 186 → 260 px へ変更（温度 3 件までカード内に収める高さ）。
+  CDP 検証スクリプト 2 本の座標定数と `notes/web-shell.md` も追随。
+- 再検証: web 11 tests / clippy 0 warning / wasm check / trunk build 成功。
+  CDP デモ `failures: []`、設定 `passed: true`、IME 32/32 OK。スクリーンショット
+  （`web-shell-*-demo.png` / `web-shell-light-theme.png` / `ime-*.png`）と証跡 JSON を更新。
+  IME 証跡は `web/verification/ime-evidence.json` に初めて保存。
+- CI は依然として新規 run が queued のまま（課金/実行基盤側の問題と推定、未解決）。
