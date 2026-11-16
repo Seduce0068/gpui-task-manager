@@ -13,8 +13,8 @@ cd "${repo_root}"
 echo '==> cargo fmt --all --check'
 cargo fmt --all --check
 
-echo '==> cargo clippy --workspace --all-targets -- -D warnings'
-cargo clippy --workspace --all-targets -- -D warnings
+echo '==> cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks'
+cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
 
 echo '==> cargo test --workspace'
 cargo test --workspace
@@ -23,6 +23,10 @@ echo '==> cargo check --target wasm32-unknown-unknown (tm-core, tm-viewmodel)'
 cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
 
 if [ -f web/Cargo.toml ]; then
+  echo '==> cargo clippy --manifest-path web/Cargo.toml --all-targets (same lints)'
+  cargo clippy --manifest-path web/Cargo.toml --all-targets -- \
+    -D warnings -D clippy::undocumented_unsafe_blocks
+
   echo '==> cargo check --target wasm32-unknown-unknown (web shell)'
   cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
