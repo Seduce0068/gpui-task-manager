@@ -859,3 +859,9 @@
 - README / SECURITY / DESIGN の「`127.0.0.1` のみ bind」は不正確だった。
   実装は `SocketAddr::ip().is_loopback()` で IPv4/IPv6 の全 loopback を許可
   （`[::1]` も受け付けるテストあり）。各所「ループバックアドレスのみ（既定 127.0.0.1）」へ修正。
+
+## 2026-11-17（CORS 許可 origin の記述を実装へ合わせる）
+
+- README / DESIGN の「CORS は localhost のみ」は不正確だった。
+  実装 `is_allowed_origin` は `http://127.0.0.1[:port]` と `http://localhost[:port]`
+  の両方を許可（DESIGN §7 の記述は正確）。各所を実装に合わせて修正。
