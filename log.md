@@ -373,3 +373,8 @@
 - a5 を検討し、`supports_network` / `supports_disks` は「ホスト capability」と定義して据え置き（列挙失敗は空スナップショットで表現）。doc comment に明記。
 - `PlatformInfo::native_read_only` を追加し、web shell の手書きリテラル（プロセス制御不可のネイティブ）を置き換え。capability 定義を 1 か所に集約。
 - テスト追加（tm-core 58 → 59）。`cargo test --workspace` 158 passed / web 7 passed / wasm check OK / clippy 警告 0。
+
+## 2026-11-16（Ctrl+K の保護判定を view model に一本化）
+
+- Ctrl+K がシェル側で `is_protected` を先に確認していたため、保護プロセスでは何も起きずメッセージも出なかった（ボタン経路と不一致）。常に `Command::RequestSignal` を投げ、判定とメッセージを view model に一本化。
+- `cargo test --workspace` 158 passed / clippy 警告 0 / fmt 適用。

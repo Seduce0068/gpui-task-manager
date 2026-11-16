@@ -729,3 +729,32 @@ API で明確にした。
 - `cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel`: 成功。
 - `cargo clippy --workspace --all-targets -- -D warnings` / web clippy: 警告 0。
 - `cargo fmt --all` 適用済み。
+
+## 2026-11-16（Ctrl+K の保護判定を view model に一本化）
+
+外部レビュー a3（「UI 側に保護判定の重複」）を確認し、修正した。
+
+### 問題
+
+`app/src/app.rs` の Ctrl+K ハンドラが `!self.dashboard.is_protected(key)` を先に確認して
+`Command::RequestSignal` を投げていたため、**保護プロセス（PID 1 / 自分自身）を
+選択して Ctrl+K を押すと何も起きず、理由も表示されなかった**。
+同じ操作をボタン（`signal-term` など）から行うと view model が
+「PID 1 と自分自身は操作できません（安全のため保護されています）」を表示するため、
+2 つの経路で挙動が食い違っていた。
+
+### 修正
+
+- `app/src/app.rs`: Ctrl+K は常に `Command::RequestSignal` を投げるようにし、
+  保護判定とエラーメッセージは view model（`Dashboard::request_signal`）へ一本化。
+  ボタン経路と同じ挙動・同じメッセージになる。
+- シェル側の `is_protected` 呼び出しは、ボタンの有効/無効表示（`enabled` の計算）
+  のみに残した（表示と実行の両方で保護される）。
+
+### 検証（Runtime Proof）
+
+- 保護フロー自体は `tm-viewmodel::kill_flow_requires_confirmation_and_is_protected` で
+  検証済み（PID 1 / 自分自身は `pending_kill` にならず `status.is_error` になる）。
+- `cargo test --workspace`: **158 passed / 0 failed**。
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
+- `cargo fmt --all` 適用済み。
