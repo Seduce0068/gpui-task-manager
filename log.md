@@ -642,3 +642,12 @@
 - 全シェルスクリプト（4 本）の `bash -n` / `shellcheck` / `shfmt -d -i 2` を
   一括検証したところ、`packaging/linux/build-deb.sh` のみ shfmt 差分あり
   （case 文のインデントとパイプ位置）。機能変更なしで整形し、3 検証すべて成功。
+
+## 2026-11-17（モーダル overlay に occlude() を追加）
+
+- レビュー s10 は「no-op の `on_click` で背景クリックを防いでいる（推測）」だった。
+  GPUI 0.3.12 のソースで `InteractiveElement::occlude()` が
+  `HitboxBehavior::BlockMouse` を設定する明示 API であることを確認し、
+  kill-overlay / help-overlay の両方に追加（no-op listener は残す）。
+- コンパイル・app 15 tests 成功。実機クリック注入は kdotool/xdotool が
+  未インストールで未検証（コード上の保証として記録）。
