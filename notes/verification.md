@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **167 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **168 passed / 0 failed**（tm-core 62 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1004,3 +1004,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   変更して競合を回避（原子的 rename と 0600 は従来どおり）。
 - テスト追加: 保存後に一時ファイルが残らず、最終ファイルが存在することを確認。
   app 11 → **12 tests**、workspace 167 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（表示フォーマットの非有限値を防御）
+
+- `crates/tm-core/src/format.rs` の `format_percent` / `format_cpu_percent` /
+  `format_load_average` が `NaN` / `inf` をそのまま表示していたため、
+  非有限値を `0` に置換するよう修正（表示レイヤの安全性）。
+  通常のカーネル由来データは有限だが、壊れた probe が `NaN%` 等を描画しないようにする。
+- テスト追加: `non_finite_numbers_never_reach_the_display`。
+  tm-core 61 → **62 tests**、workspace 168 passed / clippy 0 warning / fmt OK。

@@ -619,3 +619,9 @@
 - 検証: `bash -n` / `shellcheck` / `shfmt -d -i 2`（差分なし）および
   `bash scripts/check.sh` を通しで実行し `All checks passed.` を確認。
   root / web とも未使用依存 0 件。
+
+## 2026-11-17（format.rs の非有限値を防御）
+
+- `format_percent` / `format_cpu_percent` / `format_load_average` で
+  NaN / 無限大を 0 として表示するよう修正（`NaN%` 等の描画を防止）。
+  テスト 1 件追加（tm-core 61 → 62、workspace 168 passed）。
