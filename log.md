@@ -767,3 +767,12 @@
 - 監査で「poc-wasm / poc-crates が対象外だが理由が書かれていない」と指摘されたため、
   履歴スパイク（Runtime Proof 資料）で出荷コードではない旨をコメントに追記。
   YAML パース成功、設定の動作変更なし。
+
+## 2026-11-17（監査後Forkの健全性確認）
+
+- Dependabot 週次更新 run 3 件（cargo root / web / github-actions）すべて success。
+- 本番コードの `expect` / `panic!` を走査し、定数起因（`DEFAULT_LISTEN`）のみで
+  実行時 panic 経路がないことを確認。
+- CDP スクリプトのテーマボタン座標定数が shell.rs と同期していること、
+  web/src/lib.rs の属性順序（allow(dead_code) → forbid(unsafe_code)）が
+  wasm ビルドで問題ないことを確認。新たな不具合は検出せず。
