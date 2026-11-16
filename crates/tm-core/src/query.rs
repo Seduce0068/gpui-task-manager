@@ -661,6 +661,28 @@ mod tests {
     }
 
     #[test]
+    fn flatten_process_tree_handles_a_large_chain_linearly() {
+        // The cycle fallback walks every index; verify that the visited guard
+        // keeps it O(n) and emits each process exactly once even for a long
+        // chain (the common shape on a real machine).
+        let mut processes = Vec::with_capacity(1_000);
+        for pid in 1..=1_000u32 {
+            let mut item = process(pid, "chain", 0.0, 1);
+            item.parent_pid = if pid == 1 { None } else { Some(pid - 1) };
+            processes.push(item);
+        }
+        let indices = (0..processes.len()).collect::<Vec<_>>();
+        let rows = flatten_process_tree(&processes, &indices, &std::collections::HashSet::new());
+        assert_eq!(rows.len(), processes.len());
+        let mut unique = rows.iter().map(|row| row.index).collect::<Vec<_>>();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), processes.len(), "no duplicate rows");
+        assert_eq!(rows.first().map(|row| row.depth), Some(0));
+        assert_eq!(rows.last().map(|row| row.depth), Some(999));
+    }
+
+    #[test]
     fn flatten_process_tree_respects_selected_order_for_roots() {
         let mut a = process(1, "a", 0.0, 1);
         a.parent_pid = None;
