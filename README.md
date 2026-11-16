@@ -16,9 +16,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 
 ## GitHub
 
-- リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（現在 **private**）
+- リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（**public**）
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
-  `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit）。
+  `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit → cargo vet）。
   追加で wasm / cargo-deny / native-windows / native-macos / release-linux /
   web-dist / sbom を実行（Linux 系ジョブは再現性のため `ubuntu-24.04` に固定、
   成果物は `actions/upload-artifact@v7`）。SBOM は
@@ -26,10 +26,8 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
   root/web ワークスペース）で生成。
 - 運用: Dependabot（Cargo / web / GitHub Actions、週次）、セキュリティアラート、
   プロジェクト用ラベル（`area:*` / `ci` / `security` / `packaging` / `supply-chain` 等）
-  を有効化。ブランチ保護は private リポジトリのプラン制約により API 上
-  `403`（GitHub Pro または public が必要）で未設定のため、保護ルール相当は
-  必須 CI / レビュー運用で補う。`cargo-vet` は root / web とも初期化済み
-  （`supply-chain/`、現状は全依存を `exempt`＝未監査の明示として記録、外部
+  を有効化。ブランチ保護は public リポジトリの機能で有効化し、必須 CI / レビュー運用で補う。
+  `cargo-vet` は root / web とも初期化済み（`supply-chain/`、現状は全依存を `exempt`＝未監査の明示として記録、外部
   imports は未使用、監査記録の捏造はしない）。SBOM（CycloneDX）は
   `scripts/generate-sbom.sh` と CI で生成する。
 - 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
@@ -54,6 +52,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - 依存監査（cargo-deny / cargo audit）と Dependabot による週次更新
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
+- **ライトテーマ（Catppuccin Latte）**: ヘッダーの「ライト/ダーク」ボタンで切替、設定に永続化
 
 ## クイックスタート（Kubuntu / Wayland）
 
@@ -207,7 +206,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - 優先度変更、GPU 監視、ブラウザ版のテーマ切替（ライトテーマはネイティブ版のみ実装）は未実装
 - DEB は未署名・リポジトリ未公開（ローカル生成のみ）
-- ブラウザ wasm は 7.28 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-15 計測）
+- ブラウザ wasm は 7.28 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み）
 - エージェントはシリアル処理（1 スナップショット約 250 ms）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある
