@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **168 passed / 0 failed**（tm-core 62 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **169 passed / 0 failed**（tm-core 63 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1013,3 +1013,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   通常のカーネル由来データは有限だが、壊れた probe が `NaN%` 等を描画しないようにする。
 - テスト追加: `non_finite_numbers_never_reach_the_display`。
   tm-core 61 → **62 tests**、workspace 168 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（ネットワークレートの微小 elapsed を防御）
+
+- `crates/tm-core/src/metrics.rs` の `NetworkCounters::rate_since` は
+  `f64::EPSILON`（約 2.2e-16 秒）より小さい値のみ弾いていたため、
+  例えば 1 ナノ秒の不正なタイムスタンプと大きなバイト差で `u64` レートが
+  saturate し、履歴グラフに虚偽のスパイクが立ち得た。
+  下限を 1 ミリ秒（`MIN_ELAPSED`）に引き上げ、それ未満は 0 を返すよう修正。
+  サンプラーは 1 秒間隔なので正規サンプルに影響なし。
+- テスト追加: `network_rate_ignores_sub_millisecond_gaps`。
+  tm-core 62 → **63 tests**、workspace 169 passed / clippy 0 warning / fmt OK。
