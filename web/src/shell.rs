@@ -91,13 +91,7 @@ impl TaskManagerApp {
                 let http = cx.http_client();
                 let client = Arc::new(AgentClient::new(config, http));
                 // The browser can never signal processes, even in live mode.
-                let platform = PlatformInfo {
-                    os: "Linux (エージェント経由)".to_string(),
-                    supports_process_control: false,
-                    supports_network: true,
-                    supports_disks: true,
-                    is_demo: false,
-                };
+                let platform = PlatformInfo::native_read_only("Linux (エージェント経由)");
                 let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
                 dashboard.set_status("エージェントに接続しています…", false);
                 (dashboard, DataSource::Live(client))

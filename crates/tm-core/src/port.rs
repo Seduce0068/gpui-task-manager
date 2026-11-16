@@ -26,10 +26,30 @@ pub struct PlatformInfo {
 
 impl PlatformInfo {
     /// Describes a native backend.
+    ///
+    /// `supports_network` / `supports_disks` describe what the *host* provides,
+    /// not whether this particular probe managed to enumerate them: on Linux
+    /// both are expected, and an enumeration failure is reported through the
+    /// (empty) snapshot data instead of a wrong capability flag. Callers that
+    /// need to know whether data is present must look at the snapshot.
     pub fn native(os: impl Into<String>) -> Self {
         Self {
             os: os.into(),
             supports_process_control: true,
+            supports_network: true,
+            supports_disks: true,
+            is_demo: false,
+        }
+    }
+
+    /// Describes a native backend where the platform cannot signal processes.
+    ///
+    /// Used by the browser shell, which reads a snapshot over HTTP and has no
+    /// process-control API by design.
+    pub fn native_read_only(os: impl Into<String>) -> Self {
+        Self {
+            os: os.into(),
+            supports_process_control: false,
             supports_network: true,
             supports_disks: true,
             is_demo: false,
@@ -199,6 +219,18 @@ mod tests {
         assert!(!info.supports_process_control);
         assert!(info.is_demo);
         assert!(info.label().contains("デモ"));
+    }
+
+    #[test]
+    fn read_only_native_platform_info_cannot_signal() {
+        // The browser shell reads snapshots over HTTP, so it must never offer
+        // process control even though the host is a native Linux machine.
+        let info = PlatformInfo::native_read_only("Linux (エージェント経由)");
+        assert!(!info.supports_process_control);
+        assert!(!info.is_demo);
+        assert!(info.supports_network);
+        assert!(info.supports_disks);
+        assert_eq!(info.label(), "Linux (エージェント経由)");
     }
 
     #[test]

@@ -367,3 +367,9 @@
 - `tm-core` に `NetworkSnapshot::physical_totals()` と `is_virtual_interface()` を追加し、overview のレート/履歴計算を仮想 IF 除外へ切り替え。回帰テスト 2 件追加（tm-core 58 tests）。
 - 旧挙動を期待値にしていた `tm-viewmodel` のテスト 1 件を正しい値へ更新。
 - `cargo test --workspace` 157 passed / web 7 passed / clippy 警告 0 / fmt 適用。
+
+## 2026-11-16（PlatformInfo capability の意味を明確化）
+
+- a5 を検討し、`supports_network` / `supports_disks` は「ホスト capability」と定義して据え置き（列挙失敗は空スナップショットで表現）。doc comment に明記。
+- `PlatformInfo::native_read_only` を追加し、web shell の手書きリテラル（プロセス制御不可のネイティブ）を置き換え。capability 定義を 1 か所に集約。
+- テスト追加（tm-core 58 → 59）。`cargo test --workspace` 158 passed / web 7 passed / wasm check OK / clippy 警告 0。
