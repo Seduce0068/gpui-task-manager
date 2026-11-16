@@ -24,8 +24,8 @@ verified: 2026-11-14T21:10:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **143 passed / 0 failed**（tm-core 49 / tm-viewmodel 34 / tm-platform 9 / tm-agent 39 / app 12） |
-| web ユニットテスト | **7 passed / 0 failed**（agent 4 + settings 3） |
+| `cargo test --workspace` | **164 passed / 0 failed**（tm-core 61 / tm-viewmodel 37 / tm-platform 14 / tm-agent 41 / app 11、2026-11-17） |
+| web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
