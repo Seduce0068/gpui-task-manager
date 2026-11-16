@@ -5,7 +5,6 @@ description: 試作版 GPUI タスクマネージャーの安全原則・脅威�
 tags: [security, policy, task-manager, gpui, rust]
 status: draft
 generated: 2026-11-14T22:35:00+09:00
-verified: 2026-11-14T22:35:00+09:00
 ---
 
 ## 1. 適用範囲とサポート
@@ -29,9 +28,9 @@ verified: 2026-11-14T22:35:00+09:00
 3. **危険操作の多層防御**:
    - PID 0 / PID 1 / 自分自身は viewmodel と platform の両方で拒否する。
    - プロセス同一性は `(pid, start_time)`。シグナル送信直前に起動時刻を再取得して照合し、
-     不一致なら `NotFound` として送信しない（PID 再利用対策）。
+      不一致なら `NotFound` として送信しない（PID 再利用対策）。
    - シグナル操作は必ず確認ダイアログを経由する。**Enter はキャンセル**、
-     Ctrl+Enter または明示クリックで確定する。
+      Ctrl+Enter または明示クリックで確定する。
    - ダイアログには PID・ユーザー・起動からの経過・コマンドを表示し、対象の取り違えを防ぐ。
 4. **読み取り専用ブラウザ**: ブラウザ版にシグナル操作を置かない。エージェントにも操作
    API を置かない。UI は `supports_process_control = false` でボタンを無効化する。
@@ -58,8 +57,8 @@ verified: 2026-11-14T22:35:00+09:00
    アプリ状態に反映せず、確定文字列だけを絞り込みに渡す。確定文字列はユーザー自身の
    入力であり、OS 由来の表示文字列とは別扱いとする。
 10. **クロスプラットフォーム**: Windows は `%SystemRoot%\System32\taskkill.exe` の
-    絶対パス起動のみ（PATH 解決をしない）。Stop/Continue は非対応。macOS は rustix の
-    安全 API を使う。
+     絶対パス起動のみ（PATH 解決をしない）。Stop/Continue は非対応。macOS は rustix の
+     安全 API を使う。
 
 ## 4. 脅威モデル（要約）
 
@@ -109,9 +108,7 @@ chmod 600 ~/.config/tm-agent.token
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
   自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
 - 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
-- **運用制約**: private リポジトリのプラン制約により GitHub ブランチ保護 API は
-  `403`（GitHub Pro または public が必要）で未設定。公開/プラン変更までは
-  必須 CI・レビュー運用で `main` を保護する。
+- **公開運用**: 本リポジトリは public。ブランチ保護は public リポジトリの機能で有効化し、必須 CI / レビュー運用で `main` を保護する。
 
 ## 7. 残余リスク
 
