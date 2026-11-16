@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **169 passed / 0 failed**（tm-core 63 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **170 passed / 0 failed**（tm-core 64 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1024,3 +1024,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   サンプラーは 1 秒間隔なので正規サンプルに影響なし。
 - テスト追加: `network_rate_ignores_sub_millisecond_gaps`。
   tm-core 62 → **63 tests**、workspace 169 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（履歴グラフへの非有限値混入を防御）
+
+- `crates/tm-core/src/metrics.rs` の `MetricHistory::push` は `f32::clamp` のみで
+  0..=100 に制限していたが、Rust の `clamp` は NaN をそのまま返すため、
+  壊れた probe が NaN / inf を履歴へ送るとチャート描画に混入し得た。
+  非有限値を 0 に置換するよう修正（前節の format 防御と同じ方針）。
+- テスト追加: `history_rejects_non_finite_percentages`。
+  tm-core 63 → **64 tests**、workspace 170 passed / clippy 0 warning / fmt OK。
