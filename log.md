@@ -360,3 +360,10 @@
 - `tm-platform` のディスクソートを容量降順（同容量はマウントポイント順）に変更し、回帰テスト 2 件を追加（tm-platform 9 → 11 tests）。
 - `cargo test --workspace` 155 passed / clippy 警告 0 / fmt 適用。
 - あわせて `DESIGN.md` §4 の `Command` 一覧を実装に合わせて更新（`ClearFilter` / `SetSortSpec` / `SetDetailsVisible` / `ToggleTreeView` / `SetTreeView` / `ToggleTreeNode` を追記、保持状態に折りたたみ集合を明記）。
+
+## 2026-11-16（ネットワーク集計の二重計上を修正）
+
+- 実測で `tailscale0`(rx 79.9 MB) が `enp4s0`(rx 124.6 GB) と二重計上されることを確認（a6）。
+- `tm-core` に `NetworkSnapshot::physical_totals()` と `is_virtual_interface()` を追加し、overview のレート/履歴計算を仮想 IF 除外へ切り替え。回帰テスト 2 件追加（tm-core 58 tests）。
+- 旧挙動を期待値にしていた `tm-viewmodel` のテスト 1 件を正しい値へ更新。
+- `cargo test --workspace` 157 passed / web 7 passed / clippy 警告 0 / fmt 適用。

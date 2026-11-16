@@ -651,8 +651,10 @@ mod tests {
         ingest_ticks(&mut dashboard, 2);
         assert_eq!(dashboard.history().len(), 2);
         assert!(dashboard.snapshot().is_some());
-        // wlan0 rx +1_234_567, lo rx +4_096 over one second.
-        assert_eq!(dashboard.network_rates(), (1_238_663, 325_552));
+        // wlan0 rx +1_234_567 over one second. The demo snapshot also carries a
+        // `lo` interface (+4_096), which the overview must ignore: loopback
+        // traffic is not network usage and would otherwise be double-counted.
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
     }
 
     #[test]
