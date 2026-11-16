@@ -422,3 +422,14 @@
   （`web-shell-*-demo.png` / `web-shell-light-theme.png` / `ime-*.png`）と証跡 JSON を更新。
   IME 証跡は `web/verification/ime-evidence.json` に初めて保存。
 - CI は依然として新規 run が queued のまま（課金/実行基盤側の問題と推定、未解決）。
+
+## 2026-11-16（ドキュメント不整合の残存 2 件を修正）
+
+- `notes/solutions-survey.md`: `start_time` を「起動からの秒」と誤記していた箇所を
+  「Unix epoch 秒（`sysinfo 0.40.3` の `Process::start_time()`）」に訂正（`crates/tm-core/src/model.rs`
+  の説明と一致）。
+- `DESIGN.md`: ADR-020（DEB 生成）が ADR-019（ネイティブ IME）より前に置かれていたため、
+  番号順になるよう 2 セクションを入れ替えた（内容変更なし、他ファイルからの参照なし）。
+- CI: この間の新規 run では 8 ジョブが実際に起動（6m21s 実行）。先の run は同ブランチへの
+  連続 push による concurrency で macOS ジョブが cancelled になったもので、
+  コード失敗ではない。最新 run の完了は未確認。
