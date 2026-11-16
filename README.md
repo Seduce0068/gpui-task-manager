@@ -173,7 +173,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
 | デモ起動 | 成功（`--demo`、合成データ） |
-| エージェント | `/healthz` 200、トークンなし 401、クエリトークン 401、`limit` 動作、CORS、Host 検証 403、405、ループバック強制を確認 |
+| エージェント | `/healthz` 200、トークンなし 401、クエリトークン 401、`limit` 動作、CORS（403 含む）、Host 検証 403、405、ループバック強制を確認。並列接続（最大 8）でアイドル 3 本下でも `/healthz` 3.04 ms、超過は即 503（2026-11-16 実測） |
 | wasm スパイク | `trunk build --release` 成功、ヘッドレス Chrome で描画・CJK・入力・fetch を確認（WebGL2 フォールバック） |
 | ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）をヘッドレス Chrome で検証（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
