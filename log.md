@@ -589,3 +589,11 @@
 - `notes/verification.md` §13 の履歴記述に、現行の一時ファイル名
   `settings.json.tmp.<pid>` とスキーマ v2（6 項目）の注記を追加。
 - app 15 tests / clippy 0 warning / markdownlint（件数同一 120）。
+
+## 2026-11-17（設定 v1→v2 マイグレーションのテストを補強）
+
+- `crates/tm-viewmodel/src/settings.rs` の `missing_fields_fall_back_to_defaults` に、
+  スキーマ v2 で追加された `tree_view` / `theme` の既定値アサーションを追加
+  （v1 の設定ファイルには双方が存在しないため、既定値へ縮退することを明示）。
+  新規テストではなく既存テストの補強（workspace 167 tests のまま）。
+- 検証: cargo test --workspace / clippy / wasm check 成功。
