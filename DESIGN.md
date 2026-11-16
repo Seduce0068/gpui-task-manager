@@ -311,7 +311,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - 日本語 IME: `EntityInputHandler` + composition を実装。CDP の
   `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」の
   変換・確定・Esc 復帰を 32 チェックで検証（JS 例外 0）。`FilterInput` のテストは
-  `tm-viewmodel` に移設（28 件）、`web/` の単体テストは 4 件。
+  `tm-viewmodel` に移設（13 件、2026-11-17 時点）、`web/` の単体テストは 12 件。
 - wasm-opt（-Oz）適用後もデモ / ライブ / エラー時の CDP 検証は pass。
 - 証拠: `notes/web-shell.md`、`notes/ime.md`、`notes/assets/web-shell-*.png`、
   `notes/assets/ime-*.png`、`web/verification/*.json`。
@@ -390,7 +390,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | エージェント | JSON 応答、認証、CORS、読み取り専用 | `cargo test -p tm-agent` + curl |
 | UI スモーク | Wayland 起動、ウィンドウ確認、スクリーンショット | 手動 + KWin D-Bus |
 | wasm | `cargo check --target wasm32-unknown-unknown`、`trunk build`、ブラウザ表示 | スパイク + CDP |
-| 入力状態 | `FilterInput` の状態機械（UTF-16・選択・marked range、Web/ネイティブ共有） | `cargo test -p tm-viewmodel`（28 件） |
+| 入力状態 | `FilterInput` の状態機械（UTF-16・選択・marked range、Web/ネイティブ共有） | `cargo test -p tm-viewmodel`（FilterInput 13 件、viewmodel 全体 37 件） |
 | IME（Web） | composition 中は確定しない・確定後に反映・Esc 復帰 | CDP `Input.imeSetComposition`（32 チェック） |
 | IME（native） | `EntityInputHandler` 経由の変換中表示と確定反映 | `TM_DEBUG_IME=1` + スクリーンショット |
 | クロスプラットフォーム | Windows/macOS ターゲットの check、CI ランナー | `cargo check --target ...` / GitHub Actions |
