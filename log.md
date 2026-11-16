@@ -814,3 +814,9 @@
 - `cargo run -q -p tm-agent -- --once --demo` を実行し、
   schema_version=1 / total_process_count=28 / processes=28 / hostname=kubuntu-demo
   を確認。README 記載のコマンドは現状でも正常に動作。
+
+## 2026-11-17（DESIGN テスト戦略の件数を実測へ修正）
+
+- §8.1「入力状態 ... 28 件」と §6「FilterInput 28 件 / web 4 件」が古く、
+  実測は FilterInput 13 件（viewmodel 全体 37 件）/ web 12 件だったため修正。
+  IME 32 チェック・CDP 検証は据え置き。
