@@ -29,12 +29,24 @@ pub fn format_rate(bytes_per_second: u64) -> String {
 }
 
 /// Formats a percentage with one decimal place.
+///
+/// Non-finite values become `0.0%` so a broken probe can never render `NaN%`
+/// or `inf%` in the UI.
 pub fn format_percent(percent: f32) -> String {
-    format!("{:.1}%", percent.clamp(0.0, 100.0))
+    let percent = if percent.is_finite() {
+        percent.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    format!("{percent:.1}%")
 }
 
 /// Formats a percentage that may exceed 100 (per-process CPU on multicore).
+///
+/// Unlike [`format_percent`] this is not capped at 100, but non-finite values
+/// are still replaced with zero for the same display-safety reason.
 pub fn format_cpu_percent(percent: f32) -> String {
+    let percent = if percent.is_finite() { percent } else { 0.0 };
     format!("{percent:.1}%")
 }
 
@@ -61,8 +73,11 @@ pub fn format_process_age(now_secs: u64, start_secs: u64) -> String {
 }
 
 /// Formats a three-value load average.
+///
+/// Non-finite components are shown as `0.00` instead of `NaN` / `inf`.
 pub fn format_load_average(load: [f32; 3]) -> String {
-    format!("{:.2} {:.2} {:.2}", load[0], load[1], load[2])
+    let finite = load.map(|value| if value.is_finite() { value } else { 0.0 });
+    format!("{:.2} {:.2} {:.2}", finite[0], finite[1], finite[2])
 }
 
 /// Formats a count with thousands separators (`12,345`).
@@ -110,6 +125,18 @@ mod tests {
         assert_eq!(format_percent(12.34), "12.3%");
         assert_eq!(format_percent(150.0), "100.0%");
         assert_eq!(format_cpu_percent(250.0), "250.0%");
+    }
+
+    #[test]
+    fn non_finite_numbers_never_reach_the_display() {
+        assert_eq!(format_percent(f32::NAN), "0.0%");
+        assert_eq!(format_percent(f32::INFINITY), "0.0%");
+        assert_eq!(format_cpu_percent(f32::NAN), "0.0%");
+        assert_eq!(format_cpu_percent(f32::NEG_INFINITY), "0.0%");
+        assert_eq!(
+            format_load_average([f32::NAN, 1.5, f32::INFINITY]),
+            "0.00 1.50 0.00"
+        );
     }
 
     #[test]
