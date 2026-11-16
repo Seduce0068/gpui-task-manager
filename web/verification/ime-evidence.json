@@ -1,5 +1,5 @@
 {
-  "url": "http://127.0.0.1:8096/",
+  "url": "http://127.0.0.1:8097/",
   "chrome": "Chrome/157.0.8103.50",
   "checks": [
     {
@@ -168,7 +168,7 @@
       "step": "initial",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=2 rows=28 selected=900 filter=",
-        "proof": "mode=demo;tick=2;cpu=35.1;mem=57.4;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000001;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "proof": "mode=demo;tick=2;cpu=35.1;mem=57.4;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000001;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "",
@@ -208,14 +208,15 @@
         "ime_field": "",
         "ime_marked": "-",
         "ime_selection": "0:0",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "ascii-fire",
       "raw": {
-        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=1 selected=800 filter=fire",
-        "proof": "mode=demo;tick=4;cpu=21.8;mem=56.2;rows=1;total=28;filter=fire;selected_pid=800;sort=CPU;dir=desc;sampled=1760000003;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fire;ime_marked=-;ime_selection=4:4;theme=dark;",
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=3 rows=1 selected=800 filter=fire",
+        "proof": "mode=demo;tick=3;cpu=45.9;mem=58.4;rows=1;total=28;filter=fire;selected_pid=800;sort=CPU;dir=desc;sampled=1760000002;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fire;ime_marked=-;ime_selection=4:4;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "fire",
@@ -238,16 +239,16 @@
       },
       "proof": {
         "mode": "demo",
-        "tick": "4",
-        "cpu": "21.8",
-        "mem": "56.2",
+        "tick": "3",
+        "cpu": "45.9",
+        "mem": "58.4",
         "rows": "1",
         "total": "28",
         "filter": "fire",
         "selected_pid": "800",
         "sort": "CPU",
         "dir": "desc",
-        "sampled": "1760000003",
+        "sampled": "1760000002",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -255,14 +256,15 @@
         "ime_field": "fire",
         "ime_marked": "-",
         "ime_selection": "4:4",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "backspace",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=1 selected=800 filter=fir",
-        "proof": "mode=demo;tick=5;cpu=32.6;mem=57.2;rows=1;total=28;filter=fir;selected_pid=800;sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fir;ime_marked=-;ime_selection=3:3;theme=dark;",
+        "proof": "mode=demo;tick=5;cpu=32.6;mem=57.2;rows=1;total=28;filter=fir;selected_pid=800;sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fir;ime_marked=-;ime_selection=3:3;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "fir",
@@ -302,14 +304,15 @@
         "ime_field": "fir",
         "ime_marked": "-",
         "ime_selection": "3:3",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "escape-clear",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=6 rows=28 selected=800 filter=",
-        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "",
@@ -349,14 +352,15 @@
         "ime_field": "",
         "ime_marked": "-",
         "ime_selection": "0:0",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "composing",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=6 rows=28 selected=800 filter=",
-        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;",
+        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "にほんご",
@@ -396,14 +400,15 @@
         "ime_field": "にほんご",
         "ime_marked": "0:4",
         "ime_selection": "4:4",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "composing-update",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=7 rows=28 selected=800 filter=",
-        "proof": "mode=demo;tick=7;cpu=28.1;mem=59.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000006;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=日本語;ime_marked=0:3;ime_selection=3:3;theme=dark;",
+        "proof": "mode=demo;tick=7;cpu=28.1;mem=59.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000006;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=日本語;ime_marked=0:3;ime_selection=3:3;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "日本語",
@@ -443,14 +448,15 @@
         "ime_field": "日本語",
         "ime_marked": "0:3",
         "ime_selection": "3:3",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "committed",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=8 rows=0 selected=- filter=日本語",
-        "proof": "mode=demo;tick=8;cpu=30.2;mem=57.0;rows=0;total=28;filter=日本語;selected_pid=-;sort=CPU;dir=desc;sampled=1760000007;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=日本語;ime_marked=-;ime_selection=3:3;theme=dark;",
+        "proof": "mode=demo;tick=8;cpu=30.2;mem=57.0;rows=0;total=28;filter=日本語;selected_pid=-;sort=CPU;dir=desc;sampled=1760000007;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=日本語;ime_marked=-;ime_selection=3:3;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "日本語",
@@ -490,14 +496,15 @@
         "ime_field": "日本語",
         "ime_marked": "-",
         "ime_selection": "3:3",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "escape-after-commit",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=9 rows=28 selected=900 filter=",
-        "proof": "mode=demo;tick=9;cpu=41.0;mem=58.0;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000008;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "proof": "mode=demo;tick=9;cpu=41.0;mem=58.0;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000008;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "",
@@ -537,7 +544,8 @@
         "ime_field": "",
         "ime_marked": "-",
         "ime_selection": "0:0",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
@@ -545,7 +553,7 @@
       "before": {
         "raw": {
           "title": "GPUI タスクマネージャー (Web) | mode=demo tick=9 rows=28 selected=900 filter=",
-          "proof": "mode=demo;tick=9;cpu=41.0;mem=58.0;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000008;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;",
+          "proof": "mode=demo;tick=9;cpu=41.0;mem=58.0;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000008;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;interval=1000;",
           "activeElement": "TEXTAREA",
           "textarea": {
             "value": "にほんご",
@@ -585,12 +593,13 @@
           "ime_field": "にほんご",
           "ime_marked": "0:4",
           "ime_selection": "4:4",
-          "theme": "dark"
+          "theme": "dark",
+          "interval": "1000"
         }
       },
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=10 rows=28 selected=900 filter=",
-        "proof": "mode=demo;tick=10;cpu=46.0;mem=58.9;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000009;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "proof": "mode=demo;tick=10;cpu=46.0;mem=58.9;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000009;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "にほんご",
@@ -630,14 +639,15 @@
         "ime_field": "",
         "ime_marked": "-",
         "ime_selection": "0:0",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "recovered",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=11 rows=0 selected=- filter=漢字",
-        "proof": "mode=demo;tick=11;cpu=27.7;mem=56.8;rows=0;total=28;filter=漢字;selected_pid=-;sort=CPU;dir=desc;sampled=1760000010;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=漢字;ime_marked=-;ime_selection=2:2;theme=dark;",
+        "proof": "mode=demo;tick=11;cpu=27.7;mem=56.8;rows=0;total=28;filter=漢字;selected_pid=-;sort=CPU;dir=desc;sampled=1760000010;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=漢字;ime_marked=-;ime_selection=2:2;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "漢字",
@@ -677,14 +687,15 @@
         "ime_field": "漢字",
         "ime_marked": "-",
         "ime_selection": "2:2",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     },
     {
       "step": "final",
       "raw": {
         "title": "GPUI タスクマネージャー (Web) | mode=demo tick=11 rows=28 selected=900 filter=",
-        "proof": "mode=demo;tick=11;cpu=27.7;mem=56.8;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000010;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "proof": "mode=demo;tick=11;cpu=27.7;mem=56.8;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000010;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;interval=1000;",
         "activeElement": "TEXTAREA",
         "textarea": {
           "value": "",
@@ -724,7 +735,8 @@
         "ime_field": "",
         "ime_marked": "-",
         "ime_selection": "0:0",
-        "theme": "dark"
+        "theme": "dark",
+        "interval": "1000"
       }
     }
   ],

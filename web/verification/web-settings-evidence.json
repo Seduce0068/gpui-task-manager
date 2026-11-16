@@ -1,6 +1,6 @@
 {
   "url": "http://127.0.0.1:8091/",
-  "started_at": "2026-11-17T05:49:22+0900",
+  "started_at": "2026-11-17T06:15:48+0900",
   "steps": [
     {
       "step": "fresh",
@@ -49,16 +49,16 @@
       "step": "restored",
       "proof": {
         "mode": "demo",
-        "tick": "1",
-        "cpu": "24.2",
-        "mem": "56.5",
-        "rows": "28",
-        "total": "28",
+        "tick": "0",
+        "cpu": "0.0",
+        "mem": "0.0",
+        "rows": "0",
+        "total": "0",
         "filter": "",
-        "selected_pid": "2",
+        "selected_pid": "-",
         "sort": "名前",
         "dir": "asc",
-        "sampled": "1760000000",
+        "sampled": "0",
         "vw": "1440",
         "vh": "857",
         "live_error": "0",
@@ -135,5 +135,5 @@
   },
   "failures": [],
   "passed": true,
-  "finished_at": "2026-11-17T05:49:31+0900"
+  "finished_at": "2026-11-17T06:16:05+0900"
 }

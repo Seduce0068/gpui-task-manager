@@ -33,7 +33,7 @@ status: verified
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
-| `trunk build --release` | 成功（wasm 7,641,970 B / gzip 3,045,139 B、2026-11-17 計測） |
+| `trunk build --release` | 成功（wasm 7,642,794 B / gzip 3,044,134 B、2026-11-17 計測） |
 | 依存監査 | `cargo audit`（脆弱性 0・既知 8 件のみ）、`cargo deny`（全カテゴリ ok）、`cargo vet`（root 804 / web 560 exempted）、`cargo machete`（未使用 0 件） |
 | CI | 全 8 ジョブ success を反復確認（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
 | CDP ブラウザ検証 | 設定・デモ・IME（32/32）すべて pass |

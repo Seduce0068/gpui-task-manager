@@ -1119,3 +1119,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   IME reader 例外伝播と子プロセスの確実な後始末を追加。
 - **doc**: `AgentConfig.token` が query 渡しと書かれていた箇所を Bearer ヘッダへ修正。
 - 検証: workspace 177 passed（agent 45）/ web 12 / clippy 0 warning / fmt OK / py_compile OK。
+
+## 2026-11-17（最新コードで CDP 再検証）
+
+- args_os / サイズ上限ほかの変更を反映したビルドで CDP 設定・デモ・IME（32/32）を再検証し、
+  すべて成功。wasm 7,642,794 B（gzip 3,044,134 B）へ微増し現状値を更新。
+  検証用プロセスを停止し、全ポート（8091/9223/8097/9229）の解放を確認。
