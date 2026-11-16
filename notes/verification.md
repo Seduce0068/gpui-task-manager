@@ -3,9 +3,9 @@ type: Reference
 title: GPUI Task Manager 検証ログ（2026-11-14）
 description: ネイティブ試作・エージェント・wasmスパイクの Runtime Proof と既知の制限
 tags: [verification, runtime-proof, gpui, linux, wayland, wasm]
-status: draft
+status: verified
 generated: 2026-11-14T21:10:00+09:00
-verified: 2026-11-14T21:10:00+09:00
+verified: 2026-11-17T01:59:00+09:00
 ---
 
 ## 1. 検証環境
