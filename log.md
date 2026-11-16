@@ -568,3 +568,9 @@
   gates / sbom / cargo-deny の 7 ジョブ success。macOS ジョブのみ約 10 分間
   queued の後 cancelled（コード失敗ではない）。直前 run 43907783410 では
   macOS を含む 8/8 success を確認済みで、ランナー可用性の問題と判断。
+
+## 2026-11-17（検証ログの OKF メタデータを更新）
+
+- `notes/verification.md` の `verified` を 2026-11-14 から現在日時に更新し、
+  `status` を `draft` → `verified` へ変更（多数の Runtime Proof を記録済みのため）。
+  `generated` は作成日として保持。OKF 形式・markdownlint 検証成功。
