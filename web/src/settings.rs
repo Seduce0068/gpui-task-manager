@@ -87,6 +87,17 @@ mod tests {
     }
 
     #[test]
+    fn future_fields_are_ignored_and_version_normalised() {
+        // A newer shell may write fields this build does not know. `#[serde(default)]`
+        // must let us read them without losing the known values.
+        let raw = r#"{"version":1,"interval_ms":1500,"future_flag":42}"#;
+        let settings = parse_saved(raw);
+        assert_eq!(settings.interval_ms, 1_500);
+        assert_eq!(settings.version, tm_viewmodel::SETTINGS_VERSION);
+        assert_eq!(settings.theme, tm_viewmodel::Theme::Dark);
+    }
+
+    #[test]
     fn corrupt_json_falls_back_to_defaults() {
         let settings = parse_saved("{ not json");
         assert_eq!(settings.interval_ms, 1_000);

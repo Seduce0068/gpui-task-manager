@@ -940,7 +940,7 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `/healthz` の応答時間は アイドル 0 本 **0.24 ms** / アイドル 3 本 **3.04 ms**
   / アイドル 13 本（上限超過）**0.03 ms + 503**。旧実装のアイドル 3 本 2,059 ms から
   大幅に改善。検証後はプロセスを停止しポート 18793 の解放を確認。
-- 全検証: `cargo test --workspace` 162 passed / web 14 passed / clippy 警告 0 /
+- 全検証: `cargo test --workspace` 162 passed / web 15 passed / clippy 警告 0 /
   fmt OK / wasm check OK。
 
 ## 2026-11-17（表示サニタイズ: ゼロ幅・不可視書式文字を追加除去）
@@ -1189,3 +1189,11 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   破損 JSON が既定値（interval 1000 / version 現行 / details_visible true）へ
   縮退することを検証。
 - web 13 → **14 tests**、ルート workspace 183 passed（不変）/ clippy 0 warning / fmt OK。
+
+## 2026-11-17（web 設定の前方互換テストを追加）
+
+- 将来のシェルが未知フィールドを書き込んだ設定を、現行ビルドが
+  `#[serde(default)]` で読み込めることを検証（既知値保持・version 現行化）。
+  native 版の `unknown_fields_are_ignored_for_forward_compatibility` と同等の
+  カバレッジを web 側にも確保。
+- web 14 → **15 tests**、ルート workspace 183 passed（不変）/ clippy 0 warning / fmt OK。
