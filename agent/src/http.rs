@@ -466,6 +466,23 @@ mod tests {
     }
 
     #[test]
+    fn accepts_a_head_spanning_a_read_chunk_boundary() {
+        // The reader consumes 1024-byte chunks; put the terminating CRLF across
+        // that boundary to verify `find_header_end` sees the accumulated buffer.
+        let mut head = String::from("GET / HTTP/1.1\r\nX: ");
+        // The header's own CRLF starts at 1023 and ends at 1024, so the final
+        // empty-line CRLF sits in the next chunk: 1024 bytes "GET ... a\r\n" +
+        // "\r\n" = 1026 total.
+        let padding = 1_024 - head.len() - 2;
+        head.push_str(&"a".repeat(padding));
+        head.push_str("\r\n\r\n");
+        assert_eq!(head.len(), 1_026);
+        assert_eq!(&head.as_bytes()[1022..1024], b"\r\n");
+        assert_eq!(&head.as_bytes()[1024..1026], b"\r\n");
+        assert!(read_head(head.as_bytes()).is_ok());
+    }
+
+    #[test]
     fn rejects_a_head_over_the_byte_limit() {
         let mut head = String::from("GET / HTTP/1.1\r\n");
         while head.len() < MAX_HEADER_BYTES + 32 {
