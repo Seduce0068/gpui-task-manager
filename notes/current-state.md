@@ -28,7 +28,7 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | 175 passed / 0 failed（core 69 / viewmodel 37 / platform 14 / agent 43 / app 15） |
+| `cargo test --workspace` | 176 passed / 0 failed（core 69 / viewmodel 37 / platform 14 / agent 44 / app 15） |
 | web ユニットテスト | 11 passed / 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |

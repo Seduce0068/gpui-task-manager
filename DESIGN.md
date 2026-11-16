@@ -295,7 +295,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - CJK は `CanvasFontFallback::EmojiAndCjk` が必須。`gpui_platform::application()`
   では設定できないため、`gpui_web::WebPlatform` を直接構築して
   `fetch_http_client` を注入する。
-- wasm サイズは wasm-opt（-Oz）適用後 **7.29 MiB（gzip 2.90 MiB、2026-11-16 計測）**。
+- wasm サイズは wasm-opt（-Oz）適用後 **7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）**。
   `web/index.html` の `data-wasm-opt="z"` で trunk が wasm-opt を自動適用する。
 
 ### 6.5 ブラウザ版シェルの実装結果（`web/`）
@@ -428,7 +428,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
 | エージェント 1 スナップショット | 約 250 ms（共有プローブで直列化、接続は最大 8 並列） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
-| wasm（release、wasm-opt -Oz） | 7.29 MiB / gzip 2.90 MiB（2026-11-16 計測） |
+| wasm（release、wasm-opt -Oz） | 7.29 MiB / gzip 2.90 MiB（2026-11-17 計測） |
 
 ---
 
@@ -486,9 +486,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - Actions はバージョンタグで参照し、Dependabot（GitHub Actions 週次）で更新を追従する。必要に応じて commit SHA ピン留めへの移行を検討する。
   `ubuntu-latest` は使用しない。
 - GPUI の X11 依存は CI でも `libxkbcommon-x11-dev` を導入する。
-- GitHub ラベルで領域・運用課題を分類する。branch protection は現行の private
-  リポジトリプランでは有効化不可（`403`）のため、CI 必須確認・レビュー運用・
-  直接 push の最小化で代替する。
+- GitHub ラベルで領域・運用課題を分類する。public 化に伴い branch protection を
+  有効化し、必須 CI とレビュー運用でゲートする（公開前の `403` は過去の記録）。
 
 ---
 
@@ -713,7 +712,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。ブラウザ版の
   状態フックは `theme=dark|light` を公開し、CDP で切替・復元を検証する。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
-- ブラウザ版の wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-16 計測）。
+- ブラウザ版の wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 計測）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での
@@ -725,8 +724,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   `scripts/generate-sbom.sh` と CI `sbom` ジョブで運用中。`cargo-vet` は初期化済み
   （root / web の `supply-chain/`、全依存 exempt ベースライン、imports 未使用）で、
   `notes/cargo-vet-adoption.md` に運用方針・imports 候補の一次調査がある
-  （監査記録の捏造は行わない）。branch protection は現行 private プラン制約で未適用
-  （`403`）。
+  （監査記録の捏造は行わない）。branch protection は public 化後に有効化済み。
 - ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。
 - ディスクは `total_space() == 0` の擬似マウントを除外する。
 - スレッド数が取得できないプロセスは「—」と表示する。

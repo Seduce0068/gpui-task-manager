@@ -120,6 +120,7 @@ impl TaskManagerApp {
         )));
         let _ = dashboard.apply(Command::SetSortSpec(settings.sort));
         let _ = dashboard.apply(Command::SetDetailsVisible(settings.details_visible));
+        let _ = dashboard.apply(Command::SetTreeView(settings.tree_view));
         // Apply persisted theme.
         crate::theme::set_theme(settings.theme);
         Self {
@@ -276,6 +277,8 @@ impl TaskManagerApp {
                 | Command::SetSortSpec(_)
                 | Command::ToggleDetails
                 | Command::SetDetailsVisible(_)
+                | Command::ToggleTreeView
+                | Command::SetTreeView(_)
         );
         let effects = self.dashboard.apply(command);
         self.execute_effects(effects, cx);

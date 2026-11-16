@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **175 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 43 / app 12、2026-11-17） |
+| `cargo test --workspace` | **176 passed / 0 failed**（tm-core 69 / tm-viewmodel 37 / tm-platform 14 / tm-agent 44 / app 12、2026-11-17） |
 | web ユニットテスト | **11 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1078,3 +1078,28 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   確認するため、1,000 プロセスの親子チェーンを平坦化するテストを追加。
   全プロセスが 1 回だけ現れ、深さが 0..999 で収束することを検証（0.01 秒で完了）。
 - tm-core 68 → **69 tests**、workspace 175 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（独立監査で発見した実バグを修正）
+
+サブエージェントによる独立調査（4 エージェント並列）の指摘を裏取りし、以下を修正:
+
+- **tree_view の永続化漏れ（app）**: `new()` が `tree_view` を復元しておらず、
+  `ToggleTreeView` / `SetTreeView` も保存対象外だった（web 版は正常）。
+  復元リストと persist 判定へ追加。
+- **トークンの前後空白（agent）**: `--token` / `TM_AGENT_TOKEN` は trim せず保持
+  していたため、`request_token` が trim する提示側と不一致だった。3 ソースを trim 統一。
+- **Host 空ポート / IPv6 不正サフィックス（agent）**: `port.chars().all(...)` は
+  空文字に `true` を返すため `localhost:` 等が許容され、`[::1]:garbage` も通過していた。
+  `valid_port_suffix` で明示検証し拒否テスト追加。
+- **更新間隔の復元が実効化されていない（web）**: サンプラーが既定 1 秒固定で
+  `settings.interval_ms` を無視していた。`dashboard.interval()` 由来に変更し、
+  proof へ `interval=` を追加。CDP で 5000 ms 復元を確認。
+- **設定一時ファイルの権限（app）**: `fs::write` 後の chmod では umask 依存の
+  0644 一瞬が存在した。Unix では `OpenOptions::mode(0o600)` で生成。
+- **CI ゲート**: `clippy_args` に `undocumented_unsafe_blocks`、`extra_gates` に
+  `cargo machete`（root / web）を追加（共通ワークフローの input を確認済み）。
+- **CDP スクリプト**: 必須キーの包含判定、 json.loads 例外処理、interval 検証を追加。
+- **ドキュメント**: trunk serve URL 8080→8091、件数・wasm 日付・branch protection・
+  CI ジョブ列挙・audit/vet 記述を現状へ修正。
+
+検証: workspace 176 passed（agent 44）/ clippy 0 warning / fmt OK / YAML パース / CDP 設定検証 pass。

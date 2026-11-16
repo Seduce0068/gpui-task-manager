@@ -109,10 +109,12 @@ async def main() -> int:
             saved = json.loads(raw)
         except json.JSONDecodeError as error:
             check(False, f"保存された設定が JSON ではない: {error}")
+    # Required keys must be present; extra keys are allowed for forward
+    # compatibility (the shared schema uses `#[serde(default)]`).
+    required = {"version", "interval_ms", "sort", "details_visible", "tree_view", "theme"}
     check(
-        set(saved.keys())
-        == {"version", "interval_ms", "sort", "details_visible", "tree_view", "theme"},
-        f"保存スキーマが想定どおり（実際: {sorted(saved.keys())}）",
+        required.issubset(saved.keys()),
+        f"必須キーが保存される（実際: {sorted(saved.keys())}）",
     )
     check("token" not in json.dumps(saved).lower(), "トークンが保存されていない")
     check(saved.get("theme") == "Dark", f"保存されたテーマが Dark（実際: {saved.get('theme')}）")
@@ -136,6 +138,10 @@ async def main() -> int:
     check(proof.get("sort") == "名前", f"ソート列が復元される（実際: {proof.get('sort')}）")
     check(proof.get("dir") == "asc", f"ソート方向が復元される（実際: {proof.get('dir')}）")
     check(proof.get("theme") == "light", f"テーマが復元される（実際: {proof.get('theme')}）")
+    check(
+        proof.get("interval") == "5000",
+        f"更新間隔が復元される（実際: {proof.get('interval')}）",
+    )
 
     # 4) 切替ボタン: Light → Dark → Light と状態フックと保存値の両方を確認する。
     theme_x = theme_button_x(viewport_width)
@@ -149,7 +155,12 @@ async def main() -> int:
             f"切替ボタンで theme={expected}（実際: {proof.get('theme')}）",
         )
         raw = await cdp.evaluate(f"localStorage.getItem({json.dumps(STORAGE_KEY)})")
-        current = json.loads(raw) if isinstance(raw, str) and raw else {}
+        current: dict = {}
+        if isinstance(raw, str) and raw:
+            try:
+                current = json.loads(raw)
+            except json.JSONDecodeError as error:
+                check(False, f"切替後の設定が JSON ではない: {error}")
         check(
             current.get("theme") == stored,
             f"切替後の保存テーマが {stored}（実際: {current.get('theme')}）",
