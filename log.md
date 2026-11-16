@@ -843,3 +843,8 @@
 
 - read_request の 8 KiB 境界（ちょうどは受理、超過は 431）をループバックソケットで検証。
   テスト 2 件追加（tm-agent 45 → 47、workspace 179 passed）。
+
+## 2026-11-17（HTTP チャンク境界テストを追加）
+
+- 終端 CRLF が 1024 バイト境界をまたぐケースを検証（tm-agent 47 → 48、
+  workspace 180 passed）。
