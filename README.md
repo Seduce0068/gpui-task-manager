@@ -188,6 +188,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
 | 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
 | ライトテーマ（ブラウザ） | 状態フック `theme=dark` が既定、`theme=light` が復元され、切替ボタンで Dark ↔ Light と保存値が連動することを CDP で確認（[画像](notes/assets/web-shell-light-theme.png)、詳細は [notes/verification.md](notes/verification.md)） |
+| 概要カードのレイアウト（ブラウザ） | システムカードの温度行とツールバーの重なりを修正（概要高さ 186 → 260 px）。CDP デモ / 設定 / IME（32/32）を再検証し、スクリーンショットで重なり解消を確認 |
 | DEB パッケージ | `bash packaging/linux/build-deb.sh` で 11 MB の `.deb` を生成、展開バイナリの `--version` と依存自動計算を確認 |
 
 詳細は [notes/verification.md](notes/verification.md)、ブラウザ版は

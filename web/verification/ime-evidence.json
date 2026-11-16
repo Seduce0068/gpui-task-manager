@@ -1,0 +1,748 @@
+{
+  "url": "http://127.0.0.1:8092/",
+  "chrome": "Chrome/157.0.8103.50",
+  "checks": [
+    {
+      "name": "隠し textarea（IME ミラー）が存在する",
+      "ok": true,
+      "detail": "value=''"
+    },
+    {
+      "name": "IME ミラーがフォーカスされている（IME 入力の受け口）",
+      "ok": true,
+      "detail": "activeElement=TEXTAREA"
+    },
+    {
+      "name": "初期状態は変換中でない",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "初期状態のフィルタは空",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ASCII 入力が絞り込みへ反映される",
+      "ok": true,
+      "detail": "fire"
+    },
+    {
+      "name": "ASCII 入力で一覧が絞り込まれる",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ASCII 入力は変換中ではない",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Backspace で 1 文字消える",
+      "ok": true,
+      "detail": "fir"
+    },
+    {
+      "name": "Esc でフィルタが解除される",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Esc で一覧が全件へ戻る",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中フラグが立つ",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中文字列が入力欄へ表示される",
+      "ok": true,
+      "detail": "にほんご"
+    },
+    {
+      "name": "変換中は marked range がある",
+      "ok": true,
+      "detail": "0:4"
+    },
+    {
+      "name": "変換中はフィルタを更新しない",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中は一覧を絞り込まない",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "候補更新が入力欄へ反映される",
+      "ok": true,
+      "detail": "日本語"
+    },
+    {
+      "name": "候補更新中もフィルタは更新しない",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "候補更新中も変換中フラグが立つ",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "確定文字列がフィルタへ反映される",
+      "ok": true,
+      "detail": "日本語"
+    },
+    {
+      "name": "確定後は変換中フラグが下がる",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "確定後は marked range が消える",
+      "ok": true,
+      "detail": "-"
+    },
+    {
+      "name": "確定文字列で一覧が絞り込まれる",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "確定後の Esc でフィルタが解除される",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "確定後の Esc で入力欄も空になる",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "確定後の Esc で一覧が全件へ戻る",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中は変換中フラグが立つ",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中の Esc でフィルタが空のまま",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換中の Esc で入力欄が空になる",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "変換破棄後も次の composition が反映される",
+      "ok": true,
+      "detail": "漢字"
+    },
+    {
+      "name": "最終状態でフィルタが解除されている",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Runtime 例外が無い",
+      "ok": true,
+      "detail": "0 件"
+    },
+    {
+      "name": "コンソールエラーが無い",
+      "ok": true,
+      "detail": "0 件: []"
+    }
+  ],
+  "steps": [
+    {
+      "step": "initial",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=2 rows=28 selected=900 filter=",
+        "proof": "mode=demo;tick=2;cpu=35.1;mem=57.4;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000001;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "2",
+        "cpu": "35.1",
+        "mem": "57.4",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "900",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000001",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "ascii-fire",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=4 rows=1 selected=800 filter=fire",
+        "proof": "mode=demo;tick=4;cpu=21.8;mem=56.2;rows=1;total=28;filter=fire;selected_pid=800;sort=CPU;dir=desc;sampled=1760000003;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fire;ime_marked=-;ime_selection=4:4;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "fire",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "4",
+        "cpu": "21.8",
+        "mem": "56.2",
+        "rows": "1",
+        "total": "28",
+        "filter": "fire",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000003",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "fire",
+        "ime_marked": "-",
+        "ime_selection": "4:4",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "backspace",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=5 rows=1 selected=800 filter=fir",
+        "proof": "mode=demo;tick=5;cpu=32.6;mem=57.2;rows=1;total=28;filter=fir;selected_pid=800;sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=fir;ime_marked=-;ime_selection=3:3;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "fir",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "5",
+        "cpu": "32.6",
+        "mem": "57.2",
+        "rows": "1",
+        "total": "28",
+        "filter": "fir",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000004",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "fir",
+        "ime_marked": "-",
+        "ime_selection": "3:3",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "escape-clear",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=6 rows=28 selected=800 filter=",
+        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "6",
+        "cpu": "43.5",
+        "mem": "58.2",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000005",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "composing",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=6 rows=28 selected=800 filter=",
+        "proof": "mode=demo;tick=6;cpu=43.5;mem=58.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000005;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "にほんご",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "6",
+        "cpu": "43.5",
+        "mem": "58.2",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000005",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "1",
+        "ime_field": "にほんご",
+        "ime_marked": "0:4",
+        "ime_selection": "4:4",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "composing-update",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=7 rows=28 selected=800 filter=",
+        "proof": "mode=demo;tick=7;cpu=28.1;mem=59.2;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000006;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=日本語;ime_marked=0:3;ime_selection=3:3;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "日本語",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "7",
+        "cpu": "28.1",
+        "mem": "59.2",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000006",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "1",
+        "ime_field": "日本語",
+        "ime_marked": "0:3",
+        "ime_selection": "3:3",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "committed",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=7 rows=0 selected=- filter=日本語",
+        "proof": "mode=demo;tick=7;cpu=28.1;mem=59.2;rows=0;total=28;filter=日本語;selected_pid=-;sort=CPU;dir=desc;sampled=1760000006;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=日本語;ime_marked=-;ime_selection=3:3;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "日本語",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "7",
+        "cpu": "28.1",
+        "mem": "59.2",
+        "rows": "0",
+        "total": "28",
+        "filter": "日本語",
+        "selected_pid": "-",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000006",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "日本語",
+        "ime_marked": "-",
+        "ime_selection": "3:3",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "escape-after-commit",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=8 rows=28 selected=800 filter=",
+        "proof": "mode=demo;tick=8;cpu=30.2;mem=57.0;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000007;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "8",
+        "cpu": "30.2",
+        "mem": "57.0",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000007",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "composing-escape",
+      "before": {
+        "raw": {
+          "title": "GPUI タスクマネージャー (Web) | mode=demo tick=8 rows=28 selected=800 filter=",
+          "proof": "mode=demo;tick=8;cpu=30.2;mem=57.0;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000007;vw=1440;vh=857;live_error=0;ime_composing=1;ime_field=にほんご;ime_marked=0:4;ime_selection=4:4;theme=dark;",
+          "activeElement": "TEXTAREA",
+          "textarea": {
+            "value": "にほんご",
+            "focused": true,
+            "readOnly": false,
+            "style": {
+              "position": "fixed",
+              "width": "1px",
+              "height": "1px",
+              "opacity": "0"
+            }
+          },
+          "canvas": {
+            "width": 1440,
+            "height": 857,
+            "clientWidth": 1440,
+            "clientHeight": 857
+          },
+          "bodyChildren": 6
+        },
+        "proof": {
+          "mode": "demo",
+          "tick": "8",
+          "cpu": "30.2",
+          "mem": "57.0",
+          "rows": "28",
+          "total": "28",
+          "filter": "",
+          "selected_pid": "800",
+          "sort": "CPU",
+          "dir": "desc",
+          "sampled": "1760000007",
+          "vw": "1440",
+          "vh": "857",
+          "live_error": "0",
+          "ime_composing": "1",
+          "ime_field": "にほんご",
+          "ime_marked": "0:4",
+          "ime_selection": "4:4",
+          "theme": "dark"
+        }
+      },
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=9 rows=28 selected=800 filter=",
+        "proof": "mode=demo;tick=9;cpu=41.0;mem=58.0;rows=28;total=28;filter=;selected_pid=800;sort=CPU;dir=desc;sampled=1760000008;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "にほんご",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "9",
+        "cpu": "41.0",
+        "mem": "58.0",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "800",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000008",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "recovered",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=10 rows=0 selected=- filter=漢字",
+        "proof": "mode=demo;tick=10;cpu=46.0;mem=58.9;rows=0;total=28;filter=漢字;selected_pid=-;sort=CPU;dir=desc;sampled=1760000009;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=漢字;ime_marked=-;ime_selection=2:2;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "漢字",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "10",
+        "cpu": "46.0",
+        "mem": "58.9",
+        "rows": "0",
+        "total": "28",
+        "filter": "漢字",
+        "selected_pid": "-",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000009",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "漢字",
+        "ime_marked": "-",
+        "ime_selection": "2:2",
+        "theme": "dark"
+      }
+    },
+    {
+      "step": "final",
+      "raw": {
+        "title": "GPUI タスクマネージャー (Web) | mode=demo tick=10 rows=28 selected=900 filter=",
+        "proof": "mode=demo;tick=10;cpu=46.0;mem=58.9;rows=28;total=28;filter=;selected_pid=900;sort=CPU;dir=desc;sampled=1760000009;vw=1440;vh=857;live_error=0;ime_composing=0;ime_field=;ime_marked=-;ime_selection=0:0;theme=dark;",
+        "activeElement": "TEXTAREA",
+        "textarea": {
+          "value": "",
+          "focused": true,
+          "readOnly": false,
+          "style": {
+            "position": "fixed",
+            "width": "1px",
+            "height": "1px",
+            "opacity": "0"
+          }
+        },
+        "canvas": {
+          "width": 1440,
+          "height": 857,
+          "clientWidth": 1440,
+          "clientHeight": 857
+        },
+        "bodyChildren": 6
+      },
+      "proof": {
+        "mode": "demo",
+        "tick": "10",
+        "cpu": "46.0",
+        "mem": "58.9",
+        "rows": "28",
+        "total": "28",
+        "filter": "",
+        "selected_pid": "900",
+        "sort": "CPU",
+        "dir": "desc",
+        "sampled": "1760000009",
+        "vw": "1440",
+        "vh": "857",
+        "live_error": "0",
+        "ime_composing": "0",
+        "ime_field": "",
+        "ime_marked": "-",
+        "ime_selection": "0:0",
+        "theme": "dark"
+      }
+    }
+  ],
+  "exceptions": [],
+  "console_errors": [],
+  "screenshots": [
+    "ime-01-initial.png",
+    "ime-02-ascii-fire.png",
+    "ime-03-backspace.png",
+    "ime-04-escape-clear.png",
+    "ime-05-composing-filter.png",
+    "ime-05-composing.png",
+    "ime-06-composing-update.png",
+    "ime-07-committed-filter.png",
+    "ime-07-committed.png",
+    "ime-08-escape-after-commit.png",
+    "ime-09-composing-escape.png",
+    "ime-10-final.png",
+    "ime-native-01-demo.png"
+  ]
+}

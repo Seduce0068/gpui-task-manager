@@ -38,7 +38,10 @@ const FONT_SANS: &str = "IBM Plex Sans";
 /// Fixed layout constants (CSS px). The CDP verification script recomputes click
 /// coordinates from these same numbers, so keep them in sync.
 const HEADER_HEIGHT: f32 = 52.0;
-const OVERVIEW_HEIGHT: f32 = 186.0;
+/// 概要カードの高さ。システムカードは最大でホスト/稼働時間/プロセス + ディスク 2 件
+/// （ラベル+バー）+ 温度 3 件を縦に並べるため、186 px では内容がはみ出して
+/// ツールバーと重なる（Runtime Proof: 2026-11-16 のスクリーンショットで確認）。
+const OVERVIEW_HEIGHT: f32 = 260.0;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 26.0;
 const GAP: f32 = 12.0;
