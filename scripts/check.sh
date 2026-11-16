@@ -50,4 +50,14 @@ else
   echo 'cargo-vet is not installed; skipping supply-chain audit check.'
 fi
 
+if command -v cargo-machete >/dev/null 2>&1; then
+  echo '==> cargo machete (root / web): unused dependencies'
+  cargo machete
+  if [ -f web/Cargo.toml ]; then
+    (cd web && cargo machete)
+  fi
+else
+  echo 'cargo-machete is not installed; skipping unused dependency check.'
+fi
+
 echo 'All checks passed.'
