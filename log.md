@@ -808,3 +808,9 @@
   ADR 番号（001〜020）と DESIGN 章番号（1〜15）が連続していることを確認。
 - キーハンドリング（app/src/app.rs）と viewmodel reducer のテスト範囲を再確認し、
   新たな不具合なし。workspace 177 passed / clippy 0 warning / CI 8/8 success。
+
+## 2026-11-17（README クイックスタートのエージェント手順を検証）
+
+- `cargo run -q -p tm-agent -- --once --demo` を実行し、
+  schema_version=1 / total_process_count=28 / processes=28 / hostname=kubuntu-demo
+  を確認。README 記載のコマンドは現状でも正常に動作。
