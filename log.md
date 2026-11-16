@@ -776,3 +776,11 @@
 - CDP スクリプトのテーマボタン座標定数が shell.rs と同期していること、
   web/src/lib.rs の属性順序（allow(dead_code) → forbid(unsafe_code)）が
   wasm ビルドで問題ないことを確認。新たな不具合は検出せず。
+
+## 2026-11-17（ライブモード End-to-End 再検証）
+
+- agent 変更後のライブ接続・エラー時モードを CDP で再検証し両方 success。
+  ライブは rows=500 / Authorization 付き / トークン URL 非含有、
+  エラー時は live_error=1 / rows=0 を確認。
+  最初のエラー時検証はフラグ指定漏れによる FAIL で、正しいフラグで解消。
+  全検証用プロセスの停止とポート解放を確認。

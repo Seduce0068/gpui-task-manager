@@ -1125,3 +1125,17 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - args_os / サイズ上限ほかの変更を反映したビルドで CDP 設定・デモ・IME（32/32）を再検証し、
   すべて成功。wasm 7,642,794 B（gzip 3,044,134 B）へ微増し現状値を更新。
   検証用プロセスを停止し、全ポート（8091/9223/8097/9229）の解放を確認。
+
+## 2026-11-17（ライブモード End-to-End 再検証）
+
+- 直近の agent 変更（トークン trim 統一・Host 空ポート拒否・並列化）後に、
+  tm-agent（127.0.0.1:18787、`--redact`、`TM_AGENT_TOKEN=test`）＋
+  web/dist（8091）＋ ヘッドレス Chrome（CDP 9223）でライブ接続を再検証:
+  - ライブモード: `{"failures": [], "passed": true}`
+    （mode=live / rows=500 / 14 GET すべて Authorization 付き /
+     CORS プリフライト 1 回 / トークン URL 非含有）。
+  - エラー時モード（`--expect-agent-error`、`--label live-error`）: `passed: true`
+    （mode=live のまま / live_error=1 / rows=0、デモへフォールバックしない）。
+- 最初にエラー時モードをフラグ無しで実行し 4 件 FAIL が出たが、
+  スクリプトの期待モード指定漏れが原因と確認し正しいフラグで再実行して解消。
+- 検証用プロセスを停止し、全ポート（8091 / 9223 / 18787）の解放を確認。
