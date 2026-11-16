@@ -79,7 +79,7 @@ verified: 2026-11-15T17:50:00+09:00
 `Cargo.lock` 更新後や導入検討時に再実行し、数値を更新する。
 
 ```bash
-cd /home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager
+cd work/gpui-task-manager   # リポジトリのチェックアウト先
 cargo metadata --format-version 1 > /tmp/gpui-tm-metadata.json
 python3 - <<'PY'
 import json
