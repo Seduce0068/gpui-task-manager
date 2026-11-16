@@ -693,3 +693,39 @@ docker0 / br-* / lxcbr0 / virbr0  rx=0 tx=0         ← アイドルだが合算
 - `cd web && cargo test`: **7 passed / 0 failed**。
 - `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
 - `cargo fmt --all` 適用済み。
+
+## 2026-11-16（capability の意味を明確化・web shell の重複構築を解消）
+
+外部レビュー a5（「`PlatformInfo` の capability が実態より強い」）を検討した。
+
+### 判断
+
+レビューの指摘は「`Networks` / `Disks` の初期化に失敗しても `supports_network` /
+`supports_disks` が true を返す」というもの。実装を確認したうえで、**フラグの意味を
+「ホストがその機能を持つか」と定義して据え置き**、代わりに意図を doc comment と
+API で明確にした。
+
+- 理由: `sysinfo` の列挙失敗は一時的（権限・コンテナ環境など）で、失敗のたびに
+  capability を false にすると UI の表示が実行ごとに揺れる。データが無いことは
+  空のスナップショット（`disks: []` / `interfaces: []`）で既に表現されている。
+- 呼び出し側で「データが有るか」を知りたい場合は snapshot を見る、と明記した。
+
+### 変更
+
+- `crates/tm-core/src/port.rs`:
+  - `PlatformInfo::native` の doc comment にフラグの意味（ホスト capability であり、
+    列挙失敗は snapshot 側で表現する）を明記。
+  - `PlatformInfo::native_read_only` を追加。ネイティブだがプロセス制御を持たない
+    バックエンド（ブラウザ経由）を 1 か所で表現する。
+  - テスト追加（`tm-core` 58 → **59 件**）: `native_read_only` は制御不可・
+    demo ではない・network/disk は対応、を検証。
+- `web/src/shell.rs`: 手書きの `PlatformInfo { .. }` リテラルを `native_read_only` に
+  置き換え（capability の定義が 1 か所に集約され、乖離しにくくなる）。
+
+### 検証（Runtime Proof）
+
+- `cargo test --workspace`: **158 passed / 0 failed**（tm-core が 59 件に増加）。
+- `cd web && cargo test`: **7 passed / 0 failed**、`cd web && cargo check`: 成功。
+- `cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel`: 成功。
+- `cargo clippy --workspace --all-targets -- -D warnings` / web clippy: 警告 0。
+- `cargo fmt --all` 適用済み。
