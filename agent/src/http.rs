@@ -466,6 +466,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_connection_returns_none() {
+        // A health check that connects and closes without sending a head must
+        // be a clean no-op, not a parse error (the agent's read timeout path).
+        assert_eq!(read_head(b""), Ok(None));
+    }
+
+    #[test]
+    fn partial_head_then_close_is_malformed() {
+        // Bytes without the final CRLF CRLF must not be treated as a request.
+        assert_eq!(
+            read_head(b"GET / HTTP/1.1\r\nHost: 127.0.0.1"),
+            Err(ParseError::Malformed)
+        );
+    }
+
+    #[test]
     fn accepts_a_head_spanning_a_read_chunk_boundary() {
         // The reader consumes 1024-byte chunks; put the terminating CRLF across
         // that boundary to verify `find_header_end` sees the accumulated buffer.
