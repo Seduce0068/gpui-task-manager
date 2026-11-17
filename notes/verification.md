@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **191 passed / 0 failed**（tm-core 78 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **192 passed / 0 failed**（tm-core 79 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1259,3 +1259,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - `const { assert!(...) }` に修正し check.sh は全ゲート exit 0 を確認。
 - CI の `extra_gates` に web clippy / web test を追加（これまで web は
   cargo-vet / cargo-machete のみで clippy が走っていなかった）。YAML パース確認済み。
+
+## 2026-11-17（network rate の backward counters を検証）
+
+- インターフェースリセット等でカウンタが戻った場合、saturating_sub が 0 を返し
+  巨大な誤レートにならないことを検証（cpu_percent 側には同種テスト済みで対称）。
+- tm-core 78 → **79 tests**、workspace 192 passed / clippy 0 warning / fmt OK。
