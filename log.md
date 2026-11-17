@@ -1010,3 +1010,7 @@
 ## 2026-11-17（その他の不可視書式文字を検証）
 
 - 未カバーの不可視書式文字 8 種を検証。tm-core 82 → 83、workspace 196 passed。
+
+## 2026-11-17（MetricHistory のゼロ容量境界を検証）
+
+- new(0) が容量1にクランプされ push が動作することを確認。tm-core 83 → 84、workspace 197 passed。
