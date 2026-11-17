@@ -44,7 +44,14 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = "s"
 lto = "thin"
 codegen-units = 1
+strip = true

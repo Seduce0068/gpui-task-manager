@@ -9,3 +9,12 @@ description = "Compile check: sysinfo 0.40.3 on wasm32-unknown-unknown (research
 
 [dependencies]
 sysinfo = { version = "=0.40.3", default-features = false, features = ["system"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true
