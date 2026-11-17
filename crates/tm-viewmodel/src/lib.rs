@@ -506,6 +506,15 @@ impl Dashboard {
             ));
             return;
         }
+        // Never silently replace an unanswered confirmation with a different
+        // target/signal: the dialog the user is looking at would change under
+        // them (R2-F02).
+        if self.pending_kill.is_some() {
+            self.status = Some(StatusMessage::info(
+                "確認待ちの操作があります。先に確定またはキャンセルしてください",
+            ));
+            return;
+        }
         self.pending_kill = Some(PendingKill {
             key,
             name: process.name.clone(),
@@ -517,6 +526,16 @@ impl Dashboard {
     }
 
     fn confirm_kill(&mut self) -> Vec<Effect> {
+        // A paused dashboard shows stale data: the process may have exited and
+        // its PID been reused without our knowledge. Never signal from a stale
+        // confirmation (R2-F01).
+        if self.paused {
+            self.pending_kill = None;
+            self.status = Some(StatusMessage::error(
+                "更新が一時停止中のため操作できません。再開してからやり直してください",
+            ));
+            return Vec::new();
+        }
         let Some(pending) = self.pending_kill.take() else {
             return Vec::new();
         };
@@ -795,6 +814,45 @@ mod tests {
             signal: Signal::Terminate,
         });
         assert!(dashboard.pending_kill().is_none());
+    }
+
+    #[test]
+    fn pending_kill_is_not_overwritten_or_confirmed_while_paused() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let code_key = dashboard
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .processes
+            .iter()
+            .find(|process| process.name == "code")
+            .unwrap()
+            .key;
+
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Terminate,
+        });
+        assert_eq!(
+            dashboard.pending_kill().expect("first pending").key,
+            firefox_key()
+        );
+        // A second request must not swap the target under the open dialog.
+        dashboard.apply(Command::RequestSignal {
+            key: code_key,
+            signal: Signal::Kill,
+        });
+        assert_eq!(
+            dashboard.pending_kill().expect("still first").key,
+            firefox_key()
+        );
+
+        // Pausing then confirming must not emit a signal from stale data.
+        dashboard.apply(Command::SetPaused(true));
+        assert!(dashboard.apply(Command::ConfirmKill).is_empty());
+        assert!(dashboard.pending_kill().is_none());
+        assert!(dashboard.status().expect("status").is_error);
     }
 
     #[test]

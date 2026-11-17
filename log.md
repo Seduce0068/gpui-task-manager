@@ -1153,3 +1153,8 @@
 
 - HEAD_TIMEOUT(5s) と 408 応答を導入、slowloris 対策。途中 Malformed→Timeout の
   誤判定とテストの無期限ブロックを修正。tm-agent 56、workspace 206 passed。
+
+## 2026-11-17（ConfirmKill の paused ガードと pending 上書き防止）
+
+- 一時停止中の確認で信号を出さず、未解決 pending の上書きも禁止。
+  tm-viewmodel 39、workspace 207 passed。

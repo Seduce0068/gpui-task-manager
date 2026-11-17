@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **206 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
+| `cargo test --workspace` | **207 passed / 0 failed**（tm-core 86 / tm-viewmodel 39 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1423,3 +1423,13 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `read_request_with_timeout` 自身が残予算で read timeout を設定。
 - 回帰テスト: 部分ヘッダを送って放置し 100ms で Timeout になることを検証。
 - tm-agent 55 → **56 tests**、workspace 206 passed / clippy 0 warning / rustdoc OK。
+
+## 2026-11-17（ConfirmKill の paused ガードと pending 上書き防止：R2-F01/F02）
+
+- `confirm_kill` が `paused` 中は信号を発行せず pending を破棄しエラー表示
+  （一時停止中は表示が古く PID 再利用判定が信頼できないため）。
+- `request_signal` が未解決の pending を無条件上書きせず、先に確定/キャンセルを
+  促す（確認ダイアログの対象が勝手に変わるのを防止）。
+- 回帰テスト: 2 回目の RequestSignal で対象が変わらないこと、paused 中の
+  ConfirmKill が Effect を出さないことを検証。
+- tm-viewmodel 38 → **39 tests**、workspace 207 passed / clippy 0 warning / rustdoc OK。
