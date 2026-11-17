@@ -228,13 +228,7 @@ impl MetricHistory {
     /// Percentages are clamped to 0..=100; non-finite values (which `clamp`
     /// would pass through as `NaN`) become zero so charts never see `NaN`.
     pub fn push(&mut self, cpu_percent: f32, memory_percent: f32, rx_rate: u64, tx_rate: u64) {
-        let clamp = |value: f32| {
-            if value.is_finite() {
-                value.clamp(0.0, 100.0)
-            } else {
-                0.0
-            }
-        };
+        let clamp = |value: f32| crate::normalise_percent(value).clamp(0.0, 100.0);
         self.cpu_percent.push(clamp(cpu_percent));
         self.memory_percent.push(clamp(memory_percent));
         self.network_rx_rate.push(rx_rate);

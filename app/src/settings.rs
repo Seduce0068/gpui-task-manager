@@ -75,9 +75,11 @@ pub fn load() -> Settings {
         Ok(settings) => settings,
         Err(error) if error.kind() == io::ErrorKind::NotFound => Settings::default(),
         Err(error) => {
+            // Log the file name only: the full path usually contains the user's
+            // home directory and account name.
             eprintln!(
                 "gpui-task-manager: 設定を読み込めません ({}): {error}",
-                path.display()
+                path.file_name().unwrap_or_default().to_string_lossy()
             );
             Settings::default()
         }
@@ -120,7 +122,7 @@ fn backup_corrupt_file(path: &Path) {
     if let Err(error) = fs::rename(path, &candidate) {
         eprintln!(
             "gpui-task-manager: 破損設定のバックアップに失敗 ({}): {error}",
-            candidate.display()
+            candidate.file_name().unwrap_or_default().to_string_lossy()
         );
     }
 }

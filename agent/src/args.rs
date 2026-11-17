@@ -96,7 +96,9 @@ where
                 let value = take_value(flag, inline_value, &mut args)?;
                 config.listen = value
                     .parse()
-                    .map_err(|_| format!("--listen に不正なアドレスが指定されました: {value}"))?;
+                    // Do not echo the supplied value: a mistaken invocation may
+                    // have put a token or other secret in this position.
+                    .map_err(|_| "--listen に不正なアドレスが指定されました".to_string())?;
             }
             "--token" => {
                 let value = take_value(flag, inline_value, &mut args)?;
@@ -128,7 +130,9 @@ where
                 reject_inline_value(flag, inline_value)?;
                 config.help = true;
             }
-            other => return Err(format!("不明な引数です: {other}\n\n{USAGE}")),
+            // Echo only the fact that an argument was unknown, not the value:
+            // a token passed as a positional argument must not reach the log.
+            _ => return Err(format!("不明な引数があります\n\n{USAGE}")),
         }
     }
 

@@ -1206,3 +1206,8 @@
   IBM Plex 帰属とライセンス文書を修正、破損設定を rename 退避。
   agent の truncate テストは PID タイブレークを考慮し truncate(1) に修正。
   workspace 214 passed / 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第7弾 → 機密情報の生エコー停止）
+
+- argv/パス/web エラーの生エコーを停止、R2X-A8、normalise_percent の重複解消、
+  自己親・format_duration 境界テストを追加。workspace 216 passed / 全ゲート成功。

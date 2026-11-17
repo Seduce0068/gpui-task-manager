@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **214 passed / 0 failed**（tm-core 89 / tm-viewmodel 40 / tm-platform 11 / tm-agent 58 / app 15、2026-11-17） |
+| `cargo test --workspace` | **216 passed / 0 failed**（tm-core 90 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1606,3 +1606,27 @@ Runtime Proof で取捨選択していた（親はその結果も仮説として
 - tm-core 88 → **89**、tm-agent 57 → **58**、app 11 → **12**、
   workspace **214 passed** / clippy / deny / rustdoc / check.sh 全ゲート成功。
   markdownlint は NOTICE.md の表区切りを baseline と同じ形式に揃え増分ゼロ。
+
+## 2026-11-18（エージェント並列調査 第7弾 → 機密情報の生エコー停止ほか）
+
+3 観点（agent HTTP / core モデル / 機密情報）の調査エージェントを並列起動し、
+各推奨項目を親が現行コードで Runtime Proof してから実装:
+
+1. **argv／パスの生エコー停止**: `agent/src/args.rs` の `--listen` 不正値と
+   不明引数、`app/src/main.rs` の `--demo=<値>` エラー、`app/src/settings.rs` の
+   設定読み込み／バックアップ失敗ログからユーザー入力値・フルパスを除去
+   （誤用時にトークンや HOME が stderr に出る経路を遮断）。
+2. **web エラーの redact**: `web/src/agent.rs` のリクエスト組み立て／JSON 解析
+   エラーにも `redact_token()` を適用（status message にトークンが流れる経路を遮断）。
+3. **R2X-A8**: 500 応答が probe エラー文字列をエコーしていたのを修正。
+   詳細は stderr へ、クライアントには固定文言。モック probe の回帰テスト追加。
+4. **正規化ヘルパの重複解消**: `format_percent` / `format_cpu_percent` /
+   `format_load_average` / `MetricHistory::push` を `normalise_percent` に統一。
+5. テスト固定: `flatten_process_tree` の自己親、`format_duration` の単位切替境界。
+
+**見送り**: R1-V08（Host 欠落）は HTTP/1.0 互換の仕様判断、R1-V09（431/400/503 の
+CORS）は parse 前の Origin 取得という設計課題、DOM proof のフィルタ文字列は
+CDP 契约上マスク不可のため、いずれも親の判断として保留。
+
+- tm-core 89 → **90**、tm-agent 58 → **59**、workspace **216 passed** /
+  clippy / rustdoc / check.sh 全ゲート成功 / markdownlint 増分ゼロ。

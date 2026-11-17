@@ -33,12 +33,8 @@ pub fn format_rate(bytes_per_second: u64) -> String {
 /// Non-finite values become `0.0%` so a broken probe can never render `NaN%`
 /// or `inf%` in the UI.
 pub fn format_percent(percent: f32) -> String {
-    let percent = if percent.is_finite() {
-        // `clamp` alone keeps `-0.0` (rendering as "-0.0%"); floor it first.
-        percent.max(0.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
+    // `normalise_percent` also removes `-0.0`, which `clamp` alone keeps.
+    let percent = crate::normalise_percent(percent).clamp(0.0, 100.0);
     format!("{percent:.1}%")
 }
 
@@ -48,11 +44,7 @@ pub fn format_percent(percent: f32) -> String {
 /// floored at zero to match the chart history's clamp, and non-finite values
 /// are replaced with zero for display safety.
 pub fn format_cpu_percent(percent: f32) -> String {
-    let percent = if percent.is_finite() {
-        percent.max(0.0)
-    } else {
-        0.0
-    };
+    let percent = crate::normalise_percent(percent);
     format!("{percent:.1}%")
 }
 
@@ -83,13 +75,7 @@ pub fn format_process_age(now_secs: u64, start_secs: u64) -> String {
 /// Non-finite components are shown as `0.00` instead of `NaN` / `inf`; negative
 /// values are floored at zero to match the percentage formatters (R1S-DATA-09).
 pub fn format_load_average(load: [f32; 3]) -> String {
-    let finite = load.map(|value| {
-        if value.is_finite() {
-            value.max(0.0)
-        } else {
-            0.0
-        }
-    });
+    let finite = load.map(crate::normalise_percent);
     format!("{:.2} {:.2} {:.2}", finite[0], finite[1], finite[2])
 }
 
@@ -181,6 +167,13 @@ mod tests {
         assert_eq!(format_duration(62), "1m 2s");
         assert_eq!(format_duration(3_600 + 120), "1h 2m");
         assert_eq!(format_duration(2 * 86_400 + 3_600), "2d 1h");
+        // Unit-switch boundaries.
+        assert_eq!(format_duration(59), "59s");
+        assert_eq!(format_duration(60), "1m 0s");
+        assert_eq!(format_duration(3_599), "59m 59s");
+        assert_eq!(format_duration(3_600), "1h 0m");
+        assert_eq!(format_duration(86_399), "23h 59m");
+        assert_eq!(format_duration(86_400), "1d 0h");
     }
 
     #[test]
