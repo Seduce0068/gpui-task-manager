@@ -1158,3 +1158,8 @@
 
 - 一時停止中の確認で信号を出さず、未解決 pending の上書きも禁止。
   tm-viewmodel 39、workspace 207 passed。
+
+## 2026-11-17（accept ループの堅牢化）
+
+- spawn 失敗を graceful 化（カウンタ手動減算）、accept 失敗に 50ms バックオフ。
+  workspace 207 passed。

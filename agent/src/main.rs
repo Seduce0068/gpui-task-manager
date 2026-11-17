@@ -248,8 +248,17 @@ fn serve(
     let state = Arc::new(SharedState::new(probe, token, redact));
     for incoming in listener.incoming() {
         match incoming {
-            Ok(stream) => spawn_connection(Arc::clone(&state), stream),
-            Err(err) => eprintln!("tm-agent: accept に失敗: {err}"),
+            Ok(stream) => {
+                if let Err(err) = spawn_connection(Arc::clone(&state), stream) {
+                    eprintln!("tm-agent: {err}");
+                }
+            }
+            // A persistent accept error (e.g. EMFILE) would otherwise spin the
+            // loop at full speed; pause briefly before retrying (R2X-FR1).
+            Err(err) => {
+                eprintln!("tm-agent: accept に失敗: {err}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
     Ok(())
@@ -265,7 +274,7 @@ impl Drop for ActiveConnection {
 }
 
 /// Handles one accepted connection, enforcing [`MAX_CONNECTIONS`].
-fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) {
+fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<(), String> {
     let previous = state.active.fetch_add(1, Ordering::AcqRel);
     if previous >= MAX_CONNECTIONS {
         // Drop guard returns the slot even if writing the rejection panics.
@@ -283,31 +292,49 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) {
         if let Err(err) = http::write_response(&mut stream, &response) {
             eprintln!("tm-agent: 503 応答に失敗: {err}");
         }
-        return;
+        return Ok(());
     }
 
     let _slot = ActiveConnection(Arc::clone(&state));
-    std::thread::spawn(move || {
-        // `_slot` is moved into the worker so the counter is released when the
-        // worker exits — or unwinds after a panic — never on the accept thread.
-        let _slot = _slot;
-        let result = handle_connection(&mut stream, |request| {
-            // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
-            // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
-            // 回収した場合はログに残し、無ログの fail-open にならないようにする。
-            let mut guard = match state.probe.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
-                    err.into_inner()
-                }
-            };
-            route(request, guard.as_mut(), &state.token, state.redact)
-        });
-        if let Err(err) = result {
-            eprintln!("tm-agent: 接続処理に失敗: {err}");
-        }
-    });
+    let worker_state = Arc::clone(&state);
+    std::thread::Builder::new()
+        .name("tm-agent-connection".to_string())
+        .spawn(move || {
+            // `_slot` is moved into the worker so the counter is released when the
+            // worker exits — or unwinds after a panic — never on the accept thread.
+            let _slot = _slot;
+            let result = handle_connection(&mut stream, |request| {
+                // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
+                // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
+                // 回収した場合はログに残し、無ログの fail-open にならないようにする。
+                let mut guard = match worker_state.probe.lock() {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        eprintln!(
+                            "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                        );
+                        err.into_inner()
+                    }
+                };
+                route(
+                    request,
+                    guard.as_mut(),
+                    &worker_state.token,
+                    worker_state.redact,
+                )
+            });
+            if let Err(err) = result {
+                eprintln!("tm-agent: 接続処理に失敗: {err}");
+            }
+        })
+        .map_err(|err| {
+            // The increment above must be undone when no worker exists to
+            // carry the drop guard (R2X-A7). `_slot` was moved into the
+            // closure, so release the slot directly here.
+            state.active.fetch_sub(1, Ordering::AcqRel);
+            format!("接続スレッドを起動できません: {err}")
+        })?;
+    Ok(())
 }
 
 /// Handles exactly one HTTP request on `stream`.
@@ -1101,7 +1128,7 @@ mod tests {
     /// dispatcher, so tests exercise the same shared-state path as `serve()`.
     fn accept_and_spawn(listener: &TcpListener, state: &Arc<SharedState>) {
         let (stream, _) = listener.accept().expect("accept");
-        spawn_connection(Arc::clone(state), stream);
+        spawn_connection(Arc::clone(state), stream).expect("spawn connection");
     }
 
     #[test]
