@@ -1105,3 +1105,9 @@
 ## 2026-11-17（生成トークンの小文字 hex を固定）
 
 - 生成トークンが小文字 hex のみであることを検証。tm-agent 51 → 52、workspace 200 passed。
+
+## 2026-11-17（不正 limit エスケープの挙動を固定）
+
+- `?limit=%zz`（不正な percent escape）はデコードが None を返し、
+  `parse_process_limit` は `limit` 欠落と同じくデフォルトへフォールバックすることを
+  明示検証（`limit=abc` が拒否されるのと対照的）。テスト件数不変（workspace 200 passed）。
