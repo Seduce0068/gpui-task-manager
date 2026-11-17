@@ -898,3 +898,8 @@
 
 - 未知フィールドを含む設定が受理され version が現行化されることを検証。
   web 14 → 15 tests。
+
+## 2026-11-17（ソート列ラベル/初期方向/矢印を全バリアント固定）
+
+- 全 8 列の label/default_direction と矢印・反転をテスト。
+  tm-core 70 → 71、workspace 184 passed。
