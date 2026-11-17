@@ -951,3 +951,11 @@
 
 - `scripts/check.sh` と CI のゲートが wasm（web 含む）で整合していることを確認。
 - README の `check.sh` 説明に web clippy/test を追記（前回の CI ゲート追加を反映）。
+
+## 2026-11-17（audit / DEB スクリプトの健全性を再確認）
+
+- `cargo audit` を再実行: exit 0、既知 8 件 allowed warnings のみ（新規アドバイザリなし）。
+- `packaging/linux/build-deb.sh` の依存生成ロジック（ldd → dpkg -S → 明示的 libvulkan1）
+  と SIGPIPE 修正後の sed 利用を確認。bash -n / shellcheck / shfmt すべて通る。
+- README 記載の主要コマンド（dev-setup / check / agent --once --demo / trunk build）
+  はすべて実行済みを確認。新たな不具合なし。
