@@ -39,6 +39,10 @@ generated: 2026-11-14T22:35:00+09:00
    - 認証は `Authorization: Bearer` のみ。クエリ文字列のトークンは拒否する
      （URL 履歴・Referer・スクリーンショットからの漏洩対策）。
    - `Host` ヘッダが loopback 以外なら 403（DNS リバインディング多層防御）。
+     Host が無いリクエスト（主に HTTP/1.0 の素の TCP クライアント）は検証を
+     スキップするが、全リクエストに Bearer トークンが必要なため実害はない。
+     ブラウザの fetch は Host を自動付与し（Forbidden header のため JS から
+     変更不可）、DNS リバインディングは常に Host 付きで到達し 403 となる。
    - CORS は loopback オリジンのみ反射（エラー応答の 403 にも許可 Origin のみ付与）。
      ヘッダ上限 8 KiB、読み取りタイムアウト 1 秒。
    - 接続は最大 8 本まで並列処理し、超過は即座に 503（アイドルピアが他の要求を阻塞しない）。
@@ -111,7 +115,8 @@ chmod 600 ~/.config/tm-agent.token
   で実装済み（`cargo vet --locked`、root / web）。
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /
   自動修正を有効化する。GPUI 系は完全ピン運用のため自動更新の対象外。
-- 依存追加は最小限とし、ライセンス（Apache-2.0 互換）と保守状況を確認する。
+- 依存追加は最小限とし、ライセンスは `deny.toml` の `[licenses].allow`
+  （AGPL-3.0-or-later と互換なライセンスの一覧）で確認し、保守状況も確認する。
 - **公開運用**: 本リポジトリは public。ブランチ保護は public リポジトリの機能で有効化し、必須 CI / レビュー運用で `main` を保護する。
 
 ## 7. 残余リスク

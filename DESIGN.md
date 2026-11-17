@@ -695,6 +695,23 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   hicolor アイコン（scalable + 256x256）、`README.md` / `NOTICE.md` / `copyright`。
 - 未実施: 署名、リポジトリ公開、AppImage/Flatpak、Windows/macOS パッケージ。
 
+### ADR-021: ライセンスを AGPL-3.0-or-later へ変更
+
+- 状況: ADR-011 は Apache-2.0 を決定していたが、commit `fdf6f62`（2026-11-18）
+  でプロジェクトライセンスを `AGPL-3.0-or-later` へ変更した。`Cargo.toml` の
+  `license`、`LICENSE` 本文、各 SPDX ヘッダ、`NOTICE.md` は移行済みで、
+  `README.md` も現行ライセンスを示している。ADR-011 は当時の決定の履歴として残す。
+- 決定: 本プロジェクトのコードは `AGPL-3.0-or-later`。旧 Apache-2.0 本文は
+  `THIRD_PARTY_NOTICES.md` にアーカイブし、上流の著作権表示・許諾通知を保持する。
+- 理由: Apache-2.0 は GPLv3 互換のため AGPLv3 への変更が可能であり、NOTICE の
+  保持義務は継続する。個人リポジトリ（`Seduce0068/*`）の既定ライセンスにも整合する。
+  既存の AGPL プロジェクト（`work/gpui-file-explorer`）からはコードをコピーせず、
+  調査ノートのみ参照している。
+- 代替: Apache-2.0 の継続（個人リポジトリの既定方針と整合しないため採用せず）。
+- 結果: ADR-011 は決定の履歴として保持し、現在のライセンス決定は本 ADR とする。
+  強いコピーレフトを採用したため、今後の第三者コード取り込み時はライセンス
+  互換性の確認が必須となる。
+
 ---
 
 ## 14. 既知の制限・未検証
