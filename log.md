@@ -1034,3 +1034,9 @@
 - コードブロック外の `<pid>` / `<host>` / `<token>` 等 35 件を走査したところ、
   すべてインラインコード（バッククォート）内で HTML タグとして解釈されないことを確認。
   新たな不具合なし（検査途中で誤った編集を加えたが即座に取り消し、差分なし）。
+
+## 2026-11-17（doc-tests と all-features の健全性を確認）
+
+- `cargo test --workspace --doc`: 全クレート 0 件（コード例なし）で正常。
+- `cargo check --workspace --all-features`: exit 0。tm-core の feature 分岐
+  （serde 等）を含む全组合せで型検査が通ることを確認。
