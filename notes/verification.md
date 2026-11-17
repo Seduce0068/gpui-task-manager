@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **199 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 51 / app 15、2026-11-17） |
+| `cargo test --workspace` | **200 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 52 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1331,3 +1331,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   当初 `X-Content-Type-Options` が "Content-Type" に部分一致して誤失敗したが、
   ヘッダ行先頭（`\r\nContent-Type:`）で照合して解消。
 - tm-agent 50 → **51 tests**、workspace 199 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（生成トークンの小文字 hex を固定）
+
+- `generate_token` が小文字 hex（0-9a-f）のみを生成することを明示検証。
+  token は constant_time_eq でバイト比較されるため、大文字化は認証失敗に直結する。
+- tm-agent 51 → **52 tests**、workspace 200 passed / clippy 0 warning / fmt OK。

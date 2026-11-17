@@ -118,6 +118,18 @@ mod tests {
     }
 
     #[test]
+    fn generated_tokens_are_lower_case_hex() {
+        // Tokens are compared byte-wise (constant_time_eq), so a producer that
+        // emitted upper-case hex would silently break every presented token.
+        let token = generate_token();
+        assert_eq!(token, token.to_ascii_lowercase());
+        assert_eq!(token.len(), TOKEN_BYTES * 2);
+        assert!(token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    }
+
+    #[test]
     fn presented_tokens_are_trimmed_before_comparison() {
         // All token sources store a trimmed value; the request side trims too,
         // so extra whitespace in the header must not break authentication.
