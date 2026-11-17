@@ -377,6 +377,15 @@ mod tests {
     }
 
     #[test]
+    fn accepts_http_1_0_request_lines() {
+        // The parser accepts both 1.0 and 1.1 (simple clients may use 1.0);
+        // responses are always written as HTTP/1.1 by `write_response`.
+        let request = parse_request(b"GET /healthz HTTP/1.0").expect("http/1.0");
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/healthz");
+    }
+
+    #[test]
     fn splits_path_and_query() {
         let request =
             parse_request(b"GET /api/v1/snapshot?token=abc HTTP/1.1").expect("valid request");
