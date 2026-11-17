@@ -965,3 +965,9 @@
 - web/scripts の 3 スクリプト（cdp_verify_web / settings / ime）すべて `--help` が exit 0。
 - ci.yml の actions は @v7 に統一、dependabot.yml の github-actions エコシステムと整合。
   前回追加した web clippy/test ゲートも CI run 43990812925（8/8 success）で実実行確認済み。
+
+## 2026-11-17（SBOM 生成を再実行・検証）
+
+- `bash scripts/generate-sbom.sh` を再実行: exit 0。CycloneDX 1.3 JSON 6 件
+  （agent / app / tm-core / tm-platform / tm-viewmodel / web）を生成し、
+  すべて jq で bomFormat/specVersion を検証。出力は target/sbom/（git 管理外）。
