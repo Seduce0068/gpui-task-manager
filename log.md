@@ -980,3 +980,10 @@
 
 - 全 `.md`（target/ と .git/ を除外）の `](...)` ローカルリンク 45 件を走査し、
   参照先の存在を確認。リンク切れ 0 件（markdownlint が検出しない観点を補完）。
+
+## 2026-11-17（画像参照と CI ゲート実実行の確認）
+
+- 全 Markdown の画像参照 2 件が実在することを確認（リンク切れ 0）。
+- CI run 43990812925 の gates ジョブログで、前回追加した
+  `cargo clippy --manifest-path web/Cargo.toml` と `cargo test --manifest-path web/Cargo.toml --lib`
+  が実際に実行されていることを確認（設定だけでなく実実行を担保）。
