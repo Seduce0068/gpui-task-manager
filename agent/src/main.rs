@@ -114,7 +114,7 @@ fn run() -> Result<(), String> {
         (None, None) => match std::env::var("TM_AGENT_TOKEN") {
             Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
             _ => {
-                let token = auth::generate_token();
+                let token = auth::generate_token()?;
                 // The operator needs the token to talk to the agent; this is the
                 // only place it is written to the log.
                 eprintln!("tm-agent: 認証トークン (生成): {token}");

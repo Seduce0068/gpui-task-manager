@@ -1370,3 +1370,15 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
      拒否（bulk-memory）。`strip = false` に変更（wasm-opt -Oz が strip を担当）。
   ローカルで `bash scripts/check.sh` 全ゲート exit 0、`trunk build --release` exit 0、
   `RUSTDOCFLAGS=-D warnings cargo doc`（root/web）両方成功を確認。
+
+## 2026-11-17（弱い乱数フォールバックを廃止：R1S-SEC-02/R4-O01）
+
+- `agent/src/auth.rs` の `/dev/urandom` 失敗時 time/PID + SplitMix64 フォールバックを削除。
+  `generate_token()` を `Result<String, String>` に変更し、OS CSPRNG が読めない場合は
+  予測可能なトークンを出さずエラーで起動を失敗させる（`parse()` は既に Result のため
+  自然に伝播）。回帰テスト 2 件は `.expect("urandom")` に更新。
+- 実機確認: `--token test --once --demo` でスナップショット取得成功、トークン省略時は
+  `/dev/urandom` から生成され stderr に 1 回表示（従来どおり）。
+- 見送り: R1S-SEC-03（stderr 平文出力）は README:88 で「stderr に 1 回だけ表示」と
+  明記された意図的な設計であり、廃止にはトークン自動保存等の仕様判断が必要。
+- workspace 203 passed / clippy 0 warning / fmt OK。

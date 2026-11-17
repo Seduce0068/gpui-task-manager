@@ -1130,3 +1130,8 @@
 
 - rustdoc 未解決リンク、chrono advisory allowlist、wasm-opt bulk-memory（strip 原因）を修正。
   check.sh / trunk build / rustdoc(root/web) すべて成功。
+
+## 2026-11-17（弱い乱数フォールバックを廃止）
+
+- 予測可能な time/PID フォールバックを削除し CSPRNG 失敗時は起動エラー化。
+  R1S-SEC-03 は仕様判断が必要なため見送り。workspace 203 passed。
