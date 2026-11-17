@@ -994,3 +994,7 @@
   cargo-audit（v0.22.2 インストール・実行、README の脆弱性 0 の裏付け）、
   cargo vet --locked（root / web）、cargo machete（root / web）。
 - 前回の web clippy/test と合わせ、check.sh と CI の全ゲートが一致・実実行を担保。
+
+## 2026-11-17（MetricHistory の極端 byte rate を検証）
+
+- u64::MAX の rx/tx rate が ring を通ることを確認。tm-core 79 → 80、workspace 193 passed。
