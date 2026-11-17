@@ -1308,3 +1308,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   壊れた intra-doc link 2 件を修正。
 - 再発防止のため `scripts/check.sh` と CI `extra_gates` に同コマンドを追加。
   shellcheck / shfmt / YAML パース / check.sh 全体（exit 0）で検証済み。
+
+## 2026-11-17（web ワークスペースの rustdoc ゲートを追加）
+
+- web 側の `RUSTDOCFLAGS=-D warnings cargo doc --manifest-path web/Cargo.toml --no-deps`
+  を実行し exit 0（壊れたリンクなし）を確認。
+- 将来 web 側で壊れた intra-doc link が入っても検出できるよう、
+  `scripts/check.sh` と CI `extra_gates` に同コマンドを追加。全体 exit 0 を確認。

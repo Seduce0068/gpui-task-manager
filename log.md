@@ -1024,3 +1024,7 @@
 
 - rustdoc 厳格実行で壊れたリンク2件を検出・修正。check.sh と CI に rustdoc ゲートを追加、
   両方 exit 0 を確認。
+
+## 2026-11-17（web ワークスペースの rustdoc ゲートを追加）
+
+- web rustdoc 厳格実行 exit 0 を確認し、check.sh / CI にゲート追加。全体 exit 0。
