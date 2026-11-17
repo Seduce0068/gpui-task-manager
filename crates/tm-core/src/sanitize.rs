@@ -11,6 +11,38 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// Maximum number of characters kept from a command line.
 pub const MAX_COMMAND_CHARS: usize = 240;
 
+use crate::model::SystemSnapshot;
+
+/// Sanitises every display string in a snapshot in place.
+///
+/// Call this at every untrusted data boundary: the native probe (OS-provided
+/// strings) and the browser shell (agent-provided JSON). Fields that are not
+/// rendered as text (numbers, timestamps, keys) are left untouched.
+pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
+    let text = |value: &mut Option<String>| {
+        if let Some(inner) = value {
+            *inner = sanitize_display(inner, MAX_NAME_CHARS);
+        }
+    };
+    text(&mut snapshot.hostname);
+    text(&mut snapshot.os_name);
+    text(&mut snapshot.kernel_version);
+    for process in &mut snapshot.processes {
+        process.name = sanitize_display(&process.name, MAX_NAME_CHARS);
+        process.command = sanitize_display(&process.command, MAX_COMMAND_CHARS);
+        text(&mut process.user);
+    }
+    for interface in &mut snapshot.network.interfaces {
+        interface.name = sanitize_display(&interface.name, MAX_NAME_CHARS);
+    }
+    for disk in &mut snapshot.disks {
+        disk.mount_point = sanitize_display(&disk.mount_point, MAX_NAME_CHARS);
+    }
+    for component in &mut snapshot.components {
+        component.label = sanitize_display(&component.label, MAX_NAME_CHARS);
+    }
+}
+
 /// Removes ANSI escape sequences, control characters, Unicode bidi control
 /// characters and zero-width / invisible format characters, collapses whitespace
 /// and truncates to `max_chars` characters (not bytes).
@@ -243,6 +275,40 @@ mod tests {
         assert_eq!(sanitize_display("あいう", 1), "あ…");
         assert_eq!(sanitize_display("abc", 0), "…");
         assert_eq!(sanitize_display("abc", 1), "a…");
+    }
+
+    #[test]
+    fn sanitize_snapshot_covers_every_display_string() {
+        use crate::demo::demo_snapshot;
+
+        let mut snapshot = demo_snapshot(0);
+        let dirty = "e\u{1b}[31mvil\u{202e}\nname";
+        snapshot.hostname = Some(dirty.to_string());
+        snapshot.os_name = Some(dirty.to_string());
+        snapshot.kernel_version = Some(dirty.to_string());
+        snapshot.processes[0].name = dirty.to_string();
+        snapshot.processes[0].command = dirty.to_string();
+        snapshot.processes[0].user = Some(dirty.to_string());
+        snapshot.network.interfaces[0].name = dirty.to_string();
+        snapshot.disks[0].mount_point = dirty.to_string();
+        snapshot.components[0].label = dirty.to_string();
+
+        sanitize_snapshot(&mut snapshot);
+        for value in [
+            snapshot.hostname.as_deref().unwrap(),
+            snapshot.os_name.as_deref().unwrap(),
+            snapshot.kernel_version.as_deref().unwrap(),
+            &snapshot.processes[0].name,
+            &snapshot.processes[0].command,
+            snapshot.processes[0].user.as_deref().unwrap(),
+            &snapshot.network.interfaces[0].name,
+            &snapshot.disks[0].mount_point,
+            &snapshot.components[0].label,
+        ] {
+            assert!(!value.contains('\u{1b}'), "ANSI survived: {value:?}");
+            assert!(!value.contains('\u{202e}'), "bidi survived: {value:?}");
+            assert!(!value.contains('\n'), "newline survived: {value:?}");
+        }
     }
 
     #[test]
