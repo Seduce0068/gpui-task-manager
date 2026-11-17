@@ -1095,3 +1095,9 @@
 
 - 200/204 のヘッダ生成を生バイトで検証。部分一致の誤検知を修正。
   tm-agent 50 → 51、workspace 199 passed。
+
+## 2026-11-17（CORS ヘッダ生成のアサーションを強化）
+
+- `writes_a_well_formed_response` に `Access-Control-Allow-Origin` が検証済み origin
+  をそのままエコーすること（wildcard ではなく）、Credentials ヘッダを付与しないことを
+  追加検証。テスト件数は不変（workspace 199 passed）。
