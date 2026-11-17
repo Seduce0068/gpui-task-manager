@@ -163,12 +163,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて
   `cargo-deny`（ライセンス・脆弱性・重複版）を CI で実行（ルート / web とも ok）
 
-## 検証状況（2026-11-17、Runtime Proof）
+## 検証状況（2026-11-18、Runtime Proof）
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **216 passed / 0 failed**（core 90 / viewmodel 40 / platform 11 / agent 59 / app 15） |
-| web ユニットテスト | **12 passed / 0 failed** |
+| `cargo test --workspace` | **216 passed / 0 failed**（core 90 / viewmodel 40 / platform 11 / agent 59 / app 16） |
+| web ユニットテスト | **16 passed / 0 failed**（agent 7 / settings 5 / theme 4） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |

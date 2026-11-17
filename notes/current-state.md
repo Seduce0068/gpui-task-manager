@@ -22,14 +22,14 @@ status: verified
   （`gpui-pre-web` / wasm、読み取り専用）を持つ。
 - ドメイン・表示ロジックは `tm-core` / `tm-viewmodel` に集約し、
   シェル（`app/` / `web/`）は描画とコマンド発行のみを行う 3 層構成。
-- ライセンス Apache-2.0、全 crate で `#![forbid(unsafe_code)]`。
+- ライセンス AGPL-3.0-or-later、全 crate で `#![forbid(unsafe_code)]`。
 
 ## 検証状況（2026-11-17）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | 216 passed / 0 failed（core 90 / viewmodel 40 / platform 11 / agent 59 / app 15） |
-| web ユニットテスト | 15 passed / 0 failed |
+| `cargo test --workspace` | 216 passed / 0 failed（core 90 / viewmodel 40 / platform 11 / agent 59 / app 16） |
+| web ユニットテスト | 16 passed / 0 failed（agent 7 / settings 5 / theme 4） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
@@ -55,7 +55,7 @@ status: verified
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
   未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
   ゲートを追加（root / web とも）。
-- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 170）。
+- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 216）。
 
 ## 未解決・今後の候補
 

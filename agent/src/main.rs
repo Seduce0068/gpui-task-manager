@@ -328,10 +328,10 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
             }
         })
         .map_err(|err| {
-            // The increment above must be undone when no worker exists to
-            // carry the drop guard (R2X-A7). `_slot` was moved into the
-            // closure, so release the slot directly here.
-            state.active.fetch_sub(1, Ordering::AcqRel);
+            // Do NOT decrement `active` here: `std::thread` drops the spawn
+            // closure (and thus `_slot`) when `Thread::new` fails, so the drop
+            // guard already released the slot. A manual decrement would make it
+            // wrap to usize::MAX and reject every later connection with 503.
             format!("接続スレッドを起動できません: {err}")
         })?;
     Ok(())
