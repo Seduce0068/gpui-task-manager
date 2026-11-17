@@ -12,7 +12,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 
 - 第一ターゲット: **Kubuntu 2026.04 / KDE Plasma 6 / Wayland**（実機検証）
 - スタック: Rust 1.92+ / `gpui-kit =0.9.1`（`gpui-pre 0.3.12`）/ `sysinfo =0.40.3` / `rustix =1.1.6`
-- ライセンス: **Apache-2.0**（第三者表示は [NOTICE.md](NOTICE.md)）
+- ライセンス: **AGPL-3.0-or-later**（第三者表示は [NOTICE.md](NOTICE.md)、以前の Apache-2.0 本文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
 
 ## GitHub
 
@@ -215,6 +215,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 ## ライセンス
 
-Apache-2.0。依存クレートのライセンスと帰属は [NOTICE.md](NOTICE.md) を参照。
+`AGPL-3.0-or-later`。依存クレートのライセンスと帰属は [NOTICE.md](NOTICE.md) を参照。
+以前の Apache-2.0 本文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に保持しています。
+Apache-2.0 は GPLv3 互換のため AGPLv3 への変更が可能ですが、NOTICE の保持義務は継続します。
 既存の AGPL プロジェクト（`work/gpui-file-explorer`）からは**コードをコピーして
 いません**（調査ノートのみ参照）。
