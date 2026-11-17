@@ -936,6 +936,13 @@ mod tests {
         assert!(parse_process_limit(Some("limit=0")).is_err());
         assert!(parse_process_limit(Some("limit=abc")).is_err());
         assert!(parse_process_limit(Some("limit=")).is_err());
+        // A malformed percent escape decodes to None, which is treated the same
+        // as an absent `limit` (default) rather than a rejection. Pin this so a
+        // future parser change cannot silently alter the response size.
+        assert_eq!(
+            parse_process_limit(Some("limit=%zz")).expect("malformed escape -> default"),
+            DEFAULT_PROCESS_LIMIT
+        );
     }
 
     #[test]
