@@ -987,3 +987,10 @@
 - CI run 43990812925 の gates ジョブログで、前回追加した
   `cargo clippy --manifest-path web/Cargo.toml` と `cargo test --manifest-path web/Cargo.toml --lib`
   が実際に実行されていることを確認（設定だけでなく実実行を担保）。
+
+## 2026-11-17（CI ゲートの実実行を包括確認）
+
+- CI run 43990812925 の gates ログで以下が実実行されていることを確認:
+  cargo-audit（v0.22.2 インストール・実行、README の脆弱性 0 の裏付け）、
+  cargo vet --locked（root / web）、cargo machete（root / web）。
+- 前回の web clippy/test と合わせ、check.sh と CI の全ゲートが一致・実実行を担保。
