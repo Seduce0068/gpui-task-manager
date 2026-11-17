@@ -40,7 +40,9 @@ generated: 2026-11-14T22:35:00+09:00
      （URL 履歴・Referer・スクリーンショットからの漏洩対策）。
    - `Host` ヘッダが loopback 以外なら 403（DNS リバインディング多層防御）。
      Host が無いリクエスト（主に HTTP/1.0 の素の TCP クライアント）は検証を
-     スキップするが、全リクエストに Bearer トークンが必要なため実害はない。
+     スキップするが、`/healthz` と `/metrics` を除く全リクエストに Bearer
+     トークンが必要なため実害はない（`/metrics` はカウンタ/ゲージのみで
+     マシンデータを返さない）。
      ブラウザの fetch は Host を自動付与し（Forbidden header のため JS から
      変更不可）、DNS リバインディングは常に Host 付きで到達し 403 となる。
    - CORS は loopback オリジンのみ反射（エラー応答の 403 にも許可 Origin のみ付与）。

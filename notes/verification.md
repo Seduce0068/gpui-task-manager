@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **235 passed / 0 failed**（tm-core 95 / tm-viewmodel 44 / tm-platform 11 / tm-agent 69 / app 16、2026-11-18） |
+| `cargo test --workspace` | **237 passed / 0 failed**（tm-core 95 / tm-viewmodel 44 / tm-platform 11 / tm-agent 69 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1823,3 +1823,28 @@ Space parity は設計判断／CDP 証跡更新を伴うため保留。
 （文言合成と解除方針の設計判断）。
 
 - tm-viewmodel 43 → **44**、workspace **235 passed** / 全テスト成功。
+
+## 2026-11-18（エージェント並列調査 第16弾 → 境界値・設定・ドキュメント）
+
+3 観点（数値精度 / app 状態 / ドキュメント）の調査エージェントを並列起動。
+別セッションが agent/web/CI/app/src/main.rs を活発に編集中だったため、
+調査・実装は crates/・app/src/settings.rs・ルートドキュメントに限定し競合回避。
+
+1. **format_bytes の繰り上がり（実バグ、子が Runtime Proof）**: 1,048,575
+   バイトが `1024.0 KiB` と表示されていた（本来 `1.0 MiB`）。`{:.1}` で
+   1024.0 に丸まる分を上位単位へキャリー。format_rate にも波及する。
+2. **settings.json がディレクトリのとき設定永続化が壊れる（実バグ）**:
+   `EISDIR` は InvalidData ではないため退避されず、save が毎回失敗して
+   一時ファイルが蓄積。path.is_dir() も退避対象に追加し、save 失敗時に
+   一時ファイルを削除。pure テスト 2 件追加。
+3. **ドキュメントの /metrics 欠落**: DESIGN.md:271 / SECURITY.md:42-43 が
+   別セッション追加の認証不要 `/metrics` を欠き「全リクエスト Bearer 必須」
+   という根拠が事実と矛盾。3 エンドポイントと認証例外を明記。
+   README のテスト件数 234→235、check.sh 説明に rustdoc/markdownlint 追記。
+
+**保留**: WireGuard IF（wg0）の二重計上（設計判断）、連番枯渇の非上書き化
+（到達困難）、load average の極端値（現実シナリオなし）、persistent status
+の運用記述（配置場所の判断）。
+
+- tm-core 95 / app 18（テスト 2 件追加）、workspace 237 passed / clippy /
+  markdownlint（増分ゼロ）成功。

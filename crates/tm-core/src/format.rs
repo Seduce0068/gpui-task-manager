@@ -20,6 +20,12 @@ pub fn format_bytes(bytes: u64) -> String {
         value /= 1_024.0;
         unit += 1;
     }
+    // `{:.1}` rounds 1023.95.. up to 1024.0. Carry into the next unit so we
+    // never print the physically nonsensical "1024.0 KiB" / "1024.0 MiB".
+    if unit + 1 < UNITS.len() && (value * 10.0).round() >= 10_240.0 {
+        value = 1.0;
+        unit += 1;
+    }
     format!("{value:.1} {}", UNITS[unit])
 }
 
@@ -112,6 +118,11 @@ mod tests {
         assert_eq!(format_bytes(1_024), "1.0 KiB");
         assert_eq!(format_bytes(1_536), "1.5 KiB");
         assert_eq!(format_bytes(16 * 1_024 * 1_024 * 1_024), "16.0 GiB");
+        // One decimal must not round up to "1024.0" in the lower unit.
+        assert_eq!(format_bytes(1_048_575), "1.0 MiB");
+        assert_eq!(format_bytes(1_073_741_823), "1.0 GiB");
+        assert_eq!(format_bytes(1_099_511_627_775), "1.0 TiB");
+        assert_eq!(format_rate(1_048_575), "1.0 MiB/s");
     }
 
     #[test]
