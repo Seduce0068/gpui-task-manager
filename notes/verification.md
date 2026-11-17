@@ -1356,3 +1356,17 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   所見は 418 行目のみだったが 430 行目も同種のバグを発見し両方を修正
   （極値 tick の回帰テスト追加）。
 - tm-core 84 → **86 tests**、workspace 203 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（CI 失敗 3 件を修正）
+
+- クロスレビュー反映後の CI で 3 ジョブが失敗:
+  1. `gates`: 私が追加した doc コメントの [`MetricHistory`] リンクが未解決
+     （format.rs は metrics を import していない）→ プレーンテキストへ変更。
+  2. `cargo-deny`: 新 advisory RUSTSEC-2026-0543（chrono unmaintained）が
+     allowlist に無かった。pin 済み GPUI スタックの推移依存であることを理由に
+     `deny.toml` へ追加（既存 8 件と同方針）。
+  3. `web dist artifact`: `web/Cargo.toml` の `strip = true` が wasm-bindgen の
+     target_features セクションを削除し、wasm-opt が memory.copy/fill を
+     拒否（bulk-memory）。`strip = false` に変更（wasm-opt -Oz が strip を担当）。
+  ローカルで `bash scripts/check.sh` 全ゲート exit 0、`trunk build --release` exit 0、
+  `RUSTDOCFLAGS=-D warnings cargo doc`（root/web）両方成功を確認。

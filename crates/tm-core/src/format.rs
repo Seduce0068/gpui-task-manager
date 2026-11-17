@@ -44,8 +44,8 @@ pub fn format_percent(percent: f32) -> String {
 /// Formats a percentage that may exceed 100 (per-process CPU on multicore).
 ///
 /// Unlike [`format_percent`] this is not capped at 100, but negative values are
-/// floored at zero to match [`MetricHistory`]'s clamp, and non-finite values are
-/// replaced with zero for display safety.
+/// floored at zero to match the chart history's clamp, and non-finite values
+/// are replaced with zero for display safety.
 pub fn format_cpu_percent(percent: f32) -> String {
     let percent = if percent.is_finite() {
         percent.max(0.0)

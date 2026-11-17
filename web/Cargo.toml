@@ -54,4 +54,7 @@ debug = false
 opt-level = "s"
 lto = "thin"
 codegen-units = 1
-strip = true
+# Keep the target_features custom section: wasm-bindgen reads it to tell
+# wasm-opt which Wasm features (e.g. bulk-memory) the binary uses. Stripping
+# here makes wasm-opt reject memory.copy/fill; wasm-opt -Oz already strips.
+strip = false
