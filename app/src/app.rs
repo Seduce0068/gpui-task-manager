@@ -231,7 +231,19 @@ impl TaskManagerApp {
                 .update(cx, |this, cx| {
                     this.sampling_in_flight = false;
                     match result {
-                        Ok(snapshot) => this.dashboard.ingest(snapshot),
+                        Ok(snapshot) => {
+                            let before = this.dashboard.selected_key();
+                            this.dashboard.ingest(snapshot);
+                            // If ingest had to move the selection (e.g. the
+                            // previously selected process disappeared), keep
+                            // it on screen. Do not scroll on every sample.
+                            if this.dashboard.selected_key() != before {
+                                if let Some(position) = this.dashboard.selected_visible_index() {
+                                    this.scroll_handle
+                                        .scroll_to_item(position, ScrollStrategy::Nearest);
+                                }
+                            }
+                        }
                         Err(error) => this.dashboard.set_status(error.to_string(), true),
                     }
                     cx.notify();

@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **226 passed / 0 failed**（tm-core 95 / tm-viewmodel 43 / tm-platform 11 / tm-agent 61 / app 16、2026-11-18） |
+| `cargo test --workspace` | **235 passed / 0 failed**（tm-core 95 / tm-viewmodel 44 / tm-platform 11 / tm-agent 69 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1798,3 +1798,28 @@ Space parity は設計判断／CDP 証跡更新を伴うため保留。
 
 - tm-agent 60 → **61**、tm-viewmodel 42 → **43**、workspace **226 passed** /
   clippy / check.sh / 実機 HTTP確認 成功。
+
+## 2026-11-18（エージェント並列調査 第15弾 → 永続通知とスクロール追従）
+
+3 観点（履歴時間軸 / コア不変条件 / app 状態）の調査エージェントを並列起動。
+別セッションが agent/web/CI/scripts を編集中だったため、調査・実装は
+`crates/` と `app/` に限定し競合を回避（別セッションの作業は commit
+`8acb10c` として反映済み）。
+
+1. **永続 status の pause/resume 消滅（実バグ）**: `SetPaused` が永続
+   起動警告（「デモデータで起動しました」）を transient で上書きしていた。
+   persistent なら上書きしないガードを追加。
+2. **再開直後の network rate 混入**: 同じ分岐で `last_network = None` とし、
+   paused 中に受け取ったバイトが再開直後の瞬間レートに化けるのを防止。
+   pure テスト `persistent_notice_survives_pause_resume_and_rate_starts_fresh`
+   を追加。
+3. **選択行のスクロール追従（実バグ）**: ingest で選択がフォールバック移動
+   したとき `scroll_to_item` が呼ばれず選択行が画面外に残っていた。
+   選択キーが変わった時だけ `ScrollStrategy::Nearest` で追従。
+
+**却下／保留**: 非単調 sampled_at のガード（配信順序と絡む設計判断）、
+温度値の正規化契約（実害観測例なし）、status_bar の生テキスト
+（識別子を含むエラー文言は現状確認できず）、破損設定の GUI 通知
+（文言合成と解除方針の設計判断）。
+
+- tm-viewmodel 43 → **44**、workspace **235 passed** / 全テスト成功。

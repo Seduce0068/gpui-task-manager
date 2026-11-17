@@ -1248,3 +1248,8 @@
 
 - paused 中の transient 消滅回帰、--redact 詳細/ダイアログ漏れ、HTTP ヘッダ
   空白/obs-fold を修正。workspace 226 passed / 実機 400/200 確認。
+
+## 2026-11-18（エージェント並列調査 第15弾 → 永続通知とスクロール追従）
+
+- 別セッションと競合しない crates/app に限定。永続 status 保護、再開時
+  network リセット、選択変更時のスクロール追従。workspace 235 passed。
