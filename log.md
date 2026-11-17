@@ -975,3 +975,8 @@
 ## 2026-11-17（network rate の backward counters を検証）
 
 - カウンタ後退時に rate が 0 になることを確認。tm-core 78 → 79、workspace 192 passed。
+
+## 2026-11-17（Markdown ローカルリンクの整合を確認）
+
+- 全 `.md`（target/ と .git/ を除外）の `](...)` ローカルリンク 45 件を走査し、
+  参照先の存在を確認。リンク切れ 0 件（markdownlint が検出しない観点を補完）。
