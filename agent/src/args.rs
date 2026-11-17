@@ -136,9 +136,13 @@ where
         return Err("--token と --token-file は同時に指定できません".to_string());
     }
 
-    if !config.listen.ip().is_loopback() {
+    // Must match `http::is_allowed_host` exactly: accepting e.g. 127.0.0.2
+    // here would let the agent start but reject every browser request whose
+    // Host header carries that address.
+    let ip = config.listen.ip();
+    if ip != std::net::Ipv4Addr::LOCALHOST && ip != std::net::Ipv6Addr::LOCALHOST {
         return Err(format!(
-            "--listen はループバックアドレスのみ指定できます (指定値: {})",
+            "--listen はループバックの 127.0.0.1 または [::1] のみ指定できます (指定値: {})",
             config.listen
         ));
     }
@@ -239,7 +243,14 @@ mod tests {
 
     #[test]
     fn rejects_non_loopback_addresses() {
-        for address in ["0.0.0.0:8787", "192.168.1.10:8787", "10.0.0.1:80"] {
+        // 127.0.0.2 is loopback but not in `is_allowed_host`'s allowlist, so
+        // accepting it would make a running agent unreachable from the browser.
+        for address in [
+            "0.0.0.0:8787",
+            "192.168.1.10:8787",
+            "10.0.0.1:80",
+            "127.0.0.2:8787",
+        ] {
             let error = parse_args(&["--listen", address]).expect_err("must be rejected");
             assert!(
                 error.contains("ループバック"),

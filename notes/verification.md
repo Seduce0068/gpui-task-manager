@@ -1393,3 +1393,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - tm-agent 53 → **54 tests**、workspace 204 passed / clippy 0 warning / fmt OK / rustdoc OK。
 - 見送り: R2X-A1（`--token` が snapshot の process.command にエコー）は redact 範囲の
   設計判断が必要なため今回は対象外。
+
+## 2026-11-17（--listen と Host 許可リストの不一致を解消：R2X-A9）
+
+- `is_loopback()` は 127.0.0.2 等も受理するため、Agent は起動するが
+  `is_allowed_host` がその Host を拒否してブラウザから到達できない不一致があった。
+  `--listen` を 127.0.0.1 / [::1] のみに限定（Host 側は緩めない）。
+- 実機確認: 127.0.0.2:18890 はエラーで拒否、127.0.0.1:18892 は正常に待ち受け。
+- tm-agent 54 tests（件数不変、既存テストへ 127.0.0.2 を追加）、
+  workspace 204 passed / clippy 0 warning / fmt OK。
