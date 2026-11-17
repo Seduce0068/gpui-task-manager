@@ -14,7 +14,7 @@
 #   /usr/bin/gpui-task-manager
 #   /usr/share/applications/gpui-task-manager.desktop
 #   /usr/share/icons/hicolor/{scalable,256x256}/apps/gpui-task-manager.*
-#   /usr/share/doc/gpui-task-manager/{README.md,NOTICE.md,copyright}
+#   /usr/share/doc/gpui-task-manager/{README.md,NOTICE.md,THIRD_PARTY_NOTICES.md,LICENSE,copyright}
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,6 +83,9 @@ install -m 0644 "${script_dir}/${package}.svg" "${staging}/usr/share/icons/hicol
 install -m 0644 "${script_dir}/${package}.png" "${staging}/usr/share/icons/hicolor/256x256/apps/${package}.png"
 install -m 0644 "${repo_root}/README.md" "${staging}/usr/share/doc/${package}/README.md"
 install -m 0644 "${repo_root}/NOTICE.md" "${staging}/usr/share/doc/${package}/NOTICE.md"
+install -m 0644 "${repo_root}/THIRD_PARTY_NOTICES.md" \
+  "${staging}/usr/share/doc/${package}/THIRD_PARTY_NOTICES.md"
+install -m 0644 "${repo_root}/LICENSE" "${staging}/usr/share/doc/${package}/LICENSE"
 install -m 0644 "${script_dir}/copyright" "${staging}/usr/share/doc/${package}/copyright"
 
 # Compute runtime dependencies from ldd + dpkg -S. The Vulkan loader is
