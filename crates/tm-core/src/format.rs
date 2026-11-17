@@ -10,7 +10,7 @@
 /// decimal place. This is the same convention as GNOME System Monitor and
 /// `btop`, which keeps the UI familiar.
 pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     if bytes < 1_024 {
         return format!("{bytes} B");
     }
@@ -125,7 +125,8 @@ mod tests {
         // Display helpers must stay total: a corrupt probe could hand them any
         // u64, and a panic in a render loop would take down the shell.
         let bytes = format_bytes(u64::MAX);
-        assert!(bytes.ends_with(" PiB"), "{bytes}");
+        assert_eq!(bytes, "16.0 EiB");
+        assert_eq!(format_bytes(1_024_u64.pow(6)), "1.0 EiB");
         assert!(format_duration(u64::MAX).ends_with('h'));
         assert_eq!(format_process_age(0, u64::MAX), "0s");
         assert!(format_count(u64::MAX as usize).contains(','));

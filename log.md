@@ -1168,3 +1168,10 @@
 
 - sanitize_snapshot を追加し web agent 境界・tm-platform の OS 文字列へ適用。
   tm-core 87、workspace 208 passed。
+
+## 2026-11-18（エージェントチーム並列調査 → 4 項目修正）
+
+- 4 観点の並列調査結果を Runtime Proof で検証し、重複ヘッダ拒否・EiB 追加・
+  web details 実効化・--demo 不正値拒否を実装。
+- probe-vm の「app にテスト追加」提案は SIGSEGV で却下（子の出力は仮説として処理）。
+  tm-agent 57、workspace 209 passed。

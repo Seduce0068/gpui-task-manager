@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **208 passed / 0 failed**（tm-core 87 / tm-viewmodel 39 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
+| `cargo test --workspace` | **209 passed / 0 failed**（tm-core 87 / tm-viewmodel 39 / tm-platform 11 / tm-agent 57 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1454,3 +1454,29 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - tm-platform の os_name / kernel_version / os_label にも sanitize_display を適用。
 - 回帰テスト: 全文字列フィールドに ANSI/bidi/改行を注入し除去されることを検証。
 - tm-core 86 → **87 tests**、workspace 208 passed / clippy 0 warning / rustdoc OK。
+
+## 2026-11-18（エージェントチーム並列調査 → 4 項目を修正）
+
+4 観点（web / agent / viewmodel-app / 設定データ）の調査エージェントを並列起動し、
+各推奨項目を親が Runtime Proof で確認してから実装:
+
+- R2X-A5: `parse_request` が重複ヘッダ（大小文字無視）を `Malformed` 拒否。
+  Host/Authorization/Origin の「先頭値」依存による解釈差分を排除。回帰テスト追加。
+- R1S-DATA-08: バイト表記へ EiB を追加（`u64::MAX` = 16.0 EiB、
+  1_024^6 = 1.0 EiB を pin）。
+- R2X-P1: web の `details_visible` を実効化（main_area の条件描画＋
+  `toggle-details-web` ボタン）。設定の復元・保存は既に配線済みで、既定値 true のため
+  既定画面は不変。
+- R3-S03: `app/src/main.rs` に pure な `parse_gui_flags` を追加し、
+  `--demo=yes` / `--redact=1` を exit 2 で拒否（`args_os()` は維持）。
+
+**子の提案で却下した点**: probe-vm は「app/src/main.rs に #[cfg(test)] を追加して
+pure 関数をテスト可能」と提案したが、実際に追加すると GPUI のテストハーネスが
+SIGSEGV (signal 11) でクラッシュ（recursion_limit 256/512 でも回避不可）。
+app クレートはテスト対象外という既存設計を尊重し、テストモジュールは削除。
+実機で `--demo=yes` / `--redact=1` の拒否と `--help` の従来動作を確認。
+
+- tm-agent 56 → **57 tests**、workspace **209 passed** / `scripts/check.sh` 全ゲート成功 /
+  clippy / rustdoc（root+web）/ fmt OK。
+- 子エージェントはすべて読み取り専用で compile/test 未実行。出力は仮説として扱い、
+  上記はすべて親の Runtime Proof で確認済み。

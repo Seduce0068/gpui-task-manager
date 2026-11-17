@@ -23,9 +23,15 @@ fn main() {
     // `args()` panics on non-UTF-8 arguments; use `args_os()` so a stray byte
     // in argv cannot abort the GUI before it starts (flags are plain ASCII).
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let demo = arguments.iter().any(|argument| argument == "--demo");
-    let redact = arguments.iter().any(|argument| argument == "--redact")
-        || std::env::var("TM_REDACT").is_ok_and(|value| value == "1");
+    let flags = match parse_gui_flags(&arguments) {
+        Ok(flags) => flags,
+        Err(message) => {
+            eprintln!("gpui-task-manager: {message}");
+            std::process::exit(2);
+        }
+    };
+    let demo = flags.demo;
+    let redact = flags.redact || std::env::var("TM_REDACT").is_ok_and(|value| value == "1");
 
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     application.run(move |cx: &mut App| {
@@ -63,6 +69,32 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+/// Parsed GUI-only flags (no GPUI dependency, so it is unit-testable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+struct GuiFlags {
+    demo: bool,
+    redact: bool,
+}
+
+/// Parses `--demo` / `--redact` without panicking on non-UTF-8 argv.
+///
+/// A `--flag=value` form is rejected rather than silently ignored: someone
+/// asking for `--demo` by mistake must not end up showing real process data.
+fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
+    let mut flags = GuiFlags::default();
+    for argument in args {
+        let text = argument.to_string_lossy();
+        for (flag, slot) in [("--demo", &mut flags.demo), ("--redact", &mut flags.redact)] {
+            if text == flag {
+                *slot = true;
+            } else if text.starts_with(flag) && text[flag.len()..].starts_with('=') {
+                return Err(format!("{flag} に値は指定できません: {text}"));
+            }
+        }
+    }
+    Ok(flags)
 }
 
 /// Handles `--version` / `--help` before GPUI starts.

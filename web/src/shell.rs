@@ -858,6 +858,37 @@ impl TaskManagerApp {
                     )
                     .child(
                         div()
+                            .id("toggle-details-web")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(palette().surface))
+                            .bg(rgb(if self.dashboard.details_visible() {
+                                palette().surface
+                            } else {
+                                palette().mantle
+                            }))
+                            .text_color(rgb(if self.dashboard.details_visible() {
+                                palette().blue
+                            } else {
+                                palette().muted
+                            }))
+                            .hover(|style| {
+                                style
+                                    .bg(rgb(palette().surface))
+                                    .text_color(rgb(palette().text))
+                            })
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.focus_handle.focus(window, cx);
+                                this.handle_command(Command::ToggleDetails, cx);
+                            }))
+                            .child("詳細"),
+                    )
+                    .child(
+                        div()
                             .text_xs()
                             .text_color(rgb(palette().muted))
                             .child(format!("表示 {} 件", self.dashboard.visible_count())),
@@ -868,13 +899,17 @@ impl TaskManagerApp {
     // ------------------------------------------------------------- main area
 
     fn main_area(&self, cx: &mut Context<Self>) -> Div {
+        let details = self
+            .dashboard
+            .details_visible()
+            .then(|| self.details_panel());
         div()
             .flex()
             .gap_3()
             .flex_1()
             .min_h(px(0.0))
             .child(self.table(cx))
-            .child(self.details_panel())
+            .children(details)
     }
 
     fn table(&self, cx: &mut Context<Self>) -> Div {

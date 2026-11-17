@@ -173,7 +173,14 @@ pub fn parse_request(head: &[u8]) -> Result<Request, ParseError> {
         {
             return Err(ParseError::Malformed);
         }
-        headers.push((name.to_ascii_lowercase(), value.to_string()));
+        let name = name.to_ascii_lowercase();
+        // Duplicate security-relevant headers would let a proxy-style
+        // interpretation mismatch: `Request::header` takes the first value,
+        // while a filter might inspect the last. Reject the whole request.
+        if headers.iter().any(|(existing, _)| existing == &name) {
+            return Err(ParseError::Malformed);
+        }
+        headers.push((name, value.to_string()));
     }
 
     Ok(Request {
@@ -432,6 +439,20 @@ mod tests {
             parse_request(b"GET /api/v1/snapshot?token=abc HTTP/1.1").expect("valid request");
         assert_eq!(request.path, "/api/v1/snapshot");
         assert_eq!(request.query.as_deref(), Some("token=abc"));
+    }
+
+    #[test]
+    fn duplicate_headers_are_rejected() {
+        assert_eq!(
+            parse_request(b"GET / HTTP/1.1\r\nHost: a\r\nHost: b"),
+            Err(ParseError::Malformed)
+        );
+        assert_eq!(
+            parse_request(b"GET / HTTP/1.1\r\nX-Test: a\r\nx-test: b"),
+            Err(ParseError::Malformed)
+        );
+        // Distinct headers remain fine.
+        assert!(parse_request(b"GET / HTTP/1.1\r\nHost: a\r\nX-Test: b").is_ok());
     }
 
     #[test]
