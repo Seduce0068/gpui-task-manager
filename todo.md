@@ -22,8 +22,8 @@ status: current
 
 - [ ] CDP 実動検証を CI ゲートへ接続し、Windows の `tm-platform` テストと
       モーダル実機クリック検証を補う（R1-V01, R1-V02, R1-G01）。
-- [ ] wasm 側 fetch にタイムアウトを設け、接続失敗時は古いスナップショットを
-      stale 表示へ切り替える（R2-X01, R3-S01）。
+- [x] wasm fetch タイムアウトと stale 表示（R2-X01, R3-S01）— 5秒タイムアウト、
+      旧スナップショット維持、DOM hook に stale=0|1 を追加。
 - [ ] `?agent=` エンドポイントを loopback/http に検証し、Bearer トークンの
       送信先を制限する（R2-P01, R1-V08, R1S-SEC-01）。
 - [ ] 弱い乱数フォールバックを廃止し、トークンの stderr 平文出力を見直す
@@ -36,11 +36,11 @@ status: current
       （R3-A02, R3-A03, R1-D11, R1-I13）。
 - [ ] DEB に purge 方針の maintainer スクリプトを追加し、`ldd` の
       "not found" を失敗扱いにする（R3-L01, R1S-OPS-05）。
-- [ ] agent の構造化ログ、リクエストトレース、メトリクス公開、終了コード
-      分類を導入する（R5-O01〜R5-O04）。
-- [ ] markdownlint を check.sh / CI へ配線し、設計・調査・テスト件数の
-      陳腐化と AC-12 マトリクスを解消する（R5-C01, R1-D01, R1-D02,
-      R1-D03, R1-D16, R5-C03, R5-C04）。
+- [x] agent の構造化ログ / トレース / /metrics / 終了コード分類（R5-O01〜O04）
+- [x] markdownlint を check.sh / CI へ配線（R5-C01 の配線部分）。
+      ドキュメント数値の陳腐化と AC-12 マトリクスは R5-C02 として分離。
+- [ ] R5-C02 設計・調査・テスト件数の陳腐化と AC-12 マトリクスを解消する
+      （R1-D01, R1-D02, R1-D03, R1-D16, R5-C03, R5-C04）。
 - [ ] 成果物ジョブへ `needs: gates` を付与し、fork PR を成果物生成から
       除外する（R1-OPS-01, R4-O02, R1S-OPS-02）。
 - [ ] NOTICE のライセンス帰属（GPUI / gpui-component / IBM Plex）と

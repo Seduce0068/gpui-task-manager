@@ -79,6 +79,10 @@ pub struct TaskManagerApp {
     live_total: Option<usize>,
     /// Last live-mode error, shown in the status bar and the table overlay.
     live_error: Option<String>,
+    /// Whether the currently displayed snapshot came from a fetch that failed
+    /// afterwards. It is kept on screen (never replaced by demo data) but
+    /// flagged as stale so the freshness boundary stays visible (R3-S01).
+    stale: bool,
     /// Number of snapshots ingested (used by the DOM proof hook).
     ticks: u64,
 }
@@ -92,7 +96,13 @@ impl TaskManagerApp {
         let (dashboard, source) = match agent_config_from_url() {
             Some(config) => {
                 let http = cx.http_client();
-                let client = Arc::new(AgentClient::new(config, http));
+                // The executor supplies the fetch deadline on wasm as well as
+                // natively; see `AgentClient::fetch_snapshot`.
+                let client = Arc::new(AgentClient::new(
+                    config,
+                    http,
+                    cx.background_executor().clone(),
+                ));
                 // The browser can never signal processes, even in live mode.
                 let platform = PlatformInfo::native_read_only("Linux (エージェント経由)");
                 let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
@@ -117,6 +127,7 @@ impl TaskManagerApp {
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
             live_error: None,
+            stale: false,
             ticks: 0,
         };
         app.restore_settings();
@@ -188,6 +199,11 @@ impl TaskManagerApp {
 
     /// Ingests a live response, or surfaces the error without falling back to demo.
     fn handle_live_result(&mut self, result: Result<crate::agent::SnapshotResponse, String>) {
+        // Freshness is decided against the snapshot that is *already on screen*,
+        // before the new one replaces it. A failure before the first successful
+        // fetch has nothing to mark stale; `live_error` covers that case.
+        let had_snapshot = self.dashboard.snapshot().is_some();
+        self.stale = stale_after_poll(had_snapshot, result.is_ok());
         match result {
             Ok(response) => {
                 self.ticks = self.ticks.saturating_add(1);
@@ -371,10 +387,12 @@ impl TaskManagerApp {
         let kernel = snapshot
             .and_then(|snapshot| snapshot.kernel_version.clone())
             .unwrap_or_else(|| "—".to_string());
+        let live = matches!(&self.source, DataSource::Live(_));
         let (mode_label, mode_color) = match &self.source {
             DataSource::Demo(_) => ("デモ", palette().yellow),
             DataSource::Live(_) => ("ライブ", palette().teal),
         };
+        let show_stale = is_stale(live, self.stale);
 
         h_flex()
             .justify_between()
@@ -420,6 +438,10 @@ impl TaskManagerApp {
                             ),
                     )
                     .child(pill(mode_label, palette().base, mode_color))
+                    .children(
+                        show_stale
+                            .then(|| pill("stale (旧データ)", palette().base, palette().yellow)),
+                    )
                     .child(pill("読み取り専用", palette().base, palette().red))
                     .child(
                         // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
@@ -1394,6 +1416,7 @@ impl TaskManagerApp {
                 false,
             ),
         };
+        let show_stale = is_stale(matches!(&self.source, DataSource::Live(_)), self.stale);
 
         h_flex()
             .justify_between()
@@ -1415,7 +1438,12 @@ impl TaskManagerApp {
                     .child(div().text_color(rgb(palette().dim)).child("|"))
                     .child(last_update)
                     .child(div().text_color(rgb(palette().dim)).child("|"))
-                    .child(counts),
+                    .child(counts)
+                    .children(show_stale.then(|| {
+                        div()
+                            .text_color(rgb(palette().yellow))
+                            .child("stale: 表示中のデータは古いです")
+                    })),
             )
             .child(
                 div()
@@ -1449,10 +1477,12 @@ impl TaskManagerApp {
             return;
         };
         let snapshot = self.dashboard.snapshot();
-        let mode = match &self.source {
-            DataSource::Demo(_) => "demo",
-            DataSource::Live(_) => "live",
-        };
+        let live = matches!(&self.source, DataSource::Live(_));
+        let mode = if live { "live" } else { "demo" };
+        // Additive field: existing CDP assertions parse `key=value;` pairs and
+        // keep working, while new checks can assert that a failed refresh
+        // leaves the old snapshot flagged as stale.
+        let stale = u8::from(is_stale(live, self.stale));
         let (cpu, mem, total, sampled) = match snapshot {
             Some(snapshot) => (
                 snapshot.cpu.total_percent,
@@ -1511,7 +1541,7 @@ impl TaskManagerApp {
             "mode={mode};tick={};cpu={cpu:.1};mem={mem:.1};rows={rows};total={total};\
              filter={filter};selected_pid={selected};sort={};dir={direction};\
              sampled={sampled};vw={viewport_width};vh={viewport_height};live_error={};\
-             ime_composing={ime_composing};ime_field={ime_field};ime_marked={ime_marked};\
+             stale={stale};ime_composing={ime_composing};ime_field={ime_field};ime_marked={ime_marked};\
              ime_selection={ime_selection};theme={theme_label};interval={interval_ms};",
             self.ticks,
             sort.key.label(),
@@ -1728,6 +1758,21 @@ fn status_color(status: ProcessStatus) -> u32 {
     }
 }
 
+/// Whether the snapshot left on screen after a poll must be shown as stale.
+///
+/// Only a failed refresh of an already-populated dashboard makes displayed data
+/// old. A first-attempt failure has nothing stale to label; it is reported via
+/// `live_error` and the empty-state overlay instead. Keeping this decision in a
+/// pure function makes the freshness boundary testable on the native host.
+fn stale_after_poll(had_snapshot: bool, succeeded: bool) -> bool {
+    had_snapshot && !succeeded
+}
+
+/// Stale markers apply to live data only; demo mode has no freshness contract.
+fn is_stale(is_live: bool, stale: bool) -> bool {
+    is_live && stale
+}
+
 /// Truncates a status-bar label on a character boundary (the bar is one line).
 fn truncate_label(text: &str, max_chars: usize) -> String {
     // ステータスバーは 1 行なので、改行や連続空白は 1 個の空白へ畳む。
@@ -1789,5 +1834,36 @@ fn agent_config_from_url() -> Option<AgentConfig> {
     #[cfg(not(target_family = "wasm"))]
     {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_refresh_marks_the_existing_snapshot_stale() {
+        assert!(stale_after_poll(true, false));
+        assert!(is_stale(true, stale_after_poll(true, false)));
+    }
+
+    #[test]
+    fn successful_refresh_clears_stale() {
+        assert!(!stale_after_poll(true, true));
+        assert_ne!(stale_after_poll(true, true), stale_after_poll(true, false));
+    }
+
+    #[test]
+    fn first_failure_has_no_old_snapshot_to_mark_stale() {
+        assert!(!stale_after_poll(false, false));
+        assert!(!stale_after_poll(false, true));
+    }
+
+    #[test]
+    fn stale_marker_is_live_only() {
+        assert!(!is_stale(false, true));
+        assert!(!is_stale(false, false));
+        assert!(is_stale(true, true));
+        assert!(!is_stale(true, false));
     }
 }

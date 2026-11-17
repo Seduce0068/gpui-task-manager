@@ -31,11 +31,19 @@ tm-agent — 読み取り専用のループバック・スナップショット�
   /healthz               {\"ok\":true,\"schema_version\":1}
   /api/v1/snapshot       {\"schema_version\":1,\"total_process_count\":N,\"snapshot\":{...}}
                          ?limit=N で返すプロセス数を指定 (既定 500、最大 2000)
+  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)
 
 認証:
   Authorization: Bearer <token>（クエリ文字列のトークンは拒否）
   トークン未指定時は起動時に生成して stderr に 1 回だけ表示する。
   解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。
+
+終了コード:
+  0 正常 / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー
+  4 プローブエラー / 5 認証・トークンエラー
+
+構造化ログ:
+  stderr に JSON 1 行 (ts_ms, level, event, ...)。--once の stdout は従来どおり JSON のみ。
 ";
 
 /// Parsed command-line configuration.
