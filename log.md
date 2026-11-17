@@ -921,3 +921,7 @@
 ## 2026-11-17（ProcessKey の Display 形式を固定）
 
 - pid@start_time 形式をテスト。tm-core 74 → 75、workspace 188 passed。
+
+## 2026-11-17（Timestamp の極端値 saturating を検証）
+
+- from_secs(u64::MAX) が saturation することを確認。tm-core 75 → 76、workspace 189 passed。

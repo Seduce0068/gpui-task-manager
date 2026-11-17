@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **188 passed / 0 failed**（tm-core 75 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **189 passed / 0 failed**（tm-core 76 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1230,3 +1230,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - PID 再利用検出のログで使われる `pid@start_time` 形式と `pid()` アクセサを検証。
   既存の順序テスト（PID → start_time）と合わせ、同一性キーの表現を固定。
 - tm-core 74 → **75 tests**、workspace 188 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（Timestamp の極端値 saturating を検証）
+
+- `Timestamp::from_secs(u64::MAX)` が秒→ミリ秒変換で wrap せず saturated になることを検証
+  （壊れた snapshot の sampled_at が未来の plausible な値に化けないことを担保）。
+- tm-core 75 → **76 tests**、workspace 189 passed / clippy 0 warning / fmt OK。
