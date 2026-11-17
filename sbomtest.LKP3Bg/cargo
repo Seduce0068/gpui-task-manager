@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-echo "CARGO CALLED: $*" >&2
-if [ "$1" = "cyclonedx" ]; then
-  name="sbom-root"
-  while [ $# -gt 0 ]; do if [ "$1" = "--override-filename" ]; then shift; name="$1"; fi; shift; done
-  echo '{}' > "${name}.json"
-fi
