@@ -337,6 +337,14 @@ fn handle_connection(
                 http::Response::json(400, "Bad Request", error_body("リクエストを解釈できません"));
             return http::write_response(stream, &response);
         }
+        Err(http::ParseError::Timeout) => {
+            let response = http::Response::json(
+                408,
+                "Request Timeout",
+                error_body("リクエストの送信がタイムアウトしました"),
+            );
+            return http::write_response(stream, &response);
+        }
     };
 
     // Compute the allowed Origin before any early return so error responses

@@ -14,13 +14,18 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Upper bound for the request line plus all header lines.
 pub const MAX_HEADER_BYTES: usize = 8 * 1024;
 
-/// How long a client may take to send the request head.
+/// Per-read timeout (a slow peer cannot block a thread indefinitely).
 pub const READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Absolute deadline for the *whole* request head. Without this, a peer that
+/// trickles one byte per second resets `READ_TIMEOUT` on every read and can
+/// hold a connection slot for hours (slowloris).
+pub const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long writing the response may take.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,6 +63,8 @@ pub enum ParseError {
     TooLarge,
     /// The bytes were not a valid HTTP/1.x request head.
     Malformed,
+    /// The head was not completed within [`HEAD_TIMEOUT`].
+    Timeout,
 }
 
 /// Reads and parses one request head from `stream`.
@@ -66,8 +73,20 @@ pub enum ParseError {
 /// anything, so an idle health check that connects and hangs up is not an
 /// error.
 pub fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, ParseError> {
+    read_request_with_timeout(stream, HEAD_TIMEOUT)
+}
+
+/// Same as [`read_request`] with an injectable deadline (used by tests).
+fn read_request_with_timeout(
+    stream: &mut TcpStream,
+    timeout: Duration,
+) -> Result<Option<Request>, ParseError> {
+    // Enforce the absolute deadline even if a caller forgot to set a socket
+    // read timeout: cap each blocking read at the remaining budget.
+    let _ = stream.set_read_timeout(Some(timeout.min(READ_TIMEOUT)));
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(position) = find_header_end(&buffer) {
             if position > MAX_HEADER_BYTES {
@@ -78,7 +97,22 @@ pub fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, ParseErro
         if buffer.len() > MAX_HEADER_BYTES {
             return Err(ParseError::TooLarge);
         }
-        let read = stream.read(&mut chunk).map_err(|_| ParseError::Malformed)?;
+        if Instant::now() >= deadline {
+            return Err(ParseError::Timeout);
+        }
+        let read = stream.read(&mut chunk).map_err(|err| {
+            if matches!(
+                err.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) {
+                ParseError::Timeout
+            } else {
+                ParseError::Malformed
+            }
+        })?;
+        if Instant::now() >= deadline {
+            return Err(ParseError::Timeout);
+        }
         if read == 0 {
             return if buffer.is_empty() {
                 Ok(None)
@@ -640,6 +674,26 @@ mod tests {
         let mut bytes = Vec::new();
         client.read_to_end(&mut bytes).expect("read response");
         bytes
+    }
+
+    #[test]
+    fn head_read_times_out_absolutely_even_when_bytes_trickle() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let client = std::net::TcpStream::connect(address).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        // Send one byte, then keep the connection open without completing the
+        // head. A per-read timeout would keep resetting; the absolute deadline
+        // must still fire.
+        let mut client = client;
+        client.write_all(b"G").expect("write partial head");
+        let mut server = server;
+        assert_eq!(
+            read_request_with_timeout(&mut server, Duration::from_millis(100)),
+            Err(ParseError::Timeout)
+        );
     }
 
     #[test]

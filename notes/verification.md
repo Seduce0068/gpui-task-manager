@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **205 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 55 / app 15、2026-11-17） |
+| `cargo test --workspace` | **206 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1411,3 +1411,15 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 設定一時ファイル名に PID + 単調 nonce + 時刻を付与し、PID 再利用時に古い tmp と
   衝突しないようにした。テストは「残 tmp なし」をディレクトリ走査で検証する形へ更新。
 - tm-agent 54 → **55 tests**、workspace 205 passed / clippy 0 warning / fmt OK / rustdoc OK。
+
+## 2026-11-17（ヘッダ読み取りの絶対 timeout：R2X-A3）
+
+- 従来は per-read の READ_TIMEOUT(1s) のみで、1 バイトずつ送り続ける
+  slowloris 接続が全スロットを長時間占有できた。`HEAD_TIMEOUT(5s)` を導入し、
+  `read_request_with_timeout`（テスト用に deadline 注入可能）でヘッダ全体の
+  絶対期限を守る。期限超過は 408 Request Timeout を返す。
+- `read()` が WouldBlock/TimedOut を返した場合も Timeout として扱うよう修正
+  （当初 Malformed になっていた）。テストソケットでも確実に動くよう
+  `read_request_with_timeout` 自身が残予算で read timeout を設定。
+- 回帰テスト: 部分ヘッダを送って放置し 100ms で Timeout になることを検証。
+- tm-agent 55 → **56 tests**、workspace 206 passed / clippy 0 warning / rustdoc OK。
