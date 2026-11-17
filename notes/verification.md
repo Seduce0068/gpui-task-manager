@@ -1480,3 +1480,23 @@ app クレートはテスト対象外という既存設計を尊重し、テス�
   clippy / rustdoc（root+web）/ fmt OK。
 - 子エージェントはすべて読み取り専用で compile/test 未実行。出力は仮説として扱い、
   上記はすべて親の Runtime Proof で確認済み。
+
+## 2026-11-18（エージェント並列調査 第2弾 → redact マスク追加）
+
+3 観点（CDP CI 接続 / wasm timeout / redact スコープ）の調査エージェントを並列起動。
+各出力を仮説として扱い、親がローカルコードで Runtime Proof してから判断:
+
+- **採用**: probe-redact の提案どおり `agent/src/main.rs` の `redact_snapshot` に
+  `disks[].mount_point` への `redact_text` 適用を追加（R2X-A4 の仕約内部分）。
+  仕約（ホスト名・ユーザー名・ホームパス）の範囲内で、新ロジック・wire 変更なし。
+  子の重要指摘どおり **IF 名はマスクしない**（`is_virtual_interface()` が名前で仮想 NIC を
+  判定し `physical_totals()` のレート計算が壊れるため。仕約変更＋設計案件）。
+- 既存テストへ `$HOME/work/project` → `/home/user/work/project` のアサーションを追加。
+  clippy の `useless format!` 指摘を修正。
+- **見送り（子の提案を判断で却下）**: probe-cdp の CDP 独立ジョブ追加（実装量大・
+  flaky 要因多数、約 2〜4 分の CI 時間増）、probe-timeout の wasm fetch watchdog
+  （future 破棄が network abort にならず orphan fetch が残る、設計判断が必要）。
+
+- 実機: `tm-agent --once --demo --redact` で mount_point が伏せられた値になることを確認
+  （デモは `/` と `/home` のみで home 配下例なし、ユニットテストでカバー）。
+- workspace **209 passed**（件数不変、既存テスト拡張）/ clippy / rustdoc OK。

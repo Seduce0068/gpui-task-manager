@@ -563,6 +563,13 @@ fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot) {
         process.command = redact_text(&process.command);
         process.name = redact_text(&process.name);
     }
+    // A mount point can be under the user's home (e.g. /home/<user>/work or a
+    // /media/<user>/... volume). Home paths are part of `--redact`'s contract;
+    // network IF names and sensor labels are deliberately NOT touched here —
+    // `is_virtual_interface()` depends on the name to classify traffic.
+    for disk in &mut snapshot.disks {
+        disk.mount_point = redact_text(&disk.mount_point);
+    }
 }
 
 /// Replaces `host.tailXXXX.ts.net` style domains with `host`.
@@ -1046,6 +1053,7 @@ mod tests {
         snapshot.processes[0].command = format!(
             "{home}/private/app --issuer=https://my-host.tail1234.ts.net:8443 --host=my-host"
         );
+        snapshot.disks[0].mount_point = format!("{home}/work/project");
         redact_snapshot(&mut snapshot);
         assert_eq!(snapshot.hostname.as_deref(), Some("host"));
         assert_eq!(snapshot.processes[0].user.as_deref(), Some("user"));
@@ -1054,6 +1062,7 @@ mod tests {
         assert!(!snapshot.processes[0].command.contains("my-host"));
         assert!(!snapshot.processes[0].command.contains("tail1234"));
         assert!(!snapshot.processes[0].command.contains(".ts.net"));
+        assert_eq!(snapshot.disks[0].mount_point, "/home/user/work/project");
         // Truncated commands (240 chars) can lose the `.ts.net` suffix.
         snapshot.processes[0].command =
             "app --url=https://host.tail1234.t… --id=tail1234abcd".to_string();

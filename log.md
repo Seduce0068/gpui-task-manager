@@ -1175,3 +1175,9 @@
   web details 実効化・--demo 不正値拒否を実装。
 - probe-vm の「app にテスト追加」提案は SIGSEGV で却下（子の出力は仮説として処理）。
   tm-agent 57、workspace 209 passed。
+
+## 2026-11-18（エージェント並列調査 第2弾 → redact マスク追加）
+
+- 3 エージェント並列調査のうち、仕約内で安全な mount_point redact のみ採用。
+  IF 名マスクは physical_totals の機能回帰リスクで却下、CDP CI・wasm timeout は見送り。
+  workspace 209 passed。
