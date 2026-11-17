@@ -415,7 +415,14 @@ impl Dashboard {
     }
 
     /// Ingests a new snapshot and updates history, rates and selection.
+    ///
+    /// A paused dashboard stays frozen: an in-flight native sample (or the web
+    /// sampler's next tick) can complete after the user pressed pause. Keep
+    /// `Tick`, `ingest` and `ConfirmKill` under the same pause invariant.
     pub fn ingest(&mut self, snapshot: SystemSnapshot) {
+        if self.paused {
+            return;
+        }
         let (rx_rate, tx_rate) = match self.last_network {
             Some((previous_rx, previous_tx, previous_at)) => {
                 let elapsed = Duration::from_millis(
@@ -641,6 +648,25 @@ mod tests {
 
     fn firefox_key() -> ProcessKey {
         tm_core::demo::demo_process_key(800).expect("demo firefox process")
+    }
+
+    #[test]
+    fn ingest_is_ignored_while_paused() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        let before_at = dashboard.snapshot().unwrap().sampled_at;
+        let before_len = dashboard.history().len();
+
+        dashboard.apply(Command::SetPaused(true));
+        // An in-flight sample completing after pause must not move the display.
+        dashboard.ingest(demo_snapshot(1));
+        assert_eq!(dashboard.history().len(), before_len);
+        assert_eq!(dashboard.snapshot().unwrap().sampled_at, before_at);
+
+        dashboard.apply(Command::SetPaused(false));
+        dashboard.ingest(demo_snapshot(2));
+        assert_eq!(dashboard.history().len(), before_len + 1);
+        assert_ne!(dashboard.snapshot().unwrap().sampled_at, before_at);
     }
 
     #[test]

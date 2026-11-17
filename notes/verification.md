@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **220 passed / 0 failed**（tm-core 94 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 16、2026-11-18） |
+| `cargo test --workspace` | **222 passed / 0 failed**（tm-core 94 / tm-viewmodel 41 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1694,3 +1694,27 @@ Runtime Proof で確認してから実装:
   `deny.toml` の `[licenses].allow`（AGPL 互換）を参照する文言へ修正。
 
 - workspace 220 passed / markdownlint（DESIGN 51 / SECURITY 9、増分ゼロ）成功。
+
+## 2026-11-18（エージェント並列調査 第11弾 → 一時停止・初回warm-up・503コメント）
+
+3 観点（pause 競合 / 503 ブロック / warm-up）の調査エージェントを並列起動し、
+各指摘を Runtime Proof で確認してから実装:
+
+1. **一時停止の競合（実バグ）**: viewmodel の `ingest()` に `paused` ガードを追加。
+   サンプリング中に Space で一時停止しても in-flight 結果で画面が動かなくなった。
+   `Tick` / `ingest` / `ConfirmKill` を同じ pause 不変条件に統一。pure テスト
+   `ingest_is_ignored_while_paused` を追加（app の SIGSEGV 制約を回避）。
+   子の副次発見どおり web には paused 参照が 0 件で一時停止が機能していなかった
+   が、viewmodel ガードで web も同時に解消。
+2. **初回 HTTP の warm-up（実バグ）**: 子が実プロセスで再現（初回は全 CPU 0.0
+   で PID 昇順 500 件、73% のビジープロセスが欠落）。`SharedState` に one-shot
+   `warmed_up: AtomicBool` を追加し、認証済み初回 snapshot のみ 250ms 空けて
+   2 回 sample（捨て＋採用）。認証失敗／healthz／不正 limit は warm-up を消費
+   しない。probe mutex は route 全体で保持されるため競合なし。demo は warm-up
+   不要（tick が進むため）。回帰テスト `CountingProbe` で sample 回数を固定。
+3. **503 コメントの訂正**: 上限超過 503 は accept スレッドで同期的に書かれる。
+   子の反証どおり 240 バイトで実害は到達不能（既存計測 0.03ms）かつ worker 化は
+   DoS ベクタになるため構造は維持し、コメントを実際の挙動に合わせた。
+
+- tm-agent 59 → **60**、tm-viewmodel 40 → **41**、workspace **222 passed** /
+  clippy / rustdoc / check.sh 成功。
