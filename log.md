@@ -946,3 +946,8 @@
 - check.sh が web clippy の assertions_on_constants で失敗していたのを修正
   （const assert 化）。CI extra_gates に web clippy / web test を追加し、ローカルと
   CI のゲートを一致させた。check.sh exit 0 / YAML パース成功。
+
+## 2026-11-17（check.sh のゲート一覧を README へ反映）
+
+- `scripts/check.sh` と CI のゲートが wasm（web 含む）で整合していることを確認。
+- README の `check.sh` 説明に web clippy/test を追記（前回の CI ゲート追加を反映）。

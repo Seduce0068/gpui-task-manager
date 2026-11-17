@@ -63,7 +63,7 @@ bash scripts/dev-setup.sh
 # 2. ビルドとテスト
 cargo build -p gpui-task-manager
 cargo test --workspace
-bash scripts/check.sh        # fmt + clippy + test + wasm + deny + vet + machete を一括実行
+bash scripts/check.sh        # fmt + clippy + test + wasm + web clippy/test + deny + vet + machete を一括実行
 
 # 3. 起動（実データ / 合成データ）
 ./target/debug/gpui-task-manager
