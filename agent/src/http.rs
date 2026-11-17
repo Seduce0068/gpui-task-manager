@@ -599,6 +599,48 @@ mod tests {
             .extra_headers
             .contains(&("Vary".to_string(), "Origin".to_string())));
     }
+    /// Writes a response over a loopback socket and returns the raw bytes.
+    fn write_response_bytes(response: &Response) -> Vec<u8> {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let client = std::net::TcpStream::connect(address).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        let mut server = server;
+        write_response(&mut server, response).expect("write response");
+        let mut client = client;
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).expect("read response");
+        bytes
+    }
+
+    #[test]
+    fn response_headers_are_safe_and_204_omits_body_headers() {
+        let ok = String::from_utf8(write_response_bytes(&Response::json(
+            200,
+            "OK",
+            b"{\"ok\":true}".to_vec(),
+        )))
+        .expect("utf8");
+        assert!(ok.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(ok.contains("Content-Type: application/json; charset=utf-8\r\n"));
+        assert!(ok.contains("Content-Length: 11\r\n"));
+        assert!(ok.contains("Cache-Control: no-store\r\n"));
+        assert!(ok.contains("X-Content-Type-Options: nosniff\r\n"));
+        assert!(ok.contains("Connection: close\r\n"));
+
+        let empty = String::from_utf8(write_response_bytes(&Response::empty(204, "No Content")))
+            .expect("utf8");
+        assert!(empty.starts_with("HTTP/1.1 204 No Content\r\n"));
+        // Match header lines, not substrings: "X-Content-Type-Options" contains
+        // "Content-Type" but is a different header.
+        assert!(!empty.contains("\r\nContent-Type:"));
+        assert!(!empty.contains("\r\nContent-Length:"));
+        assert!(empty.ends_with("\r\n\r\n"));
+    }
+
     #[test]
     fn query_param_extracts_values() {
         let query = Some("foo=1&token=abc%2Bdef&bar=2");
