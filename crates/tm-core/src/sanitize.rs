@@ -189,6 +189,16 @@ mod tests {
     }
 
     #[test]
+    fn truncation_at_zero_and_one_characters() {
+        // A zero-width cap must still produce a finite, non-panicking label.
+        // The ellipsis itself is not counted toward `max_chars`.
+        assert_eq!(sanitize_display("あいう", 0), "…");
+        assert_eq!(sanitize_display("あいう", 1), "あ…");
+        assert_eq!(sanitize_display("abc", 0), "…");
+        assert_eq!(sanitize_display("abc", 1), "a…");
+    }
+
+    #[test]
     fn empty_input_is_empty_output() {
         assert_eq!(sanitize_display("", 10), "");
         assert_eq!(sanitize_display("\u{1b}[0m", 10), "");
