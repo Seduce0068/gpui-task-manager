@@ -223,9 +223,17 @@ pub fn filter_and_sort(
     indices
 }
 
+/// Compares percentages the same way the chart history treats them: a
+/// non-finite value is displayed as zero, so it must sort as zero rather than
+/// jump to the front via `f32::total_cmp`.
+fn cmp_percent(left: f32, right: f32) -> Ordering {
+    let normalise = |value: f32| if value.is_finite() { value } else { 0.0 };
+    normalise(left).total_cmp(&normalise(right))
+}
+
 fn compare(left: &ProcessSnapshot, right: &ProcessSnapshot, key: SortKey) -> Ordering {
     match key {
-        SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
+        SortKey::Cpu => cmp_percent(left.cpu_percent, right.cpu_percent),
         SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
         SortKey::Pid => left.key.pid.cmp(&right.key.pid),
         SortKey::Name => cmp_ignore_case(&left.name, &right.name),
@@ -463,6 +471,16 @@ mod tests {
     fn default_sort_is_cpu_descending() {
         let sorted = filter_and_sort(&sample(), &Filter::default(), SortSpec::default());
         assert_eq!(sorted, vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn nan_cpu_sorts_as_zero_like_the_history() {
+        // The chart clamps non-finite percentages to 0; sorting must agree so
+        // the table order matches the displayed bars (R1S-DATA-07).
+        let mut processes = sample();
+        processes[0].cpu_percent = f32::NAN;
+        let sorted = filter_and_sort(&processes, &Filter::default(), SortSpec::default());
+        assert_eq!(sorted, vec![2, 1, 0]);
     }
 
     #[test]
