@@ -1500,3 +1500,29 @@ app クレートはテスト対象外という既存設計を尊重し、テス�
 - 実機: `tm-agent --once --demo --redact` で mount_point が伏せられた値になることを確認
   （デモは `/` と `/home` のみで home 配下例なし、ユニットテストでカバー）。
 - workspace **209 passed**（件数不変、既存テスト拡張）/ clippy / rustdoc OK。
+
+## 2026-11-18（エージェント並列調査 第3弾 → ?agent= 送信先制限）
+
+3 観点（残所見再走査 / データ境界 / UX）の調査エージェントを並列起動。
+probe-residual はさらに 3 体の子エージェントを入れ子で活用し、各出力を
+Runtime Proof で取捨選択していた（親はその結果も仮説として現行コードで確認）:
+
+- **採用**: R2-P01 — `web/src/agent.rs` に `is_loopback_http_endpoint()` を追加し、
+  `fetch_snapshot()` の入り口で Bearer ヘッダ付与前に接続先を検証。
+  `http://` ＋ host が `127.0.0.1` / `localhost` / `[::1]` ＋数値 port のみ許可。
+  URL フラグ由来のトークンを任意ホストへ送る経路を遮断（agent 側 Host 検証との非対称も解消）。
+  pure 関数のため web の native テストで決定論的に検証（許可 4 件／拒否 7 件）。
+- web 15 → **16 tests**、workspace 209 passed / clippy / wasm check / rustdoc OK。
+
+**見送り・却下（子の提案を判断で処理）**:
+
+- probe-ux の R2-C01（Effect 明示）、probe-boundary の `format_load_average` 負値フロアは
+  今回は見送り（次ラウンド候補として保持）。
+- R2X-D5（ディスク used）は子の追加発見で pinned sysinfo 0.40.3 に `used_space()` が
+  無いことが判明し「安全」から「要判断」へ格下げ（子の提案を補正して採用）。
+- R4-A02（8MiB upfront 確保）は `body.take(8MiB)` の実装を確認し「対応済み相当」と判定。
+- CDP CI 接続 / wasm watchdog / per-signal capability / 更新間隔 UI は設計判断または
+  flaky 要因を伴うため再度見送り。
+
+- 新たな不整合として `NOTICE.md:31` が「Apache License 2.0」のまま
+  （fdf6f62 で AGPL 移行済み）であることを記録（次ラウンド候補）。

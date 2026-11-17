@@ -1181,3 +1181,9 @@
 - 3 エージェント並列調査のうち、仕約内で安全な mount_point redact のみ採用。
   IF 名マスクは physical_totals の機能回帰リスクで却下、CDP CI・wasm timeout は見送り。
   workspace 209 passed。
+
+## 2026-11-18（エージェント並列調査 第3弾 → ?agent= 送信先制限）
+
+- R2-P01 を実装: Bearer 付与前に loopback/http 接続先を検証。web 16 tests、
+  workspace 209 passed。sysinfo used_space 不在の指摘を採用し R2X-D5 は要判断へ。
+  NOTICE.md:31 の Apache 表記漏れを記録。
