@@ -1019,3 +1019,8 @@
 
 - `bash scripts/check.sh` を再実行: exit 0。workspace 197 passed / web 15 tests /
   wasm check / clippy / deny / vet / machete すべて成功。新たな不具合なし。
+
+## 2026-11-17（壊れた intra-doc link を修正し rustdoc ゲートを追加）
+
+- rustdoc 厳格実行で壊れたリンク2件を検出・修正。check.sh と CI に rustdoc ゲートを追加、
+  両方 exit 0 を確認。
