@@ -39,6 +39,7 @@ jobs:
       extra_gates: |
         # web/ is a separate Cargo workspace, so the reusable workflow's
         # root-only clippy/test gates do not cover it. Mirror scripts/check.sh.
+        cargo fmt --manifest-path web/Cargo.toml --all --check
         cargo clippy --manifest-path web/Cargo.toml --all-targets -- \
           -D warnings -D clippy::undocumented_unsafe_blocks
         cargo test --manifest-path web/Cargo.toml --lib

@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **222 passed / 0 failed**（tm-core 94 / tm-viewmodel 41 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
+| `cargo test --workspace` | **223 passed / 0 failed**（tm-core 95 / tm-viewmodel 41 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1718,3 +1718,29 @@ Runtime Proof で確認してから実装:
 
 - tm-agent 59 → **60**、tm-viewmodel 40 → **41**、workspace **222 passed** /
   clippy / rustdoc / check.sh 成功。
+
+## 2026-11-18（エージェント並列調査 第12弾 → デモ/SBOM/web fmt の実バグ）
+
+3 観点（IME / デモ境界 / スクリプト）の調査エージェントを並列起動し、
+各指摘を親が Runtime Proof で確認してから実装:
+
+1. **demo のメモリ列が静止（実バグ）**: `noise as u64` は常に 0 なので
+   `(noise * 4_096.0) as u64` に変更（スケールしてから整数化）。
+   `demo_process_memory_varies_with_tick` で tick 差と不変条件を固定。
+2. **`http://[::1]` が拒否（実バグ）**: 前回実装した `is_loopback_http_endpoint`
+   が IPv6 リテラルのコロンを port 区切りと誤判定していた。括弧の後ろだけを
+   port として扱うよう修正し、allowed リストに `http://[::1]` を追加。
+3. **SBOM artifact から root SBOM が欠落（実バグ）**: `find .` は
+   `./target/sbom/...` を返すのに除外パターンが `${out_dir}/*` で不一致。
+   `out_dir` を `./target/sbom` 形式へ正規化。Stub で再現・修正確認済み。
+4. **web rustfmt ゲート漏れ（実バグ）**: `cargo fmt --manifest-path
+   web/Cargo.toml --all --check` が exit 1（3 箇所の整形漏れ）だった。
+   check.sh と ci.yml の extra_gates に web fmt を追加し、web を整形。
+
+**却下／保留**: IME の「Enter で未確定文字が残る」シナリオは子の静的解析で
+表示が Dashboard 確定値に戻ることが判明し却下。R2X-S1（unmark の
+`committed_text()` 矛盾）、demo pid 421 の self-parent、補助面 VS、
+schema 互換方針、GLIBC バージョン付き Depends は設計判断として保留。
+
+- tm-core 94 → **95**、workspace **223 passed** / web 16 / clippy / check.sh /
+  shellcheck / shfmt / YAML 成功。cargo deny は一時 GnuTLS エラー后再試行で成功。
