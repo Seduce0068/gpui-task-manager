@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **211 passed / 0 failed**（tm-core 88 / tm-viewmodel 40 / tm-platform 11 / tm-agent 57 / app 15、2026-11-17） |
+| `cargo test --workspace` | **214 passed / 0 failed**（tm-core 89 / tm-viewmodel 40 / tm-platform 11 / tm-agent 58 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1578,3 +1578,31 @@ Runtime Proof で取捨選択していた（親はその結果も仮説として
   見送り（README に現行方針を明記）。
 - tm-core 87 → **88**、tm-viewmodel 39 → **40**、workspace **211 passed** /
   clippy / shellcheck / shfmt / YAML / rustdoc / check.sh 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第6弾 → 3 論理変更）
+
+3 観点（同族負値 / ライセンス文書 / 設定バックアップ）の調査エージェントを並列起動し、
+各推奨項目を親が現行コードで Runtime Proof してから実装:
+
+1. **負値の正規化を統一**: tm-core に `pub fn normalise_percent()` を追加し
+   （非有限・負値・-0.0 → 正の 0）、`cmp_percent` / `Filter::matches` /
+   agent の `apply_process_limit` を同じ floor に揃えた。閾値側（min_cpu）は
+   負の閾値を壊さないよう触らない。回帰テスト 2 件追加。
+   agent の truncate テストは子の提案どおり PID タイブレークで失敗したため、
+   `truncate(1)` で「30% が残る」ことを検証する形に修正（修正前は -5% が残る）。
+2. **ライセンス文書の残り**: NOTICE.md へ IBM Plex の帰属（SIL OFL 1.1、
+   RFN "Plex"、Copyright 2017-2018 IBM）を追加。deny.toml の allow リスト
+   コメントを実態（permissive + AGPL + MPL）に修正。web/README.md の
+   「本 crate は Apache-2.0」「AGPL/GPL コードは含みません」という誤記を修正。
+3. **R2-D02 破損設定バックアップ**: load_from() の InvalidData 分岐で
+   `settings.json.corrupt-<epoch_nanos:16hex>` へ rename 退避（上書き禁止・
+   連番付与・バックアップ失敗は起動を止めず元の InvalidData を維持）。
+   settings.rs の既存テストモジュールは GPUI 非依存で SIGSEGV せず動作
+   （8 件成功を確認。SIGSEGV は main.rs に限定されることが判明）。
+
+- 子の指摘で見送り: SECURITY.md:114 の文言は方針判断、copyright の
+   common-licenses 記述は Debian 一般の真偽未確認のため保留。
+
+- tm-core 88 → **89**、tm-agent 57 → **58**、app 11 → **12**、
+  workspace **214 passed** / clippy / deny / rustdoc / check.sh 全ゲート成功。
+  markdownlint は NOTICE.md の表区切りを baseline と同じ形式に揃え増分ゼロ。

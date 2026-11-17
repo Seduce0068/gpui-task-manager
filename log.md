@@ -1199,3 +1199,10 @@
 - R2-C01/C02（Effect/Result 明示）、format_percent/cmp_percent の -0.0/負値、
   build-deb.sh の ldd not found 失敗扱い、Windows tm-platform テストを実装。
   clippy の needless_return 指摘は空ブロック化で解消。workspace 211 passed。
+
+## 2026-11-18（エージェント並列調査 第6弾 → 3 論理変更）
+
+- normalise_percent 公開で表示/ソート/フィルタ/truncate の負値扱いを統一、
+  IBM Plex 帰属とライセンス文書を修正、破損設定を rename 退避。
+  agent の truncate テストは PID タイブレークを考慮し truncate(1) に修正。
+  workspace 214 passed / 全ゲート成功。

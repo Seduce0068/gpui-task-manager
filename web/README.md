@@ -195,10 +195,10 @@ python3 cdp_verify_web.py \
 
 ## ライセンス
 
-- 本 crate のコード: Apache-2.0（リポジトリ本体と同じ）
+- 本 crate のコード: AGPL-3.0-or-later（リポジトリ本体と同じ）
 - `gpui-pre` / `gpui-pre-platform` / `gpui-pre-web` 0.3.12: Apache-2.0
 - IBM Plex Sans / Mono: SIL OFL 1.1（`assets/fonts/LICENSE-IBM-Plex.txt`）
-- AGPL/GPL コードは含みません（`poc-wasm` と同じプロジェクトの自作コードのみ再利用）。
+- 他プロジェクトからコピーした AGPL/GPL コードは含みません（`poc-wasm` と同じプロジェクトの自作コードのみ再利用）。本 crate 自体は上のとおり AGPL-3.0-or-later です。
 
 ## 参考
 

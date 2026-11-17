@@ -92,12 +92,57 @@ pub fn save(settings: &Settings) -> io::Result<()> {
     save_to(&path, settings)
 }
 
+/// Moves a corrupt settings file aside before the next save overwrites it.
+///
+/// Failures are deliberately ignored: the caller still returns the original
+/// `InvalidData`, so a backup problem never turns into a startup failure.
+fn backup_corrupt_file(path: &Path) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings.json".to_string());
+    let stem = path
+        .with_file_name(format!("{name}.corrupt-{nanos:016x}"))
+        .display()
+        .to_string();
+    // Append a counter if two corruptions are detected within the same tick.
+    let mut candidate = PathBuf::from(stem.clone());
+    for counter in 1..=u16::MAX {
+        if !candidate.exists() {
+            break;
+        }
+        candidate = PathBuf::from(format!("{stem}-{counter}"));
+    }
+    if let Err(error) = fs::rename(path, &candidate) {
+        eprintln!(
+            "gpui-task-manager: 破損設定のバックアップに失敗 ({}): {error}",
+            candidate.display()
+        );
+    }
+}
+
 /// Loads settings from an explicit path (used by tests and by [`load`]).
 pub(crate) fn load_from(path: &Path) -> io::Result<Settings> {
-    let text = fs::read_to_string(path)?;
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            // Invalid UTF-8 is also InvalidData; preserve those bytes too.
+            if error.kind() == io::ErrorKind::InvalidData {
+                backup_corrupt_file(path);
+            }
+            return Err(error);
+        }
+    };
     serde_json::from_str(&text)
         .map(Settings::normalized)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        .map_err(|error| {
+            backup_corrupt_file(path);
+            io::Error::new(io::ErrorKind::InvalidData, error)
+        })
 }
 
 /// Writes settings atomically to an explicit path.
@@ -187,6 +232,30 @@ mod tests {
         assert!(leftovers.is_empty(), "leftover temps: {leftovers:?}");
         assert_eq!(load_from(&path).expect("load settings"), settings);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn corrupt_settings_are_renamed_to_a_backup() {
+        let path = temporary_path("corrupt-backup");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(&path, "{ not json").expect("write corrupt file");
+
+        let error = load_from(&path).expect_err("corrupt json");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!path.exists(), "corrupt file must be moved aside");
+
+        let parent = path.parent().expect("parent");
+        let backups: Vec<_> = fs::read_dir(parent)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup expected");
+        assert_eq!(
+            fs::read(backups[0].path()).expect("read backup"),
+            b"{ not json"
+        );
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[cfg(unix)]

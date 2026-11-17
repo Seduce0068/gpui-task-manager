@@ -666,9 +666,10 @@ fn parse_process_limit(query: Option<&str>) -> Result<usize, String> {
 fn apply_process_limit(snapshot: &mut SystemSnapshot, limit: usize) -> usize {
     let total = snapshot.processes.len();
     snapshot.processes.sort_by(|left, right| {
-        right
-            .cpu_percent
-            .total_cmp(&left.cpu_percent)
+        // Sort by the displayed value: a negative/NaN CPU percentage renders as
+        // 0.0% and must not jump ahead of real work when `limit` truncates.
+        tm_core::normalise_percent(right.cpu_percent)
+            .total_cmp(&tm_core::normalise_percent(left.cpu_percent))
             .then_with(|| left.key.pid.cmp(&right.key.pid))
     });
     snapshot.processes.truncate(limit);
@@ -1087,6 +1088,20 @@ mod tests {
                 "processes must be sorted by CPU desc then PID asc"
             );
         }
+    }
+
+    #[test]
+    fn process_limit_treats_negative_cpu_as_zero_when_truncating() {
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.processes.truncate(3);
+        snapshot.processes[0].cpu_percent = -5.0;
+        snapshot.processes[1].cpu_percent = 0.0;
+        snapshot.processes[2].cpu_percent = 30.0;
+
+        // Truncate to one row: before normalising, the -5.0 row sorts first
+        // (total_cmp) and would be kept instead of the real 30% process.
+        apply_process_limit(&mut snapshot, 1);
+        assert_eq!(snapshot.processes[0].cpu_percent, 30.0);
     }
 
     #[test]
