@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **185 passed / 0 failed**（tm-core 72 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **186 passed / 0 failed**（tm-core 73 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1211,3 +1211,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   個別マッチ・非マッチ（user は大小文字無視）が未検証だった。
   `Filter::matches` を直接検証するテストを追加。
 - tm-core 71 → **72 tests**、workspace 185 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（CPU/メモリ閾値の個別適用を検証）
+
+- 既存の閾値テストは両方同時指定のみだったため、min_cpu_percent と
+  min_memory_bytes をそれぞれ単独で指定した場合に正しくフィルタされることを検証。
+- tm-core 72 → **73 tests**、workspace 186 passed / clippy 0 warning / fmt OK。

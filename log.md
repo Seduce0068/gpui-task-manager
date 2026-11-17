@@ -908,3 +908,7 @@
 
 - status/user のマッチ・非マッチ（user 大小文字無視）を検証。
   tm-core 71 → 72、workspace 185 passed。
+
+## 2026-11-17（CPU/メモリ閾値の個別適用を検証）
+
+- 各閾値の単独指定をテスト。tm-core 72 → 73、workspace 186 passed。
