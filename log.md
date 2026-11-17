@@ -1014,3 +1014,8 @@
 ## 2026-11-17（MetricHistory のゼロ容量境界を検証）
 
 - new(0) が容量1にクランプされ push が動作することを確認。tm-core 83 → 84、workspace 197 passed。
+
+## 2026-11-17（80 ラウンド時点の全ゲート再検証）
+
+- `bash scripts/check.sh` を再実行: exit 0。workspace 197 passed / web 15 tests /
+  wasm check / clippy / deny / vet / machete すべて成功。新たな不具合なし。
