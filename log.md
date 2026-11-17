@@ -1101,3 +1101,7 @@
 - `writes_a_well_formed_response` に `Access-Control-Allow-Origin` が検証済み origin
   をそのままエコーすること（wildcard ではなく）、Credentials ヘッダを付与しないことを
   追加検証。テスト件数は不変（workspace 199 passed）。
+
+## 2026-11-17（生成トークンの小文字 hex を固定）
+
+- 生成トークンが小文字 hex のみであることを検証。tm-agent 51 → 52、workspace 200 passed。
