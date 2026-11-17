@@ -14,6 +14,8 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 - [cross-platform.md](cross-platform.md) — Windows/macOS 対応（cfg 分岐・CI マトリクス・cross-check）
 - [wasm-spike.md](wasm-spike.md) — GPUI Web の実現性スパイク（capability 表、
   バックエンド切り分け、推奨構成、未確認事項）
+- [residual-tasks-research.md](residual-tasks-research.md) — 全 6 ラウンドの
+  クロスレビュー記録（189 所見・根拠・重複統合・妥当性判定・最終バックログ）
 
 ## 検証
 
