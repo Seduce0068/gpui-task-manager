@@ -112,7 +112,8 @@ impl TaskManagerApp {
         let demo_mode = platform.is_demo;
         let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
         if let Some(error) = init_error {
-            dashboard.set_status(error, true);
+            // Startup failures must stay visible until the user acts.
+            dashboard.set_persistent_status(error);
         }
         let settings = crate::settings::load();
         for command in [
@@ -230,7 +231,13 @@ impl TaskManagerApp {
                 .update(cx, |this, cx| {
                     this.sampling_in_flight = false;
                     match result {
-                        Ok(snapshot) => this.dashboard.ingest(snapshot),
+                        Ok(snapshot) => {
+                            this.dashboard.ingest(snapshot);
+                            // A transient notice (e.g. "resumed") should not
+                            // linger after fresh data; persistent startup
+                            // notices survive (R3-U05).
+                            this.dashboard.clear_transient_status();
+                        }
                         Err(error) => this.dashboard.set_status(error.to_string(), true),
                     }
                     cx.notify();

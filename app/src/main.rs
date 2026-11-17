@@ -86,14 +86,22 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
     let mut flags = GuiFlags::default();
     for argument in args {
         let text = argument.to_string_lossy();
+        let mut recognised = false;
         for (flag, slot) in [("--demo", &mut flags.demo), ("--redact", &mut flags.redact)] {
             if text == flag {
                 *slot = true;
+                recognised = true;
             } else if text.starts_with(flag) && text[flag.len()..].starts_with('=') {
                 // Do not echo `text`: a mistaken `--demo=<secret>` would put
                 // the secret in stderr, so name only the flag.
                 return Err(format!("{flag} に値は指定できません"));
             }
+        }
+        if !recognised && text.starts_with('-') {
+            // A typo such as `--redcat` must not silently disable redaction
+            // (SECURITY.md public-evidence hygiene). Echo only the fact that
+            // an unknown flag was seen, never the value.
+            return Err("不明なフラグがあります".to_string());
         }
     }
     Ok(flags)
@@ -117,7 +125,7 @@ fn handle_cli() -> bool {
     {
         println!(
             "gpui-task-manager {}\n\n\
-             使い方: gpui-task-manager [--demo] [--redact]\n\n\
+             使い方: gpui-task-manager [--demo] [--redact]（未知のフラグはエラー）\n\n\
              --demo    合成データで起動します（スクリーンショット・ブラウザ比較用）\n\
              --redact  ホスト名・ユーザー名・ホームパスを表示時に伏せます（公開用スクリーンショット）\n\n\
              主なキー: ↑↓ 選択 / Space 一時停止 / Ctrl+F 絞り込み /\n\

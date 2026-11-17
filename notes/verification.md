@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **223 passed / 0 failed**（tm-core 95 / tm-viewmodel 41 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
+| `cargo test --workspace` | **224 passed / 0 failed**（tm-core 95 / tm-viewmodel 42 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1744,3 +1744,31 @@ schema 互換方針、GLIBC バージョン付き Depends は設計判断とし�
 
 - tm-core 94 → **95**、workspace **223 passed** / web 16 / clippy / check.sh /
   shellcheck / shfmt / YAML 成功。cargo deny は一時 GnuTLS エラー后再試行で成功。
+
+## 2026-11-18（エージェント並列調査 第13弾 → CDP/status/CLI の実バグ）
+
+3 観点（設定状態機械 / web CDP / 認証起動）の調査エージェントを並列起動し、
+各指摘を親が Runtime Proof で確認してから実装:
+
+1. **CDP read_loop の pending future 解決漏れ**: `cdp_verify_web.py` は
+   read loop 終了時に pending future を放置し `call()` が 120 秒ハング
+   （IME 版には完成した修正例あり）。IME 版と同じ `set_exception` を移植。
+   settings スクリプトも web を import するので同時に解消。
+2. **R3-U05 transient status の未クリア**: `StatusMessage` に `persistent`
+   を追加し、`set_persistent_status` / `clear_transient_status` を新設。
+   native/web の成功 ingest 時に transient のみクリア（起動エラーは永続）。
+   pure テスト `transient_status_is_cleared_but_persistent_status_survives`
+   を tm-viewmodel へ追加。
+3. **`parse_gui_flags` の未知フラグ無視**: `--redcat` 等の typo が黙って
+   redact=false で起動し SECURITY.md の公開物衛生に反するシナリオを修正。
+   未知フラグを拒否（値はエコーしない）。usage にも明記。
+   app テストは SIGSEGV 制約で追加せず、実バイナリで `--help` / `--version` /
+   `--demo=yes` / `--redcat` の全経路を確認。
+
+**却下／保留**: R2-D01（version 保持）/ R5-D02（未知フィールド）は現状
+再現不能でマイグレーション方針が必要、R3-U01（破損設定 GUI 通知）は
+persistent 受け皿ができたので別途、CDP の固定 sleep・ポート競合・F2/
+Space parity は設計判断／CDP 証跡更新を伴うため保留。
+
+- tm-viewmodel 41 → **42**、workspace **224 passed** / clippy / check.sh /
+  python py_compile 成功。CLI 全経路の Runtime Proof 成功。
