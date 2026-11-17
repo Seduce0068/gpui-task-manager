@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **216 passed / 0 failed**（tm-core 90 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 16、2026-11-18） |
+| `cargo test --workspace` | **220 passed / 0 failed**（tm-core 94 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1650,3 +1650,27 @@ CDP 契约上マスク不可のため、いずれも親の判断として保留�
   ADR-021（AGPL 移行）の追加、ADR-011 の superseded 扱いも判断待ち。
 
 - workspace 216 passed / clippy / markdownlint（増分ゼロ）成功。
+
+## 2026-11-18（エージェント並列調査 第9弾 → app redact を agent と共通化）
+
+2 体のエージェント（redact 調査／実装レビュー）を並列起動し、指摘を
+Runtime Proof で確認してから実装:
+
+- **tm-core に `redact` モジュールを追加**: `RedactionIdentifiers { home, user,
+  hostname }` と pure な `redact_text` / `redact_snapshot`。`env` 読み取りは
+  呼び出し側に残し、no-I/O・wasm 対応を維持。既存 agent の tailnet 3 ヘルパを
+  移動し、置換順序を `home → hostname → short_host → user → tailnet →
+  subdomains → tokens` に修正（短い user が hostname を壊す問題を解消）。
+  空／短い識別子の最小長ガードも追加。
+- **agent**: ローカル redact ヘルパを削除し共通関数へ切り替え。既存テストは
+  回帰として維持（59 件すべて成功）。
+- **app**: `display()` が dashboard の hostname を使って共通 `redact_text` を
+  呼ぶようにし、`process.name`（テーブル＋詳細）・`summary().disks.mount` ・
+  hostname に適用。SECURITY.md の約束（hostname/tailnet 含む）を満たす。
+- **レビュー指摘で回避**: `dashboard.snapshot()` は `Option<&SystemSnapshot>`
+  なので app では `&mut` を要求する `redact_snapshot` を使わず pure 関数のみ。
+  ids は redact 前に clone して所有させ borrow 競合・順序依存を回避。
+  IF 名・センサー名は `is_virtual_interface()` の回帰リスクで意図的に非対象。
+
+- tm-core 90 → **94**、workspace **220 passed** / clippy / rustdoc 成功。
+  ネイティブ `--demo --redact` 起動スモークも成功。

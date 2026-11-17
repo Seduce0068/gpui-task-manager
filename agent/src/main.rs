@@ -525,124 +525,23 @@ fn snapshot_response(
 ///
 /// Used by `--redact` so screenshots and JSON evidence can be published without
 /// exposing the host name, user names or home directory layout.
+/// Removes local identifiers from a snapshot before it is serialised.
+///
+/// The rules live in `tm_core::redact` so the native shell (`--redact`) and
+/// this endpoint cannot drift. Values are captured before redaction and owned
+/// as Strings to avoid borrowing a snapshot we are about to mutate.
 fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot) {
     let original_hostname = snapshot.hostname.clone().unwrap_or_default();
-    if snapshot.hostname.is_some() {
-        snapshot.hostname = Some("host".to_string());
-    }
     let home = std::env::var("HOME").unwrap_or_default();
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default();
-    // Host names also appear inside command lines (for example OIDC issuer
-    // URLs, `--trusted-host` flags or avahi's advertised name). Replace the
-    // full host name, its first label and any `*.ts.net` style tailnet domain
-    // so `--redact` really removes the machine identity.
-    let short_host = original_hostname
-        .split(['.', '-'])
-        .next()
-        .unwrap_or("")
-        .to_string();
-    let redact_text = |value: &str| {
-        let mut out = value.to_string();
-        if !home.is_empty() {
-            out = out.replace(&home, "/home/user");
-        }
-        if !user.is_empty() {
-            out = out.replace(&user, "user");
-        }
-        if !original_hostname.is_empty() {
-            out = out.replace(&original_hostname, "host");
-        }
-        if short_host.len() >= 3 {
-            out = out.replace(&short_host, "host");
-        }
-        out = redact_tailnet_domains(&out);
-        out = redact_host_subdomains(&out);
-        redact_tailnet_tokens(&out)
+    let ids = tm_core::redact::RedactionIdentifiers {
+        home: &home,
+        user: &user,
+        hostname: &original_hostname,
     };
-    for process in &mut snapshot.processes {
-        if process.user.is_some() {
-            process.user = Some("user".to_string());
-        }
-        process.command = redact_text(&process.command);
-        process.name = redact_text(&process.name);
-    }
-    // A mount point can be under the user's home (e.g. /home/<user>/work or a
-    // /media/<user>/... volume). Home paths are part of `--redact`'s contract;
-    // network IF names and sensor labels are deliberately NOT touched here —
-    // `is_virtual_interface()` depends on the name to classify traffic.
-    for disk in &mut snapshot.disks {
-        disk.mount_point = redact_text(&disk.mount_point);
-    }
-}
-
-/// Replaces `host.tailXXXX.ts.net` style domains with `host`.
-///
-/// Commands are truncated to 240 characters before they reach the agent, so a
-/// full `.ts.net` suffix may be missing; [`redact_host_subdomains`] and
-/// [`redact_tailnet_tokens`] cover those fragments as well.
-fn redact_tailnet_domains(value: &str) -> String {
-    const SUFFIX: &str = ".ts.net";
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(position) = rest.find(SUFFIX) {
-        let before = &rest[..position];
-        let start = before
-            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-'))
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        out.push_str(&before[..start]);
-        out.push_str("host");
-        rest = &rest[position + SUFFIX.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Replaces `host.<tailnet-id>` style suffixes with `host`.
-///
-/// This catches truncated commands such as `https://host.tail1234.t…` where the
-/// `.ts.net` suffix was cut off by the 240-character command limit.
-fn redact_host_subdomains(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(position) = rest.find("host.") {
-        out.push_str(&rest[..position]);
-        out.push_str("host");
-        let suffix = &rest[position + "host.".len()..];
-        let consumed = suffix
-            .char_indices()
-            .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '.'))
-            .map(|(index, _)| index)
-            .unwrap_or(suffix.len());
-        rest = &suffix[consumed..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Replaces bare `tail` + hex identifiers (tailnet IDs) with `tailnet`.
-fn redact_tailnet_tokens(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(position) = rest.find("tail") {
-        out.push_str(&rest[..position]);
-        let candidate = &rest[position + "tail".len()..];
-        let hex_len = candidate
-            .chars()
-            .take_while(|ch| ch.is_ascii_hexdigit())
-            .count();
-        if hex_len >= 6 {
-            out.push_str("tailnet");
-            rest = &candidate[hex_len..];
-        } else {
-            out.push_str("tail");
-            rest = candidate;
-        }
-    }
-    out.push_str(rest);
-    out
+    tm_core::redact::redact_snapshot(snapshot, &ids);
 }
 
 /// Parses `?limit=`: default [`DEFAULT_PROCESS_LIMIT`], clamped to
