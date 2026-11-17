@@ -158,7 +158,10 @@ pub fn parse_request(head: &[u8]) -> Result<Request, ParseError> {
             return Err(ParseError::TooLarge);
         }
         let (name, value) = line.split_once(':').ok_or(ParseError::Malformed)?;
-        let name = name.trim();
+        // RFC 9110 §5.1 forbids whitespace between the field name and colon,
+        // and a line starting with SP/HTAB is an obs-fold continuation. Do NOT
+        // trim the name: accepting `Host : x` (or a folded `Authorization`)
+        // creates a header-interpretation ambiguity (R23 HTTP review).
         if name.is_empty()
             || !name
                 .bytes()
@@ -169,7 +172,7 @@ pub fn parse_request(head: &[u8]) -> Result<Request, ParseError> {
         let value = value.trim();
         if value
             .bytes()
-            .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+            .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
         {
             return Err(ParseError::Malformed);
         }
@@ -439,6 +442,23 @@ mod tests {
             parse_request(b"GET /api/v1/snapshot?token=abc HTTP/1.1").expect("valid request");
         assert_eq!(request.path, "/api/v1/snapshot");
         assert_eq!(request.query.as_deref(), Some("token=abc"));
+    }
+
+    #[test]
+    fn malformed_header_names_and_folds_are_rejected() {
+        // RFC 9110 §5.1: no whitespace before the colon, no obs-fold lines,
+        // and no C0 controls in values (HTAB remains legal OWS).
+        for raw in [
+            &b"GET / HTTP/1.1\r\nHost : a"[..],
+            b"GET / HTTP/1.1\r\nHost\t: a",
+            "GET / HTTP/1.1\r\nHost\u{a0}: a".as_bytes(),
+            b"GET / HTTP/1.1\r\nHost: a\r\n Authorization: Bearer x",
+            b"GET / HTTP/1.1\r\nX-Test: a\x1bb",
+            b"GET / HTTP/1.1\r\nX-Test: a\x7fb",
+        ] {
+            assert_eq!(parse_request(raw), Err(ParseError::Malformed), "{raw:?}");
+        }
+        assert!(parse_request(b"GET / HTTP/1.1\r\nX-Test: a\tb").is_ok());
     }
 
     #[test]
