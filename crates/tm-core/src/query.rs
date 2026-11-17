@@ -433,6 +433,33 @@ mod tests {
     }
 
     #[test]
+    fn sort_key_labels_directions_and_arrows_are_stable() {
+        // These values are shown in the header and asserted by the CDP proof
+        // hook (`sort=名前`, `dir=asc`), so pin every variant here.
+        let cases = [
+            (SortKey::Cpu, "CPU", SortDirection::Descending),
+            (SortKey::Memory, "メモリ", SortDirection::Descending),
+            (SortKey::Pid, "PID", SortDirection::Ascending),
+            (SortKey::Name, "名前", SortDirection::Ascending),
+            (SortKey::User, "ユーザー", SortDirection::Ascending),
+            (SortKey::Status, "状態", SortDirection::Ascending),
+            (SortKey::Threads, "スレッド", SortDirection::Ascending),
+            (SortKey::StartTime, "起動時刻", SortDirection::Ascending),
+        ];
+        for (key, label, direction) in cases {
+            assert_eq!(key.label(), label);
+            assert_eq!(key.default_direction(), direction);
+            assert_eq!(SortSpec::new(key).direction, direction);
+        }
+        assert_eq!(SortDirection::Ascending.arrow(), "▲");
+        assert_eq!(SortDirection::Descending.arrow(), "▼");
+        assert_eq!(
+            SortDirection::Ascending.flipped(),
+            SortDirection::Descending
+        );
+    }
+
+    #[test]
     fn default_sort_is_cpu_descending() {
         let sorted = filter_and_sort(&sample(), &Filter::default(), SortSpec::default());
         assert_eq!(sorted, vec![2, 0, 1]);
