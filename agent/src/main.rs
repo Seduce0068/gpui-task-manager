@@ -21,6 +21,7 @@
 mod args;
 mod auth;
 mod http;
+mod telemetry;
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
@@ -29,15 +30,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
+use serde_json::json;
 use tm_core::demo::DemoProbe;
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
 use tm_platform::NativeProbe;
 
+use telemetry::{AgentError, ExitCategory, Level, Metrics, RequestTrace};
+
 /// Health endpoint (no authentication, reveals nothing sensitive).
 const HEALTH_PATH: &str = "/healthz";
 /// Snapshot endpoint (bearer token required).
 const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
+/// Metrics endpoint (no authentication; counters/gauges only, no machine data).
+const METRICS_PATH: &str = "/metrics";
 
 /// Number of processes returned when the client does not ask for a limit.
 ///
@@ -82,21 +88,43 @@ struct ErrorBody<'a> {
 }
 
 fn main() {
-    if let Err(message) = run() {
-        eprintln!("tm-agent: {message}");
-        std::process::exit(1);
+    match run() {
+        Ok(()) => telemetry::emit(
+            Level::Info,
+            "agent.exit",
+            json!({ "exit_code": 0, "category": ExitCategory::Success.as_str() }),
+        ),
+        Err(error) => {
+            // Structured first (machine-readable), then the unchanged human line.
+            telemetry::emit(
+                Level::Error,
+                "agent.exit",
+                json!({
+                    "exit_code": error.code(),
+                    "category": error.category().as_str(),
+                    "error": error.message(),
+                }),
+            );
+            eprintln!("tm-agent: {}", error.message());
+            std::process::exit(error.code());
+        }
     }
 }
 
-/// Runs the agent and returns a human-readable error on failure.
-fn run() -> Result<(), String> {
-    let config = args::parse(std::env::args().skip(1))?;
+/// Runs the agent and returns a categorised error on failure.
+///
+/// Error categories map to stable exit codes (see [`ExitCategory`]); the legacy
+/// human-readable message is preserved verbatim on stderr.
+fn run() -> Result<(), AgentError> {
+    let config = args::parse(std::env::args().skip(1))
+        .map_err(|message| AgentError::new(ExitCategory::Usage, message))?;
     if config.help {
         print!("{}", args::USAGE);
         return Ok(());
     }
 
-    let mut probe = build_probe(&config)?;
+    let mut probe =
+        build_probe(&config).map_err(|message| AgentError::new(ExitCategory::Probe, message))?;
 
     // Warn about argv exposure before the `--once` early return so operators
     // running a one-shot snapshot with `--token` see the same warning.
@@ -107,12 +135,16 @@ fn run() -> Result<(), String> {
     }
 
     if config.once {
-        return print_once(probe.as_mut(), config.redact);
+        return print_once(probe.as_mut(), config.redact)
+            .map_err(|message| AgentError::new(ExitCategory::Probe, message));
     }
 
     let token = match (config.token, config.token_file.as_deref()) {
         (Some(_), Some(_)) => {
-            return Err("--token と --token-file は同時に指定できません".to_string());
+            return Err(AgentError::new(
+                ExitCategory::Usage,
+                "--token と --token-file は同時に指定できません",
+            ));
         }
         (Some(token), None) => {
             // The argv warning was already emitted above (also for --once).
@@ -120,11 +152,14 @@ fn run() -> Result<(), String> {
             // token for every source (the file path already does this).
             token.trim().to_string()
         }
-        (None, Some(path)) => read_token_file(path)?,
+        (None, Some(path)) => {
+            read_token_file(path).map_err(|message| AgentError::new(ExitCategory::Auth, message))?
+        }
         (None, None) => match std::env::var("TM_AGENT_TOKEN") {
             Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
             _ => {
-                let token = auth::generate_token()?;
+                let token = auth::generate_token()
+                    .map_err(|message| AgentError::new(ExitCategory::Auth, message))?;
                 // The operator needs the token to talk to the agent; this is the
                 // only place it is written to the log.
                 eprintln!("tm-agent: 認証トークン (生成): {token}");
@@ -133,17 +168,36 @@ fn run() -> Result<(), String> {
         },
     };
 
-    let listener = TcpListener::bind(config.listen)
-        .map_err(|err| format!("{} を bind できません: {err}", config.listen))?;
-    let local = listener
-        .local_addr()
-        .map_err(|err| format!("待ち受けアドレスを取得できません: {err}"))?;
+    let listener = TcpListener::bind(config.listen).map_err(|err| {
+        AgentError::new(
+            ExitCategory::Network,
+            format!("{} を bind できません: {err}", config.listen),
+        )
+    })?;
+    let local = listener.local_addr().map_err(|err| {
+        AgentError::new(
+            ExitCategory::Network,
+            format!("待ち受けアドレスを取得できません: {err}"),
+        )
+    })?;
     eprintln!(
         "tm-agent: http://{local} で待ち受けます (読み取り専用, demo={}, schema_version={})",
         config.demo,
         tm_core::WIRE_SCHEMA_VERSION
     );
-    serve(&listener, probe, &token, config.redact, !config.demo)
+    telemetry::emit(
+        Level::Info,
+        "agent.listening",
+        json!({
+            "address": local.to_string(),
+            "demo": config.demo,
+            "redact": config.redact,
+            "schema_version": tm_core::WIRE_SCHEMA_VERSION,
+        }),
+    );
+    // `serve` still returns `Result<(), String>`; `From<String>` maps it to
+    // the historical Internal category / exit code 1.
+    serve(&listener, probe, &token, config.redact, !config.demo).map_err(AgentError::from)
 }
 
 /// Reads a bearer token from a file, trimming the trailing newline.
@@ -228,6 +282,8 @@ struct SharedState {
     /// `false` until the first real-probe snapshot has consumed a warm-up
     /// sample. Demo data starts ready (its ticks are deterministic).
     warmed_up: AtomicBool,
+    /// Request counters/gauges exposed read-only at [`METRICS_PATH`].
+    metrics: Arc<Metrics>,
 }
 
 impl SharedState {
@@ -238,6 +294,7 @@ impl SharedState {
             redact,
             active: AtomicUsize::new(0),
             warmed_up: AtomicBool::new(!needs_warmup),
+            metrics: Arc::new(Metrics::new()),
         }
     }
 }
@@ -266,6 +323,7 @@ fn serve(
             // loop at full speed; pause briefly before retrying (R2X-FR1).
             Err(err) => {
                 eprintln!("tm-agent: accept に失敗: {err}");
+                telemetry::emit(Level::Warn, "accept.failed", json!({}));
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
@@ -287,7 +345,10 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
     let previous = state.active.fetch_add(1, Ordering::AcqRel);
     if previous >= MAX_CONNECTIONS {
         // Drop guard returns the slot even if writing the rejection panics.
+        let metrics = Arc::clone(&state.metrics);
         let _slot = ActiveConnection(state);
+        let mut trace = RequestTrace::begin_unknown(&metrics);
+        trace.finish(503);
         let response = http::Response::json(
             503,
             "Service Unavailable",
@@ -316,7 +377,7 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
             // `_slot` is moved into the worker so the counter is released when the
             // worker exits — or unwinds after a panic — never on the accept thread.
             let _slot = _slot;
-            let result = handle_connection(&mut stream, |request| {
+            let result = handle_connection(&mut stream, &worker_state.metrics, |request| {
                 // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
                 // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
                 // 回収した場合はログに残し、無ログの fail-open にならないようにする。
@@ -325,6 +386,11 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
                     Err(err) => {
                         eprintln!(
                             "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                        );
+                        telemetry::emit(
+                            Level::Warn,
+                            "probe.mutex_poisoned",
+                            json!({ "recovered": true }),
                         );
                         err.into_inner()
                     }
@@ -335,6 +401,8 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
                     &worker_state.token,
                     worker_state.redact,
                     &worker_state.warmed_up,
+                    &worker_state.metrics,
+                    &worker_state.active,
                 )
             });
             if let Err(err) = result {
@@ -354,9 +422,12 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
 /// Handles exactly one HTTP request on `stream`.
 ///
 /// The caller supplies `route` so the shared probe is locked only after a
-/// complete request head has been read.
+/// complete request head has been read. Every request gets a [`RequestTrace`]:
+/// its `Drop` implementation guarantees even an early error return is recorded
+/// in the structured log and metrics.
 fn handle_connection(
     stream: &mut TcpStream,
+    metrics: &Metrics,
     mut route: impl FnMut(&http::Request) -> http::Response,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
@@ -365,28 +436,30 @@ fn handle_connection(
     let request = match http::read_request(stream) {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
-        Err(http::ParseError::TooLarge) => {
-            let response = http::Response::json(
-                431,
-                "Request Header Fields Too Large",
-                error_body("リクエストヘッダが大きすぎます"),
-            );
-            return http::write_response(stream, &response);
-        }
-        Err(http::ParseError::Malformed) => {
-            let response =
-                http::Response::json(400, "Bad Request", error_body("リクエストを解釈できません"));
-            return http::write_response(stream, &response);
-        }
-        Err(http::ParseError::Timeout) => {
-            let response = http::Response::json(
-                408,
-                "Request Timeout",
-                error_body("リクエストの送信がタイムアウトしました"),
-            );
+        Err(parse_error) => {
+            let (status, reason, message) = match parse_error {
+                http::ParseError::TooLarge => (
+                    431,
+                    "Request Header Fields Too Large",
+                    "リクエストヘッダが大きすぎます",
+                ),
+                http::ParseError::Malformed => (400, "Bad Request", "リクエストを解釈できません"),
+                http::ParseError::Timeout => (
+                    408,
+                    "Request Timeout",
+                    "リクエストの送信がタイムアウトしました",
+                ),
+            };
+            let mut trace = RequestTrace::begin_unknown(metrics);
+            trace.finish(status);
+            let response = http::Response::json(status, reason, error_body(message));
             return http::write_response(stream, &response);
         }
     };
+
+    // Only `path` is traced. The raw target (with `?token=...`) and the
+    // Authorization header must never reach a log line.
+    let mut trace = RequestTrace::begin(metrics, &request.method, &request.path);
 
     // Compute the allowed Origin before any early return so error responses
     // (e.g. the Host check below) carry CORS headers too. Without this, the
@@ -406,11 +479,13 @@ fn handle_connection(
             if let Some(origin) = allowed_origin {
                 http::add_cors_headers(&mut response, origin);
             }
+            trace.finish(response.status);
             return http::write_response(stream, &response);
         }
     }
 
     let mut response = route(&request);
+    trace.finish(response.status);
     if let Some(origin) = allowed_origin {
         http::add_cors_headers(&mut response, origin);
     }
@@ -424,6 +499,8 @@ fn route(
     token: &str,
     redact: bool,
     warmed_up: &AtomicBool,
+    metrics: &Metrics,
+    active: &AtomicUsize,
 ) -> http::Response {
     if request.method.eq_ignore_ascii_case("OPTIONS") {
         return preflight_response(request);
@@ -443,6 +520,7 @@ fn route(
     match request.path.as_str() {
         HEALTH_PATH => health_response(),
         SNAPSHOT_PATH => snapshot_response(request, probe, token, redact, warmed_up),
+        METRICS_PATH => metrics_response(metrics, active),
         _ => http::Response::json(
             404,
             "Not Found",
@@ -489,6 +567,17 @@ fn health_response() -> http::Response {
     )
 }
 
+/// `/metrics`: process-local counters/gauges in Prometheus text format.
+///
+/// Deliberately public like `/healthz` (loopback-only listener, no machine
+/// data). It does not replace or alter any existing endpoint.
+fn metrics_response(metrics: &Metrics, active: &AtomicUsize) -> http::Response {
+    let body = metrics.render_prometheus(active.load(Ordering::Acquire));
+    let mut response = http::Response::json(200, "OK", body);
+    response.content_type = "text/plain; version=0.0.4; charset=utf-8";
+    response
+}
+
 /// `/api/v1/snapshot`: authenticated, read-only snapshot.
 fn snapshot_response(
     request: &http::Request,
@@ -498,9 +587,20 @@ fn snapshot_response(
     warmed_up: &AtomicBool,
 ) -> http::Response {
     let Some(supplied) = auth::request_token(request) else {
+        // Never log the supplied value; only the fact that it was absent.
+        telemetry::emit(
+            Level::Warn,
+            "auth.denied",
+            json!({ "reason": "missing_token", "path": request.path }),
+        );
         return unauthorized_response();
     };
     if !auth::constant_time_eq(token, &supplied) {
+        telemetry::emit(
+            Level::Warn,
+            "auth.denied",
+            json!({ "reason": "invalid_token", "path": request.path }),
+        );
         return unauthorized_response();
     }
 
@@ -517,6 +617,11 @@ fn snapshot_response(
     if !warmed_up.load(Ordering::Acquire) {
         if let Err(err) = probe.sample() {
             eprintln!("tm-agent: ウォームアップサンプルに失敗: {err}");
+            telemetry::emit(
+                Level::Error,
+                "probe.sample_failed",
+                json!({ "phase": "warmup" }),
+            );
             return json_response(
                 500,
                 "Internal Server Error",
@@ -546,6 +651,11 @@ fn snapshot_response(
             // Details go to the operator's log; the client gets a fixed string
             // so a future probe implementation cannot leak paths in the body.
             eprintln!("tm-agent: スナップショット取得に失敗: {err}");
+            telemetry::emit(
+                Level::Error,
+                "probe.sample_failed",
+                json!({ "phase": "snapshot" }),
+            );
             json_response(
                 500,
                 "Internal Server Error",
@@ -632,6 +742,11 @@ fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> 
         Ok(body) => http::Response::json(status, reason, body),
         Err(err) => {
             eprintln!("tm-agent: JSON への変換に失敗: {err}");
+            telemetry::emit(
+                Level::Error,
+                "response.serialize_failed",
+                json!({ "status": status }),
+            );
             http::Response::json(
                 500,
                 "Internal Server Error",
@@ -659,15 +774,27 @@ mod tests {
 
     /// Starts a demo-mode server that accepts exactly `connections` requests.
     fn spawn_demo_server(connections: usize) -> (SocketAddr, JoinHandle<()>) {
+        spawn_demo_server_with_redaction(connections, false)
+    }
+
+    /// Same as [`spawn_demo_server`] with an explicit `--redact` setting.
+    fn spawn_demo_server_with_redaction(
+        connections: usize,
+        redact: bool,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
         let handle = std::thread::spawn(move || {
             let mut probe = DemoProbe::new();
             let warm = AtomicBool::new(true); // demo data needs no warm-up
+            let metrics = Metrics::new();
+            let active = AtomicUsize::new(0);
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().expect("accept");
-                handle_connection(&mut stream, |request| {
-                    route(request, &mut probe, TEST_TOKEN, false, &warm)
+                handle_connection(&mut stream, &metrics, |request| {
+                    route(
+                        request, &mut probe, TEST_TOKEN, redact, &warm, &metrics, &active,
+                    )
                 })
                 .expect("handle connection");
             }
@@ -718,9 +845,13 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut probe = FailingProbe;
             let warm = AtomicBool::new(true); // the error path never warms up
+            let metrics = Metrics::new();
+            let active = AtomicUsize::new(0);
             let (mut stream, _) = listener.accept().expect("accept");
-            handle_connection(&mut stream, |request| {
-                route(request, &mut probe, TEST_TOKEN, false, &warm)
+            handle_connection(&mut stream, &metrics, |request| {
+                route(
+                    request, &mut probe, TEST_TOKEN, false, &warm, &metrics, &active,
+                )
             })
             .expect("handle connection");
         });
@@ -1328,5 +1459,61 @@ mod tests {
         for keeper in keepers {
             keeper.join().expect("keeper thread");
         }
+    }
+
+    #[test]
+    fn metrics_endpoint_is_public_and_never_leaks_the_token() {
+        let (address, handle) = spawn_demo_server(2);
+        // A first request must be counted before /metrics is rendered.
+        let health = send_request(address, "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
+
+        let metrics = send_request(address, "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        handle.join().expect("server thread");
+
+        assert!(metrics.starts_with("HTTP/1.1 200 OK"), "{metrics}");
+        let (head, body) = metrics.split_once("\r\n\r\n").expect("body separator");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: text/plain"),
+            "{head}"
+        );
+        assert!(body.contains("tm_agent_requests_total 1"), "{body}");
+        assert!(
+            body.contains("tm_agent_responses_total{class=\"2xx\"} 1"),
+            "{body}"
+        );
+        assert!(
+            body.contains("# TYPE tm_agent_active_connections gauge"),
+            "{body}"
+        );
+        assert!(
+            !body.contains(TEST_TOKEN),
+            "metrics must never expose the bearer token"
+        );
+        assert!(
+            !body.contains("kubuntu-demo"),
+            "metrics must never expose machine data"
+        );
+    }
+
+    #[test]
+    fn redacted_snapshot_http_response_keeps_the_wire_envelope() {
+        let (address, handle) = spawn_demo_server_with_redaction(1, true);
+        let response = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        handle.join().expect("server thread");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        let body = parse_body(&response);
+        // These envelope keys are an existing contract: adding telemetry must
+        // not change them.
+        assert_eq!(body["schema_version"], json!(tm_core::WIRE_SCHEMA_VERSION));
+        assert!(body["total_process_count"].is_number());
+        assert!(body["snapshot"]["processes"].is_array());
+        assert_eq!(body["snapshot"]["hostname"], "host");
+        assert!(!response.contains("kubuntu-demo"));
     }
 }

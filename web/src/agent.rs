@@ -12,11 +12,18 @@
 //!   redacted before they reach the UI,
 //! - the client only ever issues GET requests (the browser shell is read-only),
 //! - exactly one fetch is in flight at a time: the sampler loop awaits each
-//!   response before sleeping, so a slow agent cannot build a request pile-up.
+//!   response before sleeping, so a slow agent cannot build a request pile-up,
+//! - one fetch is bounded by [`FETCH_TIMEOUT`]; the deadline is driven by
+//!   GPUI's executor timer, so the same code path runs on wasm and on the
+//!   native test host (no `tokio::time` dependency in the browser).
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::AsyncReadExt as _;
+use futures::future::Either;
+use gpui::BackgroundExecutor;
 use gpui::http_client::http::{Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
@@ -31,6 +38,15 @@ pub const SNAPSHOT_LIMIT: usize = 500;
 /// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
 /// heap from a broken or malicious loopback agent.
 pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Deadline for one whole snapshot fetch (request headers **and** body read).
+///
+/// A stalled loopback agent must not park the sampler forever (R2-X01). The
+/// browser has no `tokio::time`, so the deadline is produced by the GPUI
+/// executor injected into [`AgentClient`]. Once it fires the in-flight fetch
+/// future is dropped (which cancels the underlying request) and the sampler
+/// is free to retry on its next tick — still one request at a time.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Endpoint and token parsed from the page URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,12 +137,22 @@ pub struct SnapshotResponse {
 pub struct AgentClient {
     config: AgentConfig,
     http: Arc<dyn HttpClient>,
+    /// Supplies [`FETCH_TIMEOUT`] deadlines on both wasm and native hosts.
+    executor: BackgroundExecutor,
 }
 
 impl AgentClient {
     /// Creates a client for the given configuration.
-    pub fn new(config: AgentConfig, http: Arc<dyn HttpClient>) -> Self {
-        Self { config, http }
+    pub fn new(
+        config: AgentConfig,
+        http: Arc<dyn HttpClient>,
+        executor: BackgroundExecutor,
+    ) -> Self {
+        Self {
+            config,
+            http,
+            executor,
+        }
     }
 
     /// Endpoint label for the status bar.
@@ -134,11 +160,21 @@ impl AgentClient {
         self.config.endpoint_label()
     }
 
-    /// Requests and parses one snapshot.
+    /// Requests and parses one snapshot, with a hard [`FETCH_TIMEOUT`] deadline.
     ///
     /// Errors are returned as user-facing Japanese strings with the token
-    /// redacted; they never trigger a silent fallback to demo data.
+    /// redacted; they never trigger a silent fallback to demo data. Racing the
+    /// inner future against the timer leaves the "one fetch in flight" contract
+    /// untouched: this method still resolves (success or error) before the
+    /// sampler sleeps and issues the next request.
     pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, String> {
+        let deadline = self.executor.timer(FETCH_TIMEOUT);
+        with_deadline(self.fetch_snapshot_inner(), deadline).await
+    }
+
+    /// The actual request/parse pipeline, kept separate so the deadline can
+    /// cover the body read as well as the response headers.
+    async fn fetch_snapshot_inner(&self) -> Result<SnapshotResponse, String> {
         // Never attach the bearer token before checking the destination.
         if !is_loopback_http_endpoint(&self.config.endpoint) {
             return Err("エージェントの接続先は loopback の http URL のみ許可されます".to_string());
@@ -209,6 +245,34 @@ impl AgentClient {
             total_process_count: envelope.total_process_count,
         })
     }
+}
+
+/// Races a fallible operation against a deadline future.
+///
+/// Both futures are injected by the caller: the operation is the real fetch,
+/// the deadline is `BackgroundExecutor::timer` on wasm (or any future in unit
+/// tests). When the deadline wins, the still-pending operation is dropped —
+/// cancelling the request — and a redaction-free timeout error is returned.
+async fn with_deadline<T, F, Deadline>(future: F, deadline: Deadline) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+    Deadline: Future<Output = ()>,
+{
+    futures::pin_mut!(future, deadline);
+    match futures::future::select(future, deadline).await {
+        Either::Left((result, _deadline)) => result,
+        Either::Right(((), _cancelled_fetch)) => Err(fetch_timeout_error()),
+    }
+}
+
+/// User-facing timeout message. Intentionally static: no token, endpoint or
+/// agent-supplied text is interpolated, so it is safe for the DOM (redact
+/// contract) and identical on every failure path.
+fn fetch_timeout_error() -> String {
+    format!(
+        "エージェントからの取得がタイムアウトしました（{}秒）",
+        FETCH_TIMEOUT.as_secs()
+    )
 }
 
 /// Rejects a wire schema version this client does not understand.
@@ -331,5 +395,65 @@ mod tests {
         let url = snapshot_url("http://127.0.0.1:18787");
         assert_eq!(url, "http://127.0.0.1:18787/api/v1/snapshot?limit=500");
         assert!(!url.contains("token"));
+    }
+
+    #[test]
+    fn fetch_timeout_is_bounded() {
+        // Long enough for a 500-process loopback payload, short enough that a
+        // stalled sampler recovers within a few polling intervals (R2-X01).
+        const { assert!(FETCH_TIMEOUT.as_secs() >= 1) };
+        const { assert!(FETCH_TIMEOUT.as_secs() <= 30) };
+    }
+
+    #[test]
+    fn deadline_passes_through_a_fast_success() {
+        let result = futures::executor::block_on(with_deadline(
+            async { Ok::<u32, String>(42) },
+            futures::future::pending::<()>(),
+        ));
+        assert_eq!(result, Ok(42));
+    }
+
+    #[test]
+    fn deadline_passes_through_the_inner_error_unchanged() {
+        let result = futures::executor::block_on(with_deadline(
+            async { Err::<u32, String>("接続に失敗しました".to_string()) },
+            futures::future::pending::<()>(),
+        ));
+        assert_eq!(result, Err("接続に失敗しました".to_string()));
+    }
+
+    #[test]
+    fn deadline_cancels_a_stalled_fetch_and_returns_a_redacted_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(std::sync::Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = std::sync::Arc::new(AtomicBool::new(false));
+        let observed = dropped.clone();
+        let result = futures::executor::block_on(with_deadline(
+            async move {
+                let _flag = DropFlag(observed);
+                futures::future::pending::<Result<u32, String>>().await
+            },
+            async {},
+        ));
+
+        let error = result.expect_err("a stalled fetch must time out");
+        assert_eq!(error, fetch_timeout_error());
+        assert!(error.contains("タイムアウト"));
+        // No token/endpoint interpolation — the message itself is redaction-safe.
+        assert_eq!(redact_token(&error, Some("super-secret-token")), error);
+        assert!(!error.contains("secret"));
+        // Cancelling the request is what keeps at most one fetch in flight.
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "timeout must drop the pending fetch"
+        );
     }
 }

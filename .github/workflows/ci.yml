@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
-# ゲート: fmt → check → test → clippy → cargo audit → cargo vet（extra_gates）。
+# ゲート: fmt → check → test → clippy → cargo audit → cargo vet → markdownlint（extra_gates）。
 name: CI
 
 on:
@@ -53,6 +53,19 @@ jobs:
         # Broken intra-doc links are not caught by clippy/test gates.
         RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
         RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path web/Cargo.toml --no-deps
+        # Markdown documentation lint. Keep this scope in sync with scripts/check.sh.
+        # MD060/MD055 are new table-style rules that conflict with the compact
+        # GFM tables used throughout the existing documents. log.md is an
+        # append-only historical record; SECURITY.md and three notes have
+        # pre-existing structural violations and are therefore out of scope.
+        npm install --global markdownlint-cli@0.50.0
+        markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'poc-wasm/README.md' 'web/README.md' \
+          --ignore log.md \
+          --ignore SECURITY.md \
+          --ignore notes/verification.md \
+          --ignore notes/cargo-vet-adoption.md \
+          --ignore notes/ime.md \
+          --disable MD060 MD055
 
   wasm:
     name: wasm check (tm-core / tm-viewmodel / web)
