@@ -159,6 +159,31 @@ mod tests {
     }
 
     #[test]
+    fn all_bidi_controls_are_neutralised() {
+        // Every bidi control in `is_bidi_control`'s ranges must be replaced by
+        // a space; a missed one could reorder a process name in the table.
+        let controls = [
+            '\u{202a}', // LRE
+            '\u{202b}', // RLE
+            '\u{202c}', // PDF
+            '\u{202d}', // LRO
+            '\u{202e}', // RLO
+            '\u{2066}', // LRI
+            '\u{2067}', // RLI
+            '\u{2068}', // FSI
+            '\u{2069}', // PDI
+        ];
+        for ch in controls {
+            assert!(
+                is_bidi_control(ch),
+                "U+{:04X} must be a bidi control",
+                ch as u32
+            );
+            assert_eq!(sanitize_display(&format!("a{ch}b"), 64), "a b");
+        }
+    }
+
+    #[test]
     fn zero_width_and_invisible_characters_are_removed() {
         // ZWSP / ZWNJ / ZWJ / word joiner / BOM / variation selector.
         let spoofed = "pay\u{200b}pal\u{200d}\u{fe0f}\u{2060}com";

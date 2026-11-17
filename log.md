@@ -1002,3 +1002,7 @@
 ## 2026-11-17（truncate の 0/1 文字境界を検証）
 
 - max_chars 0/1 の境界を日本語/ASCII で固定。tm-core 80 → 81、workspace 194 passed。
+
+## 2026-11-17（双方向制御文字の全バリアントを検証）
+
+- bidi 制御 9 文字すべてが中性化されることを検証。tm-core 81 → 82、workspace 195 passed。
