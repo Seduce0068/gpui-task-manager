@@ -1040,3 +1040,10 @@
 - `cargo test --workspace --doc`: 全クレート 0 件（コード例なし）で正常。
 - `cargo check --workspace --all-features`: exit 0。tm-core の feature 分岐
   （serde 等）を含む全组合せで型検査が通ることを確認。
+
+## 2026-11-17（feature / 依存 / OKF の健全性を確認）
+
+- `cargo check --manifest-path web/Cargo.toml --all-features`: exit 0（web に feature 定義なし）。
+- `cargo machete`（root / web）: 未使用依存なし。
+- `notes/` 配下の成果物 12 件の OKF frontmatter（type / RFC 3339 時刻）を検証し、
+  違反 0 件を確認（README / NOTICE は成果物ドキュメントではないため対象外）。
