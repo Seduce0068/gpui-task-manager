@@ -1074,3 +1074,9 @@
   .gitignore が適切に機能していることを確認。
 - 追跡ファイルは最大 244K（証跡画像）、合計 12M。過大なバイナリ / wasm の
   誤追跡なし。変更不要。
+
+## 2026-11-17（Cargo バージョン整合を確認）
+
+- 全クレートが `version.workspace = true`（0.1.0）で統一、web も 0.1.0、
+  workspace.dependencies の tm-core / tm-viewmodel も 0.1.0。`cargo metadata` 成功。
+  バージョン不整合なし。
