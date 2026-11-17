@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
 # ゲート: fmt → check → test → clippy → cargo audit → cargo vet（extra_gates）。
 name: CI
@@ -46,7 +46,7 @@ jobs:
         cargo vet --locked
         (cd web && cargo vet --locked)
         # ADR-009: detect newly introduced unused dependencies.
-        cargo install cargo-machete --locked
+        cargo install cargo-machete --version 0.10.1 --locked
         cargo machete
         (cd web && cargo machete)
         # Broken intra-doc links are not caught by clippy/test gates.
@@ -108,6 +108,8 @@ jobs:
   # ダウンロードできるようにする。
   release-linux:
     name: release artifacts (linux)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: gates
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -139,6 +141,8 @@ jobs:
   # ブラウザ版の配布物（dist）。trunk を CI で導入してビルドする。
   web-dist:
     name: web dist artifact
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: gates
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -160,6 +164,8 @@ jobs:
   # ごとに生成し、監査・供給網確認用の成果物として保持する。
   sbom:
     name: sbom (cyclonedx)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: gates
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

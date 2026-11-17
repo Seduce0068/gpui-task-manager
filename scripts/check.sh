@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Runs the standard verification loop for this repository:
 #   fmt -> clippy -> tests -> wasm -> deny -> vet -> machete

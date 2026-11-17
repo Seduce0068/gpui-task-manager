@@ -28,4 +28,4 @@
 
 ## ライセンス全文
 
-本プロジェクト自身のコードは Apache License 2.0（[LICENSE](LICENSE)）です。
+本プロジェクト自身のコードは AGPL-3.0-or-later（[LICENSE](LICENSE)）です。
