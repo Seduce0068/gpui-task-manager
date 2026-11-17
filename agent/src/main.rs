@@ -94,6 +94,14 @@ fn run() -> Result<(), String> {
 
     let mut probe = build_probe(&config)?;
 
+    // Warn about argv exposure before the `--once` early return so operators
+    // running a one-shot snapshot with `--token` see the same warning.
+    if config.token.is_some() {
+        eprintln!(
+            "tm-agent: 警告: --token の値は /proc/<pid>/cmdline から同一ユーザーに読まれ得ます。常用時は --token-file か TM_AGENT_TOKEN を使ってください。"
+        );
+    }
+
     if config.once {
         return print_once(probe.as_mut(), config.redact);
     }
@@ -103,9 +111,7 @@ fn run() -> Result<(), String> {
             return Err("--token と --token-file は同時に指定できません".to_string());
         }
         (Some(token), None) => {
-            eprintln!(
-                "tm-agent: 警告: --token の値は /proc/<pid>/cmdline から同一ユーザーに読まれ得ます。常用時は --token-file か TM_AGENT_TOKEN を使ってください。"
-            );
+            // The argv warning was already emitted above (also for --once).
             // `request_token` trims the presented value, so store the trimmed
             // token for every source (the file path already does this).
             token.trim().to_string()
@@ -142,6 +148,27 @@ fn run() -> Result<(), String> {
 /// `/proc/<pid>/cmdline`. Empty files are rejected so a misconfiguration cannot
 /// start an agent with an empty token.
 fn read_token_file(path: &std::path::Path) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|err| {
+                format!(
+                    "トークンファイルの属性を読めません ({}): {err}",
+                    path.display()
+                )
+            })?
+            .permissions()
+            .mode();
+        // Group/other readability would expose the secret to other local users.
+        if mode & 0o044 != 0 {
+            return Err(format!(
+                "トークンファイルの権限が緩すぎます ({}): 0600 にしてください (現在 {:04o})",
+                path.display(),
+                mode & 0o777
+            ));
+        }
+    }
     let contents = std::fs::read_to_string(path)
         .map_err(|err| format!("トークンファイルを読めません ({}): {err}", path.display()))?;
     let token = contents.trim();
@@ -950,9 +977,27 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("tm-agent-token-{}-{}", std::process::id(), "read"));
         std::fs::write(&path, "secret-token\n").expect("write token file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("set 0600");
+        }
         assert_eq!(read_token_file(&path).expect("read token"), "secret-token");
         std::fs::write(&path, "   \n").expect("write empty token file");
         assert!(read_token_file(&path).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn token_file_rejects_group_or_other_readability() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("tm-agent-token-{}-mode", std::process::id()));
+        std::fs::write(&path, "secret-token\n").expect("write token file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("set 0644");
+        let error = read_token_file(&path).expect_err("0644 must be rejected");
+        assert!(error.contains("0600"), "{error}");
         let _ = std::fs::remove_file(&path);
     }
 
