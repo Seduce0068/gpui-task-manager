@@ -1299,3 +1299,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - `MetricHistory::new(0)` が各 series の RingBuffer を capacity 1 にクランプし、
   push がパニックせず最新値を保持することを検証。
 - tm-core 83 → **84 tests**、workspace 197 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（壊れた intra-doc link を修正し rustdoc ゲートを追加）
+
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` を実行したところ
+  exit 101。`filter_input.rs` の [`gpui::EntityInputHandler`]（tm-viewmodel は gpui 非依存）
+  と [`tm_viewmodel::Dashboard`]（自クレート内なので `crate::Dashboard`）の
+  壊れた intra-doc link 2 件を修正。
+- 再発防止のため `scripts/check.sh` と CI `extra_gates` に同コマンドを追加。
+  shellcheck / shfmt / YAML パース / check.sh 全体（exit 0）で検証済み。

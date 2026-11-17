@@ -64,4 +64,7 @@ else
   echo 'cargo-machete is not installed; skipping unused dependency check.'
 fi
 
+echo '==> RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps'
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
 echo 'All checks passed.'
