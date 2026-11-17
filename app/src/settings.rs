@@ -107,9 +107,20 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
     }
     let json = serde_json::to_string_pretty(&settings.clone().normalized())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    // Include the PID so two processes saving at once cannot clobber the same
-    // temporary file before either rename completes.
-    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    // PID + monotonic nonce: a recycled PID must not collide with a stale
+    // temporary file left by an earlier process.
+    static SAVE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = SAVE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let temporary = path.with_extension(format!(
+        "json.tmp.{}.{:x}.{:x}",
+        std::process::id(),
+        nanos,
+        nonce
+    ));
     #[cfg(unix)]
     {
         // Create with 0600 from the start: `fs::write` would use the process
@@ -164,11 +175,16 @@ mod tests {
         };
         save_to(&path, &settings).expect("save settings");
         assert!(path.is_file());
-        // The temporary file must not survive the rename (same PID-scoped name
-        // used by `save_to`).
-        assert!(!path
-            .with_extension(format!("json.tmp.{}", std::process::id()))
-            .exists());
+        // No temporary file may survive the rename, whatever nonce was used.
+        let leftovers: Vec<_> = path
+            .parent()
+            .expect("parent")
+            .read_dir()
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".json.tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temps: {leftovers:?}");
         assert_eq!(load_from(&path).expect("load settings"), settings);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
@@ -189,10 +205,15 @@ mod tests {
         let path = temporary_path("tmp-name");
         let parent = path.parent().expect("parent");
         save_to(&path, &Settings::default()).expect("save settings");
-        let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+        let leftovers: Vec<_> = parent
+            .read_dir()
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".json.tmp."))
+            .collect();
         assert!(
-            !temporary.exists(),
-            "the temporary file must be renamed away, not left behind"
+            leftovers.is_empty(),
+            "the temporary file must be renamed away, not left behind: {leftovers:?}"
         );
         assert!(path.exists(), "the final settings file must exist");
         let _ = fs::remove_dir_all(parent);
