@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **204 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 54 / app 15、2026-11-17） |
+| `cargo test --workspace` | **205 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 55 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1402,3 +1402,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 実機確認: 127.0.0.2:18890 はエラーで拒否、127.0.0.1:18892 は正常に待ち受け。
 - tm-agent 54 tests（件数不変、既存テストへ 127.0.0.2 を追加）、
   workspace 204 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（query_param ポイズニング対策と設定 tmp nonce：R2-D05/R2-D03）
+
+- `query_param` がデコード後の制御文字（%0d%0a / %00 等）を含む値を `None` として
+  扱うようにした（`parse_process_limit` は None をデフォルト扱い → 攻撃値を無効化）。
+  重複クエリは先勝ちを維持し、テストで固定（第 2 の注入値で上書き不可）。
+- 設定一時ファイル名に PID + 単調 nonce + 時刻を付与し、PID 再利用時に古い tmp と
+  衝突しないようにした。テストは「残 tmp なし」をディレクトリ走査で検証する形へ更新。
+- tm-agent 54 → **55 tests**、workspace 205 passed / clippy 0 warning / fmt OK / rustdoc OK。

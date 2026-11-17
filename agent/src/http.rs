@@ -319,7 +319,14 @@ pub fn query_param(query: Option<&str>, name: &str) -> Option<String> {
             None => (pair, ""),
         };
         if key == name {
-            return percent_decode(value);
+            let decoded = percent_decode(value)?;
+            // A decoded control character (e.g. %0d%0a) must never reach a
+            // parsed parameter: treat the whole query as invalid. First value
+            // wins on duplicates, so a second injected value cannot override.
+            if decoded.chars().any(|ch| ch.is_control()) {
+                return None;
+            }
+            return Some(decoded);
         }
     }
     None
@@ -667,6 +674,18 @@ mod tests {
         assert_eq!(query_param(query, "foo").as_deref(), Some("1"));
         assert_eq!(query_param(query, "missing"), None);
         assert_eq!(query_param(None, "token"), None);
+    }
+
+    #[test]
+    fn query_param_rejects_controls_and_keeps_first_duplicate() {
+        // Decoded CRLF/NUL would allow header/parameter poisoning downstream.
+        assert_eq!(query_param(Some("limit=5%0d%0afoo"), "limit"), None);
+        assert_eq!(query_param(Some("limit=%00"), "limit"), None);
+        // Deterministic first-wins: a second injected value cannot override.
+        assert_eq!(
+            query_param(Some("limit=5&limit=9999"), "limit").as_deref(),
+            Some("5")
+        );
     }
 
     #[test]
