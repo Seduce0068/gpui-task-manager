@@ -126,12 +126,21 @@ impl NativeProbe {
             .ok()
             .map(|host| sanitize_display(&host, MAX_NAME_CHARS))
             .filter(|host| !host.is_empty());
-        let os_name = System::name().ok();
-        let kernel_version = System::kernel_version().ok();
+        // Sanitise every OS-provided string: a compromised host value must not
+        // inject control characters into the status bar or logs (R2X-D2).
+        let os_name = System::name()
+            .ok()
+            .map(|value| sanitize_display(&value, MAX_NAME_CHARS))
+            .filter(|value| !value.is_empty());
+        let kernel_version = System::kernel_version()
+            .ok()
+            .map(|value| sanitize_display(&value, MAX_NAME_CHARS))
+            .filter(|value| !value.is_empty());
         let os_label = System::long_os_version()
             .ok()
             .or_else(|| os_name.clone())
             .unwrap_or_else(|| std::env::consts::OS.to_string());
+        let os_label = sanitize_display(&os_label, MAX_NAME_CHARS);
 
         Ok(Self {
             system,

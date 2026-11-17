@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **207 passed / 0 failed**（tm-core 86 / tm-viewmodel 39 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
+| `cargo test --workspace` | **208 passed / 0 failed**（tm-core 87 / tm-viewmodel 39 / tm-platform 11 / tm-agent 56 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1443,3 +1443,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   ビジーループしないようにした。
 - `spawn_connection` を `Result<(), String>` に変更し、呼び出し側でエラーをログ出力。
 - workspace 207 passed / clippy 0 warning / rustdoc OK（テスト件数は不変）。
+
+## 2026-11-17（ワイヤ境界と OS 文字列のサニタイズ：R2X-D1/D2）
+
+- tm-core に `sanitize_snapshot(&mut SystemSnapshot)` を追加。hostname / os_name /
+  kernel_version / process(name,command,user) / IF 名 / mount_point / component.label
+  をまとめて `sanitize_display` に通す（数値・時刻・キーは触らない）。
+- web の agent レスポンス処理でデシリアライズ直後に適用し、悪意/破損エージェントの
+  ANSI・制御文字が canvas に届かないようにした。
+- tm-platform の os_name / kernel_version / os_label にも sanitize_display を適用。
+- 回帰テスト: 全文字列フィールドに ANSI/bidi/改行を注入し除去されることを検証。
+- tm-core 86 → **87 tests**、workspace 208 passed / clippy 0 warning / rustdoc OK。

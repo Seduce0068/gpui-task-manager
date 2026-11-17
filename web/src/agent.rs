@@ -148,8 +148,12 @@ impl AgentClient {
         let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer)
             .map_err(|error| format!("スナップショット JSON の解析に失敗しました: {error}"))?;
         check_schema_version(envelope.schema_version)?;
+        // Never trust display strings from the wire: a malicious or corrupted
+        // agent could inject ANSI/control characters into the canvas (R2X-D1).
+        let mut snapshot = envelope.snapshot;
+        tm_core::sanitize::sanitize_snapshot(&mut snapshot);
         Ok(SnapshotResponse {
-            snapshot: envelope.snapshot,
+            snapshot,
             total_process_count: envelope.total_process_count,
         })
     }

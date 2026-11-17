@@ -1163,3 +1163,8 @@
 
 - spawn 失敗を graceful 化（カウンタ手動減算）、accept 失敗に 50ms バックオフ。
   workspace 207 passed。
+
+## 2026-11-17（ワイヤ境界と OS 文字列のサニタイズ）
+
+- sanitize_snapshot を追加し web agent 境界・tm-platform の OS 文字列へ適用。
+  tm-core 87、workspace 208 passed。
