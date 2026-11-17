@@ -1249,3 +1249,13 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   空 needle が常に一致、ASCII 折り目、および `ß` が `ss` に展開されない
   （Unicode lowercase の制約）ことをテストで明示。
 - tm-core 77 → **78 tests**、workspace 191 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（ローカルゲート scripts/check.sh の失敗を修正し CI へ反映）
+
+- `bash scripts/check.sh` を実行したところ exit 101 で失敗。原因は web 側
+  `assert!(MAX_SNAPSHOT_BYTES > 1_000_000);` が clippy::assertions_on_constants
+  （-D warnings）に引っかかったこと。ルートの `cargo clippy --workspace` は
+  web 別ワークスペースを含まないため見落としていた。
+- `const { assert!(...) }` に修正し check.sh は全ゲート exit 0 を確認。
+- CI の `extra_gates` に web clippy / web test を追加（これまで web は
+  cargo-vet / cargo-machete のみで clippy が走っていなかった）。YAML パース確認済み。
