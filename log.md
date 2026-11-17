@@ -1135,3 +1135,7 @@
 
 - 予測可能な time/PID フォールバックを削除し CSPRNG 失敗時は起動エラー化。
   R1S-SEC-03 は仕様判断が必要なため見送り。workspace 203 passed。
+
+## 2026-11-17（トークンファイル権限と argv 警告を修正）
+
+- 0644 トークンファイルを拒否、--once でも argv 警告を表示。tm-agent 54、workspace 204 passed。

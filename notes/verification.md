@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **203 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 53 / app 15、2026-11-17） |
+| `cargo test --workspace` | **204 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 54 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1382,3 +1382,14 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 見送り: R1S-SEC-03（stderr 平文出力）は README:88 で「stderr に 1 回だけ表示」と
   明記された意図的な設計であり、廃止にはトークン自動保存等の仕様判断が必要。
 - workspace 203 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（トークンファイル権限と argv 警告：R2X-A2/A10）
+
+- `read_token_file` が Unix で mode を検証し、group/other に読み取り権がある
+  （0644 等）場合は 0600 を要求して起動を拒否。Windows は mode が無いためスキップ。
+- `--token` の argv 露出警告を `--once` の早期 return より前に移動し、
+  one-shot 実行でも警告が出るようにした（重複警告は削除）。
+- 実機確認: `--once --demo --token test` で警告表示、0644 ファイルで拒否メッセージを確認。
+- tm-agent 53 → **54 tests**、workspace 204 passed / clippy 0 warning / fmt OK / rustdoc OK。
+- 見送り: R2X-A1（`--token` が snapshot の process.command にエコー）は redact 範囲の
+  設計判断が必要なため今回は対象外。
