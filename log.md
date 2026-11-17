@@ -1047,3 +1047,10 @@
 - `cargo machete`（root / web）: 未使用依存なし。
 - `notes/` 配下の成果物 12 件の OKF frontmatter（type / RFC 3339 時刻）を検証し、
   違反 0 件を確認（README / NOTICE は成果物ドキュメントではないため対象外）。
+
+## 2026-11-17（全 Markdown の frontmatter / 見出し構造を確認）
+
+- 全 21 件の Markdown のうち frontmatter なし 7 件はすべて想定通り
+  （README / NOTICE / log / notes/index / 各 README は AGENTS.md §8 で対象外）。
+- 成果物 11 件の見出し構造を検証し、title のある文書で本文 H1 を使っていないことを確認。
+  違反 0 件。
