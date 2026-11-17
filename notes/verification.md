@@ -1674,3 +1674,23 @@ Runtime Proof で確認してから実装:
 
 - tm-core 90 → **94**、workspace **220 passed** / clippy / rustdoc 成功。
   ネイティブ `--demo --redact` 起動スモークも成功。
+
+## 2026-11-18（エージェント並列調査 第10弾 → ADR-021 と SECURITY 明記）
+
+2 体のエージェント（Host 欠落対策／ADR）を並列起動。
+
+- **R1-V08（Host 欠落）は見送りを維持**: 案 B（HTTP/1.1 のみ Host 必須化）は
+  技術的には実装可だが、既存テスト 11 箇所で Host 欠落が期待値の前提になっており
+  改変が波及する。主防御は Bearer トークンで、DNS rebinding は Host 付きで到達し
+  従来どおり 403 となるため防御効果も限定的（子のレビューを Runtime Proof で確認）。
+  代わりに SECURITY.md に「Host 欠落時は検証をスキップするがトークン必須、
+  ブラウザの fetch は Host を自動付与（Forbidden header）で変更不可」を明記し、
+  誤読リスクを解消。
+- **ADR-021 を追加**: commit fdf6f62 の AGPL-3.0-or-later 移行を DESIGN.md の
+  ADR 一覧末尾（ADR-020 の後）に記録。ADR-011（Apache）は一切書き換えず履歴として
+  保持し、ADR-021 側に関係を記載（repo の ADR-012 は in-place 改訂の前例だが、
+  履歴保持の制約を優先）。frontmatter は慣例どおり未更新。
+- **SECURITY.md:114** の「ライセンス（Apache-2.0 互換）」を
+  `deny.toml` の `[licenses].allow`（AGPL 互換）を参照する文言へ修正。
+
+- workspace 220 passed / markdownlint（DESIGN 51 / SECURITY 9、増分ゼロ）成功。

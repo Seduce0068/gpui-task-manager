@@ -1222,3 +1222,9 @@
 
 - tm-core::redact を新設し agent/app で共有。置換順序・最小長ガードを修正、
   app の name/mount/hostname へ適用。workspace 220 passed / 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第10弾 → ADR-021 と SECURITY 明記）
+
+- Host 欠落の 400 化はテスト 11 箇所波及＋防御効果限定的で見送り、SECURITY に
+  実際の挙動を明記。ADR-021（AGPL 移行）を追加し ADR-011 は履歴保持。
+  SECURITY の依存ライセンス文言を deny.toml 参照へ修正。workspace 220 passed。
