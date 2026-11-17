@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **224 passed / 0 failed**（tm-core 95 / tm-viewmodel 42 / tm-platform 11 / tm-agent 60 / app 16、2026-11-18） |
+| `cargo test --workspace` | **226 passed / 0 failed**（tm-core 95 / tm-viewmodel 43 / tm-platform 11 / tm-agent 61 / app 16、2026-11-18） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1772,3 +1772,29 @@ Space parity は設計判断／CDP 証跡更新を伴うため保留。
 
 - tm-viewmodel 41 → **42**、workspace **224 passed** / clippy / check.sh /
   python py_compile 成功。CLI 全経路の Runtime Proof 成功。
+
+## 2026-11-18（エージェント並列調査 第14弾 → 前回回帰と redact/HTTP 漏れ）
+
+3 観点（描画境界 / 不変条件 / HTTP 完全性）の調査エージェントを並列起動し、
+各指摘を親が Runtime Proof で確認してから実装:
+
+1. **前回実装の回帰（2 エージェントが独立に指摘）**: R21 の paused ガードと
+   R22 の transient クリアが交錯し、一時停止中に in-flight サンプルが完了すると
+   `ingest` は no-op なのに `clear_transient_status()` が「一時停止しました」
+   を消していた。`clear_transient_status()` を `ingest` 内（paused ガード
+   通過後）へ移動し app/web の重複呼び出しを削除。demo/live 両方を同時解消。
+   `pause_notice_survives_in_flight_ingest` で回帰固定。
+2. **`--redact` の漏れ**: 詳細パネルのユーザー、確認ダイアログのユーザー名と
+   プロセス名の 3 箇所が `self.display()` を通しておらず SECURITY.md の
+   約束（公開スクリーンショット）に反していた。3 箇所を統一。
+3. **HTTP ヘッダ名の空白／obs-fold**: `name.trim()` により `Host : x` や
+   CRLF で始まる折り返しの `Authorization` 行が受理されていた
+   （RFC 9110 §5.1 MUST 違反、   子が /tmp で Runtime Proof）。trim を廃止し、ヘッダ値の C0/DEL も拒否。
+   実機で両ケースが 400、正規 healthz が 200 であることを確認。
+
+**保留**: persistent status の上書き（1 行ステータスで最新エラー優先という
+意図があり得るため設計判断）、再開直後の network rate、CDP の固定 sleep /
+ポート競合 / F2 parity、R2-D01 / R5-D02。
+
+- tm-agent 60 → **61**、tm-viewmodel 42 → **43**、workspace **226 passed** /
+  clippy / check.sh / 実機 HTTP確認 成功。

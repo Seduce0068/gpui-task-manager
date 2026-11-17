@@ -194,8 +194,6 @@ impl TaskManagerApp {
                 self.live_total = Some(response.total_process_count);
                 self.live_error = None;
                 self.dashboard.ingest(response.snapshot);
-                // Keep persistent notices; drop only transient ones (R3-U05).
-                self.dashboard.clear_transient_status();
             }
             Err(error) => {
                 self.live_error = Some(error.clone());

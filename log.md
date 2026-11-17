@@ -1243,3 +1243,8 @@
 
 - CDP read_loop の pending future 解決、transient status クリア（persistent
   導入）、未知 GUI フラグ拒否を実装。workspace 224 passed / CLI 全経路確認。
+
+## 2026-11-18（エージェント並列調査 第14弾 → 前回回帰と redact/HTTP 漏れ）
+
+- paused 中の transient 消滅回帰、--redact 詳細/ダイアログ漏れ、HTTP ヘッダ
+  空白/obs-fold を修正。workspace 226 passed / 実機 400/200 確認。

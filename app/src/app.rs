@@ -231,13 +231,7 @@ impl TaskManagerApp {
                 .update(cx, |this, cx| {
                     this.sampling_in_flight = false;
                     match result {
-                        Ok(snapshot) => {
-                            this.dashboard.ingest(snapshot);
-                            // A transient notice (e.g. "resumed") should not
-                            // linger after fresh data; persistent startup
-                            // notices survive (R3-U05).
-                            this.dashboard.clear_transient_status();
-                        }
+                        Ok(snapshot) => this.dashboard.ingest(snapshot),
                         Err(error) => this.dashboard.set_status(error.to_string(), true),
                     }
                     cx.notify();
@@ -1490,7 +1484,7 @@ impl TaskManagerApp {
                     )
                     .child(kv(
                         "ユーザー",
-                        process.user.clone().unwrap_or_else(|| "—".to_string()),
+                        self.display(&process.user.clone().unwrap_or_else(|| "—".to_string())),
                     ))
                     .child(kv(
                         "起動から",
@@ -1772,7 +1766,7 @@ impl TaskManagerApp {
                 )
             })
             .unwrap_or_else(|| "—".to_string());
-        let user = pending.user.as_deref().unwrap_or("—").to_string();
+        let user = self.display(pending.user.as_deref().unwrap_or("—"));
         let command = self.display(&pending.command);
         let (color, label) = match pending.signal {
             Signal::Kill => (palette().red, "強制終了"),
@@ -1818,7 +1812,7 @@ impl TaskManagerApp {
                                 .text_color(rgb(palette().subtext))
                                 .child(format!(
                                     "「{}」（PID {} / ユーザー {} / 起動から {}）に {} を送信します。",
-                                    pending.name,
+                                    self.display(&pending.name),
                                     pending.key.pid,
                                     user,
                                     age,

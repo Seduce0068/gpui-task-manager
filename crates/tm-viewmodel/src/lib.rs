@@ -434,8 +434,13 @@ impl Dashboard {
     /// `Tick`, `ingest` and `ConfirmKill` under the same pause invariant.
     pub fn ingest(&mut self, snapshot: SystemSnapshot) {
         if self.paused {
+            // Keep the "paused" notice: an in-flight sample finishing now must
+            // not clear it (R23 regression from R21/R22 interaction).
             return;
         }
+        // Only a snapshot that was actually ingested may clear a transient
+        // notice. Doing this here covers every shell (native, live web, demo).
+        self.clear_transient_status();
         let (rx_rate, tx_rate) = match self.last_network {
             Some((previous_rx, previous_tx, previous_at)) => {
                 let elapsed = Duration::from_millis(
@@ -680,6 +685,28 @@ mod tests {
 
     fn firefox_key() -> ProcessKey {
         tm_core::demo::demo_process_key(800).expect("demo firefox process")
+    }
+
+    #[test]
+    fn pause_notice_survives_in_flight_ingest() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        dashboard.apply(Command::SetPaused(true));
+        assert_eq!(
+            dashboard.status().map(|status| status.text.as_str()),
+            Some("更新を一時停止しました")
+        );
+        // A sample that was in flight when pause was pressed must not wipe the
+        // notice: `ingest` is a no-op while paused.
+        dashboard.ingest(demo_snapshot(1));
+        assert_eq!(
+            dashboard.status().map(|status| status.text.as_str()),
+            Some("更新を一時停止しました")
+        );
+
+        dashboard.apply(Command::SetPaused(false));
+        dashboard.ingest(demo_snapshot(2));
+        assert!(dashboard.status().is_none());
     }
 
     #[test]
