@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Creates the local libxkbcommon-x11 linker shim for hosts that have the
 # runtime library but not the -dev package (Kubuntu 2026.04 is one).

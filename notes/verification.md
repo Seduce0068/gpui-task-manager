@@ -1526,3 +1526,27 @@ Runtime Proof で取捨選択していた（親はその結果も仮説として
 
 - 新たな不整合として `NOTICE.md:31` が「Apache License 2.0」のまま
   （fdf6f62 で AGPL 移行済み）であることを記録（次ラウンド候補）。
+
+## 2026-11-18（エージェント並列調査 第4弾 → 3 論理変更）
+
+3 観点（ライセンス文書 / サニタイズ / CI 設定）の調査エージェントを並列起動し、
+各推奨項目を親が現行コードで Runtime Proof してから実装:
+
+1. **ライセンス表記の整合**（14 ファイルの SPDX ヘッダ + NOTICE.md:31 +
+   web/Cargo.toml:8 の実メタデータ）を AGPL-3.0-or-later へ統一。
+   fdf6f62 は LICENSE 本文等のみを変更し、SPDX ヘッダ群と独立 workspace の
+   `license` メタデータが旧 Apache のまま残っていた。旧 SPDX 残存 0 件を確認。
+   THIRD_PARTY_NOTICES.md は旧本文アーカイブとして正当（probe が diff で検証）。
+2. **format_load_average の負値フロア**（R1S-DATA-09 残り）: 非有限は 0、
+   有限は `max(0.0)` に。probe が /tmp で現行 `"-1.00"` と `-0.0 → "-0.00"`
+   を実証。`[-1.0,1.5,NaN]` → `"0.00 1.50 0.00"` を回帰テストで固定。
+3. **CI 成果物ジョブの保護**: release-linux / web-dist / sbom の 3 ジョブへ
+   fork PR 除外の `if` と `needs: gates` を付与（R4-O02 / R1-OPS-01）、
+   cargo-machete を 0.10.1 に pin（R1S-OPS-02）。YAML パース成功。
+
+**見送り**: Windows への tm-platform テスト追加（R1-V02）は初回 CI の実行時
+アサーションがローカル検証不可のため次ラウンド以降に保留。macOS cancelled は
+外部ランナー供給問題で設定側緩和策なし（probe も同意）。DESIGN の ADR-011 は
+履歴として保持し、ADR-021 で AGPL 移行を記録するのは要判断として据え置き。
+
+- workspace 209 passed / clippy / cargo-deny / rustdoc / check.sh 全ゲート成功。

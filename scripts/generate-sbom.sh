@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Generate CycloneDX SBOMs for the native and web Cargo workspaces.
 # Requires: cargo-cyclonedx (`cargo install cargo-cyclonedx`).

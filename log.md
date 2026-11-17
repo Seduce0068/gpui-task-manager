@@ -1187,3 +1187,9 @@
 - R2-P01 を実装: Bearer 付与前に loopback/http 接続先を検証。web 16 tests、
   workspace 209 passed。sysinfo used_space 不在の指摘を採用し R2X-D5 は要判断へ。
   NOTICE.md:31 の Apache 表記漏れを記録。
+
+## 2026-11-18（エージェント並列調査 第4弾 → 3 論理変更）
+
+- SPDX ヘッダ群/ライセンスメタデータ統一、format_load_average 負値フロア、
+  CI 成果物ジョブ保護（fork PR 除外+needs gates+machete pin）を実装。
+  workspace 209 passed / check.sh 全ゲート成功。Windows tm-platform は保留。

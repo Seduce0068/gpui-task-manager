@@ -79,9 +79,16 @@ pub fn format_process_age(now_secs: u64, start_secs: u64) -> String {
 
 /// Formats a three-value load average.
 ///
-/// Non-finite components are shown as `0.00` instead of `NaN` / `inf`.
+/// Non-finite components are shown as `0.00` instead of `NaN` / `inf`; negative
+/// values are floored at zero to match the percentage formatters (R1S-DATA-09).
 pub fn format_load_average(load: [f32; 3]) -> String {
-    let finite = load.map(|value| if value.is_finite() { value } else { 0.0 });
+    let finite = load.map(|value| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        }
+    });
     format!("{:.2} {:.2} {:.2}", finite[0], finite[1], finite[2])
 }
 
@@ -154,6 +161,12 @@ mod tests {
         assert_eq!(format_cpu_percent(-5.0), "0.0%");
         assert_eq!(
             format_load_average([f32::NAN, 1.5, f32::INFINITY]),
+            "0.00 1.50 0.00"
+        );
+        assert_eq!(format_load_average([-1.0, 1.5, f32::NAN]), "0.00 1.50 0.00");
+        // `-0.0` would render as "-0.00" without the floor.
+        assert_eq!(
+            format_load_average([-0.0, 1.5, f32::NEG_INFINITY]),
             "0.00 1.50 0.00"
         );
     }

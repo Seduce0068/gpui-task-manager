@@ -1,11 +1,11 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 [package]
 name = "tm-web"
 version = "0.1.0"
 edition = "2024"
 publish = false
 # cargo-deny: workspace 外の独立 crate でもライセンスを明示する。
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 description = "Browser (wasm) GPUI shell for the GPUI task manager"
 
 # 親 workspace（work/gpui-task-manager/Cargo.toml）に巻き込まれないよう独立 crate にする。
