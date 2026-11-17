@@ -1125,3 +1125,8 @@
 
 - NaN ソート・負値表示・demo tick overflow を修正。430 行目の overflow はテストで発見。
   tm-core 84 → 86、workspace 203 passed。
+
+## 2026-11-17（CI 失敗 3 件を修正）
+
+- rustdoc 未解決リンク、chrono advisory allowlist、wasm-opt bulk-memory（strip 原因）を修正。
+  check.sh / trunk build / rustdoc(root/web) すべて成功。
