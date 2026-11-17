@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **192 passed / 0 failed**（tm-core 79 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **193 passed / 0 failed**（tm-core 80 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1265,3 +1265,11 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - インターフェースリセット等でカウンタが戻った場合、saturating_sub が 0 を返し
   巨大な誤レートにならないことを検証（cpu_percent 側には同種テスト済みで対称）。
 - tm-core 78 → **79 tests**、workspace 192 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（MetricHistory の極端 byte rate を検証）
+
+- network_rx/tx_rate は u64 でチャートへそのまま渡るため、u64::MAX が
+  固定長 ring を通って latest/earliest で正しくラウンドトリップすることを検証。
+  当初フィールド名を rx_bytes と誤記してコンパイルエラーになったが、
+  実定義（network_rx_rate / network_tx_rate）に修正。
+- tm-core 79 → **80 tests**、workspace 193 passed / clippy 0 warning / fmt OK。

@@ -379,6 +379,19 @@ mod tests {
     }
 
     #[test]
+    fn history_keeps_extreme_byte_rates_without_panicking() {
+        // Byte rates are u64 and are forwarded to the chart untouched; an
+        // extreme value must still round-trip through the fixed-capacity ring.
+        let mut history = MetricHistory::new(2);
+        history.push(1.0, 2.0, u64::MAX, 0);
+        history.push(3.0, 4.0, 0, u64::MAX);
+        assert_eq!(history.network_rx_rate.latest(), Some(&0));
+        assert_eq!(history.network_tx_rate.latest(), Some(&u64::MAX));
+        assert_eq!(history.network_rx_rate.earliest(), Some(&u64::MAX));
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
     fn history_rejects_non_finite_percentages() {
         let mut history = MetricHistory::new(4);
         history.push(f32::NAN, f32::INFINITY, 1, 2);
