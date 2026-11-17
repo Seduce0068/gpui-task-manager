@@ -378,11 +378,21 @@ impl Dashboard {
             }
             Command::SetPaused(paused) => {
                 self.paused = paused;
+                // A persistent startup/configuration notice must survive a
+                // pause/resume cycle (R24 history review).
+                let notice_persistent = self.status.as_ref().is_some_and(|s| s.persistent);
                 if paused {
-                    self.status = Some(StatusMessage::info("更新を一時停止しました"));
+                    if !notice_persistent {
+                        self.status = Some(StatusMessage::info("更新を一時停止しました"));
+                    }
                     Vec::new()
                 } else {
-                    self.status = Some(StatusMessage::info("更新を再開しました"));
+                    // The bytes received while paused are stale for an instant
+                    // rate; start a fresh baseline on the next sample.
+                    self.last_network = None;
+                    if !notice_persistent {
+                        self.status = Some(StatusMessage::info("更新を再開しました"));
+                    }
                     vec![Effect::SampleNow]
                 }
             }
@@ -685,6 +695,24 @@ mod tests {
 
     fn firefox_key() -> ProcessKey {
         tm_core::demo::demo_process_key(800).expect("demo firefox process")
+    }
+
+    #[test]
+    fn persistent_notice_survives_pause_resume_and_rate_starts_fresh() {
+        let mut dashboard = dashboard();
+        dashboard.set_persistent_status("デモデータで起動しました");
+        dashboard.apply(Command::SetPaused(true));
+        dashboard.apply(Command::SetPaused(false));
+        let status = dashboard.status().expect("persistent notice survives");
+        assert!(status.persistent);
+        assert_eq!(status.text, "デモデータで起動しました");
+
+        // A sample after resume starts a fresh network baseline, so bytes
+        // received while paused are not reported as an instant-rate spike.
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        dashboard.ingest(demo_snapshot(1));
+        assert!(dashboard.network_rates().0 > 0 || dashboard.network_rates().1 > 0);
     }
 
     #[test]
