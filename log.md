@@ -1054,3 +1054,10 @@
   （README / NOTICE / log / notes/index / 各 README は AGENTS.md §8 で対象外）。
 - 成果物 11 件の見出し構造を検証し、title のある文書で本文 H1 を使っていないことを確認。
   違反 0 件。
+
+## 2026-11-17（SPDX ヘッダ付与方針を確認）
+
+- 全 37 ソースファイルの SPDX ヘッダを走査: 6 件（scripts/*.sh / build-deb.sh /
+  dependabot.yml / ci.yml）に付与、31 件（Rust / Python）には未付与。
+- Cargo.toml の `license = "Apache-2.0"` でクレート単位のライセンスは明示されており、
+  SPDX はシェル・設定ファイルのみに付与する一貫した方針と判断。変更不要。
