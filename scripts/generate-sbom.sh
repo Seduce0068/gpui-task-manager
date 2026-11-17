@@ -12,6 +12,11 @@ cd "${repo_root}"
 
 out_dir="${1:-${repo_root}/target/sbom}"
 mkdir -p "${out_dir}"
+# `find .` reports paths like ./target/sbom/...; the raw argument may be
+# absolute or lack the leading "./", so normalise it to the same form before
+# using it as an exclusion pattern (otherwise the generated SBOMs are deleted).
+out_dir="./${out_dir#"${repo_root}"/}"
+out_dir="${out_dir#././}"
 
 if ! command -v cargo-cyclonedx >/dev/null 2>&1; then
   echo 'cargo-cyclonedx is not installed; skipping SBOM generation.'

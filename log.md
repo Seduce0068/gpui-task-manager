@@ -1233,3 +1233,8 @@
 
 - ingest に paused ガード（web も同時解消）、初回 HTTP のみ warm-up、
   503 コメントを実挙動に訂正。workspace 222 passed / 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第12弾 → デモ/SBOM/web fmt の実バグ）
+
+- demo メモリのジッタ、`http://[::1]` 拒否、SBOM 除外パス、web rustfmt ゲート
+  を修正。IME 提示シナリオは却下。workspace 223 passed / check.sh 成功。

@@ -13,6 +13,9 @@ cd "${repo_root}"
 echo '==> cargo fmt --all --check'
 cargo fmt --all --check
 
+echo '==> cargo fmt --manifest-path web/Cargo.toml --all --check'
+cargo fmt --manifest-path web/Cargo.toml --all --check
+
 echo '==> cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks'
 cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
 

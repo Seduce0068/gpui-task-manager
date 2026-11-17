@@ -348,8 +348,12 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
             } else {
                 (demo.base_cpu + noise * 6.0).min(399.0)
             };
-            let memory_bytes =
-                demo.base_memory + (noise as u64).saturating_mul(4_096 * ((index as u64 % 5) + 1));
+            // `noise` is in 0.0..1.0, so casting it to u64 first would always
+            // yield 0 and freeze the memory column. Scale before casting.
+            let jitter_bytes = (noise * 4_096.0) as u64;
+            let memory_bytes = demo
+                .base_memory
+                .saturating_add(jitter_bytes.saturating_mul((index as u64 % 5) + 1));
             let start_time_secs = demo_process_start_time(demo.pid);
             ProcessSnapshot {
                 key: ProcessKey::new(demo.pid, start_time_secs),
@@ -504,6 +508,33 @@ impl SystemProbe for DemoProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_process_memory_varies_with_tick() {
+        // `noise` used to be cast to u64 before scaling, which is always 0 and
+        // froze the memory column in the browser demo (R21 demo review).
+        let first = demo_snapshot(0);
+        let second = demo_snapshot(1);
+        let find = |snapshot: &SystemSnapshot, pid: u32| {
+            snapshot
+                .processes
+                .iter()
+                .find(|process| process.key.pid == pid)
+                .expect("process present")
+                .memory_bytes
+        };
+        let pid = first.processes[0].key.pid;
+        assert_ne!(find(&first, pid), find(&second, pid));
+        for tick in [0, 1, 42, u64::MAX] {
+            let snapshot = demo_snapshot(tick);
+            for process in &snapshot.processes {
+                assert!(
+                    process.virtual_memory_bytes >= process.memory_bytes,
+                    "virtual memory must cover resident memory"
+                );
+            }
+        }
+    }
 
     #[test]
     fn demo_snapshot_is_deterministic() {

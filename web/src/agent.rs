@@ -78,13 +78,27 @@ pub(crate) fn is_loopback_http_endpoint(endpoint: &str) -> bool {
         return false;
     };
     let authority = rest.split('/').next().unwrap_or("");
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (authority, None),
+    // An IPv6 literal contains colons; only split off a port after the closing
+    // bracket so `http://[::1]` (default port) is accepted too.
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let Some(end) = inner.find(']') else {
+            return false;
+        };
+        let host = &inner[..end];
+        let tail = &inner[end + 1..];
+        if !tail.is_empty() && !tail.starts_with(':') {
+            return false;
+        }
+        (format!("[{host}]"), tail.strip_prefix(':'))
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host.to_string(), Some(port)),
+            None => (authority.to_string(), None),
+        }
     };
     let host_ok = host.eq_ignore_ascii_case("localhost")
         || host == "127.0.0.1"
-        || host == "[::1]";
+        || host.eq_ignore_ascii_case("[::1]");
     if !host_ok {
         return false;
     }
@@ -135,14 +149,12 @@ impl AgentClient {
             // クエリではなくヘッダで渡す（URL・Referer・アクセスログに残さない）。
             builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
-        let request = builder
-            .body(AsyncBody::empty())
-            .map_err(|error| {
-                format!(
-                    "リクエストの組み立てに失敗しました: {}",
-                    redact_token(&format!("{error:#}"), self.config.token.as_deref())
-                )
-            })?;
+        let request = builder.body(AsyncBody::empty()).map_err(|error| {
+            format!(
+                "リクエストの組み立てに失敗しました: {}",
+                redact_token(&format!("{error:#}"), self.config.token.as_deref())
+            )
+        })?;
         let response = self.http.send(request).await.map_err(|error| {
             // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
             // トークンを伏せたうえで console に残す。
@@ -267,9 +279,13 @@ mod tests {
             "http://127.0.0.1:18787",
             "http://localhost:5173",
             "http://[::1]:18787",
+            "http://[::1]",
             "http://127.0.0.1",
         ] {
-            assert!(is_loopback_http_endpoint(allowed), "{allowed} should be allowed");
+            assert!(
+                is_loopback_http_endpoint(allowed),
+                "{allowed} should be allowed"
+            );
         }
         for rejected in [
             "https://127.0.0.1:18787",
