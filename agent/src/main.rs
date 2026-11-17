@@ -24,7 +24,7 @@ mod http;
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -46,6 +46,10 @@ const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
 /// renders a table page, so the agent truncates by default and reports the
 /// full count alongside the list.
 const DEFAULT_PROCESS_LIMIT: usize = 500;
+
+/// Delay between the discarded warm-up sample and the first published sample.
+/// Must exceed sysinfo's `MINIMUM_CPU_UPDATE_INTERVAL` (~200 ms).
+const WARMUP_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Hard upper bound for `?limit=` (a larger value is clamped, not rejected).
 const MAX_PROCESS_LIMIT: usize = 2000;
@@ -139,7 +143,7 @@ fn run() -> Result<(), String> {
         config.demo,
         tm_core::WIRE_SCHEMA_VERSION
     );
-    serve(&listener, probe, &token, config.redact)
+    serve(&listener, probe, &token, config.redact, !config.demo)
 }
 
 /// Reads a bearer token from a file, trimming the trailing newline.
@@ -194,7 +198,7 @@ fn print_once(probe: &mut dyn SystemProbe, redact: bool) -> Result<(), String> {
     // CPU percentages are deltas to the previous sample, so the first sample
     // is a warm-up and is not printed.
     probe.sample().map_err(|err| err.to_string())?;
-    std::thread::sleep(Duration::from_millis(250));
+    std::thread::sleep(WARMUP_INTERVAL);
     let mut snapshot = probe.sample().map_err(|err| err.to_string())?;
     if redact {
         redact_snapshot(&mut snapshot);
@@ -221,15 +225,19 @@ struct SharedState {
     token: String,
     redact: bool,
     active: AtomicUsize,
+    /// `false` until the first real-probe snapshot has consumed a warm-up
+    /// sample. Demo data starts ready (its ticks are deterministic).
+    warmed_up: AtomicBool,
 }
 
 impl SharedState {
-    fn new(probe: Box<dyn SystemProbe>, token: &str, redact: bool) -> Self {
+    fn new(probe: Box<dyn SystemProbe>, token: &str, redact: bool, needs_warmup: bool) -> Self {
         Self {
             probe: Mutex::new(probe),
             token: token.to_string(),
             redact,
             active: AtomicUsize::new(0),
+            warmed_up: AtomicBool::new(!needs_warmup),
         }
     }
 }
@@ -244,8 +252,9 @@ fn serve(
     probe: Box<dyn SystemProbe>,
     token: &str,
     redact: bool,
+    needs_warmup: bool,
 ) -> Result<(), String> {
-    let state = Arc::new(SharedState::new(probe, token, redact));
+    let state = Arc::new(SharedState::new(probe, token, redact, needs_warmup));
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -284,8 +293,12 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
             "Service Unavailable",
             error_body("同時接続数が上限に達しました"),
         );
-        // The 503 path bypasses `handle_connection`, so set the timeout here:
-        // a peer that stops reading must not block the accept loop.
+        // The 503 path is written synchronously on the accept thread, bounded
+        // by WRITE_TIMEOUT (5 s). In practice the ~240-byte response fits in
+        // the loopback send buffer and returns immediately; a peer stopping
+        // reads alone cannot stall the loop. Do NOT move this to a worker:
+        // spawning a thread per rejected connection would defeat MAX_CONNECTIONS
+        // and open a local resource-exhaustion vector.
         if let Err(err) = stream.set_write_timeout(Some(http::WRITE_TIMEOUT)) {
             eprintln!("tm-agent: 503 のタイムアウト設定に失敗: {err}");
         }
@@ -321,6 +334,7 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
                     guard.as_mut(),
                     &worker_state.token,
                     worker_state.redact,
+                    &worker_state.warmed_up,
                 )
             });
             if let Err(err) = result {
@@ -409,6 +423,7 @@ fn route(
     probe: &mut dyn SystemProbe,
     token: &str,
     redact: bool,
+    warmed_up: &AtomicBool,
 ) -> http::Response {
     if request.method.eq_ignore_ascii_case("OPTIONS") {
         return preflight_response(request);
@@ -427,7 +442,7 @@ fn route(
 
     match request.path.as_str() {
         HEALTH_PATH => health_response(),
-        SNAPSHOT_PATH => snapshot_response(request, probe, token, redact),
+        SNAPSHOT_PATH => snapshot_response(request, probe, token, redact, warmed_up),
         _ => http::Response::json(
             404,
             "Not Found",
@@ -480,6 +495,7 @@ fn snapshot_response(
     probe: &mut dyn SystemProbe,
     token: &str,
     redact: bool,
+    warmed_up: &AtomicBool,
 ) -> http::Response {
     let Some(supplied) = auth::request_token(request) else {
         return unauthorized_response();
@@ -492,6 +508,26 @@ fn snapshot_response(
         Ok(limit) => limit,
         Err(message) => return http::Response::json(400, "Bad Request", error_body(&message)),
     };
+
+    // CPU percentages are deltas; the first native sample is always 0.0, which
+    // makes every process tie and turns `limit` into an arbitrary PID subset
+    // instead of the busiest processes. Consume one discarded sample on the
+    // first authenticated snapshot only. The probe mutex is held by the caller
+    // (`route`), so concurrent connections cannot race this check.
+    if !warmed_up.load(Ordering::Acquire) {
+        if let Err(err) = probe.sample() {
+            eprintln!("tm-agent: ウォームアップサンプルに失敗: {err}");
+            return json_response(
+                500,
+                "Internal Server Error",
+                &ErrorBody {
+                    error: "スナップショットを取得できませんでした",
+                },
+            );
+        }
+        std::thread::sleep(WARMUP_INTERVAL);
+        warmed_up.store(true, Ordering::Release);
+    }
 
     match probe.sample() {
         Ok(mut snapshot) => {
@@ -627,10 +663,11 @@ mod tests {
         let address = listener.local_addr().expect("local addr");
         let handle = std::thread::spawn(move || {
             let mut probe = DemoProbe::new();
+            let warm = AtomicBool::new(true); // demo data needs no warm-up
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().expect("accept");
                 handle_connection(&mut stream, |request| {
-                    route(request, &mut probe, TEST_TOKEN, false)
+                    route(request, &mut probe, TEST_TOKEN, false, &warm)
                 })
                 .expect("handle connection");
             }
@@ -680,9 +717,10 @@ mod tests {
         let address = listener.local_addr().expect("local addr");
         let handle = std::thread::spawn(move || {
             let mut probe = FailingProbe;
+            let warm = AtomicBool::new(true); // the error path never warms up
             let (mut stream, _) = listener.accept().expect("accept");
             handle_connection(&mut stream, |request| {
-                route(request, &mut probe, TEST_TOKEN, false)
+                route(request, &mut probe, TEST_TOKEN, false, &warm)
             })
             .expect("handle connection");
         });
@@ -1099,6 +1137,68 @@ mod tests {
         spawn_connection(Arc::clone(state), stream).expect("spawn connection");
     }
 
+    struct CountingProbe {
+        inner: DemoProbe,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SystemProbe for CountingProbe {
+        fn platform_info(&self) -> tm_core::PlatformInfo {
+            self.inner.platform_info()
+        }
+        fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.inner.sample()
+        }
+    }
+
+    #[test]
+    fn first_authenticated_snapshot_consumes_one_warmup_sample() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = Arc::new(SharedState::new(
+            Box::new(CountingProbe {
+                inner: DemoProbe::new(),
+                calls: Arc::clone(&calls),
+            }),
+            TEST_TOKEN,
+            false,
+            true, // simulate a real probe needing warm-up
+        ));
+        // One accept per request, synchronously driven by the test so there is
+        // no race between `send_request` and the listener accepting.
+        let request = |raw: &str, state: &Arc<SharedState>| -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let address = listener.local_addr().expect("local addr");
+            let server = std::thread::spawn({
+                let state = Arc::clone(state);
+                move || accept_and_spawn(&listener, &state)
+            });
+            let _ = address;
+            let response = send_request(address, raw);
+            server.join().expect("server thread");
+            response
+        };
+
+        // Unauthorized, public health check and bad limit must NOT consume
+        // warm-up. `/healthz` legitimately returns 200 without a token.
+        let health = request("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", &state);
+        assert!(health.starts_with("HTTP/1.1 200"));
+        for raw in [
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            "GET /api/v1/snapshot?limit=abc HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        ] {
+            let response = request(raw, &state);
+            assert!(!response.starts_with("HTTP/1.1 200"), "unexpected: {response}");
+        }
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+
+        let auth = "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n";
+        assert!(request(auth, &state).starts_with("HTTP/1.1 200"));
+        assert_eq!(calls.load(Ordering::Acquire), 2); // discarded + published
+        assert!(request(auth, &state).starts_with("HTTP/1.1 200"));
+        assert_eq!(calls.load(Ordering::Acquire), 3); // one per later request
+    }
+
     #[test]
     fn active_counter_is_released_when_worker_panics() {
         // Exercises the Drop guard: a panic inside the worker must not leak a
@@ -1108,6 +1208,7 @@ mod tests {
             Box::new(DemoProbe::new()),
             TEST_TOKEN,
             false,
+            false, // demo data needs no warm-up
         ));
         assert_eq!(state.active.load(Ordering::Acquire), 0);
         let worker = {
@@ -1130,6 +1231,7 @@ mod tests {
             Box::new(DemoProbe::new()),
             TEST_TOKEN,
             false,
+            false, // demo data needs no warm-up
         ));
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
@@ -1172,6 +1274,7 @@ mod tests {
             Box::new(DemoProbe::new()),
             TEST_TOKEN,
             false,
+            false, // demo data needs no warm-up
         ));
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");

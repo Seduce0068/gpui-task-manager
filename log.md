@@ -1228,3 +1228,8 @@
 - Host 欠落の 400 化はテスト 11 箇所波及＋防御効果限定的で見送り、SECURITY に
   実際の挙動を明記。ADR-021（AGPL 移行）を追加し ADR-011 は履歴保持。
   SECURITY の依存ライセンス文言を deny.toml 参照へ修正。workspace 220 passed。
+
+## 2026-11-18（エージェント並列調査 第11弾 → 一時停止・初回warm-up・503コメント）
+
+- ingest に paused ガード（web も同時解消）、初回 HTTP のみ warm-up、
+  503 コメントを実挙動に訂正。workspace 222 passed / 全ゲート成功。
