@@ -929,3 +929,7 @@
 ## 2026-11-17（Signal ラベルの全バリアント固定）
 
 - 4 信号の label/short_label と map_signal の網羅性を確認。tm-core 76 → 77、workspace 190 passed。
+
+## 2026-11-17（大小文字無視ヘルパーの Unicode 挙動を固定）
+
+- İ の展開と ß 非展開を検証。tm-core 77 → 78、workspace 191 passed。

@@ -490,6 +490,20 @@ mod tests {
     }
 
     #[test]
+    fn case_insensitive_helpers_handle_unicode_expansion() {
+        // `İ` lowercases to two chars (`i` + combining dot); both helpers must
+        // agree so sorting and filtering do not disagree about the same name.
+        assert!(eq_ignore_case("İ", "i\u{307}"));
+        assert_eq!(cmp_ignore_case("İ", "i\u{307}"), Ordering::Equal);
+        assert!(contains_ignore_case("直美的İ", "İ"));
+        // Empty needles always match, and ASCII folding still works.
+        assert!(contains_ignore_case("anything", ""));
+        assert!(eq_ignore_case("Firefox", "firefox"));
+        // `ß` does not expand to `ss` under Unicode lowercase: document it.
+        assert!(!eq_ignore_case("straße", "strasse"));
+    }
+
+    #[test]
     fn name_sort_is_case_insensitive() {
         let processes = vec![process(1, "Zsh", 0.0, 1), process(2, "bash", 0.0, 1)];
         let spec = SortSpec::new(SortKey::Name);
