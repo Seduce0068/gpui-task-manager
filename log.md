@@ -1111,3 +1111,7 @@
 - `?limit=%zz`（不正な percent escape）はデコードが None を返し、
   `parse_process_limit` は `limit` 欠落と同じくデフォルトへフォールバックすることを
   明示検証（`limit=abc` が拒否されるのと対照的）。テスト件数不変（workspace 200 passed）。
+
+## 2026-11-17（HTTP/1.0 要求行の受け付けを検証）
+
+- parse_request の HTTP/1.0 受理を検証。tm-agent 52 → 53、workspace 201 passed。

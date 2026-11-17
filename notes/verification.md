@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **200 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 52 / app 15、2026-11-17） |
+| `cargo test --workspace` | **201 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 53 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1337,3 +1337,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - `generate_token` が小文字 hex（0-9a-f）のみを生成することを明示検証。
   token は constant_time_eq でバイト比較されるため、大文字化は認証失敗に直結する。
 - tm-agent 51 → **52 tests**、workspace 200 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（HTTP/1.0 要求行の受け付けを検証）
+
+- parse_request が HTTP/1.0 と HTTP/1.1 の両方を受け付けることを明示検証
+  （既存テストは HTTP/2.0 拒否のみで 1.0 受理は未カバー）。レスポンスは常に HTTP/1.1。
+- tm-agent 52 → **53 tests**、workspace 201 passed / clippy 0 warning / fmt OK。
