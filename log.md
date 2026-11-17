@@ -917,3 +917,7 @@
 
 - user/status/min_cpu/min_memory が active 判定されることを検証。
   tm-core 73 → 74、workspace 187 passed。
+
+## 2026-11-17（ProcessKey の Display 形式を固定）
+
+- pid@start_time 形式をテスト。tm-core 74 → 75、workspace 188 passed。
