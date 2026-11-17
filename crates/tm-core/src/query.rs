@@ -569,6 +569,29 @@ mod tests {
     }
 
     #[test]
+    fn cpu_and_memory_thresholds_apply_independently() {
+        let processes = sample();
+        let cpu = Filter {
+            min_cpu_percent: Some(20.0),
+            ..Filter::default()
+        };
+        assert_eq!(
+            processes.iter().filter(|p| cpu.matches(p)).count(),
+            1,
+            "only the 30% CPU process passes"
+        );
+        let memory = Filter {
+            min_memory_bytes: Some(3_000),
+            ..Filter::default()
+        };
+        assert_eq!(
+            processes.iter().filter(|p| memory.matches(p)).count(),
+            1,
+            "only the 4 KB process passes"
+        );
+    }
+
+    #[test]
     fn active_detection_ignores_blank_text() {
         assert!(!Filter::default().is_active());
         assert!(!Filter {
