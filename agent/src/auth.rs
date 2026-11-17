@@ -11,30 +11,25 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::http::Request;
 
 /// Number of random bytes in a generated token.
 pub const TOKEN_BYTES: usize = 32;
 
-/// Generates a fresh bearer token.
+/// Generates a fresh bearer token from the OS CSPRNG.
 ///
-/// Uses `/dev/urandom` and falls back to a time/PID mix only when the device
-/// cannot be read (a degraded container, for example). The fallback is clearly
-/// weaker and is documented rather than hidden.
-pub fn generate_token() -> String {
+/// There is deliberately no time/PID fallback: a locally predictable token
+/// would make the loopback "security boundary" meaningless. If `/dev/urandom`
+/// cannot be read the agent fails to start rather than emitting a weak secret.
+pub fn generate_token() -> Result<String, String> {
     let mut bytes = [0u8; TOKEN_BYTES];
-    if let Ok(mut device) = File::open("/dev/urandom") {
-        if device.read_exact(&mut bytes).is_ok() {
-            return hex_encode(&bytes);
-        }
-    }
-    eprintln!(
-        "tm-agent: 警告: /dev/urandom を読めないため、弱いフォールバック乱数でトークンを生成しました"
-    );
-    fallback_token_bytes(&mut bytes);
-    hex_encode(&bytes)
+    let mut device =
+        File::open("/dev/urandom").map_err(|err| format!("/dev/urandom を読めません: {err}"))?;
+    device
+        .read_exact(&mut bytes)
+        .map_err(|err| format!("/dev/urandom から読み取れません: {err}"))?;
+    Ok(hex_encode(&bytes))
 }
 
 /// Lower-case hex encoding (used for tokens only).
@@ -45,29 +40,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-/// Best-effort entropy when `/dev/urandom` is unavailable.
-fn fallback_token_bytes(out: &mut [u8; TOKEN_BYTES]) {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or(0);
-    let mut state = nanos ^ u64::from(std::process::id());
-    for chunk in out.chunks_mut(8) {
-        state = splitmix64(state);
-        for (slot, byte) in chunk.iter_mut().zip(state.to_le_bytes().iter()) {
-            *slot = *byte;
-        }
-    }
-}
-
-/// One round of SplitMix64, used to expand the fallback seed.
-fn splitmix64(seed: u64) -> u64 {
-    let mut value = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    value ^ (value >> 31)
 }
 
 /// Compares two secrets without leaking their contents through timing.
@@ -110,8 +82,8 @@ mod tests {
 
     #[test]
     fn generated_tokens_are_hex_and_unique() {
-        let first = generate_token();
-        let second = generate_token();
+        let first = generate_token().expect("urandom");
+        let second = generate_token().expect("urandom");
         assert_eq!(first.len(), TOKEN_BYTES * 2);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second, "two tokens must differ");
@@ -121,7 +93,7 @@ mod tests {
     fn generated_tokens_are_lower_case_hex() {
         // Tokens are compared byte-wise (constant_time_eq), so a producer that
         // emitted upper-case hex would silently break every presented token.
-        let token = generate_token();
+        let token = generate_token().expect("urandom");
         assert_eq!(token, token.to_ascii_lowercase());
         assert_eq!(token.len(), TOKEN_BYTES * 2);
         assert!(token
