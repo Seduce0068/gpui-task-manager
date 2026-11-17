@@ -159,6 +159,28 @@ mod tests {
     }
 
     #[test]
+    fn other_invisible_format_characters_are_removed() {
+        // These format characters are not bidi controls and not caught by the
+        // common ZWSP/VS ranges, but can still spoof or pad a process name.
+        for ch in [
+            '\u{034f}', // COMBINING GRAPHEME JOINER
+            '\u{061c}', // ARABIC LETTER MARK
+            '\u{115f}', // HANGUL CHOSEONG FILLER
+            '\u{1160}', // HANGUL JUNGSEONG FILLER
+            '\u{17b4}', // KHMER VOWEL INHERENT AQ
+            '\u{180b}', // MONGOLIAN FREE VARIATION SELECTOR ONE
+            '\u{3164}', // HANGUL FILLER
+            '\u{ffa0}', // HALFWIDTH HANGUL FILLER
+        ] {
+            assert!(
+                is_invisible_format(ch),
+                "U+{:04X} must be invisible",
+                ch as u32
+            );
+        }
+    }
+
+    #[test]
     fn all_bidi_controls_are_neutralised() {
         // Every bidi control in `is_bidi_control`'s ranges must be replaced by
         // a space; a missed one could reorder a process name in the table.

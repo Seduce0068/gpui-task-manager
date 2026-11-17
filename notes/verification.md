@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **195 passed / 0 failed**（tm-core 82 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **196 passed / 0 failed**（tm-core 83 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1285,3 +1285,11 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - `is_bidi_control` の全範囲（LRE/RLE/PDF/LRO/RLO/LRI/RLI/FSI/PDI の 9 文字）が
   すべて空白に中性化されることを網羅検証（プロセス名の並び替えリスクを担保）。
 - tm-core 81 → **82 tests**、workspace 195 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（その他の不可視書式文字を検証）
+
+- 既存テストがカバーしていない CGJ / Arabic Letter Mark / Hangul Filler /
+  Khmer Vowel / Mongolian VS / Halfwidth Hangul Filler が
+  `is_invisible_format` で検出されることを検証（前回の bidi 9 文字と合わせ
+  サニタイズ対象を網羅）。
+- tm-core 82 → **83 tests**、workspace 196 passed / clippy 0 warning / fmt OK。
