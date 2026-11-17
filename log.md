@@ -1211,3 +1211,9 @@
 
 - argv/パス/web エラーの生エコーを停止、R2X-A8、normalise_percent の重複解消、
   自己親・format_duration 境界テストを追加。workspace 216 passed / 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第8弾 → 接続カウンタ二重減算を修正）
+
+- 前回 R2X-A7 修正の誤り（spawn 失敗時の fetch_sub 二重減算）を Runtime Proof で
+  再現・修正。2 回目 healthz が 503 → 修正後 3 回連続 503 なし。
+  テスト件数/ライセンス表記を実測へ追随。app redact 共通化は次ラウンド候補。

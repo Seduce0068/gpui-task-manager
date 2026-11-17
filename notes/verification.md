@@ -24,8 +24,8 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **216 passed / 0 failed**（tm-core 90 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 15、2026-11-17） |
-| web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
+| `cargo test --workspace` | **216 passed / 0 failed**（tm-core 90 / tm-viewmodel 40 / tm-platform 11 / tm-agent 59 / app 16、2026-11-18） |
+| web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
@@ -1630,3 +1630,23 @@ CDP 契约上マスク不可のため、いずれも親の判断として保留�
 
 - tm-core 89 → **90**、tm-agent 58 → **59**、workspace **216 passed** /
   clippy / rustdoc / check.sh 全ゲート成功 / markdownlint 増分ゼロ。
+
+## 2026-11-18（エージェント並列調査 第8弾 → 接続カウンタ二重減算を修正）
+
+3 観点（実バグ探索 / redact 共通化 / ドキュメント残）の調査エージェントを並列起動。
+
+- **実バグ（信頼度 高、Runtime Proof 済み）**: 前回 R2X-A7 対応（e6b46ff）で
+  `thread::Builder::spawn` 失敗時に `map_err` 内の `fetch_sub` と `_slot` の
+  `Drop`（std は spawn 失敗時にクロージャをドロップする）の両方が作動し、
+  `active` が `usize::MAX` にラップして以降の全接続が 503 になる。
+  `RUST_MIN_STACK=1099511627776` で再現（2 回目の /healthz が 503）、
+  `fetch_sub` 削除後は 3 回連続で 503 にならないことを確認。
+- **ドキュメント追随**: app 16 / web 16（agent 7 + settings 5 + theme 4）の
+  実測へ README / current-state / verification を更新。current-state の
+  ライセンス（AGPL）とテスト推移（143 → 216）も更新。
+- **保留（要判断）**: app 版 redact は HOME/USER のみで hostname/tailnet を
+  マスクせず SECURITY.md の約束と不一致（スクリーンショット経由の漏えい）。
+  tm-core 共通化の提案を記録し、次ラウンドの実装候補とする。
+  ADR-021（AGPL 移行）の追加、ADR-011 の superseded 扱いも判断待ち。
+
+- workspace 216 passed / clippy / markdownlint（増分ゼロ）成功。
