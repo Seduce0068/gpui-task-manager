@@ -607,6 +607,33 @@ mod tests {
     }
 
     #[test]
+    fn every_filter_field_marks_the_filter_active() {
+        // `is_active` drives the UI's "filtered" indicator; each field must be
+        // recognised, otherwise a threshold-only filter would look inactive.
+        let cases = [
+            Filter {
+                user: Some("user".to_string()),
+                ..Filter::default()
+            },
+            Filter {
+                status: Some(ProcessStatus::Running),
+                ..Filter::default()
+            },
+            Filter {
+                min_cpu_percent: Some(0.0),
+                ..Filter::default()
+            },
+            Filter {
+                min_memory_bytes: Some(0),
+                ..Filter::default()
+            },
+        ];
+        for filter in cases {
+            assert!(filter.is_active(), "{filter:?} must be active");
+        }
+    }
+
+    #[test]
     fn flatten_process_tree_preserves_roots_and_children() {
         let mut parent = process(1, "init", 0.0, 1);
         parent.parent_pid = None;

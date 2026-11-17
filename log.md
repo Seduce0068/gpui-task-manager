@@ -912,3 +912,8 @@
 ## 2026-11-17（CPU/メモリ閾値の個別適用を検証）
 
 - 各閾値の単独指定をテスト。tm-core 72 → 73、workspace 186 passed。
+
+## 2026-11-17（is_active の全フィールド検証を追加）
+
+- user/status/min_cpu/min_memory が active 判定されることを検証。
+  tm-core 73 → 74、workspace 187 passed。
