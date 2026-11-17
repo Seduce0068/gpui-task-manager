@@ -925,3 +925,7 @@
 ## 2026-11-17（Timestamp の極端値 saturating を検証）
 
 - from_secs(u64::MAX) が saturation することを確認。tm-core 75 → 76、workspace 189 passed。
+
+## 2026-11-17（Signal ラベルの全バリアント固定）
+
+- 4 信号の label/short_label と map_signal の網羅性を確認。tm-core 76 → 77、workspace 190 passed。
