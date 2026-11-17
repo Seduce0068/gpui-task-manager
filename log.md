@@ -1090,3 +1090,8 @@
 
 - 監査指摘の未カバー項目だった previous_hint の回帰テストを追加。
   tm-viewmodel 37 → 38、workspace 198 passed。
+
+## 2026-11-17（HTTP レスポンスヘッダの厳格テストを追加）
+
+- 200/204 のヘッダ生成を生バイトで検証。部分一致の誤検知を修正。
+  tm-agent 50 → 51、workspace 199 passed。

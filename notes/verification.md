@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **198 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **199 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 51 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1322,3 +1322,12 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   （選択プロセス消滅時に同じ行位置へフォールバック）を明示検証するテストを追加。
   中間行（index 2）を選択してそのプロセスを消し、同じ位置の行が選択されることを確認。
 - tm-viewmodel 37 → **38 tests**、workspace 198 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（HTTP レスポンスヘッダの厳格テストを追加）
+
+- ループバックソケットで write_response の生バイトを検証:
+  200 は Content-Type / Content-Length / Cache-Control / nosniff / Connection、
+  204 は Content-Type / Content-Length を省略し終端 CRLF CRLF のみ。
+  当初 `X-Content-Type-Options` が "Content-Type" に部分一致して誤失敗したが、
+  ヘッダ行先頭（`\r\nContent-Type:`）で照合して解消。
+- tm-agent 50 → **51 tests**、workspace 199 passed / clippy 0 warning / fmt OK。
