@@ -896,6 +896,26 @@ mod tests {
     }
 
     #[test]
+    fn settings_restore_commands_emit_no_effects() {
+        // The native shell checks this contract when restoring settings; keep
+        // it pinned here so a future effect cannot be silently dropped (R2-C01).
+        let mut dashboard = dashboard();
+        assert!(dashboard
+            .apply(Command::SetInterval(Duration::from_millis(1_500)))
+            .is_empty());
+        assert!(dashboard
+            .apply(Command::SetSortSpec(SortSpec {
+                key: SortKey::Name,
+                direction: SortDirection::Ascending,
+            }))
+            .is_empty());
+        assert!(dashboard
+            .apply(Command::SetDetailsVisible(false))
+            .is_empty());
+        assert!(dashboard.apply(Command::SetTreeView(true)).is_empty());
+    }
+
+    #[test]
     fn sort_spec_and_details_can_be_restored_exactly() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);

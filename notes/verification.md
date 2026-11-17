@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **209 passed / 0 failed**（tm-core 87 / tm-viewmodel 39 / tm-platform 11 / tm-agent 57 / app 15、2026-11-17） |
+| `cargo test --workspace` | **211 passed / 0 failed**（tm-core 88 / tm-viewmodel 40 / tm-platform 11 / tm-agent 57 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1550,3 +1550,31 @@ Runtime Proof で取捨選択していた（親はその結果も仮説として
 履歴として保持し、ADR-021 で AGPL 移行を記録するのは要判断として据え置き。
 
 - workspace 209 passed / clippy / cargo-deny / rustdoc / check.sh 全ゲート成功。
+
+## 2026-11-18（エージェント並列調査 第5弾 → 5 項目を修正）
+
+3 観点（同族バグ / Effect / DEB）の調査エージェントを並列起動し、
+各推奨項目を親が現行コードで Runtime Proof してから実装:
+
+1. **R2-C02**: app/src/app.rs の 2 箇所で `let _ = this.update(...)` を
+   `if ... .is_err() {}` に変更（entity 消滅後のコールバックを明示）。
+   子の提案どおり `return` を付けたが、末尾の文なので clippy の
+   `needless_return` に指摘され、コメント入り空ブロックに修正。
+2. **R2-C01**: 設定復元 4 コマンドの Effect を明示的に検査（native と web を
+   同等化）。契約テスト `settings_restore_commands_emit_no_effects` を
+   tm-viewmodel へ追加（app クレートの SIGSEGV 制約を回避）。
+3. **format_percent(-0.0) / cmp_percent 負値**: 直近の `format_load_average`
+   修正の取り残し。`clamp` は `-0.0` を保持するため `.max(0.0)` を前置。
+   ソートも表示と揃え、Ascending の回帰テストで `-5.0` / `-0.0` を固定。
+4. **R1S-OPS-05**: build-deb.sh が `ldd` の "not found" を黙ってスキップ
+   していた問題を修正。ldd 出力を捕捉して明示検査し、未解決ライブラリは
+   ビルド失敗扱い。README に依存・残置方針を追記。
+5. **R1-V02**: Windows CI の `cargo test` へ `-p tm-platform` を追加
+   （前回保留項目。前回 CI が 8/8 success だったため実施）。
+
+- 子の指摘で却下: 補助面 VS (U+E0100..E01EF) は IVS として正当利用され
+  表示差を生み得るため別判断に保留。R3-L01 (postrm) は Debian Policy 上
+  `postrm` 追加で `apt remove` 後に rc 状態が残る退行リスクがあるため
+  見送り（README に現行方針を明記）。
+- tm-core 87 → **88**、tm-viewmodel 39 → **40**、workspace **211 passed** /
+  clippy / shellcheck / shfmt / YAML / rustdoc / check.sh 全ゲート成功。

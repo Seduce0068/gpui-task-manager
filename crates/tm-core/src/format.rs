@@ -34,7 +34,8 @@ pub fn format_rate(bytes_per_second: u64) -> String {
 /// or `inf%` in the UI.
 pub fn format_percent(percent: f32) -> String {
     let percent = if percent.is_finite() {
-        percent.clamp(0.0, 100.0)
+        // `clamp` alone keeps `-0.0` (rendering as "-0.0%"); floor it first.
+        percent.max(0.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
@@ -159,6 +160,9 @@ mod tests {
         assert_eq!(format_cpu_percent(f32::NEG_INFINITY), "0.0%");
         // Negative values are floored to match MetricHistory's 0..=100 clamp.
         assert_eq!(format_cpu_percent(-5.0), "0.0%");
+        // `clamp` alone would keep -0.0 (bit sign) and render "-0.0%".
+        assert_eq!(format_percent(-0.0), "0.0%");
+        assert_eq!(format_percent(-5.0), "0.0%");
         assert_eq!(
             format_load_average([f32::NAN, 1.5, f32::INFINITY]),
             "0.00 1.50 0.00"

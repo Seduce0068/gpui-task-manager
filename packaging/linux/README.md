@@ -27,7 +27,13 @@ Output: `packaging/linux/build/gpui-task-manager_<version>-1_<arch>.deb`
 ## Notes
 
 - Runtime dependencies are derived from `ldd` + `dpkg -S`; `libvulkan1` is added
-  explicitly because Vulkan is loaded at runtime with `dlopen`.
+  explicitly because Vulkan is loaded at runtime with `dlopen`. Unresolved
+  libraries (`ldd` "not found") fail the build rather than being silently
+  omitted from `Depends`.
+- No maintainer scripts or conffiles are installed: `/usr` files are removed by
+  `dpkg -R`, and user settings under `~/.config/gpui-task-manager/` are kept
+  intentionally. With no `postrm`/conffiles, `apt remove` effectively purges
+  the package; no `/var` state or logs are created.
 - The package is unsigned. Signing and repository hosting are out of scope for
   the prototype.
 - Installation is left to the user (`sudo apt install ./...deb`); the script

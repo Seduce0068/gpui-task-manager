@@ -115,12 +115,22 @@ impl TaskManagerApp {
             dashboard.set_status(error, true);
         }
         let settings = crate::settings::load();
-        let _ = dashboard.apply(Command::SetInterval(Duration::from_millis(
-            settings.interval_ms,
-        )));
-        let _ = dashboard.apply(Command::SetSortSpec(settings.sort));
-        let _ = dashboard.apply(Command::SetDetailsVisible(settings.details_visible));
-        let _ = dashboard.apply(Command::SetTreeView(settings.tree_view));
+        for command in [
+            Command::SetInterval(Duration::from_millis(settings.interval_ms)),
+            Command::SetSortSpec(settings.sort),
+            Command::SetDetailsVisible(settings.details_visible),
+            Command::SetTreeView(settings.tree_view),
+        ] {
+            // Restoring settings only changes display state; these commands
+            // return no effects today. Check explicitly so a future effect is
+            // not silently dropped (R2-C01). The web shell does the same.
+            for effect in dashboard.apply(command) {
+                match effect {
+                    Effect::SampleNow => {}
+                    Effect::Signal { .. } => {}
+                }
+            }
+        }
         // Apply persisted theme.
         crate::theme::set_theme(settings.theme);
         Self {
@@ -216,14 +226,20 @@ impl TaskManagerApp {
                     }
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                this.sampling_in_flight = false;
-                match result {
-                    Ok(snapshot) => this.dashboard.ingest(snapshot),
-                    Err(error) => this.dashboard.set_status(error.to_string(), true),
-                }
-                cx.notify();
-            });
+            if this
+                .update(cx, |this, cx| {
+                    this.sampling_in_flight = false;
+                    match result {
+                        Ok(snapshot) => this.dashboard.ingest(snapshot),
+                        Err(error) => this.dashboard.set_status(error.to_string(), true),
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                // The view was dropped while sampling was in flight; nothing
+                // left to do in this terminal callback.
+            }
         })
         .detach();
     }
@@ -243,17 +259,23 @@ impl TaskManagerApp {
                     }
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => this.dashboard.set_status(
-                        format!("{} を送信しました（PID {}）", signal.short_label(), key.pid),
-                        false,
-                    ),
-                    Err(error) => this.dashboard.set_status(error.to_string(), true),
-                }
-                this.request_sample(cx);
-                cx.notify();
-            });
+            if this
+                .update(cx, |this, cx| {
+                    match result {
+                        Ok(()) => this.dashboard.set_status(
+                            format!("{} を送信しました（PID {}）", signal.short_label(), key.pid),
+                            false,
+                        ),
+                        Err(error) => this.dashboard.set_status(error.to_string(), true),
+                    }
+                    this.request_sample(cx);
+                    cx.notify();
+                })
+                .is_err()
+            {
+                // The view was dropped while the signal was in flight; nothing
+                // left to do in this terminal callback.
+            }
         })
         .detach();
     }
