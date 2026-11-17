@@ -390,6 +390,17 @@ mod tests {
     }
 
     #[test]
+    fn process_key_display_includes_pid_and_start_time() {
+        // The signal path logs this form when reusing a PID; both halves of the
+        // identity must be visible for diagnostics.
+        assert_eq!(
+            ProcessKey::new(4242, 1_700_000_000).to_string(),
+            "4242@1700000000"
+        );
+        assert_eq!(ProcessKey::new(4242, 1_700_000_001).pid(), 4242);
+    }
+
+    #[test]
     fn timestamp_math_is_saturating() {
         let now = Timestamp::from_secs(100);
         let earlier = Timestamp::from_secs(140);
