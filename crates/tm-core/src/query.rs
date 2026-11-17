@@ -776,6 +776,23 @@ mod tests {
     }
 
     #[test]
+    fn flatten_process_tree_treats_self_parent_as_root() {
+        // A corrupt snapshot can name a process as its own parent; it must
+        // still appear as a root instead of vanishing from the tree.
+        let mut process = process(7, "self", 0.0, 1);
+        process.parent_pid = Some(7);
+        let rows = flatten_process_tree(&[process], &[0], &std::collections::HashSet::new());
+        assert_eq!(
+            rows,
+            vec![ProcessTreeRow {
+                index: 0,
+                depth: 0,
+                has_children: false,
+            }]
+        );
+    }
+
+    #[test]
     fn flatten_process_tree_survives_a_parent_cycle() {
         // Malformed data (a hand-crafted agent response or a kernel race) can
         // describe two processes as each other's parent. Neither becomes a

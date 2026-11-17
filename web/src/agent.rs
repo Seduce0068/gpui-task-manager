@@ -137,7 +137,12 @@ impl AgentClient {
         }
         let request = builder
             .body(AsyncBody::empty())
-            .map_err(|error| format!("リクエストの組み立てに失敗しました: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "リクエストの組み立てに失敗しました: {}",
+                    redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                )
+            })?;
         let response = self.http.send(request).await.map_err(|error| {
             // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
             // トークンを伏せたうえで console に残す。
@@ -176,8 +181,12 @@ impl AgentClient {
             ));
         }
 
-        let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer)
-            .map_err(|error| format!("スナップショット JSON の解析に失敗しました: {error}"))?;
+        let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
+            format!(
+                "スナップショット JSON の解析に失敗しました: {}",
+                redact_token(&format!("{error:#}"), self.config.token.as_deref())
+            )
+        })?;
         check_schema_version(envelope.schema_version)?;
         // Never trust display strings from the wire: a malicious or corrupted
         // agent could inject ANSI/control characters into the canvas (R2X-D1).

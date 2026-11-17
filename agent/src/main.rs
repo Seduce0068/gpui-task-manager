@@ -506,13 +506,18 @@ fn snapshot_response(
             };
             json_response(200, "OK", &envelope)
         }
-        Err(err) => json_response(
-            500,
-            "Internal Server Error",
-            &ErrorBody {
-                error: &err.to_string(),
-            },
-        ),
+        Err(err) => {
+            // Details go to the operator's log; the client gets a fixed string
+            // so a future probe implementation cannot leak paths in the body.
+            eprintln!("tm-agent: スナップショット取得に失敗: {err}");
+            json_response(
+                500,
+                "Internal Server Error",
+                &ErrorBody {
+                    error: "スナップショットを取得できませんでした",
+                },
+            )
+        }
     }
 }
 
@@ -755,6 +760,46 @@ mod tests {
             .split_once("\r\n\r\n")
             .expect("response must contain a body separator");
         serde_json::from_str(body).expect("body must be JSON")
+    }
+
+    struct FailingProbe;
+
+    impl SystemProbe for FailingProbe {
+        fn platform_info(&self) -> tm_core::PlatformInfo {
+            tm_core::PlatformInfo::demo()
+        }
+        fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
+            Err(tm_core::ProbeError::Io(
+                "SECRET-PATH /home/victim".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn snapshot_error_body_does_not_echo_probe_details() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let mut probe = FailingProbe;
+            let (mut stream, _) = listener.accept().expect("accept");
+            handle_connection(&mut stream, |request| {
+                route(request, &mut probe, TEST_TOKEN, false)
+            })
+            .expect("handle connection");
+        });
+        let response = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        handle.join().expect("server thread");
+
+        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
+        assert!(!response.contains("SECRET-PATH"));
+        assert!(!response.contains("/home/victim"));
+        assert_eq!(
+            parse_body(&response)["error"],
+            "スナップショットを取得できませんでした"
+        );
     }
 
     #[test]

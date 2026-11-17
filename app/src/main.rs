@@ -90,7 +90,9 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
             if text == flag {
                 *slot = true;
             } else if text.starts_with(flag) && text[flag.len()..].starts_with('=') {
-                return Err(format!("{flag} に値は指定できません: {text}"));
+                // Do not echo `text`: a mistaken `--demo=<secret>` would put
+                // the secret in stderr, so name only the flag.
+                return Err(format!("{flag} に値は指定できません"));
             }
         }
     }
