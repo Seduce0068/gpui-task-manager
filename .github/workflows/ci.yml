@@ -78,8 +78,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check workspace
         run: cargo check --workspace
-      - name: Test portable crates
-        run: cargo test -p tm-core -p tm-viewmodel
+      - name: Test portable and platform crates
+        run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
 
   native-macos:
     name: native check (macos-latest)

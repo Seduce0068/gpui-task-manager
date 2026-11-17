@@ -1193,3 +1193,9 @@
 - SPDX ヘッダ群/ライセンスメタデータ統一、format_load_average 負値フロア、
   CI 成果物ジョブ保護（fork PR 除外+needs gates+machete pin）を実装。
   workspace 209 passed / check.sh 全ゲート成功。Windows tm-platform は保留。
+
+## 2026-11-18（エージェント並列調査 第5弾 → 5 項目修正）
+
+- R2-C01/C02（Effect/Result 明示）、format_percent/cmp_percent の -0.0/負値、
+  build-deb.sh の ldd not found 失敗扱い、Windows tm-platform テストを実装。
+  clippy の needless_return 指摘は空ブロック化で解消。workspace 211 passed。

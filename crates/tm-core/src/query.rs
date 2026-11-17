@@ -223,11 +223,17 @@ pub fn filter_and_sort(
     indices
 }
 
-/// Compares percentages the same way the chart history treats them: a
-/// non-finite value is displayed as zero, so it must sort as zero rather than
-/// jump to the front via `f32::total_cmp`.
+/// Compares percentages the same way the chart history and the formatter treat
+/// them: non-finite and negative values are displayed as zero, so they must
+/// sort as zero rather than jump to the front via `f32::total_cmp`.
 fn cmp_percent(left: f32, right: f32) -> Ordering {
-    let normalise = |value: f32| if value.is_finite() { value } else { 0.0 };
+    let normalise = |value: f32| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        }
+    };
     normalise(left).total_cmp(&normalise(right))
 }
 
@@ -481,6 +487,27 @@ mod tests {
         processes[0].cpu_percent = f32::NAN;
         let sorted = filter_and_sort(&processes, &Filter::default(), SortSpec::default());
         assert_eq!(sorted, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn negative_cpu_sorts_as_zero_like_the_display() {
+        // Negative values render as "0.0%"; sorting must agree. Ascending
+        // order makes the pre-fix behaviour visible (the negative row first).
+        let mut processes = sample();
+        processes[0].cpu_percent = -5.0;
+        processes[1].cpu_percent = 0.0;
+        processes[2].cpu_percent = 0.0;
+        let spec = SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Ascending,
+        };
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 2, 0]);
+
+        // `total_cmp` also orders -0.0 before +0.0; the floor must remove it.
+        processes[0].cpu_percent = -0.0;
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 2, 0]);
     }
 
     #[test]

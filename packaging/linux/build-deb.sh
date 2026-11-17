@@ -90,6 +90,20 @@ install -m 0644 "${script_dir}/copyright" "${staging}/usr/share/doc/${package}/c
 
 # Compute runtime dependencies from ldd + dpkg -S. The Vulkan loader is
 # dlopen()ed by wgpu/Blade, so it does not appear in ldd and is added explicitly.
+# `ldd` exits 0 even when a library is unresolved ("=> not found"), so check the
+# output explicitly: otherwise awk would turn it into "not" and dpkg -S would
+# silently skip it, producing a .deb with a missing dependency (R1S-OPS-05).
+if ! ldd_output="$(LC_ALL=C ldd "${binary}" 2>&1)"; then
+  echo "error: ldd failed for ${binary}:" >&2
+  echo "${ldd_output}" >&2
+  exit 1
+fi
+if missing="$(grep -E '=>[[:space:]]+not found' <<<"${ldd_output}")"; then
+  echo "error: unresolved shared libraries (ldd 'not found'):" >&2
+  echo "${missing}" >&2
+  exit 1
+fi
+
 declare -A dependency_set=()
 while IFS= read -r library; do
   [ -n "${library}" ] || continue
@@ -101,7 +115,7 @@ while IFS= read -r library; do
   if [ -n "${owner}" ]; then
     dependency_set["${owner}"]=1
   fi
-done < <(ldd "${binary}" 2>/dev/null | awk '/=>/ {print $3}' | sort -u)
+done < <(printf '%s\n' "${ldd_output}" | awk '/=>/ {print $3}' | sort -u)
 dependency_set["libvulkan1"]=1
 depends="$(printf '%s\n' "${!dependency_set[@]}" | sort | paste -sd, -)"
 if [ -z "${depends}" ]; then
