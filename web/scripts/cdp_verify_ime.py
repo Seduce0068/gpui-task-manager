@@ -9,6 +9,10 @@
 スクリプト自身が静的サーバと Chrome を起動・停止する。
 
 使い方（リポジトリルートから）:
+    # CI ゲート: ブラウザ/サーバ不要のオフライン自己検証（失敗時は終了コード 1）
+    python3 web/scripts/cdp_verify_ime.py --self-check
+
+    # 実機 CDP 検証（このスクリプト自身が静的サーバと Chrome を起動・停止する）
     python3 web/scripts/cdp_verify_ime.py \
         --dist web/dist \
         --out notes/assets \
@@ -31,8 +35,6 @@ import sys
 import time
 import urllib.request
 
-import websockets
-
 # --- src/shell.rs のレイアウト定数と同期させること -------------------------
 ROOT_PAD = 12.0
 GAP = 12.0
@@ -54,6 +56,9 @@ class CDP:
         self._reader: asyncio.Task | None = None
 
     async def connect(self, ws_url: str) -> None:
+        # CDP 接続時だけ読み込む: --self-check（CI ゲート）は websockets 不要。
+        import websockets
+
         self.ws = await websockets.connect(ws_url, max_size=128 * 1024 * 1024)
         self._reader = asyncio.create_task(self._read_loop())
 
@@ -271,6 +276,45 @@ def pick_page_target(port: int) -> str:
     raise RuntimeError(f"page target が見つかりません: {targets}")
 
 
+def self_check() -> int:
+    """オフライン自己検証（CI ゲート）。ブラウザもサーバも起動しない。
+
+    IME 検証で使う状態フック解析・ツールバー座標・フック式だけを検証する。
+    実機の composition 挙動は通常実行（サーバ/Chrome を自己起動）で確認する。
+    """
+    failures: list[str] = []
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+            print(f"  FAIL: {message}")
+
+    parsed = parse_proof("tick=2;filter=fire;ime_composing=1;ime_marked=0:4")
+    check(parsed.get("tick") == "2", "tick が解析できる")
+    check(parsed.get("ime_composing") == "1", "変換中フラグが解析できる")
+    check(parsed.get("ime_marked") == "0:4", "marked range が解析できる")
+    check(parse_proof(None) == {}, "空のフックは空辞書")
+    check(TOOLBAR_TOP == 348.0, "ツールバー上端がレイアウト定数と一致する")
+    check(FILTER_X == ROOT_PAD, "絞り込み欄の x がルート余白と一致する")
+    check(FILTER_W > 0 and FILTER_H > 0, "絞り込み欄のサイズが正")
+    check(
+        "data-gpui-proof" in PROOF_EXPR
+        and "textarea" in PROOF_EXPR
+        and "activeElement" in PROOF_EXPR,
+        "IME 状態フック式が維持されている",
+    )
+
+    passed = not failures
+    print(
+        json.dumps(
+            {"script": "cdp_verify_ime.py", "mode": "self-check",
+             "passed": passed, "failures": failures},
+            ensure_ascii=False,
+        )
+    )
+    return 0 if passed else 1
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dist", default="work/gpui-task-manager/web/dist")
@@ -279,7 +323,15 @@ async def main() -> int:
     parser.add_argument("--http-port", type=int, default=8091)
     parser.add_argument("--cdp-port", type=int, default=9223)
     parser.add_argument("--evidence", default="/tmp/ime-evidence.json")
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="CDP を使わずオフラインで状態フック/座標を検証する（CI ゲート用）",
+    )
     args = parser.parse_args()
+
+    if args.self_check:
+        return self_check()
 
     dist = pathlib.Path(args.dist).resolve()
     out = pathlib.Path(args.out).resolve()

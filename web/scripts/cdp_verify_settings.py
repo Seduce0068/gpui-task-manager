@@ -17,6 +17,10 @@
       --user-data-dir=/tmp/tm-web-chrome about:blank
 
 使い方:
+    # CI ゲート: ブラウザ/サーバ不要のオフライン自己検証（失敗時は終了コード 1）
+    python3 web/scripts/cdp_verify_settings.py --self-check
+
+    # 実機 CDP 検証（開発ホストで手動実行。上記の Chrome / 静的サーバが前提）
     python3 web/scripts/cdp_verify_settings.py \\
       --url http://127.0.0.1:8091/ --evidence /tmp/settings-evidence.json
 """
@@ -32,6 +36,25 @@ import time
 import cdp_verify_web as helper
 
 STORAGE_KEY = "gpui-task-manager.settings"
+
+# tm-viewmodel::Settings のスキーマ（#[serde(default)] で未来のキーは許容）。
+REQUIRED_SETTING_KEYS = {
+    "version",
+    "interval_ms",
+    "sort",
+    "details_visible",
+    "tree_view",
+    "theme",
+}
+# 復元経路のオフライン検証で使う入力。main() と self_check() で共有する。
+RESTORED_SETTINGS = {
+    "version": 2,
+    "interval_ms": 5000,
+    "sort": {"key": "Name", "direction": "Ascending"},
+    "details_visible": False,
+    "tree_view": True,
+    "theme": "Light",
+}
 
 # ヘッダー右端のテーマ切替ボタン（src/shell.rs のレイアウト定数と同期）。
 # ボタンは右グループの最後の子で固定幅 56 px、ヘッダー高さ 52 px。
@@ -57,12 +80,67 @@ async def wait_for_proof(cdp: helper.CDP, timeout: float = 20.0) -> dict:
     return {}
 
 
+def self_check() -> int:
+    """オフライン自己検証（CI ゲート）。ブラウザもサーバも起動しない。
+
+    設定スキーマの必須キー・復元用フィクスチャ・テーマボタン座標と、
+    web/scripts 内からの共有ヘルパー import を検証する。
+    """
+    failures: list[str] = []
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+            print(f"  FAIL: {message}")
+
+    check(STORAGE_KEY == "gpui-task-manager.settings", "localStorage キーが維持されている")
+    check(
+        REQUIRED_SETTING_KEYS.issubset(RESTORED_SETTINGS.keys()),
+        f"復元用設定が必須キーを持つ（実際: {sorted(RESTORED_SETTINGS.keys())}）",
+    )
+    check(RESTORED_SETTINGS.get("version") == 2, "復元用設定の version が 2")
+    check(RESTORED_SETTINGS.get("theme") == "Light", "復元用設定の theme が Light")
+    check(
+        "token" not in json.dumps(RESTORED_SETTINGS).lower(),
+        "復元用設定にトークンが含まれない",
+    )
+    check(theme_button_x(1440.0) == 1400.0, "テーマボタンの x 座標が計算できる")
+    check(theme_button_x(1000.0) == 960.0, "テーマボタンの x 座標が幅に追従する")
+    check(THEME_BTN_CENTER_Y == 38.0, "テーマボタンの y 座標がヘッダー内")
+    check(
+        helper.parse_proof("theme=light;rows=3").get("theme") == "light",
+        "共有 parse_proof を web/scripts から import できる",
+    )
+    check(
+        set(helper.column_centers(1440.0)) >= {"name", "cpu"},
+        "共有 column_centers を web/scripts から import できる",
+    )
+
+    passed = not failures
+    print(
+        json.dumps(
+            {"script": "cdp_verify_settings.py", "mode": "self-check",
+             "passed": passed, "failures": failures},
+            ensure_ascii=False,
+        )
+    )
+    return 0 if passed else 1
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=9223)
     parser.add_argument("--url", default="http://127.0.0.1:8091/")
     parser.add_argument("--evidence", default="/tmp/settings-evidence.json")
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="CDP を使わずオフラインで設定スキーマを検証する（CI ゲート用）",
+    )
     args = parser.parse_args()
+
+    if args.self_check:
+        return self_check()
 
     cdp = helper.CDP()
     await cdp.connect(helper.pick_page_target(args.port))
@@ -109,11 +187,8 @@ async def main() -> int:
             saved = json.loads(raw)
         except json.JSONDecodeError as error:
             check(False, f"保存された設定が JSON ではない: {error}")
-    # Required keys must be present; extra keys are allowed for forward
-    # compatibility (the shared schema uses `#[serde(default)]`).
-    required = {"version", "interval_ms", "sort", "details_visible", "tree_view", "theme"}
     check(
-        required.issubset(saved.keys()),
+        REQUIRED_SETTING_KEYS.issubset(saved.keys()),
         f"必須キーが保存される（実際: {sorted(saved.keys())}）",
     )
     check("token" not in json.dumps(saved).lower(), "トークンが保存されていない")
@@ -121,14 +196,7 @@ async def main() -> int:
     evidence["steps"].append({"step": "saved_parsed", "settings": saved})
 
     # 3) 復元経路: 設定を書いて再読込し、ソートが反映されることを確認する。
-    restored = {
-        "version": 2,
-        "interval_ms": 5000,
-        "sort": {"key": "Name", "direction": "Ascending"},
-        "details_visible": False,
-        "tree_view": True,
-        "theme": "Light",
-    }
+    restored = RESTORED_SETTINGS
     await cdp.evaluate(
         f"localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(restored))});"
     )

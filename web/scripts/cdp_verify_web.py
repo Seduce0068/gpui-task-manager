@@ -6,6 +6,10 @@
 スクリーンショットと状態フック（body[data-gpui-proof]）で確認する。
 
 使い方:
+    # CI ゲート: ブラウザ/サーバ不要のオフライン自己検証（失敗時は終了コード 1）
+    python3 web/scripts/cdp_verify_web.py --self-check
+
+    # 実機 CDP 検証（開発ホストで手動実行）
     # 静的配信（別シェル）
     cd work/gpui-task-manager/web/dist
     python3 -m http.server 8091 --bind 127.0.0.1
@@ -41,8 +45,6 @@ import pathlib
 import time
 import urllib.request
 
-import websockets
-
 # --- src/shell.rs のレイアウト定数と同期させること -------------------------
 ROOT_PAD = 12.0
 GAP = 12.0
@@ -76,6 +78,9 @@ class CDP:
         self._reader: asyncio.Task | None = None
 
     async def connect(self, ws_url: str) -> None:
+        # CDP 接続時だけ読み込む: --self-check（CI ゲート）は websockets 不要。
+        import websockets
+
         self.ws = await websockets.connect(ws_url, max_size=128 * 1024 * 1024)
         self._reader = asyncio.create_task(self._read_loop())
 
@@ -379,6 +384,108 @@ def column_centers(vw: float) -> dict:
     return centers
 
 
+def self_check() -> int:
+    """オフライン自己検証（CI ゲート）。ブラウザもサーバも起動しない。
+
+    CDP 接続前に決まる純粋関数（状態フック解析・座標計算・ネットワーク/
+    コンソール分類）とレイアウト定数を検証する。実機挙動の検証は通常実行
+    （--url / --port を指定）で行い、CI では下記の手動手順に委ねる。
+    """
+    failures: list[str] = []
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+            print(f"  FAIL: {message}")
+
+    # 状態フック解析: 値に含まれる '=' は区切りとして扱わない。
+    parsed = parse_proof("vw=1440;tick=3;rows=42;filter=a=b;sort=CPU;dir=desc")
+    check(parsed.get("vw") == "1440", "vw が解析できる")
+    check(parsed.get("rows") == "42", "rows が解析できる")
+    check(parsed.get("filter") == "a=b", "値に含まれる '=' が保持される")
+    check(parsed.get("dir") == "desc", "末尾のフィールドが解析できる")
+    check(parse_proof(None) == {} and parse_proof("") == {}, "空のフックは空辞書")
+
+    # 列座標: 全列が正の座標で、左から右へ単調増加すること。
+    centers = column_centers(1440.0)
+    expected = ("name", "cpu", "memory", "pid", "user", "status", "threads")
+    check(all(key in centers for key in expected), "全列のクリック中心が計算できる")
+    ordered = [centers[key] for key in expected if key in centers]
+    check(len(ordered) == len(expected) and all(value > 0 for value in ordered), "列座標が正")
+    check(ordered == sorted(ordered), "列座標が左から右へ単調増加")
+    check(column_centers(1440.0) == centers, "列座標が決定的に計算される")
+
+    # ネットワーク: トークン非露出と Authorization ヘッダの検出。
+    def events(url: str, with_auth: bool) -> list[dict]:
+        headers = {"Authorization": "Bearer test-token"} if with_auth else {}
+        return [
+            {
+                "method": "Network.requestWillBeSentExtraInfo",
+                "params": {"requestId": "req-1", "headers": headers},
+            },
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {"requestId": "req-1", "request": {"method": "GET", "url": url}},
+            },
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-2",
+                    "request": {
+                        "method": "OPTIONS",
+                        "url": "http://127.0.0.1:18787/api/v1/snapshot",
+                    },
+                },
+            },
+        ]
+
+    snapshot = "http://127.0.0.1:18787/api/v1/snapshot"
+    clean = collect_network(events(snapshot, True))
+    check(clean["get_count"] == 1, "スナップショット GET が集計される")
+    check(clean["preflight_count"] == 1, "プリフライト OPTIONS が集計される")
+    check(clean["authorization_header_seen"], "Authorization ヘッダが検出される")
+    check(not clean["token_in_url"], "トークン無し URL は正しく判定される")
+    leaked = collect_network(events(f"{snapshot}?token=secret", False))
+    check(leaked["token_in_url"], "URL 内の token= が検出される")
+
+    # コンソール: console / log / exception の 3 経路を分類できること。
+    messages = console_texts(
+        [
+            {
+                "method": "Runtime.consoleAPICalled",
+                "params": {"type": "warning", "args": [{"value": "warn"}]},
+            },
+            {
+                "method": "Log.entryAdded",
+                "params": {"entry": {"level": "error", "source": "network", "text": "404"}},
+            },
+            {
+                "method": "Runtime.exceptionThrown",
+                "params": {"exceptionDetails": {"text": "boom"}},
+            },
+        ]
+    )
+    check(
+        [message["source"] for message in messages] == ["console", "log", "exception"],
+        "コンソール 3 経路が分類される",
+    )
+    check("boom" in messages[2]["text"], "例外本文が記録される")
+
+    # レイアウト定数とフック式: src/shell.rs 側の変更に気付けること。
+    check(TOOLBAR_CENTER_Y < HEADER_Y < ROW0_CENTER_Y, "ヘッダー/行/ツールバーの順序が正しい")
+    check("data-gpui-proof" in PROOF_EXPR and "canvas" in PROOF_EXPR, "状態フック式が維持されている")
+
+    passed = not failures
+    print(
+        json.dumps(
+            {"script": "cdp_verify_web.py", "mode": "self-check",
+             "passed": passed, "failures": failures},
+            ensure_ascii=False,
+        )
+    )
+    return 0 if passed else 1
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=9223)
@@ -393,7 +500,15 @@ async def main() -> int:
         action="store_true",
         help="エージェント停止時のエラー表示だけを検証する（デモへフォールバックしないこと）",
     )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="CDP を使わずオフラインで純粋関数を検証する（CI ゲート用）",
+    )
     args = parser.parse_args()
+
+    if args.self_check:
+        return self_check()
 
     out_dir = pathlib.Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

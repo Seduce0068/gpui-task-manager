@@ -20,8 +20,8 @@ status: current
 
 ### 優先度: 高
 
-- [ ] CDP 実動検証を CI ゲートへ接続し、Windows の `tm-platform` テストと
-      モーダル実機クリック検証を補う（R1-V01, R1-V02, R1-G01）。
+- [x] CDP 自己検証を CI ゲートへ接続（R1-V01/G01）— cdp-verify ジョブと
+      3 スクリプトの --self-check を追加。実機クリック手順は CI コメントに明記。
 - [x] wasm fetch タイムアウトと stale 表示（R2-X01, R3-S01）— 5秒タイムアウト、
       旧スナップショット維持、DOM hook に stale=0|1 を追加。
 - [ ] `?agent=` エンドポイントを loopback/http に検証し、Bearer トークンの
@@ -31,7 +31,7 @@ status: current
 - [ ] 設定ファイルの破損時バックアップ、version 保持、未知フィールドの
       ラウンドトリップ、GUI への非通知解消（R2-D01, R2-D02, R5-D02,
       R3-U01, R3-U02）。
-- [ ] Web 版へ aria / AccessKit の代替表現を追加する（R3-A01）。
+- [x] Web 版へ aria / AccessKit の代替表現を追加（R3-A01）— 表・ボタン・ステータスに role / aria-label / live を付与。
 - [ ] キーボードショートカットの cross-shell parity と入力中のナビ抑制
       （R3-A02, R3-A03, R1-D11, R1-I13）。
 - [ ] DEB に purge 方針の maintainer スクリプトを追加し、`ldd` の
@@ -74,7 +74,7 @@ status: current
 - [ ] 接続スレッドの `JoinHandle` を追跡し、終了処理を制御する（R2-X03）。
 - [ ] i18n 機構、シグナル別の確認文言、色以外の status 識別、transient
       メッセージの自動クリアを実装する（R3-A04, R3-U03, R3-U04, R3-U05）。
-- [ ] agent と app の CLI（--version / --log-level）を揃える（R5-O05）。
+- [x] agent と app の CLI を揃える（R5-O05）— --version / --log-level / ヘルプ / 終了コードを統一。
 - [ ] `dashboard.apply` が返す Effect を実行するか、空である前提を明示する
       （R2-C01, R2-C02）。
 - [ ] Web 版へ更新間隔変更 UI を追加し、起動時固定の潜在問題を解消する
