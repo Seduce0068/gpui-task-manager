@@ -1148,3 +1148,8 @@
 
 - デコード制御文字を拒否、重複は先勝ち固定、設定 tmp 名に nonce 付与。
   tm-agent 55、workspace 205 passed。
+
+## 2026-11-17（ヘッダ読み取りの絶対 timeout を追加）
+
+- HEAD_TIMEOUT(5s) と 408 応答を導入、slowloris 対策。途中 Malformed→Timeout の
+  誤判定とテストの無期限ブロックを修正。tm-agent 56、workspace 206 passed。
