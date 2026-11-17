@@ -1217,3 +1217,8 @@
 - 前回 R2X-A7 修正の誤り（spawn 失敗時の fetch_sub 二重減算）を Runtime Proof で
   再現・修正。2 回目 healthz が 503 → 修正後 3 回連続 503 なし。
   テスト件数/ライセンス表記を実測へ追随。app redact 共通化は次ラウンド候補。
+
+## 2026-11-18（エージェント並列調査 第9弾 → app redact 共通化）
+
+- tm-core::redact を新設し agent/app で共有。置換順序・最小長ガードを修正、
+  app の name/mount/hostname へ適用。workspace 220 passed / 全ゲート成功。

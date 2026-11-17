@@ -32,6 +32,7 @@ pub mod metrics;
 pub mod model;
 pub mod port;
 pub mod query;
+pub mod redact;
 pub mod sanitize;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};

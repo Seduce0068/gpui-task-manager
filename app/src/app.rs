@@ -516,7 +516,12 @@ impl TaskManagerApp {
     /// `--redact` / `TM_REDACT=1` is active (used for public screenshots).
     fn display(&self, value: &str) -> String {
         if self.redact {
-            redact_text(value)
+            let hostname = self
+                .dashboard
+                .snapshot()
+                .and_then(|snapshot| snapshot.hostname.clone())
+                .unwrap_or_default();
+            redact_text(value, &hostname)
         } else {
             value.to_string()
         }
@@ -574,13 +579,7 @@ impl TaskManagerApp {
             visible_count: self.dashboard.visible_count(),
             hostname: snapshot
                 .and_then(|s| s.hostname.clone())
-                .map(|host| {
-                    if self.redact {
-                        "host".to_string()
-                    } else {
-                        host
-                    }
-                })
+                .map(|host| self.display(&host))
                 .unwrap_or_else(|| "—".to_string()),
             kernel: snapshot
                 .and_then(|s| s.kernel_version.clone())
@@ -594,7 +593,7 @@ impl TaskManagerApp {
                         .iter()
                         .take(2)
                         .map(|disk| DiskRow {
-                            mount: disk.mount_point.clone(),
+                            mount: self.display(&disk.mount_point),
                             percent: disk.used_percent(),
                         })
                         .collect()
@@ -1299,7 +1298,7 @@ impl TaskManagerApp {
             let process = snapshot.processes.get(row_index)?;
             (
                 process.key,
-                process.name.clone(),
+                self.display(&process.name),
                 process.command.clone(),
                 process.cpu_percent,
                 process.memory_bytes,
@@ -1464,7 +1463,7 @@ impl TaskManagerApp {
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(process.name.clone()),
+                            .child(self.display(&process.name)),
                     )
                     .child(
                         h_flex()
@@ -2148,20 +2147,21 @@ fn status_color(status: ProcessStatus) -> u32 {
     }
 }
 
-/// Replaces the current home directory and user name with generic values.
-fn redact_text(text: &str) -> String {
+/// Replaces local identifiers with generic values for public screenshots.
+///
+/// The rules are shared with the agent's `--redact` snapshot endpoint so the
+/// native UI and the JSON evidence hide the same set of identifiers.
+fn redact_text(text: &str, hostname: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default();
-    let mut out = text.to_string();
-    if !home.is_empty() {
-        out = out.replace(&home, "/home/user");
-    }
-    if !user.is_empty() {
-        out = out.replace(&user, "user");
-    }
-    out
+    let ids = tm_core::redact::RedactionIdentifiers {
+        home: &home,
+        user: &user,
+        hostname,
+    };
+    tm_core::redact::redact_text(text, &ids)
 }
 
 fn now_unix_secs() -> u64 {
