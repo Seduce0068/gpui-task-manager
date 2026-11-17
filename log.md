@@ -940,3 +940,9 @@
   を 2 文字エスケープとして消費し、print 可能な payload は残す（終端 BEL は
   sanitize_display が空白化）。既存テストがこの挙動を固定しているため、
   コメントを実態に合わせて修正。テスト挙動は不変（sanitize 10 tests pass）。
+
+## 2026-11-17（scripts/check.sh の失敗を修正し CI ゲートを整備）
+
+- check.sh が web clippy の assertions_on_constants で失敗していたのを修正
+  （const assert 化）。CI extra_gates に web clippy / web test を追加し、ローカルと
+  CI のゲートを一致させた。check.sh exit 0 / YAML パース成功。

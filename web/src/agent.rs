@@ -212,7 +212,9 @@ mod tests {
         // A 500-process payload is ~140 KB on the development host; the cap
         // must be comfortably above it while still bounding the wasm heap.
         assert_eq!(MAX_SNAPSHOT_BYTES, 8 * 1024 * 1024);
-        assert!(MAX_SNAPSHOT_BYTES > 1_000_000);
+        // Inline const keeps this a compile-time check without tripping
+        // clippy::assertions_on_constants under `-D warnings`.
+        const { assert!(MAX_SNAPSHOT_BYTES > 1_000_000) };
     }
 
     #[test]

@@ -37,6 +37,11 @@ jobs:
       # バージョンは notes/cargo-vet-adoption.md の固定方針に合わせる。
       # taiki-e/install-action が cargo-vet 未対応のため cargo install で導入する。
       extra_gates: |
+        # web/ is a separate Cargo workspace, so the reusable workflow's
+        # root-only clippy/test gates do not cover it. Mirror scripts/check.sh.
+        cargo clippy --manifest-path web/Cargo.toml --all-targets -- \
+          -D warnings -D clippy::undocumented_unsafe_blocks
+        cargo test --manifest-path web/Cargo.toml --lib
         cargo install cargo-vet --version 0.10.3 --locked
         cargo vet --locked
         (cd web && cargo vet --locked)
