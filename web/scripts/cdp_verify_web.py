@@ -91,6 +91,11 @@ class CDP:
                     self.events.append(message)
         except Exception as error:  # noqa: BLE001 - 検証スクリプトなので記録して続行
             self.events.append({"method": "__reader_closed__", "error": repr(error)})
+            # Unblock any in-flight call instead of letting `call()` wait for
+            # the 120 s timeout when the page/browser disappears (R22 CDP).
+            for future in self.pending.values():
+                if not future.done():
+                    future.set_exception(error)
 
     async def call(self, method: str, params: dict | None = None):
         self._id += 1

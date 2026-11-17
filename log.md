@@ -1238,3 +1238,8 @@
 
 - demo メモリのジッタ、`http://[::1]` 拒否、SBOM 除外パス、web rustfmt ゲート
   を修正。IME 提示シナリオは却下。workspace 223 passed / check.sh 成功。
+
+## 2026-11-18（エージェント並列調査 第13弾 → CDP/status/CLI の実バグ）
+
+- CDP read_loop の pending future 解決、transient status クリア（persistent
+  導入）、未知 GUI フラグ拒否を実装。workspace 224 passed / CLI 全経路確認。

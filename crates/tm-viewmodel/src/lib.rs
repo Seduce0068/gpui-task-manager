@@ -116,6 +116,9 @@ pub struct StatusMessage {
     pub text: String,
     /// `true` for errors and rejections.
     pub is_error: bool,
+    /// `true` for startup/configuration notices that must survive the next
+    /// successful sample (R3-U05).
+    pub persistent: bool,
 }
 
 impl StatusMessage {
@@ -123,6 +126,7 @@ impl StatusMessage {
         Self {
             text: text.into(),
             is_error: false,
+            persistent: false,
         }
     }
 
@@ -130,6 +134,15 @@ impl StatusMessage {
         Self {
             text: text.into(),
             is_error: true,
+            persistent: false,
+        }
+    }
+
+    fn persistent_error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: true,
+            persistent: true,
         }
     }
 }
@@ -471,12 +484,31 @@ impl Dashboard {
         self.sync_selection_hint();
     }
 
-    /// Sets a transient status message (used by shells after executing effects).
+    /// Sets a transient status message (cleared on the next successful sample).
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
-        self.status = Some(StatusMessage {
-            text: text.into(),
-            is_error,
+        self.status = Some(if is_error {
+            StatusMessage::error(text)
+        } else {
+            StatusMessage::info(text)
         });
+    }
+
+    /// Sets a persistent status message (startup/configuration notices).
+    ///
+    /// Unlike transient messages, it is not cleared by a successful sample.
+    pub fn set_persistent_status(&mut self, text: impl Into<String>) {
+        self.status = Some(StatusMessage::persistent_error(text));
+    }
+
+    /// Clears the current status only when it is transient (R3-U05).
+    pub fn clear_transient_status(&mut self) {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.persistent)
+        {
+            self.status = None;
+        }
     }
 
     /// Clears the status message.
@@ -648,6 +680,20 @@ mod tests {
 
     fn firefox_key() -> ProcessKey {
         tm_core::demo::demo_process_key(800).expect("demo firefox process")
+    }
+
+    #[test]
+    fn transient_status_is_cleared_but_persistent_status_survives() {
+        let mut dashboard = dashboard();
+        dashboard.set_status("一時的なお知らせ", false);
+        dashboard.clear_transient_status();
+        assert!(dashboard.status().is_none());
+
+        dashboard.set_persistent_status("起動時の警告");
+        dashboard.clear_transient_status();
+        let status = dashboard.status().expect("persistent status survives");
+        assert!(status.persistent);
+        assert_eq!(status.text, "起動時の警告");
     }
 
     #[test]
