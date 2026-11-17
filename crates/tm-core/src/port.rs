@@ -234,6 +234,22 @@ mod tests {
     }
 
     #[test]
+    fn every_signal_has_stable_labels() {
+        // The confirmation dialog shows these strings; pin them for all
+        // variants so a rename cannot silently change what the user confirms.
+        let cases = [
+            (Signal::Terminate, "終了 (SIGTERM)", "終了"),
+            (Signal::Kill, "強制終了 (SIGKILL)", "強制終了"),
+            (Signal::Stop, "一時停止 (SIGSTOP)", "一時停止"),
+            (Signal::Continue, "再開 (SIGCONT)", "再開"),
+        ];
+        for (signal, label, short) in cases {
+            assert_eq!(signal.label(), label);
+            assert_eq!(signal.short_label(), short);
+        }
+    }
+
+    #[test]
     fn destructive_signal_is_only_kill() {
         assert!(Signal::Kill.is_destructive());
         assert!(!Signal::Terminate.is_destructive());
