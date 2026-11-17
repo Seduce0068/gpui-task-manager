@@ -95,10 +95,14 @@ fn is_invisible_format(ch: char) -> bool {
     )
 }
 
-/// Removes CSI/OSC style escape sequences.
+/// Consumes the ESC prefix of CSI/two-character escape sequences.
 ///
 /// The parser is deliberately small: it only needs to be correct enough that an
 /// escape sequence cannot reach the renderer, not to interpret terminal output.
+/// In particular an OSC introducer (`ESC ]`) is consumed as a two-character
+/// escape and its printable payload is left in place; the terminating BEL is a
+/// control character and is replaced by [`sanitize_display`]. The existing test
+/// pins this (`ESC ] 0;title BEL` becomes `"0;title "`).
 fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
