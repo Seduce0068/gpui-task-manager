@@ -598,6 +598,16 @@ mod tests {
         assert!(response
             .extra_headers
             .contains(&("Vary".to_string(), "Origin".to_string())));
+        assert!(response.extra_headers.contains(&(
+            "Access-Control-Allow-Origin".to_string(),
+            "http://127.0.0.1:5173".to_string()
+        )));
+        // The header echoes the validated origin verbatim, so no wildcard:
+        // credentials and loopback scoping stay meaningful.
+        assert!(response
+            .extra_headers
+            .iter()
+            .all(|(name, _)| name != "Access-Control-Allow-Credentials"));
     }
     /// Writes a response over a loopback socket and returns the raw bytes.
     fn write_response_bytes(response: &Response) -> Vec<u8> {
