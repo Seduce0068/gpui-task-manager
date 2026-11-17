@@ -51,6 +51,7 @@ jobs:
         (cd web && cargo machete)
         # Broken intra-doc links are not caught by clippy/test gates.
         RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path web/Cargo.toml --no-deps
 
   wasm:
     name: wasm check (tm-core / tm-viewmodel / web)

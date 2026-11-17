@@ -66,5 +66,9 @@ fi
 
 echo '==> RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps'
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+if [ -f web/Cargo.toml ]; then
+  echo '==> RUSTDOCFLAGS=-D warnings cargo doc (web workspace)'
+  RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path web/Cargo.toml --no-deps
+fi
 
 echo 'All checks passed.'
