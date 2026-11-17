@@ -1067,3 +1067,10 @@
 - 主要設定（Cargo.toml root/web、.github/dependabot.yml、ci.yml、シェル）には SPDX 付与。
 - 生成物/ツール管理ファイル（Trunk.toml、supply-chain/*.toml、verification/*.json、
   .desktop）には未付与で、前回確認した方針（シェル・主要設定のみ付与）と一貫。変更不要。
+
+## 2026-11-17（gitignore と追跡ファイルサイズを確認）
+
+- 生成物（`target` / `dist` / `__pycache__` / `*.log` 等）は一切追跡されておらず、
+  .gitignore が適切に機能していることを確認。
+- 追跡ファイルは最大 244K（証跡画像）、合計 12M。過大なバイナリ / wasm の
+  誤追跡なし。変更不要。
