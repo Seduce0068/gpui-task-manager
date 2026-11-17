@@ -1061,3 +1061,9 @@
   dependabot.yml / ci.yml）に付与、31 件（Rust / Python）には未付与。
 - Cargo.toml の `license = "Apache-2.0"` でクレート単位のライセンスは明示されており、
   SPDX はシェル・設定ファイルのみに付与する一貫した方針と判断。変更不要。
+
+## 2026-11-17（設定ファイルの SPDX 付与方針を確認）
+
+- 主要設定（Cargo.toml root/web、.github/dependabot.yml、ci.yml、シェル）には SPDX 付与。
+- 生成物/ツール管理ファイル（Trunk.toml、supply-chain/*.toml、verification/*.json、
+  .desktop）には未付与で、前回確認した方針（シェル・主要設定のみ付与）と一貫。変更不要。
