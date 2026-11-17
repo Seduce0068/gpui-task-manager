@@ -1253,3 +1253,8 @@
 
 - 別セッションと競合しない crates/app に限定。永続 status 保護、再開時
   network リセット、選択変更時のスクロール追従。workspace 235 passed。
+
+## 2026-11-18（エージェント並列調査 第16弾 → 境界値・設定・ドキュメント）
+
+- 別セッションと競合しない範囲で format_bytes の境界、settings.json が
+  ディレクトリの場合、/metrics ドキュメントを修正。workspace 237 passed。

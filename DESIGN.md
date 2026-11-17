@@ -268,7 +268,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - トークンは起動時に `/dev/urandom` から生成して stderr に 1 回表示する。
   `--token-file PATH` または `TM_AGENT_TOKEN` で外部から渡せる（ファイル推奨）。
   `--token` はテスト専用で、argv が `/proc/<pid>/cmdline` から読まれ得るため警告を出す。
-- エンドポイントは `GET /healthz` と `GET /api/v1/snapshot` のみ。
+- エンドポイントは `GET /healthz`・`GET /api/v1/snapshot` と、認証不要の
+  `GET /metrics`（カウンタ/ゲージのみ、マシンデータなし、ループバック限定）の 3 つ。
 - プロセス操作 API を持たない（読み取り専用）。
 - `Host` ヘッダが loopback（`127.0.0.1` / `localhost` / `[::1]`）以外なら 403。
   DNS リバインディングの多層防御。

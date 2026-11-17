@@ -133,7 +133,10 @@ pub(crate) fn load_from(path: &Path) -> io::Result<Settings> {
         Ok(text) => text,
         Err(error) => {
             // Invalid UTF-8 is also InvalidData; preserve those bytes too.
-            if error.kind() == io::ErrorKind::InvalidData {
+            // A directory at the settings path gives IsADirectory (not
+            // InvalidData); rename can move it aside just as well, otherwise
+            // every later save would fail and leak temp files (R25 audit).
+            if error.kind() == io::ErrorKind::InvalidData || path.is_dir() {
                 backup_corrupt_file(path);
             }
             return Err(error);
@@ -168,24 +171,31 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
         nanos,
         nonce
     ));
-    #[cfg(unix)]
-    {
-        // Create with 0600 from the start: `fs::write` would use the process
-        // umask (typically 0644), leaving a window where group/other could
-        // read the file before the explicit chmod below.
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(json.as_bytes())?;
+    let written = (|| {
+        #[cfg(unix)]
+        {
+            // Create with 0600 from the start: `fs::write` would use the process
+            // umask (typically 0644), leaving a window where group/other could
+            // read the file before the explicit chmod below.
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(json.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        fs::write(&temporary, json)?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        // Leave no half-written temp file behind on a failed save (R25 audit).
+        let _ = fs::remove_file(&temporary);
     }
-    #[cfg(not(unix))]
-    fs::write(&temporary, json)?;
-    fs::rename(&temporary, path)?;
-    Ok(())
+    written
 }
 
 #[cfg(test)]
@@ -234,6 +244,45 @@ mod tests {
         assert!(leftovers.is_empty(), "leftover temps: {leftovers:?}");
         assert_eq!(load_from(&path).expect("load settings"), settings);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn directory_at_settings_path_is_backed_up_and_save_recovers() {
+        let path = temporary_path("settings-dir");
+        let parent = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&path).expect("create directory at settings path");
+        // `EISDIR` is not InvalidData; the path-is-dir check must still move
+        // it aside so the next save can create a regular file.
+        assert!(load_from(&path).is_err());
+        assert!(!path.is_dir(), "directory must be renamed aside");
+        save_to(&path, &Settings::default()).expect("save after recovery");
+        assert!(path.is_file());
+
+        let leftovers: Vec<_> = fs::read_dir(&parent)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".json.tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temps: {leftovers:?}");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn failed_save_does_not_leave_temporary_files() {
+        // A directory at the target makes `rename` fail; no temp may survive.
+        let path = temporary_path("save-fails");
+        let parent = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&path).expect("create directory at target");
+        assert!(save_to(&path, &Settings::default()).is_err());
+        let leftovers: Vec<_> = fs::read_dir(&parent)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".json.tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temps: {leftovers:?}");
+        let _ = fs::remove_dir_all(&path);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

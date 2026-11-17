@@ -63,7 +63,7 @@ bash scripts/dev-setup.sh
 # 2. ビルドとテスト
 cargo build -p gpui-task-manager
 cargo test --workspace
-bash scripts/check.sh        # fmt + clippy + test + wasm + web clippy/test + deny + vet + machete を一括実行
+bash scripts/check.sh        # fmt + clippy + test + wasm + web clippy/test + deny + vet + machete + rustdoc + markdownlint を一括実行
 
 # 3. 起動（実データ / 合成データ）
 ./target/debug/gpui-task-manager
@@ -167,7 +167,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **234 passed / 0 failed**（core 95 / viewmodel 44 / platform 11 / agent 69 / app 16） |
+| `cargo test --workspace` | **235 passed / 0 failed**（core 95 / viewmodel 44 / platform 11 / agent 69 / app 16） |
 | web ユニットテスト | **16 passed / 0 failed**（agent 7 / settings 5 / theme 4） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo fmt --all --check` | 成功 |
