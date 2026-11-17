@@ -67,6 +67,33 @@ struct SnapshotEnvelope {
     snapshot: SystemSnapshot,
 }
 
+/// Returns `true` only for a loopback HTTP endpoint.
+///
+/// The token comes from the URL fragment and is sent as a Bearer header. If a
+/// page can be made to load with `?agent=https://attacker.example/`, the token
+/// would be handed to that host. Keep this check textual so it stays testable
+/// on the native host (no `web_sys::Url` needed).
+pub(crate) fn is_loopback_http_endpoint(endpoint: &str) -> bool {
+    let Some(rest) = endpoint.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let host_ok = host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "[::1]";
+    if !host_ok {
+        return false;
+    }
+    match port {
+        None => true,
+        Some(port) => !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()),
+    }
+}
+
 /// One successful snapshot plus the agent's pre-truncation process count.
 #[derive(Debug)]
 pub struct SnapshotResponse {
@@ -98,6 +125,10 @@ impl AgentClient {
     /// Errors are returned as user-facing Japanese strings with the token
     /// redacted; they never trigger a silent fallback to demo data.
     pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, String> {
+        // Never attach the bearer token before checking the destination.
+        if !is_loopback_http_endpoint(&self.config.endpoint) {
+            return Err("エージェントの接続先は loopback の http URL のみ許可されます".to_string());
+        }
         let url = snapshot_url(&self.config.endpoint);
         let mut builder = Request::builder().method("GET").uri(&url);
         if let Some(token) = &self.config.token {
@@ -219,6 +250,32 @@ mod tests {
         // Inline const keeps this a compile-time check without tripping
         // clippy::assertions_on_constants under `-D warnings`.
         const { assert!(MAX_SNAPSHOT_BYTES > 1_000_000) };
+    }
+
+    #[test]
+    fn only_loopback_http_endpoints_are_allowed() {
+        for allowed in [
+            "http://127.0.0.1:18787",
+            "http://localhost:5173",
+            "http://[::1]:18787",
+            "http://127.0.0.1",
+        ] {
+            assert!(is_loopback_http_endpoint(allowed), "{allowed} should be allowed");
+        }
+        for rejected in [
+            "https://127.0.0.1:18787",
+            "http://192.168.1.10:18787",
+            "http://127.0.0.1.evil.example",
+            "ftp://127.0.0.1:18787",
+            "http://localhost:",
+            "http://127.0.0.1:80:80",
+            "",
+        ] {
+            assert!(
+                !is_loopback_http_endpoint(rejected),
+                "{rejected} should be rejected"
+            );
+        }
     }
 
     #[test]
