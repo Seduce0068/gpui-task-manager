@@ -726,6 +726,31 @@ mod tests {
     }
 
     #[test]
+    fn selection_falls_back_to_the_same_row_position() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        dashboard.apply(Command::SelectRelative(2));
+        let visible = dashboard.visible_indices().to_vec();
+        assert!(visible.len() > 3, "need at least four rows for this test");
+
+        let old_key = dashboard.selected_key().expect("selection");
+        let position = dashboard
+            .selected_visible_index()
+            .expect("selected row position");
+        assert_eq!(position, 2);
+        // The process that will take the vacated slot at the same row index.
+        let expected = dashboard.snapshot.as_ref().unwrap().processes[visible[3]].key;
+
+        let mut next = demo_snapshot(1);
+        next.processes.retain(|process| process.key != old_key);
+        dashboard.ingest(next);
+
+        // The vanished selection must fall back to the row that now occupies
+        // the same position, not jump to the top of the list.
+        assert_eq!(dashboard.selected_key(), Some(expected));
+    }
+
+    #[test]
     fn kill_flow_requires_confirmation_and_is_protected() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
