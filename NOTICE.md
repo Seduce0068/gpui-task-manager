@@ -20,6 +20,12 @@
 | [console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook) | Apache-2.0 OR MIT | ブラウザコンソールへの panic 出力 |
 | [anyhow](https://github.com/dtolnay/anyhow) / [futures](https://github.com/rust-lang/futures-rs) / [log](https://github.com/rust-lang/log) | Apache-2.0 OR MIT | web シェルのエラー処理・非同期・ログ |
 
+## バンドル済みアセット
+
+| アセット | ライセンス | 帰属・同梱先 |
+| --- | --- | --- |
+| IBM Plex Sans / Mono（3 TTF） | SIL OFL 1.1（Reserved Font Name "Plex"） | Copyright 2017-2018 IBM Corporation。ライセンス全文は `web/assets/fonts/LICENSE-IBM-Plex.txt`（`poc-wasm/assets/fonts/` にも同梱） |
+
 ## 参考にした調査（コードはコピーしていない）
 
 - `work/gpui-file-explorer`（AGPL-3.0-or-later）の調査ノート

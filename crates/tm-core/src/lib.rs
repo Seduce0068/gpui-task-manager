@@ -41,7 +41,8 @@ pub use model::{
 };
 pub use port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 pub use query::{
-    filter_and_sort, flatten_process_tree, Filter, ProcessTreeRow, SortDirection, SortKey, SortSpec,
+    filter_and_sort, flatten_process_tree, normalise_percent, Filter, ProcessTreeRow,
+    SortDirection, SortKey, SortSpec,
 };
 
 /// Version of the JSON wire schema used between the native agent and the

@@ -155,7 +155,9 @@ impl Filter {
     /// Returns `true` when the process passes every active filter.
     pub fn matches(&self, process: &ProcessSnapshot) -> bool {
         if let Some(min_cpu) = self.min_cpu_percent {
-            if process.cpu_percent < min_cpu {
+            // Normalise the process value only: a negative threshold (e.g. -1.0)
+            // must still match processes displayed as 0.0%.
+            if normalise_percent(process.cpu_percent) < min_cpu {
                 return false;
             }
         }
@@ -223,18 +225,24 @@ pub fn filter_and_sort(
     indices
 }
 
+/// Normalises a percentage the same way the UI displays it.
+///
+/// Non-finite values and negative values (including `-0.0`, whose sign bit
+/// survives `clamp`) become positive zero. Callers that sort or filter CPU
+/// percentages must use this so their decisions match the rendered `0.0%`.
+pub fn normalise_percent(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// Compares percentages the same way the chart history and the formatter treat
 /// them: non-finite and negative values are displayed as zero, so they must
 /// sort as zero rather than jump to the front via `f32::total_cmp`.
 fn cmp_percent(left: f32, right: f32) -> Ordering {
-    let normalise = |value: f32| {
-        if value.is_finite() {
-            value.max(0.0)
-        } else {
-            0.0
-        }
-    };
-    normalise(left).total_cmp(&normalise(right))
+    normalise_percent(left).total_cmp(&normalise_percent(right))
 }
 
 fn compare(left: &ProcessSnapshot, right: &ProcessSnapshot, key: SortKey) -> Ordering {
@@ -614,6 +622,25 @@ mod tests {
             filter_and_sort(&sample(), &filter, SortSpec::default()).len(),
             1
         );
+    }
+
+    #[test]
+    fn negative_and_non_finite_cpu_match_zero_threshold_like_the_display() {
+        let filter = Filter {
+            min_cpu_percent: Some(0.0),
+            ..Filter::default()
+        };
+        for cpu in [-5.0, -0.0, f32::NAN, f32::NEG_INFINITY] {
+            assert!(
+                filter.matches(&process(1, "p", cpu, 1)),
+                "{cpu:?} renders as 0.0% and must match a 0.0 threshold"
+            );
+        }
+        let strict = Filter {
+            min_cpu_percent: Some(0.1),
+            ..Filter::default()
+        };
+        assert!(!strict.matches(&process(1, "p", -5.0, 1)));
     }
 
     #[test]

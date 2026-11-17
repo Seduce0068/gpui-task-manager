@@ -6,7 +6,8 @@
 # - vulnerabilities fail the build;
 # - known unmaintained transitive dependencies are explicitly ignored with a
 #   reason and tracked in DESIGN.md §14 (they come from the pinned GPUI stack);
-# - only permissive licenses are allowed (Apache-2.0 compatible);
+# - allowed licenses are enumerated in [licenses].allow (permissive licenses
+#   plus AGPL-3.0-or-later and MPL-2.0);
 # - unknown registries / git sources are rejected.
 #
 # Run locally:  cargo deny check
