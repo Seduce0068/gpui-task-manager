@@ -933,3 +933,10 @@
 ## 2026-11-17（大小文字無視ヘルパーの Unicode 挙動を固定）
 
 - İ の展開と ß 非展開を検証。tm-core 77 → 78、workspace 191 passed。
+
+## 2026-11-17（strip_ansi のコメントを実態へ修正）
+
+- コメントは「CSI/OSC を除去」と書いていたが、実装は OSC の introducer (`ESC ]`)
+  を 2 文字エスケープとして消費し、print 可能な payload は残す（終端 BEL は
+  sanitize_display が空白化）。既存テストがこの挙動を固定しているため、
+  コメントを実態に合わせて修正。テスト挙動は不変（sanitize 10 tests pass）。
