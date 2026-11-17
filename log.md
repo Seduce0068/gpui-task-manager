@@ -998,3 +998,7 @@
 ## 2026-11-17（MetricHistory の極端 byte rate を検証）
 
 - u64::MAX の rx/tx rate が ring を通ることを確認。tm-core 79 → 80、workspace 193 passed。
+
+## 2026-11-17（truncate の 0/1 文字境界を検証）
+
+- max_chars 0/1 の境界を日本語/ASCII で固定。tm-core 80 → 81、workspace 194 passed。

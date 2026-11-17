@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **193 passed / 0 failed**（tm-core 80 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **194 passed / 0 failed**（tm-core 81 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1273,3 +1273,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   当初フィールド名を rx_bytes と誤記してコンパイルエラーになったが、
   実定義（network_rx_rate / network_tx_rate）に修正。
 - tm-core 79 → **80 tests**、workspace 193 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（truncate の 0/1 文字境界を検証）
+
+- `max_chars=0` が 「…」、`max_chars=1` が 1 文字 + 「…」になることを
+  日本語/ASCII 両方で固定（ellipsis は max_chars に含まれない）。
+- tm-core 80 → **81 tests**、workspace 194 passed / clippy 0 warning / fmt OK。
