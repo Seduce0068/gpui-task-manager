@@ -511,6 +511,32 @@ mod tests {
     }
 
     #[test]
+    fn status_and_user_filters_match_exactly() {
+        let processes = sample();
+        let sleeping = Filter {
+            status: Some(ProcessStatus::Sleeping),
+            ..Filter::default()
+        };
+        assert!(processes.iter().all(|p| sleeping.matches(p)));
+        let running = Filter {
+            status: Some(ProcessStatus::Running),
+            ..Filter::default()
+        };
+        assert!(processes.iter().all(|p| !running.matches(p)));
+
+        let matching_user = Filter {
+            user: Some("USER".to_string()),
+            ..Filter::default()
+        };
+        assert!(processes.iter().all(|p| matching_user.matches(p)));
+        let other_user = Filter {
+            user: Some("root".to_string()),
+            ..Filter::default()
+        };
+        assert!(processes.iter().all(|p| !other_user.matches(p)));
+    }
+
+    #[test]
     fn text_filter_requires_every_token() {
         let filter = Filter {
             text: "firefox code".to_string(),

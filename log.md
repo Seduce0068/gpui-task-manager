@@ -903,3 +903,8 @@
 
 - 全 8 列の label/default_direction と矢印・反転をテスト。
   tm-core 70 → 71、workspace 184 passed。
+
+## 2026-11-17（status/user フィルタの個別テストを追加）
+
+- status/user のマッチ・非マッチ（user 大小文字無視）を検証。
+  tm-core 71 → 72、workspace 185 passed。
