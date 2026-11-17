@@ -1085,3 +1085,8 @@
 
 - `cargo check --workspace --locked` と `cargo check --manifest-path web/Cargo.toml --locked`
   がともに成功。Cargo.lock が最新で依存解決が再現可能であることを確認。変更不要。
+
+## 2026-11-17（選択行位置フォールバックの回帰テストを追加）
+
+- 監査指摘の未カバー項目だった previous_hint の回帰テストを追加。
+  tm-viewmodel 37 → 38、workspace 198 passed。
