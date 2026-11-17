@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **184 passed / 0 failed**（tm-core 71 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **185 passed / 0 failed**（tm-core 72 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1204,3 +1204,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   全 8 列で固定（label / default_direction / SortSpec::new）し、
   SortDirection の矢印・反転も検証。
 - tm-core 70 → **71 tests**、workspace 184 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（status/user フィルタの個別テストを追加）
+
+- 既存の閾値テストは min_cpu/min_memory 同時指定のみで、status / user の
+  個別マッチ・非マッチ（user は大小文字無視）が未検証だった。
+  `Filter::matches` を直接検証するテストを追加。
+- tm-core 71 → **72 tests**、workspace 185 passed / clippy 0 warning / fmt OK。
