@@ -415,7 +415,7 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
     ];
 
     SystemSnapshot {
-        sampled_at: Timestamp::from_secs(DEMO_BASE_UNIX_SECS + tick),
+        sampled_at: Timestamp::from_secs(DEMO_BASE_UNIX_SECS.saturating_add(tick)),
         hostname: Some("kubuntu-demo".to_string()),
         os_name: Some("Linux".to_string()),
         kernel_version: Some("6.11.0-demo".to_string()),
@@ -427,7 +427,7 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 0.38 + jitter(2) * 0.4,
                 0.31 + jitter(3) * 0.2,
             ],
-            uptime_secs: 3 * 86_400 + 3_600 + tick,
+            uptime_secs: 259_200_u64.saturating_add(tick),
             frequency_mhz: Some(3_600 + (tick % 7) * 100),
         },
         memory: MemorySnapshot {
@@ -547,6 +547,14 @@ mod tests {
             .iter()
             .all(|percent| (0.0..=100.0).contains(percent)));
         assert!(snapshot.memory.used_percent() <= 100.0);
+    }
+
+    #[test]
+    fn extreme_tick_saturates_sampled_at() {
+        // DEMO_BASE_UNIX_SECS + u64::MAX would overflow in debug builds; the
+        // demo must stay total so a fuzzed/generated tick cannot panic (R1S-DATA-10).
+        let snapshot = demo_snapshot(u64::MAX);
+        assert_eq!(snapshot.sampled_at, Timestamp::from_secs(u64::MAX));
     }
 
     #[test]

@@ -43,10 +43,15 @@ pub fn format_percent(percent: f32) -> String {
 
 /// Formats a percentage that may exceed 100 (per-process CPU on multicore).
 ///
-/// Unlike [`format_percent`] this is not capped at 100, but non-finite values
-/// are still replaced with zero for the same display-safety reason.
+/// Unlike [`format_percent`] this is not capped at 100, but negative values are
+/// floored at zero to match [`MetricHistory`]'s clamp, and non-finite values are
+/// replaced with zero for display safety.
 pub fn format_cpu_percent(percent: f32) -> String {
-    let percent = if percent.is_finite() { percent } else { 0.0 };
+    let percent = if percent.is_finite() {
+        percent.max(0.0)
+    } else {
+        0.0
+    };
     format!("{percent:.1}%")
 }
 
@@ -144,6 +149,8 @@ mod tests {
         assert_eq!(format_percent(f32::INFINITY), "0.0%");
         assert_eq!(format_cpu_percent(f32::NAN), "0.0%");
         assert_eq!(format_cpu_percent(f32::NEG_INFINITY), "0.0%");
+        // Negative values are floored to match MetricHistory's 0..=100 clamp.
+        assert_eq!(format_cpu_percent(-5.0), "0.0%");
         assert_eq!(
             format_load_average([f32::NAN, 1.5, f32::INFINITY]),
             "0.00 1.50 0.00"

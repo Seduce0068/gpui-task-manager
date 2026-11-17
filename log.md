@@ -1120,3 +1120,8 @@
 
 - 全ソース（Rust / shell / Python）の TODO / FIXME / XXX / todo! / unimplemented! を走査。
   唯一のヒットはドキュメント内の `tailXXXX.ts.net` プレースホルダ説明で、未解決作業はなし。
+
+## 2026-11-17（クロスレビュー R1S-DATA-07/09/10 を修正）
+
+- NaN ソート・負値表示・demo tick overflow を修正。430 行目の overflow はテストで発見。
+  tm-core 84 → 86、workspace 203 passed。

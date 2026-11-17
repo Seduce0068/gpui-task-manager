@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **201 passed / 0 failed**（tm-core 84 / tm-viewmodel 38 / tm-platform 11 / tm-agent 53 / app 15、2026-11-17） |
+| `cargo test --workspace` | **203 passed / 0 failed**（tm-core 86 / tm-viewmodel 38 / tm-platform 11 / tm-agent 53 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1343,3 +1343,16 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - parse_request が HTTP/1.0 と HTTP/1.1 の両方を受け付けることを明示検証
   （既存テストは HTTP/2.0 拒否のみで 1.0 受理は未カバー）。レスポンスは常に HTTP/1.1。
 - tm-agent 52 → **53 tests**、workspace 201 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（クロスレビュー R1S-DATA-07/09/10 を修正）
+
+- R1S-DATA-07: `query.rs` の CPU ソートで NaN が先頭に来ていた。履歴側が
+  non-finite を 0 にクランプするのと揃え、NaN を 0 としてソートする
+  `cmp_percent` を導入（回帰テスト追加）。
+- R1S-DATA-09: `format_cpu_percent` が負値を `-5.0%` と表示し履歴 clamp と
+  不一致だったため、下限 0 にフロア（multicore の 100 超は従来どおり許容）。
+- R1S-DATA-10: `demo.rs` の `DEMO_BASE_UNIX_SECS + tick` と `uptime_secs` が
+  非 saturating で、`u64::MAX` tick で debug overflow panic していた。
+  所見は 418 行目のみだったが 430 行目も同種のバグを発見し両方を修正
+  （極値 tick の回帰テスト追加）。
+- tm-core 84 → **86 tests**、workspace 203 passed / clippy 0 warning / fmt OK。
