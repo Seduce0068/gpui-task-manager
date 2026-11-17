@@ -42,6 +42,7 @@ ignore = [
 confidence-threshold = 0.90
 allow = [
     "0BSD",
+    "AGPL-3.0-or-later",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",

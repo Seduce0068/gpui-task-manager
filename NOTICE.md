@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # NOTICE — 第三者ソフトウェアの帰属
 
 本プロジェクトは以下のオープンソースソフトウェアを利用しています。
