@@ -409,6 +409,15 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_from_extreme_secs_saturates() {
+        // A corrupt snapshot could carry an out-of-range sampled_at; converting
+        // it must saturate rather than wrap into a plausible past timestamp.
+        let timestamp = Timestamp::from_secs(u64::MAX);
+        assert_eq!(timestamp.unix_millis, u64::MAX);
+        assert_eq!(timestamp.as_secs(), u64::MAX / 1_000);
+    }
+
+    #[test]
     fn memory_percent_handles_zero_total() {
         let memory = MemorySnapshot::default();
         assert_eq!(memory.used_percent(), 0.0);
