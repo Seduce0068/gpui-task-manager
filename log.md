@@ -1115,3 +1115,8 @@
 ## 2026-11-17（HTTP/1.0 要求行の受け付けを検証）
 
 - parse_request の HTTP/1.0 受理を検証。tm-agent 52 → 53、workspace 201 passed。
+
+## 2026-11-17（未解決マーカーの走査）
+
+- 全ソース（Rust / shell / Python）の TODO / FIXME / XXX / todo! / unimplemented! を走査。
+  唯一のヒットはドキュメント内の `tailXXXX.ts.net` プレースホルダ説明で、未解決作業はなし。
