@@ -959,3 +959,9 @@
   と SIGPIPE 修正後の sed 利用を確認。bash -n / shellcheck / shfmt すべて通る。
 - README 記載の主要コマンド（dev-setup / check / agent --once --demo / trunk build）
   はすべて実行済みを確認。新たな不具合なし。
+
+## 2026-11-17（CDP スクリプトと CI/Dependabot の整合を確認）
+
+- web/scripts の 3 スクリプト（cdp_verify_web / settings / ime）すべて `--help` が exit 0。
+- ci.yml の actions は @v7 に統一、dependabot.yml の github-actions エコシステムと整合。
+  前回追加した web clippy/test ゲートも CI run 43990812925（8/8 success）で実実行確認済み。
