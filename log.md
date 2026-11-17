@@ -1080,3 +1080,8 @@
 - 全クレートが `version.workspace = true`（0.1.0）で統一、web も 0.1.0、
   workspace.dependencies の tm-core / tm-viewmodel も 0.1.0。`cargo metadata` 成功。
   バージョン不整合なし。
+
+## 2026-11-17（Cargo.lock の再現性を確認）
+
+- `cargo check --workspace --locked` と `cargo check --manifest-path web/Cargo.toml --locked`
+  がともに成功。Cargo.lock が最新で依存解決が再現可能であることを確認。変更不要。
