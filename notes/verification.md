@@ -1433,3 +1433,13 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 回帰テスト: 2 回目の RequestSignal で対象が変わらないこと、paused 中の
   ConfirmKill が Effect を出さないことを検証。
 - tm-viewmodel 38 → **39 tests**、workspace 207 passed / clippy 0 warning / rustdoc OK。
+
+## 2026-11-17（accept ループの堅牢化：R2X-A7/R2X-FR1）
+
+- `thread::spawn` の Result を扱い、失敗時は接続カウンタを手動で減らして
+  エージェント全体を panic で落とさないようにした（Drop ガードは worker へ move
+  済みなので `state.active.fetch_sub` で直接戻す）。スレッドに名前を付与。
+- accept 失敗時に 50ms バックオフを入れ、EMFILE 等の永続エラーで
+  ビジーループしないようにした。
+- `spawn_connection` を `Result<(), String>` に変更し、呼び出し側でエラーをログ出力。
+- workspace 207 passed / clippy 0 warning / rustdoc OK（テスト件数は不変）。
