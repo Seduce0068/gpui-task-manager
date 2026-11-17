@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **186 passed / 0 failed**（tm-core 73 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **187 passed / 0 failed**（tm-core 74 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1217,3 +1217,10 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
 - 既存の閾値テストは両方同時指定のみだったため、min_cpu_percent と
   min_memory_bytes をそれぞれ単独で指定した場合に正しくフィルタされることを検証。
 - tm-core 72 → **73 tests**、workspace 186 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（is_active の全フィールド検証を追加）
+
+- 既存の active 判定テストは text のみだった。UI の「絞り込み中」表示に効く
+  user / status / min_cpu / min_memory の各フィールドが active と判定されることを検証
+  （閾値 0 も明示指定として active）。
+- tm-core 73 → **74 tests**、workspace 187 passed / clippy 0 warning / fmt OK。
