@@ -80,6 +80,42 @@ jobs:
           cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
           cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
+  # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
+  # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と
+  # GPUI の canvas 描画が不安定なため、実機 CDP 検証は開発ホストの手動手順とし、
+  # CI では各スクリプトの --self-check（CDP 不要のオフライン検証）と
+  # py_compile（構文チェック）をゲートにする。どちらかが失敗するとジョブが落ちる。
+  #
+  # 実機 CDP の手動手順（開発ホスト / Kubuntu、README と同じ並び）:
+  #   cd web && trunk build --release && cd ..
+  #   python3 -m http.server 8091 --bind 127.0.0.1 -d web/dist   # 別シェル
+  #   google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \
+  #     --window-size=1440,1000 --remote-debugging-port=9223 \
+  #     --user-data-dir=/tmp/tm-web-chrome about:blank           # 別シェル
+  #   python3 web/scripts/cdp_verify_web.py --url http://127.0.0.1:8091/ \
+  #     --out notes/assets --evidence-out web/verification --prefix web-shell --label demo
+  #   python3 web/scripts/cdp_verify_settings.py \
+  #     --url http://127.0.0.1:8091/ --evidence /tmp/settings-evidence.json
+  #   python3 web/scripts/cdp_verify_ime.py --dist web/dist \
+  #     --out notes/assets --evidence /tmp/ime-evidence.json
+  #     （cdp_verify_ime.py のみ静的サーバと Chrome を自己起動するため、
+  #       上記の手動起動は不要。dist ではなく web/dist を指定すること）
+  #   各スクリプトは検査失敗時に終了コード 1 を返す。
+  cdp-verify:
+    name: cdp verify (offline self-check)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Syntax check (py_compile)
+        run: python3 -m py_compile web/scripts/cdp_verify_*.py
+      - name: Offline self-check
+        run: |
+          set -euo pipefail
+          for script in web/scripts/cdp_verify_*.py; do
+            echo "==> python3 ${script} --self-check"
+            python3 "${script}" --self-check
+          done
+
   # Windows / macOS は開発ホスト（Linux）に実機が無いため、GitHub Actions の
   # windows-latest / macos-latest を「実機相当の検証」として位置づける。
   # どちらも `cargo check --workspace` で app（GPUI）を含む全クレートを型検査し、
@@ -92,6 +128,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check workspace
         run: cargo check --workspace
+      # R1-V02: Windows 側でも tm-platform のテストを実行する（macOS と同対象）。
       - name: Test portable and platform crates
         run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
 

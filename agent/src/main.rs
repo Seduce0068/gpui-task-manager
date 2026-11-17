@@ -25,7 +25,7 @@ mod telemetry;
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,6 +65,47 @@ const MAX_PROCESS_LIMIT: usize = 2000;
 /// thread-per-connection server would still be a local resource exhaustion vector.
 const MAX_CONNECTIONS: usize = 8;
 
+/// Minimum severity for structured events, set once from `--log-level`.
+///
+/// `0` = error, `1` = warn, `2` = info. `debug` and `trace` map to `2` because
+/// the agent currently emits only Info/Warn/Error events, so there is nothing
+/// lower-severity to reveal at those settings.
+static LOG_THRESHOLD: AtomicU8 = AtomicU8::new(2);
+
+/// Lower ranks are more severe; used for both `Level` and the CLI threshold.
+fn level_rank(level: Level) -> u8 {
+    match level {
+        Level::Error => 0,
+        Level::Warn => 1,
+        Level::Info => 2,
+    }
+}
+
+fn threshold_rank(level: args::LogLevel) -> u8 {
+    match level {
+        args::LogLevel::Error => 0,
+        args::LogLevel::Warn => 1,
+        args::LogLevel::Info | args::LogLevel::Debug | args::LogLevel::Trace => 2,
+    }
+}
+
+/// Pure form of the threshold check (kept separate so it can be tested).
+fn level_allowed(level: Level, minimum: args::LogLevel) -> bool {
+    level_rank(level) <= threshold_rank(minimum)
+}
+
+/// Emits a structured event unless `--log-level` suppresses it.
+fn emit(level: Level, event: &str, fields: serde_json::Value) {
+    let minimum = match LOG_THRESHOLD.load(Ordering::Relaxed) {
+        0 => args::LogLevel::Error,
+        1 => args::LogLevel::Warn,
+        _ => args::LogLevel::Info,
+    };
+    if level_allowed(level, minimum) {
+        telemetry::emit(level, event, fields);
+    }
+}
+
 /// Wire envelope returned by `/api/v1/snapshot` and by `--once`.
 #[derive(Serialize)]
 struct SnapshotEnvelope<'a> {
@@ -89,14 +130,14 @@ struct ErrorBody<'a> {
 
 fn main() {
     match run() {
-        Ok(()) => telemetry::emit(
+        Ok(()) => emit(
             Level::Info,
             "agent.exit",
             json!({ "exit_code": 0, "category": ExitCategory::Success.as_str() }),
         ),
         Err(error) => {
             // Structured first (machine-readable), then the unchanged human line.
-            telemetry::emit(
+            emit(
                 Level::Error,
                 "agent.exit",
                 json!({
@@ -118,6 +159,12 @@ fn main() {
 fn run() -> Result<(), AgentError> {
     let config = args::parse(std::env::args().skip(1))
         .map_err(|message| AgentError::new(ExitCategory::Usage, message))?;
+    LOG_THRESHOLD.store(threshold_rank(config.log_level), Ordering::Relaxed);
+    if config.version {
+        // Same one-line shape as `gpui-task-manager --version`; stdout only.
+        println!("tm-agent {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if config.help {
         print!("{}", args::USAGE);
         return Ok(());
@@ -185,7 +232,7 @@ fn run() -> Result<(), AgentError> {
         config.demo,
         tm_core::WIRE_SCHEMA_VERSION
     );
-    telemetry::emit(
+    emit(
         Level::Info,
         "agent.listening",
         json!({
@@ -323,7 +370,7 @@ fn serve(
             // loop at full speed; pause briefly before retrying (R2X-FR1).
             Err(err) => {
                 eprintln!("tm-agent: accept に失敗: {err}");
-                telemetry::emit(Level::Warn, "accept.failed", json!({}));
+                emit(Level::Warn, "accept.failed", json!({}));
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
@@ -387,7 +434,7 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
                         eprintln!(
                             "tm-agent: プローブの mutex が poison しました; 回収して続行します"
                         );
-                        telemetry::emit(
+                        emit(
                             Level::Warn,
                             "probe.mutex_poisoned",
                             json!({ "recovered": true }),
@@ -588,7 +635,7 @@ fn snapshot_response(
 ) -> http::Response {
     let Some(supplied) = auth::request_token(request) else {
         // Never log the supplied value; only the fact that it was absent.
-        telemetry::emit(
+        emit(
             Level::Warn,
             "auth.denied",
             json!({ "reason": "missing_token", "path": request.path }),
@@ -596,7 +643,7 @@ fn snapshot_response(
         return unauthorized_response();
     };
     if !auth::constant_time_eq(token, &supplied) {
-        telemetry::emit(
+        emit(
             Level::Warn,
             "auth.denied",
             json!({ "reason": "invalid_token", "path": request.path }),
@@ -617,7 +664,7 @@ fn snapshot_response(
     if !warmed_up.load(Ordering::Acquire) {
         if let Err(err) = probe.sample() {
             eprintln!("tm-agent: ウォームアップサンプルに失敗: {err}");
-            telemetry::emit(
+            emit(
                 Level::Error,
                 "probe.sample_failed",
                 json!({ "phase": "warmup" }),
@@ -651,7 +698,7 @@ fn snapshot_response(
             // Details go to the operator's log; the client gets a fixed string
             // so a future probe implementation cannot leak paths in the body.
             eprintln!("tm-agent: スナップショット取得に失敗: {err}");
-            telemetry::emit(
+            emit(
                 Level::Error,
                 "probe.sample_failed",
                 json!({ "phase": "snapshot" }),
@@ -742,7 +789,7 @@ fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> 
         Ok(body) => http::Response::json(status, reason, body),
         Err(err) => {
             eprintln!("tm-agent: JSON への変換に失敗: {err}");
-            telemetry::emit(
+            emit(
                 Level::Error,
                 "response.serialize_failed",
                 json!({ "status": status }),
@@ -1515,5 +1562,31 @@ mod tests {
         assert!(body["snapshot"]["processes"].is_array());
         assert_eq!(body["snapshot"]["hostname"], "host");
         assert!(!response.contains("kubuntu-demo"));
+    }
+
+    #[test]
+    fn log_level_filters_structured_events_without_changing_levels() {
+        // Default keeps every existing event (no behaviour change by default).
+        assert!(level_allowed(Level::Info, args::LogLevel::Info));
+        assert!(level_allowed(Level::Warn, args::LogLevel::Info));
+        assert!(level_allowed(Level::Error, args::LogLevel::Info));
+
+        assert!(level_allowed(Level::Error, args::LogLevel::Error));
+        assert!(!level_allowed(Level::Warn, args::LogLevel::Error));
+        assert!(!level_allowed(Level::Info, args::LogLevel::Error));
+
+        assert!(level_allowed(Level::Warn, args::LogLevel::Warn));
+        assert!(!level_allowed(Level::Info, args::LogLevel::Warn));
+
+        // The agent emits no Debug/Trace events, so those settings behave like
+        // info; error-level exit telemetry is never suppressed.
+        for minimum in [args::LogLevel::Debug, args::LogLevel::Trace] {
+            assert!(level_allowed(Level::Info, minimum));
+            assert!(level_allowed(Level::Error, minimum));
+        }
+        assert_eq!(
+            LOG_THRESHOLD.load(Ordering::Relaxed),
+            threshold_rank(args::LogLevel::Info)
+        );
     }
 }

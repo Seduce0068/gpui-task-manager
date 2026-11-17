@@ -4,7 +4,10 @@
 //! focus) is wired by `shell.rs`, which keeps the layout code readable and makes
 //! it obvious that the browser shell offers no process control.
 
-use gpui::{Div, FontWeight, IntoElement, SharedString, div, prelude::*, px, rgb};
+use gpui::accesskit::Role;
+use gpui::{
+    Div, ElementId, FontWeight, IntoElement, SharedString, Stateful, div, prelude::*, px, rgb,
+};
 
 use crate::theme::*;
 
@@ -116,4 +119,83 @@ pub fn section_title(title: &'static str) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(palette().muted))
         .child(title)
+}
+
+// --------------------------------------------------------------- accessibility
+//
+// The browser shell draws everything on a canvas, so the visible colour of a
+// pill or a bar is not reachable by assistive technology. These wrappers add
+// stable GPUI/AccessKit identities and textual names to the presentational
+// widgets. Callers must pass an id that is unique within a frame (use a tuple
+// with the row index for repeated widgets such as process-row status pills).
+
+/// A status pill with an explicit accessible name.
+///
+/// `text` stays visible so the state is never communicated by colour alone;
+/// `label` is exposed as the AccessKit name (the Web/aria equivalent of
+/// `aria-label`).
+pub fn accessible_pill(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    fg: u32,
+    bg: u32,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    pill(text, fg, bg)
+        .id(id)
+        .role(Role::Label)
+        .aria_label(label)
+}
+
+/// A utilisation bar with a numeric accessible value and a textual name.
+pub fn accessible_metric_bar(
+    id: impl Into<ElementId>,
+    percent: f32,
+    color: u32,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let percent = percent.clamp(0.0, 100.0);
+    metric_bar(percent, color)
+        .id(id)
+        .role(Role::ProgressIndicator)
+        .aria_label(label)
+        .aria_numeric_value(percent as f64)
+        .aria_value(format!("{percent:.0}%"))
+}
+
+/// Textual severity for a 0..=100 utilisation value.
+///
+/// The thresholds mirror [`crate::theme::usage_color`]: a colour-blind reader
+/// can still tell whether a value is low, elevated or critical.
+pub fn usage_severity(percent: f32) -> &'static str {
+    if percent >= 85.0 {
+        "高"
+    } else if percent >= 60.0 {
+        "中"
+    } else {
+        "低"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_severity_has_the_same_thresholds_as_usage_color() {
+        // theme::usage_color switches at 60 and 85; keep the textual cue in
+        // lockstep so a colour and its label never disagree.
+        assert_eq!(usage_severity(0.0), "低");
+        assert_eq!(usage_severity(59.9), "低");
+        assert_eq!(usage_severity(60.0), "中");
+        assert_eq!(usage_severity(84.9), "中");
+        assert_eq!(usage_severity(85.0), "高");
+        assert_eq!(usage_severity(100.0), "高");
+    }
+
+    #[test]
+    fn usage_severity_clamps_against_nan_like_inputs() {
+        // Negative values cannot come from a probe, but must not be "高".
+        assert_eq!(usage_severity(-1.0), "低");
+    }
 }

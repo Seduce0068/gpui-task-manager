@@ -17,6 +17,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui::accesskit::{Live, Node, Role, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
     KeyDownEvent, Pixels, Render, ScrollStrategy, Stateful, TextInputConfiguration, UTF16Selection,
@@ -26,12 +27,15 @@ use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe};
 use tm_viewmodel::{
-    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput,
+    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput, StatusMessage,
 };
 
 use crate::agent::{AgentClient, AgentConfig};
 use crate::theme::*;
-use crate::widgets::{card, h_flex, kv, metric_bar, pill, section_title, sparkline, v_flex};
+use crate::widgets::{
+    accessible_metric_bar, accessible_pill, card, h_flex, kv, section_title, sparkline,
+    usage_severity, v_flex,
+};
 
 const FONT_SANS: &str = "IBM Plex Sans";
 
@@ -55,6 +59,11 @@ const COL_USER: f32 = 96.0;
 const COL_STATUS: f32 = 74.0;
 const COL_THREADS: f32 = 64.0;
 const DETAILS_WIDTH: f32 = 320.0;
+
+/// Screen-reader-only status node mirrored into the DOM on wasm. The canvas
+/// itself carries no semantics, so this is the browser-side `aria-live`
+/// counterpart of the AccessKit status node in `status_bar()`.
+const A11Y_LIVE_DOM_ID: &str = "tm-web-a11y-live";
 
 /// How the shell gets its data.
 enum DataSource {
@@ -393,6 +402,11 @@ impl TaskManagerApp {
             DataSource::Live(_) => ("ライブ", palette().teal),
         };
         let show_stale = is_stale(live, self.stale);
+        let (theme_now, theme_next) = if theme() == tm_viewmodel::Theme::Dark {
+            ("ダーク", "ライト")
+        } else {
+            ("ライト", "ダーク")
+        };
 
         h_flex()
             .justify_between()
@@ -407,11 +421,21 @@ impl TaskManagerApp {
                             .gap_2()
                             .child(
                                 div()
+                                    .id("header-title")
+                                    .role(Role::Heading)
+                                    .aria_level(1)
+                                    .aria_label("GPUI タスクマネージャー（Web 版）")
                                     .text_xl()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child("GPUI タスクマネージャー"),
                             )
-                            .child(pill("ブラウザ版", palette().base, palette().blue)),
+                            .child(accessible_pill(
+                                "header-browser",
+                                "ブラウザ版",
+                                palette().base,
+                                palette().blue,
+                                "ブラウザ版（読み取り専用）",
+                            )),
                     )
                     .child(div().text_xs().text_color(rgb(palette().muted)).child(
                         "gpui-pre 0.3.12 / wasm32-unknown-unknown / wgpu (WebGPU→WebGL2 fallback)",
@@ -437,17 +461,42 @@ impl TaskManagerApp {
                                     .child(format!("{os} / {kernel}")),
                             ),
                     )
-                    .child(pill(mode_label, palette().base, mode_color))
-                    .children(
-                        show_stale
-                            .then(|| pill("stale (旧データ)", palette().base, palette().yellow)),
-                    )
-                    .child(pill("読み取り専用", palette().base, palette().red))
+                    .child(accessible_pill(
+                        "header-mode",
+                        mode_label,
+                        palette().base,
+                        mode_color,
+                        if live {
+                            "データ源: ライブ（エージェント経由）"
+                        } else {
+                            "データ源: デモ"
+                        },
+                    ))
+                    .children(show_stale.then(|| {
+                        accessible_pill(
+                            "header-stale",
+                            "stale (旧データ)",
+                            palette().base,
+                            palette().yellow,
+                            "表示中のデータは古いです",
+                        )
+                    }))
+                    .child(accessible_pill(
+                        "header-readonly",
+                        "読み取り専用",
+                        palette().base,
+                        palette().red,
+                        "ブラウザ版ではプロセスを操作できません",
+                    ))
                     .child(
                         // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
                         // （CDP 検証スクリプトがこのボタンをクリックする）。
                         div()
                             .id("toggle-theme-web")
+                            .role(Role::Button)
+                            .aria_label(format!(
+                                "テーマを切り替える。現在 {theme_now}、押すと {theme_next} に変更"
+                            ))
                             .w(px(56.0))
                             .py_1()
                             .rounded_md()
@@ -469,11 +518,7 @@ impl TaskManagerApp {
                                 this.sync_proof_dom();
                                 cx.notify();
                             }))
-                            .child(if theme() == tm_viewmodel::Theme::Dark {
-                                "ライト"
-                            } else {
-                                "ダーク"
-                            }),
+                            .child(theme_next),
                     ),
             )
     }
@@ -561,7 +606,15 @@ impl TaskManagerApp {
                                 .child(format!("{} コア{}", cores.len(), frequency_label)),
                         ),
                 )
-                .child(sparkline(&cpu_history, 100.0, palette().blue, 28.0))
+                .child(
+                    sparkline(&cpu_history, 100.0, palette().blue, 28.0)
+                        .id("cpu-sparkline")
+                        .role(Role::Image)
+                        .aria_label(format!(
+                            "CPU 使用率の推移、現在 {label}",
+                            label = a11y_usage_label("CPU", cpu_total)
+                        )),
+                )
                 .child(
                     h_flex().items_end().gap(px(2.0)).h(px(18.0)).children(
                         cores
@@ -585,7 +638,10 @@ impl TaskManagerApp {
         )
         .h_full()
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        .id("overview-cpu")
+        .role(Role::Group)
+        .aria_label(a11y_usage_label("CPU 使用率", cpu_total));
 
         let memory_card = card(
             "メモリ",
@@ -610,7 +666,12 @@ impl TaskManagerApp {
                                 .child(format::format_used_of_total(mem_used, mem_total)),
                         ),
                 )
-                .child(metric_bar(mem_percent, usage_color(mem_percent)))
+                .child(accessible_metric_bar(
+                    "memory-usage-bar",
+                    mem_percent,
+                    usage_color(mem_percent),
+                    a11y_usage_label("メモリ使用率", mem_percent),
+                ))
                 .child(
                     h_flex()
                         .justify_between()
@@ -619,8 +680,21 @@ impl TaskManagerApp {
                         .child("スワップ")
                         .child(format::format_used_of_total(swap_used, swap_total)),
                 )
-                .child(metric_bar(swap_percent, palette().peach))
-                .child(sparkline(&mem_history, 100.0, palette().mauve, 18.0))
+                .child(accessible_metric_bar(
+                    "swap-usage-bar",
+                    swap_percent,
+                    palette().peach,
+                    a11y_usage_label("スワップ使用率", swap_percent),
+                ))
+                .child(
+                    sparkline(&mem_history, 100.0, palette().mauve, 18.0)
+                        .id("memory-sparkline")
+                        .role(Role::Image)
+                        .aria_label(format!(
+                            "メモリ使用率の推移、現在 {label}",
+                            label = a11y_usage_label("メモリ", mem_percent)
+                        )),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -630,7 +704,10 @@ impl TaskManagerApp {
         )
         .h_full()
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        .id("overview-memory")
+        .role(Role::Group)
+        .aria_label(a11y_usage_label("メモリ使用率", mem_percent));
 
         let network_card = card(
             "ネットワーク",
@@ -655,7 +732,15 @@ impl TaskManagerApp {
                                 .child("受信"),
                         ),
                 )
-                .child(sparkline(&rx_history, max_rate, palette().teal, 20.0))
+                .child(
+                    sparkline(&rx_history, max_rate, palette().teal, 20.0)
+                        .id("network-rx-sparkline")
+                        .role(Role::Image)
+                        .aria_label(format!(
+                            "ネットワーク受信レートの推移、現在 {}",
+                            format::format_rate(rx_rate)
+                        )),
+                )
                 .child(
                     h_flex()
                         .justify_between()
@@ -673,18 +758,33 @@ impl TaskManagerApp {
                                 .child("送信"),
                         ),
                 )
-                .child(sparkline(&tx_history, max_rate, palette().peach, 12.0)),
+                .child(
+                    sparkline(&tx_history, max_rate, palette().peach, 12.0)
+                        .id("network-tx-sparkline")
+                        .role(Role::Image)
+                        .aria_label(format!(
+                            "ネットワーク送信レートの推移、現在 {}",
+                            format::format_rate(tx_rate)
+                        )),
+                ),
         )
         .h_full()
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        .id("overview-network")
+        .role(Role::Group)
+        .aria_label(format!(
+            "ネットワーク、受信 {rx}、送信 {tx}",
+            rx = format::format_rate(rx_rate),
+            tx = format::format_rate(tx_rate),
+        ));
 
         let mut system_body = v_flex()
             .gap_1()
-            .child(kv("ホスト", hostname))
+            .child(kv("ホスト", hostname.clone()))
             .child(kv("稼働時間", format::format_duration(uptime)))
             .child(kv("プロセス", format::format_count(process_count)));
-        for (mount, percent) in disks {
+        for (index, (mount, percent)) in disks.into_iter().enumerate() {
             system_body = system_body.child(
                 v_flex()
                     .gap_1()
@@ -693,10 +793,15 @@ impl TaskManagerApp {
                             .justify_between()
                             .text_xs()
                             .text_color(rgb(palette().muted))
-                            .child(mount)
+                            .child(mount.clone())
                             .child(format!("{percent:.0}%")),
                     )
-                    .child(metric_bar(percent, usage_color(percent))),
+                    .child(accessible_metric_bar(
+                        ("disk-usage-bar", index),
+                        percent,
+                        usage_color(percent),
+                        a11y_usage_label(&format!("ディスク {mount} 使用率"), percent),
+                    )),
             );
         }
         let components = snapshot.map(|s| s.components.as_slice()).unwrap_or(&[]);
@@ -728,7 +833,12 @@ impl TaskManagerApp {
         let system_card = card("システム", palette().green, system_body)
             .h_full()
             .flex_1()
-            .min_w_0();
+            .min_w_0()
+            .id("overview-system")
+            .role(Role::Group)
+            .aria_label(format!(
+                "システム概要、ホスト {hostname}、プロセス {process_count} 件"
+            ));
 
         div()
             .flex()
@@ -782,6 +892,11 @@ impl TaskManagerApp {
         let sort = self.dashboard.sort_spec();
         let filter_box = div()
             .id("filter-box")
+            .role(Role::TextInput)
+            .aria_label("プロセスの絞り込み")
+            .aria_placeholder("名前・コマンド・ユーザー・PID")
+            .aria_value(self.dashboard.filter_text())
+            .aria_description(hint)
             .flex()
             .items_center()
             .gap_2()
@@ -834,6 +949,13 @@ impl TaskManagerApp {
                     .gap_3()
                     .child(
                         div()
+                            .id("sort-indicator")
+                            .role(Role::Label)
+                            .aria_label(format!(
+                                "ソート: {} {}",
+                                sort.key.label(),
+                                a11y_sort_direction(sort.direction)
+                            ))
                             .text_xs()
                             .text_color(rgb(palette().muted))
                             .child(format!(
@@ -845,6 +967,13 @@ impl TaskManagerApp {
                     .child(
                         div()
                             .id("toggle-tree-web")
+                            .role(Role::Button)
+                            .aria_label("ツリービューを切り替える")
+                            .aria_toggled(if self.dashboard.tree_view() {
+                                Toggled::True
+                            } else {
+                                Toggled::False
+                            })
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -880,6 +1009,13 @@ impl TaskManagerApp {
                     .child(
                         div()
                             .id("toggle-details-web")
+                            .role(Role::Button)
+                            .aria_label("詳細パネルを切り替える")
+                            .aria_toggled(if self.dashboard.details_visible() {
+                                Toggled::True
+                            } else {
+                                Toggled::False
+                            })
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -910,6 +1046,9 @@ impl TaskManagerApp {
                     )
                     .child(
                         div()
+                            .id("visible-count")
+                            .role(Role::Label)
+                            .aria_label(format!("表示 {} 件", self.dashboard.visible_count()))
                             .text_xs()
                             .text_color(rgb(palette().muted))
                             .child(format!("表示 {} 件", self.dashboard.visible_count())),
@@ -933,7 +1072,7 @@ impl TaskManagerApp {
             .children(details)
     }
 
-    fn table(&self, cx: &mut Context<Self>) -> Div {
+    fn table(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let count = self.dashboard.visible_count();
         let list = uniform_list(
             "process-list",
@@ -959,6 +1098,11 @@ impl TaskManagerApp {
         };
 
         div()
+            .id("process-table")
+            .role(Role::Table)
+            .aria_label("プロセス一覧")
+            .aria_row_count(count)
+            .aria_column_count(8)
             .flex()
             .flex_col()
             .flex_1()
@@ -988,7 +1132,7 @@ impl TaskManagerApp {
         }
     }
 
-    fn table_header(&self, cx: &mut Context<Self>) -> Div {
+    fn table_header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         h_flex()
             .gap_2()
             .h(px(30.0))
@@ -997,6 +1141,9 @@ impl TaskManagerApp {
             .bg(rgb(palette().mantle))
             .border_b_1()
             .border_color(rgb(palette().surface))
+            .id("table-header")
+            .role(Role::RowGroup)
+            .aria_label("プロセス一覧の列見出し")
             .child(
                 self.sort_cell("sort-name", "名前", SortKey::Name, cx)
                     .w(px(COL_NAME))
@@ -1058,6 +1205,15 @@ impl TaskManagerApp {
         };
         div()
             .id(id)
+            .role(Role::ColumnHeader)
+            .aria_label(if active {
+                format!(
+                    "{label} 列で並び替え、現在 {direction}",
+                    direction = a11y_sort_direction(sort.direction)
+                )
+            } else {
+                format!("{label} 列で並び替え")
+            })
             .flex()
             .items_center()
             .cursor_pointer()
@@ -1134,9 +1290,18 @@ impl TaskManagerApp {
             format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
         };
 
+        let row_a11y_label = a11y_row_label(&name, status, cpu, memory, pid, selected);
+
         Some(
             div()
                 .id(("proc-row", index))
+                .role(Role::Row)
+                .aria_label(row_a11y_label)
+                .aria_selected(selected)
+                .aria_row_index(index + 1)
+                .when(tree_view && has_children, |this| {
+                    this.aria_expanded(!collapsed)
+                })
                 .flex()
                 .items_center()
                 .w_full()
@@ -1226,11 +1391,18 @@ impl TaskManagerApp {
                         .truncate()
                         .child(user),
                 )
-                .child(div().w(px(COL_STATUS)).flex_shrink_0().child(pill(
-                    status.label(),
-                    status_color(status),
-                    palette().surface,
-                )))
+                .child(
+                    div()
+                        .w(px(COL_STATUS))
+                        .flex_shrink_0()
+                        .child(accessible_pill(
+                            ("row-status", index),
+                            status.label(),
+                            status_color(status),
+                            palette().surface,
+                            format!("状態: {}", status.label()),
+                        )),
+                )
                 .child(
                     div()
                         .w(px(COL_THREADS))
@@ -1243,7 +1415,7 @@ impl TaskManagerApp {
         )
     }
 
-    fn details_panel(&self) -> Div {
+    fn details_panel(&self) -> Stateful<Div> {
         let selected = self.dashboard.selected_process().cloned();
         let now = self
             .dashboard
@@ -1260,7 +1432,12 @@ impl TaskManagerApp {
                     .child("行をクリックすると詳細を表示します"),
             ),
         };
-        content = content.child(section_title("センサー / 温度"));
+        content = content.child(
+            section_title("センサー / 温度")
+                .id("details-sensors-title")
+                .role(Role::Heading)
+                .aria_level(2),
+        );
         let components = self
             .dashboard
             .snapshot()
@@ -1295,6 +1472,9 @@ impl TaskManagerApp {
         }
 
         v_flex()
+            .id("details-panel")
+            .role(Role::Complementary)
+            .aria_label("プロセス詳細パネル")
             .w(px(DETAILS_WIDTH))
             .h_full()
             .flex_shrink_0()
@@ -1304,7 +1484,12 @@ impl TaskManagerApp {
             .rounded_md()
             .p_4()
             .gap_3()
-            .child(section_title("プロセス詳細"))
+            .child(
+                section_title("プロセス詳細")
+                    .id("details-title")
+                    .role(Role::Heading)
+                    .aria_level(2),
+            )
             .child(
                 div()
                     .id("details-scroll")
@@ -1338,10 +1523,12 @@ impl TaskManagerApp {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(pill(
+                    .child(accessible_pill(
+                        "details-status",
                         process.status.label(),
                         status_color(process.status),
                         palette().surface,
+                        format!("状態: {}", process.status.label()),
                     ))
                     .child(
                         div()
@@ -1368,7 +1555,12 @@ impl TaskManagerApp {
                 format::format_process_age(now, process.key.start_time_secs),
             ))
             .child(div().h(px(1.0)).w_full().bg(rgb(palette().surface)))
-            .child(section_title("コマンド"))
+            .child(
+                section_title("コマンド")
+                    .id("details-command-title")
+                    .role(Role::Heading)
+                    .aria_level(2),
+            )
             .child(
                 div()
                     .text_xs()
@@ -1383,7 +1575,7 @@ impl TaskManagerApp {
 
     // ------------------------------------------------------------ status bar
 
-    fn status_bar(&self) -> Div {
+    fn status_bar(&self) -> Stateful<Div> {
         let snapshot = self.dashboard.snapshot();
         let source_label = match &self.source {
             DataSource::Demo(_) => "データ源: デモ (tm-core DemoProbe)".to_string(),
@@ -1417,8 +1609,23 @@ impl TaskManagerApp {
             ),
         };
         let show_stale = is_stale(matches!(&self.source, DataSource::Live(_)), self.stale);
+        let live_text = a11y_live_text(self.dashboard.status(), show_stale);
+        let announcement = live_text.clone();
 
         h_flex()
+            .id("status-bar")
+            .role(Role::Status)
+            .aria_label("ステータス")
+            .aria_value(live_text)
+            // AccessKit has no DOM on wasm, so expose an explicit polite live
+            // node here; sync_proof_dom() mirrors the same text into a hidden
+            // `role=status aria-live=polite` element for real browsers.
+            .a11y_synthetic_children(move |builder| {
+                let mut node = Node::new(Role::Status);
+                node.set_live(Live::Polite);
+                node.set_label(announcement);
+                builder.push_child(builder.synthetic_node_id("status-live"), node);
+            })
             .justify_between()
             .gap_3()
             .px_3()
@@ -1457,7 +1664,11 @@ impl TaskManagerApp {
                     }))
                     .truncate()
                     .text_right()
-                    .child(message),
+                    .child(if is_error {
+                        format!("エラー: {message}")
+                    } else {
+                        message
+                    }),
             )
     }
 
@@ -1553,6 +1764,53 @@ impl TaskManagerApp {
         ));
         if let Some(body) = document.body() {
             let _ = body.set_attribute("data-gpui-proof", &proof);
+        }
+        self.sync_a11y_dom(&document);
+    }
+
+    /// Browser-side `aria-live` mirror for the canvas-only UI.
+    ///
+    /// The canvas carries no DOM semantics, so a visually hidden
+    /// `role="status" aria-live="polite"` node announces status changes. This
+    /// is additive: `body[data-gpui-proof]` is written just before this call
+    /// and keeps its exact key=value; format. Only already-redacted status
+    /// text is copied here — never the agent token.
+    #[cfg(target_family = "wasm")]
+    fn sync_a11y_dom(&self, document: &web_sys::Document) {
+        let Some(body) = document.body() else {
+            return;
+        };
+        let element = match document.get_element_by_id(A11Y_LIVE_DOM_ID) {
+            Some(element) => element,
+            None => {
+                let Ok(element) = document.create_element("div") else {
+                    return;
+                };
+                if element.set_attribute("id", A11Y_LIVE_DOM_ID).is_err() {
+                    return;
+                }
+                let _ = element.set_attribute("role", "status");
+                let _ = element.set_attribute("aria-live", "polite");
+                let _ = element.set_attribute("aria-atomic", "true");
+                // Visually hidden but still in the accessibility tree.
+                let _ = element.set_attribute(
+                    "style",
+                    "position:fixed;width:1px;height:1px;overflow:hidden;\
+                     clip:rect(0 0 0 0);white-space:nowrap",
+                );
+                if body.append_child(&element).is_err() {
+                    return;
+                }
+                element
+            }
+        };
+        let text = a11y_live_text(
+            self.dashboard.status(),
+            is_stale(matches!(&self.source, DataSource::Live(_)), self.stale),
+        );
+        // Avoid re-announcing an unchanged message on every sample.
+        if element.text_content().as_deref() != Some(text.as_str()) {
+            let _ = element.set_text_content(Some(&text));
         }
     }
 
@@ -1746,6 +2004,66 @@ impl Render for TaskManagerApp {
 
 // ------------------------------------------------------------------ helpers
 
+/// Accessible name for one process row.
+///
+/// The coloured status dot and usage colour are decorative; the name repeats
+/// their meaning in text so it survives colour-blindness and screen readers.
+fn a11y_row_label(
+    name: &str,
+    status: ProcessStatus,
+    cpu: f32,
+    memory_bytes: u64,
+    pid: u32,
+    selected: bool,
+) -> String {
+    let suffix = if selected { "、選択中" } else { "" };
+    format!(
+        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、PID {pid}{suffix}",
+        status_label = status.label(),
+        cpu_label = format::format_cpu_percent(cpu),
+        severity = usage_severity(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+    )
+}
+
+/// Text announced by the status live region (AccessKit + DOM mirror).
+///
+/// Error and freshness states are spelled out instead of relying on the red /
+/// yellow status-bar text colour. The text comes from `Dashboard::status()`,
+/// which the agent client has already redacted before it reaches the UI.
+fn a11y_live_text(status: Option<&StatusMessage>, stale: bool) -> String {
+    let mut parts = Vec::new();
+    if stale {
+        parts.push("表示中のデータは古いです".to_string());
+    }
+    if let Some(status) = status {
+        let prefix = if status.is_error { "エラー: " } else { "" };
+        parts.push(format!("{prefix}{}", truncate_label(&status.text, 160)));
+    }
+    if parts.is_empty() {
+        "ステータス: 変更なし".to_string()
+    } else {
+        parts.join("。")
+    }
+}
+
+/// Accessible name for a colour-coded utilisation value.
+fn a11y_usage_label(title: &str, percent: f32) -> String {
+    let percent = percent.clamp(0.0, 100.0);
+    format!(
+        "{title} {percent:.0}%、{severity}",
+        severity = usage_severity(percent)
+    )
+}
+
+/// Japanese direction name for sort headers (the ▲/▼ glyph alone is not text).
+fn a11y_sort_direction(direction: SortDirection) -> &'static str {
+    match direction {
+        SortDirection::Ascending => "昇順",
+        SortDirection::Descending => "降順",
+    }
+}
+
 fn status_color(status: ProcessStatus) -> u32 {
     match status {
         ProcessStatus::Running => palette().green,
@@ -1865,5 +2183,45 @@ mod tests {
         assert!(!is_stale(false, false));
         assert!(is_stale(true, true));
         assert!(!is_stale(true, false));
+    }
+
+    #[test]
+    fn row_label_always_spells_out_status_and_usage_in_text() {
+        let label = a11y_row_label("systemd", ProcessStatus::Zombie, 92.0, 4_096, 1, true);
+        assert!(label.contains("systemd"), "{label}");
+        assert!(label.contains("ゾンビ"), "{label}");
+        assert!(label.contains("高"), "{label}");
+        assert!(label.contains("選択中"), "{label}");
+        let unselected = a11y_row_label("idle", ProcessStatus::Idle, 1.0, 0, 2, false);
+        assert!(unselected.contains("アイドル"), "{unselected}");
+        assert!(unselected.contains("低"), "{unselected}");
+        assert!(!unselected.contains("選択中"), "{unselected}");
+    }
+
+    #[test]
+    fn live_text_marks_errors_and_staleness_without_colour() {
+        let error = StatusMessage {
+            text: "接続に失敗しました".to_string(),
+            is_error: true,
+            persistent: false,
+        };
+        let text = a11y_live_text(Some(&error), true);
+        assert!(text.contains("エラー:"), "{text}");
+        assert!(text.contains("古い"), "{text}");
+        assert!(text.contains("接続に失敗しました"), "{text}");
+        assert_eq!(a11y_live_text(None, false), "ステータス: 変更なし");
+    }
+
+    #[test]
+    fn usage_label_includes_threshold_word() {
+        assert!(a11y_usage_label("CPU 使用率", 90.0).contains("高"));
+        assert!(a11y_usage_label("CPU 使用率", 70.0).contains("中"));
+        assert!(a11y_usage_label("CPU 使用率", 10.0).contains("低"));
+    }
+
+    #[test]
+    fn sort_direction_has_a_textual_name() {
+        assert_eq!(a11y_sort_direction(SortDirection::Ascending), "昇順");
+        assert_eq!(a11y_sort_direction(SortDirection::Descending), "降順");
     }
 }

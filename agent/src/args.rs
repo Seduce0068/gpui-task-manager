@@ -10,41 +10,59 @@ use std::path::PathBuf;
 /// Default listen address (loopback only).
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8787";
 
+/// Severity accepted by `--log-level` (same accept set in both binaries).
+///
+/// The canonical spelling is lowercase, but matching is ASCII case-insensitive
+/// so `--log-level=INFO` behaves identically in the agent and in the app.
+// Parsed here and applied by `main.rs` as the minimum structured-log level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
 /// Help text shown for `--help`.
-pub const USAGE: &str = "\
-tm-agent — 読み取り専用のループバック・スナップショットエージェント
-
-使い方:
-  tm-agent [--listen ADDR] [--token TOKEN | --token-file PATH] [--demo] [--once] [--redact]
-
-オプション:
-  --listen ADDR   待ち受けアドレス (既定: 127.0.0.1:8787、ループバックのみ)
-  --token TOKEN   Bearer トークン (テスト用。argv は他プロセスから見える)
-  --token-file PATH  トークンをファイルから読む (末尾の改行は除去、推奨)
-  TM_AGENT_TOKEN  環境変数でもトークンを渡せる (--token/--token-file より後に解決)
-  --demo          実機ではなく決定的なデモデータを返す
-  --once          スナップショットを 1 回だけ stdout に JSON で出して終了（先頭 500 件）
-  --redact        ホスト名・ユーザー名・ホームパスを伏せて返す（公開用スクリーンショット）
-  -h, --help      このヘルプを表示
-
-エンドポイント (GET のみ):
-  /healthz               {\"ok\":true,\"schema_version\":1}
-  /api/v1/snapshot       {\"schema_version\":1,\"total_process_count\":N,\"snapshot\":{...}}
-                         ?limit=N で返すプロセス数を指定 (既定 500、最大 2000)
-  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)
-
-認証:
-  Authorization: Bearer <token>（クエリ文字列のトークンは拒否）
-  トークン未指定時は起動時に生成して stderr に 1 回だけ表示する。
-  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。
-
-終了コード:
-  0 正常 / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー
-  4 プローブエラー / 5 認証・トークンエラー
-
-構造化ログ:
-  stderr に JSON 1 行 (ts_ms, level, event, ...)。--once の stdout は従来どおり JSON のみ。
-";
+///
+/// The first line and the `使い方 / オプション / 終了コード` sections mirror the
+/// app's help text so both binaries present the same CLI contract. `concat!`
+/// keeps the printed version tied to this crate's Cargo version.
+pub const USAGE: &str = concat!(
+    "tm-agent ",
+    env!("CARGO_PKG_VERSION"),
+    " — 読み取り専用のループバック・スナップショットエージェント\n\n",
+    "使い方:\n",
+    "  tm-agent [--listen ADDR] [--token TOKEN | --token-file PATH] [--demo] [--once] [--redact]\n",
+    "           [--log-level LEVEL] [-V, --version] [-h, --help]\n\n",
+    "オプション:\n",
+    "  --listen ADDR   待ち受けアドレス (既定: 127.0.0.1:8787、ループバックのみ)\n",
+    "  --token TOKEN   Bearer トークン (テスト用。argv は他プロセスから見える)\n",
+    "  --token-file PATH  トークンをファイルから読む (末尾の改行は除去、推奨)\n",
+    "  TM_AGENT_TOKEN  環境変数でもトークンを渡せる (--token/--token-file より後に解決)\n",
+    "  --demo          実機ではなく決定的なデモデータを返す\n",
+    "  --once          スナップショットを 1 回だけ stdout に JSON で出して終了（先頭 500 件）\n",
+    "  --redact        ホスト名・ユーザー名・ホームパスを伏せて返す（公開用スクリーンショット）\n",
+    "  --log-level LEVEL  構造化ログの最低レベル (error/warn/info/debug/trace、既定 info)\n",
+    "  -V, --version   バージョンを 1 行で表示して終了 (gpui-task-manager と同一形式)\n",
+    "  -h, --help      このヘルプを表示\n\n",
+    "エンドポイント (GET のみ):\n",
+    "  /healthz               {\"ok\":true,\"schema_version\":1}\n",
+    "  /api/v1/snapshot       {\"schema_version\":1,\"total_process_count\":N,\"snapshot\":{...}}\n",
+    "                         ?limit=N で返すプロセス数を指定 (既定 500、最大 2000)\n",
+    "  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)\n\n",
+    "認証:\n",
+    "  Authorization: Bearer <token>（クエリ文字列のトークンは拒否）\n",
+    "  トークン未指定時は起動時に生成して stderr に 1 回だけ表示する。\n",
+    "  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。\n\n",
+    "終了コード (app と共通の分類。tm-agent は 0〜5 を返します):\n",
+    "  0 正常 (--help / --version を含む) / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー\n",
+    "  4 プローブエラー / 5 認証・トークンエラー\n\n",
+    "構造化ログ:\n",
+    "  stderr に JSON 1 行 (ts_ms, level, event, ...)。--once の stdout は従来どおり JSON のみ。\n",
+);
 
 /// Parsed command-line configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +81,10 @@ pub struct Config {
     pub redact: bool,
     /// Print usage and exit.
     pub help: bool,
+    /// `--version` / `-V` was requested; `main.rs` prints the version and exits.
+    pub version: bool,
+    /// Level requested by `--log-level` (default: `info`), applied by `main.rs`.
+    pub log_level: LogLevel,
 }
 
 impl Default for Config {
@@ -77,6 +99,8 @@ impl Default for Config {
             once: false,
             redact: false,
             help: false,
+            version: false,
+            log_level: LogLevel::Info,
         }
     }
 }
@@ -134,6 +158,14 @@ where
                 reject_inline_value(flag, inline_value)?;
                 config.redact = true;
             }
+            "--version" | "-V" => {
+                reject_inline_value(flag, inline_value)?;
+                config.version = true;
+            }
+            "--log-level" => {
+                let value = take_value(flag, inline_value, &mut args)?;
+                config.log_level = parse_log_level(&value)?;
+            }
             "-h" | "--help" => {
                 reject_inline_value(flag, inline_value)?;
                 config.help = true;
@@ -183,6 +215,26 @@ fn reject_inline_value(flag: &str, inline_value: Option<String>) -> Result<(), S
     }
 }
 
+/// Parses `--log-level` with the same accept set, default and error text as
+/// `gpui-task-manager`. The raw value is never echoed: a mistyped invocation
+/// might have put a token or a path in this position.
+fn parse_log_level(value: &str) -> Result<LogLevel, String> {
+    let level = match value.trim().to_ascii_lowercase().as_str() {
+        "error" => LogLevel::Error,
+        "warn" => LogLevel::Warn,
+        "info" => LogLevel::Info,
+        "debug" => LogLevel::Debug,
+        "trace" => LogLevel::Trace,
+        _ => {
+            return Err(
+                "--log-level には error/warn/info/debug/trace のいずれかを指定してください"
+                    .to_string(),
+            )
+        }
+    };
+    Ok(level)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +253,8 @@ mod tests {
         assert!(!config.once);
         assert!(!config.redact);
         assert!(!config.help);
+        assert!(!config.version);
+        assert_eq!(config.log_level, LogLevel::Info);
     }
 
     #[test]
@@ -213,6 +267,9 @@ mod tests {
             "--demo",
             "--once",
             "--redact",
+            "--log-level",
+            "debug",
+            "--version",
         ])
         .expect("flags");
         assert_eq!(config.listen, "127.0.0.1:18787".parse().expect("addr"));
@@ -220,6 +277,8 @@ mod tests {
         assert!(config.demo);
         assert!(config.once);
         assert!(config.redact);
+        assert_eq!(config.log_level, LogLevel::Debug);
+        assert!(config.version);
     }
 
     #[test]
@@ -287,5 +346,70 @@ mod tests {
     fn help_is_recognised() {
         assert!(parse_args(&["--help"]).expect("help").help);
         assert!(parse_args(&["-h"]).expect("help").help);
+    }
+
+    #[test]
+    fn version_is_recognised_with_the_app_flag_names() {
+        assert!(parse_args(&["--version"]).expect("version").version);
+        assert!(parse_args(&["-V"]).expect("version").version);
+        let config = parse_args(&["--version", "--log-level", "info"]).expect("combined");
+        assert!(config.version);
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(!config.help);
+    }
+
+    #[test]
+    fn log_level_accepts_the_same_values_as_the_app() {
+        for (value, expected) in [
+            ("error", LogLevel::Error),
+            ("warn", LogLevel::Warn),
+            ("INFO", LogLevel::Info),
+            ("Debug", LogLevel::Debug),
+            (" trace ", LogLevel::Trace),
+        ] {
+            let config = parse_args(&["--log-level", value]).expect(value);
+            assert_eq!(config.log_level, expected, "{value}");
+        }
+        let inline = parse_args(&["--log-level=warn"]).expect("inline level");
+        assert_eq!(inline.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn invalid_log_levels_are_rejected_without_echoing_the_value() {
+        for value in ["", "   ", "verbose", "info=1", "SECRET-TOKEN"] {
+            let error = parse_args(&["--log-level", value])
+                .expect_err("invalid log level must be rejected");
+            assert!(error.contains("error/warn/info/debug/trace"), "{error}");
+            if !value.trim().is_empty() {
+                assert!(!error.contains(value), "value must not be echoed: {error}");
+            }
+        }
+        assert!(parse_args(&["--log-level"]).is_err());
+        assert!(parse_args(&["--version=yes"]).is_err());
+        assert!(parse_args(&["-V=1"]).is_err());
+    }
+
+    #[test]
+    fn usage_documents_the_shared_cli_contract() {
+        // Both binaries print `<binary> <version>` as the first help line and
+        // use the same section order and exit-code classification.
+        assert!(USAGE.starts_with(concat!("tm-agent ", env!("CARGO_PKG_VERSION"))));
+        for fragment in [
+            "使い方:",
+            "オプション:",
+            "--log-level LEVEL",
+            "error/warn/info/debug/trace",
+            "-V, --version",
+            "--redact",
+            "--once",
+            "終了コード",
+            "0 正常",
+            "2 引数・設定エラー",
+            "3 ネットワークエラー",
+            "4 プローブエラー",
+            "5 認証・トークンエラー",
+        ] {
+            assert!(USAGE.contains(fragment), "missing {fragment:?}");
+        }
     }
 }
