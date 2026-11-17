@@ -24,7 +24,7 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **196 passed / 0 failed**（tm-core 83 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
+| `cargo test --workspace` | **197 passed / 0 failed**（tm-core 84 / tm-viewmodel 37 / tm-platform 11 / tm-agent 50 / app 15、2026-11-17） |
 | web ユニットテスト | **12 passed / 0 failed**（theme 4 + settings 3 + agent 4、2026-11-17） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1293,3 +1293,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   `is_invisible_format` で検出されることを検証（前回の bidi 9 文字と合わせ
   サニタイズ対象を網羅）。
 - tm-core 82 → **83 tests**、workspace 196 passed / clippy 0 warning / fmt OK。
+
+## 2026-11-17（MetricHistory のゼロ容量境界を検証）
+
+- `MetricHistory::new(0)` が各 series の RingBuffer を capacity 1 にクランプし、
+  push がパニックせず最新値を保持することを検証。
+- tm-core 83 → **84 tests**、workspace 197 passed / clippy 0 warning / fmt OK。

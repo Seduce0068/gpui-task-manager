@@ -379,6 +379,18 @@ mod tests {
     }
 
     #[test]
+    fn history_with_zero_capacity_still_accepts_samples() {
+        // A misconfigured shell could ask for a zero-length history; each
+        // series clamps to one slot, so push must not panic or lose the latest.
+        let mut history = MetricHistory::new(0);
+        history.push(10.0, 20.0, 30, 40);
+        history.push(50.0, 60.0, 70, 80);
+        assert_eq!(history.cpu_percent.latest(), Some(&50.0));
+        assert_eq!(history.network_tx_rate.latest(), Some(&80));
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
     fn history_keeps_extreme_byte_rates_without_panicking() {
         // Byte rates are u64 and are forwarded to the chart untouched; an
         // extreme value must still round-trip through the fixed-capacity ring.
