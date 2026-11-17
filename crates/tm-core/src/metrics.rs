@@ -315,6 +315,16 @@ mod tests {
     }
 
     #[test]
+    fn network_rate_handles_backwards_counters() {
+        // An interface reset or counter wrap can make totals go backwards;
+        // saturating_sub must yield zero, never a huge bogus rate.
+        let previous = NetworkCounters::new(5_000, 9_000);
+        let current = NetworkCounters::new(1_000, 2_000);
+        let (rx, tx) = current.rate_since(previous, Duration::from_secs(2));
+        assert_eq!((rx, tx), (0, 0));
+    }
+
+    #[test]
     fn network_rate_handles_zero_elapsed() {
         let previous = NetworkCounters::new(1, 1);
         let current = NetworkCounters::new(2, 2);
