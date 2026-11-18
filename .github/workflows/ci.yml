@@ -36,6 +36,9 @@ jobs:
       # cargo-vet: supply-chain/ ストア（root / web）の整合確認。
       # バージョンは notes/cargo-vet-adoption.md の固定方針に合わせる。
       # taiki-e/install-action が cargo-vet 未対応のため cargo install で導入する。
+      # root の exempt は `baseline-unreviewed`（未監査ベースライン）に変更済み。
+      # このゲートは依存セットのドリフト検出であり、監査済みの保証ではない。
+      # 実レビュー後は `audited` criteria で certify し、exempt を更新する。
       extra_gates: |
         # web/ is a separate Cargo workspace, so the reusable workflow's
         # root-only clippy/test gates do not cover it. Mirror scripts/check.sh.
@@ -144,6 +147,7 @@ jobs:
         run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
 
   # ライセンス・脆弱性・重複バージョンのゲート。ポリシーは deny.toml（ルート）に置く。
+  # advisory ignore は 3 か月で expire し、期限切れは check を失敗させる（再レビュー必須）。
   deny:
     name: cargo-deny (licenses / advisories / duplicates)
     runs-on: ubuntu-24.04
@@ -226,6 +230,22 @@ jobs:
           tool: cargo-cyclonedx
       - name: Generate SBOMs
         run: bash scripts/generate-sbom.sh target/sbom
+      # 2 回連続で生成し、成果物のファイル集合が変わらない（古いコピーが
+      # 蓄積しない）ことと、生成元ファイルが作業ツリーに残らないことを確認。
+      - name: Verify SBOM generation is idempotent
+        run: |
+          set -euo pipefail
+          before="$(find target/sbom -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)"
+          bash scripts/generate-sbom.sh target/sbom
+          after="$(find target/sbom -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)"
+          test "${before}" = "${after}"
+          test -n "${after}"
+          if find . -path ./target -prune -o -type f \
+              \( -name 'sbom-root*.json' -o -name 'sbom-web*.json' \) -print \
+              | grep -q .; then
+            echo 'Uncollected SBOM files remain in the worktree.' >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: gpui-task-manager-sbom

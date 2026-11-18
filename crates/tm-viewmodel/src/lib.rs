@@ -1343,14 +1343,12 @@ mod tests {
     fn kill_flow_requires_confirmation_and_is_protected() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
-        assert!(
-            dashboard
-                .apply(Command::RequestSignal {
-                    key: firefox_key(),
-                    signal: Signal::Terminate,
-                })
-                .is_empty()
-        );
+        assert!(dashboard
+            .apply(Command::RequestSignal {
+                key: firefox_key(),
+                signal: Signal::Terminate,
+            })
+            .is_empty());
         assert_eq!(
             dashboard.pending_kill().expect("pending").key,
             firefox_key()
