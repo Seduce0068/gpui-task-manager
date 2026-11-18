@@ -121,16 +121,16 @@ status: current
 
 ### 優先度: 高 — Twitter 公開前チェック (swarm-project-review R6)
 
-- [ ] 公開ドキュメントから内部情報を除去: `README.md:35` の内部ブランチ名
+- [x] 公開ドキュメントから内部情報を除去: `README.md:35` の内部ブランチ名
       内部ブランチ名と「クリーンな履歴」運用、`SECURITY.md:12` の
       内部作業パス、`log.md` の旧アカウント名・トークン scope・課金
       情報・内部サービス名・絶対ホームパス、`notes/` のエージェント名・未 push
       状態、`RESEARCH.md` の Apache-2.0 前提。根拠 R3-DE01 / R5-DC01 / R5-UX01。
-- [ ] DEB 同梱ドキュメントを専用テンプレートへ変更し、生成物 `packaging/linux/build/`
+- [x] DEB 同梱ドキュメントを専用テンプレートへ変更し、生成物 `packaging/linux/build/`
       を git 管理から外す: 現在 `build-deb.sh:84` が開発用 `README.md` を無修正で
       同梱し、内部パス・ブランチ名・古い検証値が入る。同 `:132` の Maintainer に
       個人 GitHub 数値 ID が固定。根拠 R4-DR01 / R1-CF01。
-- [ ] Web ライブモードの redaction を必須化: `web/src/agent.rs:406` は sanitize
+- [x] Web ライブモードの redaction を必須化: `web/src/agent.rs:406` は sanitize
       のみで redact を適用せず、既定 (`--redact` 無し) のエージェントに接続すると
       実ホスト名・ユーザー名・ホームパスが画面と「伏せ字化済み」エクスポートへ残る。
       初回ガイドへ `--redact` 必須を明記し、未 redact 応答はエクスポート拒否または
@@ -140,7 +140,7 @@ status: current
       `redact_for_export` はマスクする。agent の `--once` / API / SSE は前者のみを
       呼び、GUI も kernel・cgroup・センサラベルが `display()` を通らない。
       根拠 R4-OB01 / R1-AR01 / R2-ER01。
-- [ ] エラー・ログ経路から内部 IP / パス / トークンを除去: 非ループバック
+- [x] エラー・ログ経路から内部 IP / パス / トークンを除去: 非ループバック
       `--listen` の指定値エコー (`agent/src/args.rs:188`)、export 成功/失敗の絶対
       パス (`app/src/main.rs:429,470`)、プローブエラー詳細・トークンファイルパス・
       生成トークンの stderr/JSON ログ (`agent/src/main.rs:319,289,234`)。
@@ -148,12 +148,12 @@ status: current
 
 ### 優先度: 中 — Twitter 公開前チェック
 
-- [ ] CI に公開前シークレットスキャンを追加: 成果物 upload 前に gitleaks /
+- [x] CI に公開前シークレットスキャンを追加: 成果物 upload 前に gitleaks /
       trufflehog とバイナリ・dist の `strings` 検査を行い検出で失敗させる。
       根拠 R4-CI01 / R3-DE02。
 - [ ] `.gitignore` へ `.env` / `.env.*` / `*.pem` / `*.key` を追加し、
       `!notes/assets/*.log` の再包含を見直す。根拠 R1-CF02。
-- [ ] CI ゲートを `scripts/check.sh` 一本へ集約し、markdownlint 設定を
+- [x] CI ゲートを `scripts/check.sh` 一本へ集約し、markdownlint 設定を
       `.markdownlint.json` へ一本化する（現在 3 か所に分散）。根拠 R4-CI01 / R1-CF01。
 - [ ] advisory ignore の失効を強制し、cargo-vet の `baseline-unreviewed` のみの
       運用と `advisory-not-detected` 常時 allow を整理する。根拠 R3-DE02 / R4-CI01。
