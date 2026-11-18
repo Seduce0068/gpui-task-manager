@@ -122,6 +122,10 @@ fn is_invisible_format(ch: char) -> bool {
             | '\u{2060}'..='\u{206f}' // WORD JOINER .. NOMINAL DIGIT SHAPES
             | '\u{3164}' // HANGUL FILLER
             | '\u{fe00}'..='\u{fe0f}' // VARIATION SELECTOR-1..16
+            // Supplementary-plane VS17..256. Process names are always paired
+            // with a numeric PID, so dropping these invisible modifiers (as we
+            // already do for VS1..16) cannot change their meaning (R26 audit).
+            | '\u{e0100}'..='\u{e01ef}' // VARIATION SELECTOR-17..256
             | '\u{feff}' // ZERO WIDTH NO-BREAK SPACE (BOM)
             | '\u{ffa0}' // HALFWIDTH HANGUL FILLER
     )
@@ -195,14 +199,16 @@ mod tests {
         // These format characters are not bidi controls and not caught by the
         // common ZWSP/VS ranges, but can still spoof or pad a process name.
         for ch in [
-            '\u{034f}', // COMBINING GRAPHEME JOINER
-            '\u{061c}', // ARABIC LETTER MARK
-            '\u{115f}', // HANGUL CHOSEONG FILLER
-            '\u{1160}', // HANGUL JUNGSEONG FILLER
-            '\u{17b4}', // KHMER VOWEL INHERENT AQ
-            '\u{180b}', // MONGOLIAN FREE VARIATION SELECTOR ONE
-            '\u{3164}', // HANGUL FILLER
-            '\u{ffa0}', // HALFWIDTH HANGUL FILLER
+            '\u{034f}',  // COMBINING GRAPHEME JOINER
+            '\u{061c}',  // ARABIC LETTER MARK
+            '\u{115f}',  // HANGUL CHOSEONG FILLER
+            '\u{1160}',  // HANGUL JUNGSEONG FILLER
+            '\u{17b4}',  // KHMER VOWEL INHERENT AQ
+            '\u{180b}',  // MONGOLIAN FREE VARIATION SELECTOR ONE
+            '\u{3164}',  // HANGUL FILLER
+            '\u{ffa0}',  // HALFWIDTH HANGUL FILLER
+            '\u{e0100}', // VARIATION SELECTOR-17 (supplementary plane)
+            '\u{e01ef}', // VARIATION SELECTOR-256
         ] {
             assert!(
                 is_invisible_format(ch),
@@ -210,6 +216,8 @@ mod tests {
                 ch as u32
             );
         }
+        assert_eq!(sanitize_display("a\u{e0100}b", 64), "a b");
+        assert_eq!(sanitize_display("a\u{e01ef}b", 64), "a b");
     }
 
     #[test]

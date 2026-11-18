@@ -1258,3 +1258,8 @@
 
 - 別セッションと競合しない範囲で format_bytes の境界、settings.json が
   ディレクトリの場合、/metrics ドキュメントを修正。workspace 237 passed。
+
+## 2026-11-18（エージェント並列調査 第17弾 → バックアップ保全とVS17）
+
+- backup_candidate を pure 化してバックアップ上書きを防止、補助面 VS17..256
+  をサニタイズ。別セッションの export.rs 失敗は担当外として据え置き。

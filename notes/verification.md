@@ -1848,3 +1848,29 @@ Space parity は設計判断／CDP 証跡更新を伴うため保留。
 
 - tm-core 95 / app 18（テスト 2 件追加）、workspace 237 passed / clippy /
   markdownlint（増分ゼロ）成功。
+
+## 2026-11-18（エージェント並列調査 第17弾 → バックアップ保全とVS17）
+
+3 観点（サニタイズ / app 状態 / ドキュメント）の調査エージェントを並列起動。
+別セッションが crates/tm-core/src/query.rs・tm-viewmodel・app/src/main.rs・
+web 等を活発に編集中だったため、実装は競合しない sanitize.rs・settings.rs
+に限定。調査中に別セッションが commit 0693fb2（仮想メモリソート等）を打ち、
+テスト件数は 261 / web 36 に更新された。
+
+1. **backup_candidate の連番枯渇（実バグ）**: 旧コードは `counter=65535` の
+   とき最終候補 `-65535` を存在チェックせず rename し、既存バックアップを
+   黙って上書きしていた（子がシミュレーションで実証）。存在判定を注入した
+   pure ヘルパ `backup_candidate` に切り出し、u64 の無制限カウンタで
+   未使用パスを選択。回帰テスト追加（65536 番目に進むことを固定）。
+2. **補助面 VS17..256 のサニタイズ**: is_invisible_format が
+   U+E0100..U+E01EF をカバーしていなかった。既存方針（VS1-16 を空白化、
+   PID とペアで識別）に従い 1 行追加＋境界テスト。
+
+**保留**: 温度の NaN°C（app/web の表示配線が必要で別セッションと競合）、
+redact の 2 文字ユーザ名（漏らさない優先か整合性かの設計判断）、
+Ctrl+K の読み取り専用ガード、demo の base_memory=0 ジッタ、
+SECURITY/DESIGN のテスト件数（別セッションが 261 に追随中）。
+
+- 担当範囲: app 28 passed / tm-core の該当テスト成功 / clippy / rustfmt OK。
+  `crates/tm-core/src/export.rs`（別セッションの未コミット作業）のテスト
+  1 件失敗は担当外のため修正せず。
