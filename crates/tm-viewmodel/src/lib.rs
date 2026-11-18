@@ -811,14 +811,20 @@ impl Dashboard {
             return;
         };
         if self.is_protected(key) {
-            self.set_status("PID 1 と自分自身は操作できません（安全のため保護されています）", true);
+            self.set_status(
+                "PID 1 と自分自身は操作できません（安全のため保護されています）",
+                true,
+            );
             return;
         }
         // Never silently replace an unanswered confirmation with a different
         // target/signal: the dialog the user is looking at would change under
         // them (R2-F02).
         if self.pending_kill.is_some() {
-            self.set_status("確認待ちの操作があります。先に確定またはキャンセルしてください", false);
+            self.set_status(
+                "確認待ちの操作があります。先に確定またはキャンセルしてください",
+                false,
+            );
             return;
         }
         let confirmation_note = signal_confirmation_note(signal);
@@ -842,7 +848,10 @@ impl Dashboard {
         // confirmation (R2-F01).
         if self.paused {
             self.pending_kill = None;
-            self.set_status("更新が一時停止中のため操作できません。再開してからやり直してください", true);
+            self.set_status(
+                "更新が一時停止中のため操作できません。再開してからやり直してください",
+                true,
+            );
             return Vec::new();
         }
         let Some(pending) = self.pending_kill.take() else {
@@ -854,7 +863,10 @@ impl Dashboard {
             .and_then(|snapshot| snapshot.process(pending.key))
             .is_some();
         if !still_running {
-            self.set_status("対象のプロセスは既に終了しています（PID 再利用を検出）", true);
+            self.set_status(
+                "対象のプロセスは既に終了しています（PID 再利用を検出）",
+                true,
+            );
             return Vec::new();
         }
         vec![Effect::Signal {
@@ -1087,11 +1099,13 @@ mod tests {
     fn prefixed_transient_status_is_cleared_by_ingest_but_persistent_is_not() {
         let mut dashboard = dashboard();
         dashboard.set_status("一時的なお知らせ", true);
-        assert!(dashboard
-            .status()
-            .expect("transient")
-            .text
-            .starts_with(STATUS_PREFIX_ERROR));
+        assert!(
+            dashboard
+                .status()
+                .expect("transient")
+                .text
+                .starts_with(STATUS_PREFIX_ERROR)
+        );
         dashboard.ingest(demo_snapshot(0));
         assert!(
             dashboard.status().is_none(),
@@ -1336,12 +1350,14 @@ mod tests {
     fn kill_flow_requires_confirmation_and_is_protected() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
-        assert!(dashboard
-            .apply(Command::RequestSignal {
-                key: firefox_key(),
-                signal: Signal::Terminate,
-            })
-            .is_empty());
+        assert!(
+            dashboard
+                .apply(Command::RequestSignal {
+                    key: firefox_key(),
+                    signal: Signal::Terminate,
+                })
+                .is_empty()
+        );
         assert_eq!(
             dashboard.pending_kill().expect("pending").key,
             firefox_key()
