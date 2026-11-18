@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use tm_core::format;
 use tm_core::{
-    filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
-    ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
-    SystemSnapshot, Timestamp,
+    filter_and_sort, flatten_process_tree, normalise_percent, Filter, MetricHistory,
+    NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
+    RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
@@ -1099,13 +1099,11 @@ mod tests {
     fn prefixed_transient_status_is_cleared_by_ingest_but_persistent_is_not() {
         let mut dashboard = dashboard();
         dashboard.set_status("一時的なお知らせ", true);
-        assert!(
-            dashboard
-                .status()
-                .expect("transient")
-                .text
-                .starts_with(STATUS_PREFIX_ERROR)
-        );
+        assert!(dashboard
+            .status()
+            .expect("transient")
+            .text
+            .starts_with(STATUS_PREFIX_ERROR));
         dashboard.ingest(demo_snapshot(0));
         assert!(
             dashboard.status().is_none(),
@@ -1350,14 +1348,12 @@ mod tests {
     fn kill_flow_requires_confirmation_and_is_protected() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
-        assert!(
-            dashboard
-                .apply(Command::RequestSignal {
-                    key: firefox_key(),
-                    signal: Signal::Terminate,
-                })
-                .is_empty()
-        );
+        assert!(dashboard
+            .apply(Command::RequestSignal {
+                key: firefox_key(),
+                signal: Signal::Terminate,
+            })
+            .is_empty());
         assert_eq!(
             dashboard.pending_kill().expect("pending").key,
             firefox_key()
