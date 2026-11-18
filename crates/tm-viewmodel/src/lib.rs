@@ -34,6 +34,14 @@ pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_millis(1_000);
 /// Number of chart samples kept (two minutes at the default cadence).
 pub const HISTORY_CAPACITY: usize = 120;
 
+/// Text marker prepended to informational status messages (R3-U04).
+///
+/// The status bar is colour-coded in both shells; the marker keeps the
+/// severity readable in monochrome and for colour-vision-deficient users.
+pub const STATUS_PREFIX_INFO: &str = "[情報]";
+/// Text marker prepended to error status messages (R3-U04).
+pub const STATUS_PREFIX_ERROR: &str = "[エラー]";
+
 /// A user intention produced by the shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -109,6 +117,12 @@ pub struct PendingKill {
     pub user: Option<String>,
     /// Signal that will be sent on confirmation.
     pub signal: Signal,
+    /// Signal-specific explanation shown while the dialog is open (R3-U03).
+    ///
+    /// Stop / Continue are reversible; Kill is not. The native shell should
+    /// render this instead of a single "cannot be undone" line so the dialog
+    /// never misleads the user about the chosen signal.
+    pub confirmation_note: &'static str,
 }
 
 /// Transient message shown in the status bar.
@@ -126,7 +140,7 @@ pub struct StatusMessage {
 impl StatusMessage {
     fn info(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: format!("{STATUS_PREFIX_INFO} {}", text.into()),
             is_error: false,
             persistent: false,
         }
@@ -134,7 +148,7 @@ impl StatusMessage {
 
     fn error(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: format!("{STATUS_PREFIX_ERROR} {}", text.into()),
             is_error: true,
             persistent: false,
         }
@@ -142,7 +156,7 @@ impl StatusMessage {
 
     fn persistent_error(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: format!("{STATUS_PREFIX_ERROR} {}", text.into()),
             is_error: true,
             persistent: true,
         }
@@ -576,14 +590,19 @@ impl Dashboard {
             ));
             return;
         }
+        let confirmation_note = signal_confirmation_note(signal);
         self.pending_kill = Some(PendingKill {
             key,
             name: process.name.clone(),
             command: process.command.clone(),
             user: process.user.clone(),
             signal,
+            confirmation_note,
         });
-        self.status = None;
+        // Surface the signal-specific warning in the status bar too. It stays
+        // transient, so the next successfully ingested snapshot clears it just
+        // like any other notice (R3-U05).
+        self.status = Some(StatusMessage::info(confirmation_note));
     }
 
     fn confirm_kill(&mut self) -> Vec<Effect> {
@@ -680,6 +699,24 @@ impl Dashboard {
     }
 }
 
+/// Explains what the confirmed signal actually does (R3-U03).
+///
+/// Kept next to the state machine, not in a shell, so the native and browser
+/// dialogs show the same wording. Only `Kill` is irreversible; `Stop` and
+/// `Continue` can be undone, and `Terminate` gives the process a chance to
+/// clean up. Returning `&'static str` keeps this allocation-free and usable
+/// from `const` contexts.
+pub const fn signal_confirmation_note(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Terminate => {
+            "終了 (SIGTERM) はプロセスに終了を通知します。保存していない作業は失われる可能性があります。"
+        }
+        Signal::Kill => "強制終了 (SIGKILL) はプロセスを即座に終了させます。この操作は取り消せません。",
+        Signal::Stop => "一時停止 (SIGSTOP) はプロセスを停止します。再開 (SIGCONT) で元に戻せます。",
+        Signal::Continue => "再開 (SIGCONT) は停止中のプロセスを再開します。",
+    }
+}
+
 fn clamp_interval(interval: Duration) -> Duration {
     interval.clamp(MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL)
 }
@@ -712,7 +749,10 @@ mod tests {
         dashboard.apply(Command::SetPaused(false));
         let status = dashboard.status().expect("persistent notice survives");
         assert!(status.persistent);
-        assert_eq!(status.text, "デモデータで起動しました");
+        assert_eq!(
+            status.text,
+            format!("{STATUS_PREFIX_ERROR} デモデータで起動しました")
+        );
 
         // A sample after resume starts a fresh network baseline, so bytes
         // received while paused are not reported as an instant-rate spike.
@@ -729,14 +769,14 @@ mod tests {
         dashboard.apply(Command::SetPaused(true));
         assert_eq!(
             dashboard.status().map(|status| status.text.as_str()),
-            Some("更新を一時停止しました")
+            Some("[情報] 更新を一時停止しました")
         );
         // A sample that was in flight when pause was pressed must not wipe the
         // notice: `ingest` is a no-op while paused.
         dashboard.ingest(demo_snapshot(1));
         assert_eq!(
             dashboard.status().map(|status| status.text.as_str()),
-            Some("更新を一時停止しました")
+            Some("[情報] 更新を一時停止しました")
         );
 
         dashboard.apply(Command::SetPaused(false));
@@ -755,7 +795,65 @@ mod tests {
         dashboard.clear_transient_status();
         let status = dashboard.status().expect("persistent status survives");
         assert!(status.persistent);
-        assert_eq!(status.text, "起動時の警告");
+        assert_eq!(status.text, format!("{STATUS_PREFIX_ERROR} 起動時の警告"));
+    }
+
+    #[test]
+    fn status_text_identifies_severity_without_colour() {
+        let mut dashboard = dashboard();
+        dashboard.set_status("情報のみ", false);
+        let info = dashboard.status().expect("info status");
+        assert!(!info.is_error);
+        assert!(!info.persistent);
+        assert!(info.text.starts_with(STATUS_PREFIX_INFO), "{}", info.text);
+        assert!(info.text.ends_with("情報のみ"), "{}", info.text);
+
+        dashboard.set_status("失敗しました", true);
+        let error = dashboard.status().expect("error status");
+        assert!(error.is_error);
+        assert!(!error.persistent);
+        assert!(
+            error.text.starts_with(STATUS_PREFIX_ERROR),
+            "{}",
+            error.text
+        );
+        assert!(error.text.ends_with("失敗しました"), "{}", error.text);
+
+        dashboard.set_persistent_status("起動時の警告");
+        let persistent = dashboard.status().expect("persistent status");
+        assert!(persistent.is_error);
+        assert!(persistent.persistent);
+        assert!(
+            persistent.text.starts_with(STATUS_PREFIX_ERROR),
+            "{}",
+            persistent.text
+        );
+    }
+
+    #[test]
+    fn prefixed_transient_status_is_cleared_by_ingest_but_persistent_is_not() {
+        let mut dashboard = dashboard();
+        dashboard.set_status("一時的なお知らせ", true);
+        assert!(dashboard
+            .status()
+            .expect("transient")
+            .text
+            .starts_with(STATUS_PREFIX_ERROR));
+        dashboard.ingest(demo_snapshot(0));
+        assert!(
+            dashboard.status().is_none(),
+            "an ingested snapshot clears a transient notice even when its text has a marker"
+        );
+
+        dashboard.set_persistent_status("デモデータで起動しました");
+        dashboard.ingest(demo_snapshot(1));
+        let status = dashboard.status().expect("persistent survives ingest");
+        assert!(status.persistent);
+        assert!(
+            status.text.starts_with(STATUS_PREFIX_ERROR),
+            "{}",
+            status.text
+        );
     }
 
     #[test]
@@ -1138,6 +1236,61 @@ mod tests {
         assert_eq!(pending.name, "firefox");
         assert!(pending.command.contains("firefox"));
         assert_eq!(pending.user.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn signal_confirmation_notes_are_distinct_and_state_reversibility() {
+        let terminate = signal_confirmation_note(Signal::Terminate);
+        let kill = signal_confirmation_note(Signal::Kill);
+        let stop = signal_confirmation_note(Signal::Stop);
+        let resume = signal_confirmation_note(Signal::Continue);
+
+        assert!(terminate.contains("SIGTERM"));
+        assert!(kill.contains("SIGKILL"));
+        assert!(stop.contains("SIGSTOP"));
+        assert!(resume.contains("SIGCONT"));
+        // Only the destructive signal must claim the action cannot be undone.
+        assert!(kill.contains("取り消せません"));
+        for note in [terminate, stop, resume] {
+            assert!(!note.contains("取り消せません"), "{note}");
+        }
+        assert!(stop.contains("元に戻せます"));
+
+        let notes = [terminate, kill, stop, resume];
+        for (index, note) in notes.iter().enumerate() {
+            assert!(!note.is_empty());
+            assert!(notes[index + 1..].iter().all(|other| other != note));
+        }
+    }
+
+    #[test]
+    fn pending_kill_carries_the_signal_specific_note() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Stop,
+        });
+
+        let pending = dashboard.pending_kill().expect("pending signal");
+        assert_eq!(pending.signal, Signal::Stop);
+        assert_eq!(
+            pending.confirmation_note,
+            signal_confirmation_note(Signal::Stop)
+        );
+        assert!(pending.confirmation_note.contains("元に戻せます"));
+
+        // The same note is visible in the status bar as a transient message,
+        // and the usual ingest contract still clears it on the next sample.
+        let status = dashboard.status().expect("status");
+        assert!(!status.is_error);
+        assert!(
+            status.text.ends_with(pending.confirmation_note),
+            "{}",
+            status.text
+        );
+        dashboard.ingest(demo_snapshot(1));
+        assert!(dashboard.status().is_none());
     }
 
     #[test]

@@ -350,6 +350,33 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn status_markers_and_signal_notes_are_visible_to_the_native_shell() {
+        // The status bar is rendered by `app::app`, but its contract is owned
+        // by the viewmodel. Pin the colour-free severity markers and the
+        // signal-specific note here so a viewmodel change cannot silently
+        // regress the native shell (R3-U03 / R3-U04).
+        use tm_viewmodel::{signal_confirmation_note, STATUS_PREFIX_ERROR, STATUS_PREFIX_INFO};
+        assert_eq!(STATUS_PREFIX_INFO, "[情報]");
+        assert_eq!(STATUS_PREFIX_ERROR, "[エラー]");
+        assert!(signal_confirmation_note(tm_core::Signal::Kill).contains("取り消せません"));
+        assert!(!signal_confirmation_note(tm_core::Signal::Stop).contains("取り消せません"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn status_and_dialog_changes_leave_the_cli_contract_unchanged() {
+        // These are GUI-only changes: help text, version output and flag
+        // parsing must keep the shared agent/app CLI shape.
+        let help = help_text();
+        assert!(help.contains("Ctrl+K 選択プロセスの終了"));
+        assert!(help.contains("error/warn/info/debug/trace"));
+        assert_eq!(
+            VERSION_LINE,
+            format!("gpui-task-manager {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(parse_gui_flags(&args(&["--log-level", "trace"])).is_ok());
+    }
+
+    #[::core::prelude::v1::test]
     fn boolean_flags_still_reject_inline_values_and_typos() {
         assert!(parse_gui_flags(&args(&["--demo=yes"])).is_err());
         assert!(parse_gui_flags(&args(&["--redact=1"])).is_err());

@@ -27,6 +27,7 @@
 #![deny(missing_docs)]
 
 pub mod demo;
+pub mod export;
 pub mod format;
 pub mod metrics;
 pub mod model;
