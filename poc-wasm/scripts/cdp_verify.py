@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """GPUI Web スパイクの Runtime Proof 取得スクリプト。
 
+**証拠収集のみ**（R1S-OPS-12）。操作検証（成否判定）ではない。
 ヘッドレス Chrome を CDP（Chrome DevTools Protocol）で操作し、
 描画・クリック・キー入力・ホイールスクロール・定期更新・HTTP fetch の証拠を
-スクリーンショットとコンソールログとして保存する。
+スクリーンショットとコンソールログとして保存する。CDP 入力は画面状態の証拠を
+残すための補助であり、操作そのものの成功・失敗をゲートしない。
+
+クリック座標の基準は DOM（canvas の getBoundingClientRect / textarea セレクタ）から
+取得する。レイアウト定数との手工同期は行わない。状態フック
+body[data-gpui-proof] は従来どおり証拠として記録する。
 
 使い方:
     python3 cdp_verify.py --url http://127.0.0.1:8090/ --out ../notes/assets \
         --prefix wasm-spike
+
+    # CI ゲート: ブラウザ/サーバ不要のオフライン自己検証（失敗時は終了コード 1）
+    python3 cdp_verify.py --self-check
 
 Chrome 側は別途起動しておく:
     google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \
@@ -24,7 +33,53 @@ import pathlib
 import time
 import urllib.request
 
-import websockets
+# websockets は CDP 接続時だけ読み込む: --self-check（CI ゲート）は不要。
+CANVAS_SELECTOR = "canvas"
+FILTER_SELECTOR = "textarea"  # 検索欄の DOM 表現（存在する場合はセレクタ取得）
+
+# 旧固定座標（1200x800）を DOM rect の比率へ変換した係数。
+WHEEL_POINT = (0.5, 470.0 / 800.0)
+ROW_POINT = (400.0 / 1200.0, 396.0 / 800.0)
+SEARCH_POINT = (0.5, 313.0 / 800.0)
+BUTTON_POINT = (1080.0 / 1200.0, 622.0 / 800.0)
+
+
+def rect_expr(selector: str) -> str:
+    """セレクタの getBoundingClientRect() を返す JS 式を組み立てる。"""
+    return """(() => {
+  const el = document.querySelector(%s);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return {
+    x: r.x, y: r.y, width: r.width, height: r.height,
+    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+  };
+})()""" % json.dumps(selector)
+
+
+def center_from_rect(rect: dict | None) -> tuple[float, float] | None:
+    """DOM rect の中心座標を返す（ブラウザ不要の純粋関数）。"""
+    if not rect:
+        return None
+    return (
+        float(rect["left"]) + float(rect["width"]) / 2.0,
+        float(rect["top"]) + float(rect["height"]) / 2.0,
+    )
+
+
+def relative_point(rect: dict, fx: float, fy: float) -> tuple[float, float]:
+    """DOM rect の左上と比率から座標を計算する（固定座標の置き換え）。"""
+    return (
+        float(rect["left"]) + float(rect["width"]) * fx,
+        float(rect["top"]) + float(rect["height"]) * fy,
+    )
+
+
+async def element_rect(cdp: "CDP", selector: str) -> dict:
+    rect = await cdp.evaluate(rect_expr(selector))
+    if not isinstance(rect, dict):
+        raise RuntimeError(f"DOM 要素が見つかりません: {selector}")
+    return rect
 
 
 class CDP:
@@ -36,6 +91,8 @@ class CDP:
         self._reader: asyncio.Task | None = None
 
     async def connect(self, ws_url: str) -> None:
+        import websockets
+
         self.ws = await websockets.connect(ws_url, max_size=128 * 1024 * 1024)
         self._reader = asyncio.create_task(self._read_loop())
 
@@ -266,6 +323,54 @@ ENV_PROBE = """
 """
 
 
+def self_check() -> int:
+    """オフライン自己検証（CI ゲート）。ブラウザもサーバも起動しない。
+
+    DOM rect 由来の座標計算とセレクタ取得式、状態フック式だけを検証する。
+    実機の証拠収集は通常実行（--url / --port）で行う。
+    """
+    failures: list[str] = []
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+            print(f"  FAIL: {message}")
+
+    rect = {
+        "left": 10.0, "top": 20.0, "width": 1200.0, "height": 800.0,
+        "right": 1210.0, "bottom": 820.0,
+    }
+    check(center_from_rect(rect) == (610.0, 420.0), "rect から中心座標が計算できる")
+    check(center_from_rect(None) is None, "要素が無い場合は None になる")
+    check(
+        relative_point(rect, *WHEEL_POINT) == (610.0, 490.0),
+        "DOM rect 比率からスクロール座標が計算できる",
+    )
+    check(
+        relative_point(rect, *ROW_POINT) == (410.0, 416.0),
+        "DOM rect 比率から行クリック座標が計算できる",
+    )
+    check(
+        relative_point(rect, *BUTTON_POINT) == (1090.0, 642.0),
+        "DOM rect 比率からボタン座標が計算できる",
+    )
+    check(CANVAS_SELECTOR == "canvas" and FILTER_SELECTOR == "textarea", "DOM セレクタが維持されている")
+    dom_expr = rect_expr(FILTER_SELECTOR)
+    check("querySelector" in dom_expr and '"textarea"' in dom_expr, "rect 取得式にセレクタが埋め込まれる")
+    check("getBoundingClientRect" in dom_expr, "getBoundingClientRect で DOM 座標を取得する")
+    check("data-gpui-proof" in ENV_PROBE, "DOM 状態フック式が維持されている")
+
+    passed = not failures
+    print(
+        json.dumps(
+            {"script": "cdp_verify.py", "mode": "self-check",
+             "passed": passed, "failures": failures},
+            ensure_ascii=False,
+        )
+    )
+    return 0 if passed else 1
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=9222)
@@ -274,7 +379,15 @@ async def main() -> int:
     parser.add_argument("--prefix", default="wasm-spike")
     parser.add_argument("--label", default="default", help="Chrome 起動条件のラベル")
     parser.add_argument("--wait", type=float, default=5.0)
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="CDP を使わずオフラインで DOM 座標ロジックを検証する（CI ゲート用）",
+    )
     args = parser.parse_args()
+
+    if args.self_check:
+        return self_check()
 
     out_dir = pathlib.Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -299,6 +412,9 @@ async def main() -> int:
 
     env = await cdp.evaluate(ENV_PROBE)
     evidence["env"] = env
+    # クリック座標の基準を DOM から取得する（固定座標 / レイアウト定数に依存しない）。
+    canvas_rect = await element_rect(cdp, CANVAS_SELECTOR)
+    evidence["layout"] = {"canvas_rect": canvas_rect}
     title_initial = await cdp.evaluate("document.title")
     proof_initial = await cdp.evaluate("document.body.getAttribute('data-gpui-proof')")
     dom_html = await cdp.evaluate("document.documentElement.outerHTML")
@@ -328,8 +444,9 @@ async def main() -> int:
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-02-after-ticks.png")
 
-    # ホイールスクロール（表のスクロール領域で下方向へ）
-    await wheel(cdp, 600, 470, 360)
+    # ホイールスクロール（DOM の canvas rect を基準に表のスクロール領域へ）
+    scroll_x, scroll_y = relative_point(canvas_rect, *WHEEL_POINT)
+    await wheel(cdp, scroll_x, scroll_y, 360)
     await cdp.drain()
     evidence["steps"].append(
         {
@@ -339,11 +456,12 @@ async def main() -> int:
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-03-scrolled.png")
     # 先頭に戻す（後続の行クリック座標を安定させるため）
-    await wheel(cdp, 600, 470, -720)
+    await wheel(cdp, scroll_x, scroll_y, -720)
     await cdp.drain()
 
-    # プロセス行クリック（表の行選択 + クリック回数）
-    await click(cdp, 400, 396)
+    # プロセス行クリック（DOM の canvas rect 比率から算出）
+    row_x, row_y = relative_point(canvas_rect, *ROW_POINT)
+    await click(cdp, row_x, row_y)
     await asyncio.sleep(0.6)
     await cdp.drain()
     evidence["steps"].append(
@@ -357,8 +475,20 @@ async def main() -> int:
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-04-row-click.png")
 
-    # 検索入力（クリックでフォーカス → キー入力 → Backspace）
-    await click(cdp, 600, 313)
+    # 検索入力（DOM の textarea があればセレクタで取得、無ければ canvas 比率）
+    try:
+        search_center = center_from_rect(await element_rect(cdp, FILTER_SELECTOR))
+        if search_center is None:
+            raise RuntimeError(f"DOM 要素の座標が取得できません: {FILTER_SELECTOR}")
+        search_x, search_y = search_center
+        search_anchor = FILTER_SELECTOR
+    except RuntimeError:
+        search_x, search_y = relative_point(canvas_rect, *SEARCH_POINT)
+        search_anchor = "canvas-relative-fallback"
+    evidence["steps"].append(
+        {"step": "search_anchor", "selector": search_anchor, "x": search_x, "y": search_y}
+    )
+    await click(cdp, search_x, search_y)
     await asyncio.sleep(0.4)
     await type_text(cdp, "http")
     await asyncio.sleep(0.5)
@@ -389,8 +519,9 @@ async def main() -> int:
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-06-search-backspace.png")
 
-    # +1 ボタンのクリック
-    await click(cdp, 1080, 622)
+    # +1 ボタンのクリック（DOM の canvas rect 比率から算出）
+    button_x, button_y = relative_point(canvas_rect, *BUTTON_POINT)
+    await click(cdp, button_x, button_y)
     await asyncio.sleep(0.5)
     await cdp.drain()
     evidence["steps"].append(

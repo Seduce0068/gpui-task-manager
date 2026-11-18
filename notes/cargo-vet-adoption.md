@@ -1,22 +1,22 @@
 ---
 type: Reference
-title: cargo-vet 導入メモ（初期化済み・全依存 exempt ベースライン）
-description: gpui-task-manager における cargo-vet（supply-chain 監査）の導入状況、運用方針、段階的レビュー計画。監査記録は未作成（全依存を exempt として明示）。
+title: cargo-vet 導入メモ（未監査ベースラインによる drift 検出、root/web 統一）
+description: gpui-task-manager における cargo-vet（supply-chain 監査）の導入状況、運用方針、段階的レビュー計画。2026-11-18 に root/web とも baseline-unreviewed 方針へ統一。監査記録は未作成（全依存を exempt として明示）。
 tags: [supply-chain, cargo-vet, security, dependencies]
 status: adopted-initial
 generated: 2026-11-15T14:42:00+09:00
-verified: 2026-11-15T17:50:00+09:00
+verified: 2026-11-18T11:36:00+09:00
 ---
 
 ## 1. 現状（事実）
 
-- **導入状態**: 初期化済み。`cargo-vet 0.10.3`（`cargo install cargo-vet --version 0.10.3 --locked`、2026-11-15）で `cargo vet init` を root / web に実行し、`supply-chain/`（`config.toml` / `audits.toml` / `imports.lock`）を作成。初期状態は全依存を `exemptions` として記録（root 804 / web 560、いずれも `criteria = "safe-to-deploy"`）。外部 imports は未使用（`imports.lock` 空）、監査記録なし（`audits.toml` 空）。exempt は「未監査の明示」であり監査済みを意味しない。
+- **導入状態**: 初期化済み。`cargo-vet 0.10.3`（`cargo install cargo-vet --version 0.10.3 --locked`、2026-11-15）で `cargo vet init` を root / web に実行し、`supply-chain/`（`config.toml` / `audits.toml` / `imports.lock`）を作成。2026-11-18 に root / web とも「未監査ベースラインによる drift 検出」方針へ統一し、全 exempt の `criteria` を `baseline-unreviewed`（root 804 / web 560）に変更、`[policy.<first-party>]` と `[criteria.baseline-unreviewed]` / `[criteria.audited]` を両ストアへ追加した。外部 imports は未使用（`imports.lock` 空）、監査記録なし（`audits.toml` の `[audits]` 空）。`baseline-unreviewed` は「未監査の明示」であり監査済みを意味しない。
 - **代替/併用中の供給網対策**:
   - `cargo audit` / `cargo-deny`（advisories/bans/licenses/sources、root/web）。CI の deny ジョブは `-A advisory-not-detected` を指定し、root `deny.toml` の ignore が web グラフに現れない場合のノイズ警告を抑制（2026-11-15、`0ee7c37`）。
   - CycloneDX SBOM: [`scripts/generate-sbom.sh`](../scripts/generate-sbom.sh) と CI `sbom` ジョブ
   - Dependabot（Cargo root/web、GitHub Actions、週次）とセキュリティアラート
   - GPUI 系・主要依存の完全ピン運用と `Cargo.lock` コミット
-- **方針の明文化**: `README.md` / `SECURITY.md` / `notes/verification.md` に「trust 方針・棚卸し・運用手順を定めてから導入、未監査依存を監査済みとして記録しない」を記載済み。
+- **方針の明文化**: `README.md` / `SECURITY.md` / `notes/verification.md` と本メモに「trust 方針・棚卸し・運用手順を定めてから導入し、未監査依存は `baseline-unreviewed` として記録して監査済みと扱わない」を記載済み（2026-11-18 に root / web 統一）。
 
 ## 2. 依存棚卸し（`cargo metadata` ベース、2026-11-15 時点のローカル lockfile）
 
@@ -46,9 +46,9 @@ verified: 2026-11-15T17:50:00+09:00
 ## 3. 導入方針（決定済みと残課題）
 
 - [x] **trust root**: 自リポジトリの `supply-chain/` を唯一の trust root とする。外部 imports（Mozilla/Google/Embark 等の公開 audits）は初期状態では使わない（`imports.lock` 空）。imports は「信頼の委譲」であり、将来採用する場合は §8 の評価軸で候補を確認してからにする。
-- [x] **初期方針**: `cargo vet init` により全依存を一括 `exempt` として記録（root 804 / web 560）。exempt は「未監査の明示」であり「監査済み」ではない。以後は実レビューできた依存から `audits.toml` に記録する。
-- [x] **監査基準（criteria）**: 既定の `safe-to-deploy` を使用（init 生成の exemptions のまま）。配布物（native/wasm/web）を扱うため、当面はデフォルト基準から始め、必要になった時点で criteria の追加/使い分けを見直す。
-- [x] **更新運用**: Dependabot/ピン更新でバージョンが変わると `cargo vet --locked` が失敗する。対応は ①実レビュー（`cargo vet inspect` / `diff`）後に `certify`、②レビュー前なら理由を明記した `add-exemption`。監査記録の捏造はしない。
+- [x] **初期方針**: `cargo vet init` により全依存を一括 `exempt` として記録（root 804 / web 560）。2026-11-18 に両ストアの `criteria` を `baseline-unreviewed` へ統一。`baseline-unreviewed` は「未監査の明示」であり「監査済み」ではない。以後は実レビューできた依存から `audits.toml` に記録する。
+- [x] **監査基準（criteria）**: 既定の `safe-to-deploy` ではなく、プロジェクト固有の `baseline-unreviewed` を root / web 両ストアで採用（2026-11-18 統一）。`audits.toml` に `[criteria.baseline-unreviewed]`（未監査ベースラインの記録専用で安全性を主張しない）と `[criteria.audited]`（`implies = ["safe-to-deploy", "baseline-unreviewed"]`、実レビュー用ラベル）を定義。`[policy.<first-party>]` で各 first-party crate（root: `gpui-task-manager` / `tm-agent` / `tm-core` / `tm-platform` / `tm-viewmodel`、web: `tm-core` / `tm-viewmodel` / `tm-web`）の依存基準も `baseline-unreviewed` とし、未監査 baseline からの drift を検出する。実監査を記録する場合は `audited`（`safe-to-deploy` を含む）を使い、`baseline-unreviewed` と混同しない。
+- [x] **更新運用**: Dependabot/ピン更新でバージョンが変わると `cargo vet --locked` が失敗する。対応は ①実レビュー（`cargo vet inspect` / `diff`）後に `certify`（`audited` を付与）、②レビュー前なら理由を明記した `add-exemption`（`baseline-unreviewed`）。監査記録の捏造はしない。
 - [x] **CI 統合**: 共通 `rust-gates.yml@v1` の `extra_gates` 入力で `cargo vet --locked`（root / web）を必須化（共通ワークフロー側の変更は不要）。`cargo-vet` は `taiki-e/install-action` 未対応のため `cargo install cargo-vet --version 0.10.3 --locked` で導入。ローカルは `scripts/check.sh` に optional ゲートとして追加（cargo-vet 未導入環境では skip）。
 - [x] **git/path 依存ポリシー**: 原則回避（現状 git 0 件 / 非workspace path 0 件）。追加時は固定リビジョン/タグ・差分レビュー・手動記録で補う。
 
@@ -119,7 +119,6 @@ PY
 - [ ] **CI/ローカル運用**: `cargo vet` 実行タイミング、失敗時の対応、Dependabot/手動更新フローとの接続を決める。
 - [ ] **証跡の健全性**: 実レビューなしに `audit` を作らない。imports は委譲として扱い、採用根拠を残す。
 
-
 ## 8. 導入判断の比較軸（trust/imports 候補評価・未決）
 
 本節は導入時の判断材料であり、特定の trust root / imports 元の採用を決定・推奨するものではない。採用前に一次情報（各プロジェクトの公開 `supply-chain/`、criteria 定義、更新履歴、利用条件）を確認する。
@@ -142,7 +141,7 @@ PY
 3. 採用する場合でも、`cargo-vet` ツールバージョン・imports 参照・自組織方針を固定/記録する。
 4. 初期導入 PR では `cargo vet init`/設定/運用文書/CI 方針を分離し、未レビュー依存の監査済み化を行わない。
 
-**2026-11-15 時点の状況**: 導入は初期化済み（全依存 exempt ベースライン、imports 未使用、監査記録なし）。trust/imports 候補の採否は未決で、上記は将来の評価軸。実レビューなしの `audit` 作成は行わない。
+**2026-11-18 時点の状況**: root / web とも未監査ベースライン（`baseline-unreviewed`）による drift 検出方針へ統一済み（全依存 exempt、root 804 / web 560、imports 未使用、監査記録なし、両ストアで `cargo vet --locked` 成功）。trust/imports 候補の採否は未決で、上記は将来の評価軸。実レビューなしの `audit` 作成は行わない。
 
 ### 8.1 外部 imports 候補の一次調査（事実確認のみ・採否未決、2026-11-15）
 
@@ -156,7 +155,7 @@ GitHub API（一次情報）による確認結果。採用判断はこの調査�
 | EmbarkStudios | GitHub 検索で cargo-vet 用の公開 audits リポジトリを確認できず（個人 `ctrlaltf2/supply-chain` のみ該当） | — | 一次情報未確認。採用候補からは当面除外 |
 
 - cargo-vet には「cargo-vet Registry」の仕組みがあり、`mini-vet 2.0.0`（crates.io、説明: "A client for the cargo-vet registry. Fetches security reviews for Rust/Cargo crates."）がクライアントとして存在する。`cargo vet suggest` は registry 経由で公開 audits を参照する（2026-11-15 実行時に `zcash` の registry audits 取得を試行）。
-- 判断メモ: `safe-to-deploy` を主基準とする現行方針に対し、Mozilla/Google の audits は対象範囲が広く、`aggregated-from` の連鎖（信頼の委譲）を理解してからでないと採用できない。優先度は「自プロジェクトの主要依存がどの程度カバーされるか」の確認後に評価する（cover 確認にはネットワークが必要）。
+- 判断メモ: 現行方針は `safe-to-deploy` を要求する通常の監査ではなく、`baseline-unreviewed` による未監査ベースラインの drift 検出（2026-11-18 に root / web 統一）。Mozilla/Google の audits は `safe-to-deploy` 等の基準で付与されており、`baseline-unreviewed` を直接満たすとは限らない。imports を採用する場合は criteria の対応付け（`audited` 経由等）と `aggregated-from` の連鎖（信頼の委譲）を理解してから評価する。優先度は「自プロジェクトの主要依存がどの程度カバーされるか」の確認後（ネットワークが必要）。
 
 ## 9. ネットワーク環境での cargo-vet 試行手順（Runbook・未実施）
 
@@ -192,4 +191,4 @@ cargo vet --locked
 
 - `certify` は自分が実際にレビューした場合のみ使う。判断できない場合は理由を明記した `add-exemption` のまま残す（捏造しない）。
 - `import` は信頼の委譲。`imports.lock` への反映差分を必ずレビューし、採用時のみコミットする。
-- web クレートは別ストアのため、imports を採用する場合は root / web で方針を統一するか、差がある理由を本メモに記録する。
+- web クレートは別ストアだが、方針の差分が出ないよう root / web とも `baseline-unreviewed` に統一済み（2026-11-18）。imports を採用する場合も両ストアで方針を揃え、差がある理由を本メモに記録する。
