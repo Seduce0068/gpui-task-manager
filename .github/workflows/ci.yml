@@ -118,8 +118,9 @@ jobs:
   # Cargo.toml / web/Cargo.toml で宣言した rust-version = "1.92" を固定検証する。
   # 共通ワークフロー rust-gates.yml に MSRV 入力が無いため、リポジトリ側で実行。
   # NOTE: 現状 sysinfo 0.40.3（tm-platform 経由）が rust-version 1.95 を要求し、
-  # `cargo +1.92 check --workspace` は失敗する（cargo metadata で確認済み）。
-  # 依存側が解消されるまで MSRV 互換のクレートと web wasm を検証する。
+  # gpui-pre-util も不安定機能 `slice_as_array` を使うため、workspace 全体と
+  # web wasm は 1.92 でビルドできない（CI で確認済み）。
+  # 依存側が解消されるまで MSRV 互換の pure crate のみを検証する。
   # 解消後は `cargo +1.92 check --workspace --locked` へ拡張すること。
   msrv-1-92:
     name: MSRV 1.92 check
@@ -129,11 +130,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: "1.92"
-          targets: wasm32-unknown-unknown
       - name: Check portable crates with MSRV
         run: cargo +1.92 check --locked -p tm-core -p tm-viewmodel
-      - name: Check web workspace with MSRV (wasm)
-        run: cargo +1.92 check --locked --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
   # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
   # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と

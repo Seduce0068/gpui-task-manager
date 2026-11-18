@@ -35,15 +35,15 @@ feature-depth = 1
 # `-D advisory-ignore-expired`, and scripts/check-advisory-ignores.sh rejects
 # entries without a reason/expiry or with an expiry more than 3 months out.
 ignore = [
-    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0370", reason = "zvariant is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
-    { id = "RUSTSEC-2026-0543", reason = "chrono is a transitive dependency of the pinned gpui-base/gpui-component 0.9.1 stack; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-19" },
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is a transitive dependency of the pinned gpui-base/gpui-component 0.9.1 stack; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
 ]
 
 [licenses]
