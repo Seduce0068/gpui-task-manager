@@ -81,8 +81,9 @@ use sysinfo::{
     UpdateKind, Users,
 };
 use tm_core::model::{
-    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
-    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    is_virtual_interface, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot,
+    NetworkInterfaceSnapshot, NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus,
+    SystemSnapshot, Timestamp,
 };
 use tm_core::port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 use tm_core::sanitize::{sanitize_display, MAX_COMMAND_CHARS, MAX_NAME_CHARS};
@@ -389,9 +390,10 @@ impl NativeProbe {
                     .iter()
                     .filter_map(|(name, data)| {
                         let name = sanitize_display(&name.to_string_lossy(), MAX_NAME_CHARS);
-                        // Loopback traffic is not network usage; exclude it so
-                        // the overview rate reflects real interfaces.
-                        if name == "lo" {
+                        // Loopback/virtual traffic duplicates counters already
+                        // seen on physical NICs. Use the shared pure predicate
+                        // so macOS "lo0" and WireGuard tunnels are excluded too.
+                        if is_virtual_interface(&name) {
                             return None;
                         }
                         Some(NetworkInterfaceSnapshot {
