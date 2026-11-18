@@ -231,6 +231,7 @@ impl NativeProbe {
         let (processes, next_cpu_ms) = self.process_snapshots(elapsed_ms);
         let snapshot = SystemSnapshot {
             sampled_at: now_millis(),
+            sampled_elapsed: std::time::Duration::from_millis(elapsed_ms),
             hostname: self.hostname.clone(),
             os_name: self.os_name.clone(),
             kernel_version: self.kernel_version.clone(),
@@ -604,23 +605,29 @@ fn refresh_thread_counts(system: &mut System) {
     }
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&pids),
-        false,
+        // Drop PIDs that exited between the two refresh passes; otherwise a
+        // stale entry with `tasks = None` reaches `build_snapshot` and the UI
+        // reports no thread count (R49 flaky-test root cause).
+        true,
         ProcessRefreshKind::nothing().with_tasks(),
     );
 }
 
 /// Number of threads in `process`, or `None` when the platform cannot report
-/// it.
+/// it at all.
 ///
 /// `sysinfo` only fills the task list on Linux; macOS, the BSDs and Windows
-/// have no equivalent API, so the UI shows "—" there.
+/// have no equivalent API, so the UI shows "—" there. On Linux an unreadable
+/// `/proc` entry yields `Some(1)` (the main thread), never `None`.
 #[cfg(target_os = "linux")]
 fn thread_count(process: &sysinfo::Process) -> Option<u32> {
     // `sysinfo` excludes the process's own (main) thread from `tasks()`, so a
     // single-threaded process reports one thread rather than zero.
-    process
-        .tasks()
-        .map(|tasks| tasks.len().saturating_add(1).min(u32::MAX as usize) as u32)
+    // A process always has at least its main thread. Falling back to 1 keeps
+    // the snapshot total even if sysinfo could not read /proc this tick.
+    Some(process.tasks().map_or(1, |tasks| {
+        tasks.len().saturating_add(1).min(u32::MAX as usize) as u32
+    }))
 }
 
 /// Number of threads in `process`, or `None` when the platform cannot report

@@ -2399,3 +2399,28 @@ TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
 同梱（法的判断）、Depends のバージョン下限（設計判断）、bond0、diverge。
 
 - workspace 371 passed / clippy / fmt / yaml / markdownlint 増分ゼロ成功。
+
+## 2026-11-18（エージェント並列調査 第40弾 → flaky と wall clock レート）
+
+2 観点（flaky 根本原因 / 新観点バグ）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **`split_task_refresh_preserves_thread_counts` の flaky を修正**（probe-flakyroot、
+   実測 30 回中 8 回失敗＝27%、シリアル 0/10）: 原因は
+   `refresh_processes_specifics(Some, false, ...)` の `remove_dead=false` で
+   終了 PID が `tasks=None` のまま残り snapshot へ入ること。第2引数を
+   `true` に変更し、さらに Linux の `thread_count()` を `Some(1)` フォールバック
+  付きに硬化。修正後 30 回連続成功（失敗 0/30）。
+2. **ネットワークレートの wall clock 依存を修正**（probe-newangle 候補1）:
+   NTP で時刻が 999ms 戻ると 1000ms の実経过が 1ms と計算され、
+   `MIN_ELAPSED` ガードを通過して約 1000 倍のスパイクになる。
+   `SystemSnapshot` に `sampled_elapsed: Duration`（serde default）を追加し、
+   platform は `Instant` 由来の elapsed_ms、demo は 1 秒を設定。
+   viewmodel は wall clock 差ではなくこの値で rate を計算。
+   `last_network` から Timestamp を削除。回帰テストで逆行を固定。
+
+**見送り**: web の `reconnect_required` 上書き（候補2、1 行＋クリア条件、
+次ラウンド候補）、CPU% の elapsed 取得タイミング（候補3、要判断）、
+`--once` serialize 失敗の exit 分類（候補4、発生確率極低）、
+永続通知の上書き（設計どおり）、nonce ラップアラウンド（三重条件）。
+
+- workspace 372 passed / clippy / fmt 成功 / flaky 30 回連続成功。
