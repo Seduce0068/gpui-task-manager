@@ -1333,3 +1333,8 @@
 
 - probe Mutex を snapshot 要求のみに限定、help の終了コード 3/5 を
   tm-agent 固有と明記。workspace 364 passed。
+
+## 2026-11-18（エージェント並列調査 第32弾 → GUI redact の漏れを塞ぐ）
+
+- 詳細/テーブル/ダイアログの process.user を redact 時 "user" 固定へ、
+  kernel/component.label を display() 経由へ。app 61 passed。
