@@ -27,20 +27,20 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-# Every suppression expires so a stale ignore cannot silently become permanent.
-# cargo deny fails the check once an entry expires; extending an expiry requires
-# re-confirming non-reachability / the absence of a maintained replacement and
-# updating the rationale in DESIGN.md §14. Review cycle: 3 months.
+# Suppressions are reviewed against DESIGN.md §14; each entry must retain a
+# current rationale (non-reachability or no maintained replacement in the
+# pinned GPUI stack). The pinned cargo-deny version does not accept an `expiry`
+# key here, so review is a manual 3-month cycle instead of an enforced one.
 ignore = [
-    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0370", reason = "zvariant is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2026-0543", reason = "chrono is a transitive dependency of the pinned gpui-base/gpui-component 0.9.1 stack; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is a transitive accesskit/atspi dependency on Linux; not reachable from process control. Tracked in DESIGN.md §14." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is a transitive dependency of the pinned gpui-base/gpui-component 0.9.1 stack; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14." },
 ]
 
 [licenses]
