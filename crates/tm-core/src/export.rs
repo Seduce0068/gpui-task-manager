@@ -585,7 +585,10 @@ mod tests {
         let redacted = redact_for_export(&secret_snapshot(), &secret_ids());
         let dump = format!("{redacted:?}");
         for secret in SECRETS {
-            assert!(!dump.contains(secret), "redact_for_export leaked {secret:?}");
+            assert!(
+                !dump.contains(secret),
+                "redact_for_export leaked {secret:?}"
+            );
         }
     }
 
