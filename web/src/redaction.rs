@@ -3,13 +3,16 @@
 //! `tm-agent`'s `--redact` flag defaults to `false`, so a live HTTP response can
 //! still carry the real host name, process users, home paths and tailnet domains.
 //! The browser cannot read the agent host's environment, so instead of trusting
-//! the agent flag we recover the identifiers from the snapshot itself **before**
-//! redacting it and reuse the same pure rules as the native / agent shells
-//! ([`tm_core::redact`]). This keeps the dashboard and its exports free of local
-//! identifiers even when an unredacted agent is connected.
+//! the agent flag we recover the identifiers from the raw wire snapshot, then
+//! redact, then sanitise. Redaction must see the untouched wire strings:
+//! sanitisation replaces Cf/control characters with spaces and truncates display
+//! strings, which would otherwise stop the recovered identifiers from matching
+//! their own display strings. The pure rules are shared with the native / agent
+//! shells ([`tm_core::redact`]). This keeps the dashboard and its exports free
+//! of local identifiers even when an unredacted agent is connected.
 //!
 //! Identifier strings are owned here rather than borrowed from the snapshot so a
-//! mutable snapshot can be sanitised / redacted alongside them.
+//! mutable snapshot can be redacted / sanitised alongside them.
 
 use tm_core::SystemSnapshot;
 use tm_core::redact::{RedactionIdentifiers, redact_snapshot};
@@ -97,23 +100,29 @@ fn derive_home(snapshot: &SystemSnapshot, user: &str) -> String {
     }
 }
 
-/// Sanitises and then redacts a snapshot that arrived over the HTTP wire.
+/// Redacts and then sanitises a snapshot that arrived over the HTTP wire.
 ///
-/// Identifiers are captured first, while the snapshot still holds the real
-/// values; sanitisation only strips control characters / truncates display
-/// strings and must not hide the values we are about to mask. Redaction runs
-/// last so the stored snapshot (and therefore every export of it) is safe to
-/// render and share regardless of the agent's `--redact` flag.
+/// Despite the historical function name, the order is deliberately
+/// **identify → redact → sanitise** and must not be swapped:
+///
+/// 1. Capture identifiers from the raw wire snapshot, before any mutation.
+/// 2. Redact against those raw strings. Sanitisation turns Cf/control characters
+///    into spaces and truncates commands at 240 chars, so sanitizing first makes
+///    the recovered ids stop matching their own display strings (ZWSP inside a
+///    host name, or an identifier crossing the truncation cut).
+/// 3. Sanitise last, so ANSI/control/Cf injection is still stripped and every
+///    rendered string stays bounded regardless of the agent's `--redact` flag.
 pub(crate) fn sanitize_and_redact_wire_snapshot(snapshot: &mut SystemSnapshot) {
     let ids = identifiers_from_snapshot(snapshot);
-    sanitize_snapshot(snapshot);
     redact_snapshot(snapshot, &ids.as_redaction_ids());
+    sanitize_snapshot(snapshot);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tm_core::model::{DiskUsageSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus};
+    use tm_core::sanitize::MAX_COMMAND_CHARS;
 
     fn wire_snapshot() -> SystemSnapshot {
         SystemSnapshot {
@@ -186,5 +195,53 @@ mod tests {
             ..ProcessSnapshot::default()
         });
         assert_eq!(identifiers_from_snapshot(&snapshot).home, "/home/alice");
+    }
+
+    #[test]
+    fn cf_characters_do_not_disable_redaction() {
+        // A ZWSP inside an identifier must not let that identifier survive.
+        // Redaction runs on the raw wire strings, where the Cf char is still
+        // present and the recovered id matches exactly; a sanitize-first order
+        // turned it into a space ("al ice" / "my host") that no full-id
+        // replacement could match.
+        let mut snapshot = SystemSnapshot {
+            hostname: Some("my\u{200b}host".into()),
+            processes: vec![ProcessSnapshot {
+                name: "al\u{200b}ice-worker".into(),
+                command: "run as al\u{200b}ice on my\u{200b}host".into(),
+                user: Some("al\u{200b}ice".into()),
+                ..ProcessSnapshot::default()
+            }],
+            ..SystemSnapshot::default()
+        };
+        sanitize_and_redact_wire_snapshot(&mut snapshot);
+
+        let process = &snapshot.processes[0];
+        assert_eq!(process.user.as_deref(), Some("user"));
+        assert_eq!(process.name, "user-worker");
+        assert_eq!(process.command, "run as user on host");
+        assert_eq!(snapshot.hostname.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn identifiers_straddling_the_truncation_boundary_are_redacted() {
+        // Commands are truncated to MAX_COMMAND_CHARS by sanitisation. Place the
+        // host name across that boundary: redacting first replaces the whole id
+        // while it is still intact, whereas sanitize-first cut it into a "my-"
+        // fragment that the full-id replacement could no longer match.
+        let prefix = "x".repeat(MAX_COMMAND_CHARS - 4);
+        let mut snapshot = SystemSnapshot {
+            hostname: Some("my-host".into()),
+            processes: vec![ProcessSnapshot {
+                command: format!("{prefix} my-host"),
+                ..ProcessSnapshot::default()
+            }],
+            ..SystemSnapshot::default()
+        };
+        sanitize_and_redact_wire_snapshot(&mut snapshot);
+
+        let command = &snapshot.processes[0].command;
+        assert!(!command.contains("my-host"), "hostname survived: {command}");
+        assert_eq!(command, &format!("{prefix} hos…"));
     }
 }

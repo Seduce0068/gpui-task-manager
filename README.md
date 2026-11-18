@@ -122,7 +122,8 @@ ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正
 
 ```bash
 cargo run -p tm-agent -- --once --demo      # 1 スナップショットを JSON で出力
-# 常用時はトークンを自動生成（stderr に 1 回だけ表示）、--token-file、または TM_AGENT_TOKEN を使う
+# 常用時はトークンを自動生成（値はログに出力しない）するか、
+# --token-file または TM_AGENT_TOKEN で渡す
 TM_AGENT_TOKEN=test cargo run -p tm-agent -- --listen 127.0.0.1:18787
 curl -s -H 'Authorization: Bearer test' \
   'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | jq .
@@ -131,7 +132,7 @@ curl -s -H 'Authorization: Bearer test' \
 エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
 CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:port]`）のみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
-を使ってください。
+を使ってください。トークンを省略すると自動生成されますが、その値はログに出力されません。
 
 ### wasm / ブラウザ
 

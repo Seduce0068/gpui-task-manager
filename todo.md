@@ -182,18 +182,18 @@ status: current
 
 ### 優先度: 高 — コンボレビュー 2026-11-19
 
-- [ ] 自動生成トークンを stderr に表示する旨の古い記載を更新:
+- [x] 自動生成トークンを stderr に表示する旨の古い記載を更新（README/DESIGN/SECURITY/verification 修正）:
       `README.md:125` / `DESIGN.md:269` / `SECURITY.md:61` は「stderr に 1 回表示」
       とあるが実装は値をログに出さない（`agent/src/main.rs:237`）。接続には
       `--token-file` / `TM_AGENT_TOKEN` で渡す必要がある旨を明記。根拠 c5-dc01。
-- [ ] ネイティブの probe 失敗 stderr を分類済み固定文言へ: `app/src/main.rs:58,510,522`
+- [x] ネイティブの probe 失敗 stderr を分類済み固定文言へ（probe_error_label 追加）: `app/src/main.rs:58,510,522`
       は `probe_failure_message` / `Display` の生 detail を出力し、内部パス・
       ホスト名が CI ログへ残る。agent の `probe_error_label` 相当を共有化。
       根拠 c4-ob01 / c1-ap01。
-- [ ] redact を大小文字非依存にする: `crates/tm-core/src/redact.rs:106-121` の
+- [x] redact を大小文字非依存にする（case_insensitive_ranges 追加）: `crates/tm-core/src/redact.rs:106-121` の
       `String::replace` は完全一致のため `MY-HOST` / `TAIL1234` / 大文字ホームが
       残る。小文字化して位置を求め元文字列を書き換える方式へ。根拠 c3-iv01。
-- [ ] Web redaction の順序を修正: `web/src/redaction.rs:107` は生識別子を取得し
+- [x] Web redaction の順序を修正（identify → redact → sanitize）: `web/src/redaction.rs:107` は生識別子を取得し
       対象はサニタイズ後のため、Cf/打ち切り境界で一致せず漏れる。redact →
       sanitize の順序に固定。根拠 c3-iv01。
 

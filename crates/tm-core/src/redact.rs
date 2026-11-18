@@ -24,6 +24,66 @@ pub struct RedactionIdentifiers<'a> {
     pub hostname: &'a str,
 }
 
+/// Byte ranges in `value` whose text equals `needle`, ignoring case.
+///
+/// Matching runs on a lowercased working copy so identifiers that differ only
+/// in case (`MY-HOST` vs `my-host`) are found too. The ranges are mapped back
+/// onto `value`'s byte offsets: lowercasing can change a character's byte
+/// length (e.g. `İ` becomes `i` plus a combining dot), so using the working
+/// copy's offsets directly could split a UTF-8 code point in the original
+/// string.
+fn case_insensitive_ranges(value: &str, needle: &str) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let needle_lower = needle.to_lowercase();
+    let lowered = value.to_lowercase();
+
+    // For every byte of `lowered`, keep the original character's start and end
+    // byte offsets. `str::to_lowercase` concatenates the per-character
+    // lowercase mappings, so the two byte streams stay index-aligned.
+    let mut starts = Vec::with_capacity(lowered.len());
+    let mut ends = Vec::with_capacity(lowered.len());
+    let mut original_offset = 0usize;
+    for ch in value.chars() {
+        let start = original_offset;
+        let end = start + ch.len_utf8();
+        original_offset = end;
+        for lowered_ch in ch.to_lowercase() {
+            for _ in 0..lowered_ch.len_utf8() {
+                starts.push(start);
+                ends.push(end);
+            }
+        }
+    }
+    debug_assert_eq!(starts.len(), lowered.len());
+    debug_assert_eq!(ends.len(), lowered.len());
+
+    lowered
+        .match_indices(&needle_lower)
+        .map(|(start, matched)| (starts[start], ends[start + matched.len() - 1]))
+        .collect()
+}
+
+/// Replaces every case-insensitive occurrence of `needle` in `value` with
+/// `replacement`, leaving all other bytes (including multibyte characters)
+/// at their original positions.
+fn replace_case_insensitive(value: &str, needle: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut cursor = 0usize;
+    for (start, end) in case_insensitive_ranges(value, needle) {
+        if start < cursor {
+            // Overlapping matches: keep the earliest replacement only.
+            continue;
+        }
+        out.push_str(&value[cursor..start]);
+        out.push_str(replacement);
+        cursor = end;
+    }
+    out.push_str(&value[cursor..]);
+    out
+}
+
 /// Replaces `host.tailXXXX.ts.net` style domains with `host`.
 ///
 /// Commands are truncated to 240 characters before they reach the agent, so a
@@ -33,9 +93,9 @@ fn redact_tailnet_domains(value: &str) -> String {
     const SUFFIX: &str = ".ts.net";
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
-    while let Some(position) = rest.find(SUFFIX) {
+    while let Some(&(position, end)) = case_insensitive_ranges(rest, SUFFIX).first() {
         let before = &rest[..position];
-        // `rfind` returns a byte index; advancing by 1 byte can land inside a
+        // The match position is a byte index; advancing by 1 byte can land inside a
         // multibyte character (e.g. a Japanese label before ".ts.net") and
         // panic on the slice below. Advance by the character's UTF-8 length.
         let start = before
@@ -46,7 +106,7 @@ fn redact_tailnet_domains(value: &str) -> String {
             .unwrap_or(0);
         out.push_str(&before[..start]);
         out.push_str("host");
-        rest = &rest[position + SUFFIX.len()..];
+        rest = &rest[end..];
     }
     out.push_str(rest);
     out
@@ -59,10 +119,10 @@ fn redact_tailnet_domains(value: &str) -> String {
 fn redact_host_subdomains(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
-    while let Some(position) = rest.find("host.") {
+    while let Some(&(position, end)) = case_insensitive_ranges(rest, "host.").first() {
         out.push_str(&rest[..position]);
         out.push_str("host");
-        let suffix = &rest[position + "host.".len()..];
+        let suffix = &rest[end..];
         let consumed = suffix
             .char_indices()
             .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '.'))
@@ -78,9 +138,9 @@ fn redact_host_subdomains(value: &str) -> String {
 fn redact_tailnet_tokens(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
-    while let Some(position) = rest.find("tail") {
+    while let Some(&(position, end)) = case_insensitive_ranges(rest, "tail").first() {
         out.push_str(&rest[..position]);
-        let candidate = &rest[position + "tail".len()..];
+        let candidate = &rest[end..];
         let hex_len = candidate
             .chars()
             .take_while(|ch| ch.is_ascii_hexdigit())
@@ -102,23 +162,24 @@ fn redact_tailnet_tokens(value: &str) -> String {
 /// The order matters: longer, more specific identifiers are replaced first so
 /// a short user name cannot partially rewrite a host name (e.g. `USER=alice`,
 /// `hostname=alice-laptop`). Very short identifiers are skipped because
-/// `String::replace` would corrupt unrelated words (`a` in `java`).
+/// a case-insensitive replacement would corrupt unrelated words (`a` in
+/// `java`). Matching ignores case, so `MY-HOST` is hidden just like `my-host`.
 pub fn redact_text(value: &str, ids: &RedactionIdentifiers<'_>) -> String {
     let mut out = value.to_string();
     if ids.home.chars().count() >= 3 {
-        out = out.replace(ids.home, "/home/user");
+        out = replace_case_insensitive(&out, ids.home, "/home/user");
     }
     // The first label of the host name is also used in service names; derive
     // it here so every caller applies the same rule.
     let short_host = ids.hostname.split(['.', '-']).next().unwrap_or("");
     if ids.hostname.chars().count() >= 3 && !ids.hostname.is_empty() {
-        out = out.replace(ids.hostname, "host");
+        out = replace_case_insensitive(&out, ids.hostname, "host");
     }
     if short_host.chars().count() >= 3 {
-        out = out.replace(short_host, "host");
+        out = replace_case_insensitive(&out, short_host, "host");
     }
     if !ids.user.is_empty() && ids.user.chars().count() >= 2 {
-        out = out.replace(ids.user, "user");
+        out = replace_case_insensitive(&out, ids.user, "user");
     }
     out = redact_tailnet_domains(&out);
     out = redact_host_subdomains(&out);
@@ -277,6 +338,55 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn uppercase_identifiers_are_redacted() {
+        let ids = RedactionIdentifiers {
+            home: "/home/alice",
+            user: "alice",
+            hostname: "my-host",
+        };
+        let value = "/HOME/ALICE/work https://MY-HOST.TAIL1234.TS.NET:8443 ALICE";
+        assert_eq!(
+            redact_text(value, &ids),
+            "/home/user/work https://host:8443 user"
+        );
+        // Mixed case is covered too, including the uppercase `.Ts.Net` suffix.
+        let mixed = "/Home/Alice https://My-Host.TailAbCd.Ts.Net AlIcE";
+        assert_eq!(redact_text(mixed, &ids), "/home/user https://host user");
+        // A bare uppercase tail token goes through `redact_tailnet_tokens`.
+        assert_eq!(
+            redact_text("--id=TAIL1234ABCD --id=TaIlAbCdEf", &ids),
+            "--id=tailnet --id=tailnet"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_replacement_preserves_multibyte_prefix() {
+        let ids = RedactionIdentifiers {
+            home: "/home/alice",
+            user: "alice",
+            hostname: "my-host",
+        };
+        // Multibyte characters before the identifier must not shift the byte
+        // offsets used for the replacement or split a UTF-8 code point.
+        let value = "日本語 /HOME/ALICE/仕事 MY-HOST ALICE";
+        assert_eq!(redact_text(value, &ids), "日本語 /home/user/仕事 host user");
+    }
+
+    #[test]
+    fn lowercased_character_expansion_does_not_split_utf8() {
+        // `İ` grows from 2 bytes to 3 when lowercased (`i` + combining dot), so
+        // the working copy is longer than the original. Offsets must be mapped
+        // back onto `value` or the replacement would split a UTF-8 code point.
+        let ids = RedactionIdentifiers {
+            home: "",
+            user: "İA",
+            hostname: "",
+        };
+        assert_eq!(redact_text("İA worker", &ids), "user worker");
+        assert_eq!(redact_text("i\u{0307}a worker", &ids), "user worker");
     }
 
     /// Identifiers that must never appear in a redacted snapshot (R4-OB01).

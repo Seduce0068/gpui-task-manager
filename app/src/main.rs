@@ -21,6 +21,33 @@ use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+/// Classifies a probe error for stderr without echoing its free-form detail.
+///
+/// `ProbeError` payloads can embed internal paths or host names. Shell output
+/// keeps only the variant, which is enough to triage a failure without leaking
+/// identifiers. The detailed message stays on the UI status path, which
+/// applies its own redaction (the same policy as `agent::probe_error_label`).
+fn probe_error_label(error: &tm_core::ProbeError) -> &'static str {
+    match error {
+        tm_core::ProbeError::Unsupported(_) => "未対応",
+        tm_core::ProbeError::Io(_) => "I/O エラー",
+        tm_core::ProbeError::Permission(_) => "権限不足",
+    }
+}
+
+/// Classified stderr line for a failed native probe initialisation.
+fn probe_init_failure_message(error: &tm_core::ProbeError) -> String {
+    format!(
+        "スナップショット収集を初期化できません ({})",
+        probe_error_label(error)
+    )
+}
+
+/// Classified stderr line for a failed snapshot sample.
+fn probe_sample_failure_message(error: &tm_core::ProbeError) -> String {
+    format!("スナップショット取得に失敗 ({})", probe_error_label(error))
+}
+
 fn main() {
     if handle_cli() {
         return;
@@ -55,10 +82,7 @@ fn main() {
         Ok(tm_core::demo::BackendChoice::Demo) => true,
         Ok(tm_core::demo::BackendChoice::Native(())) => false,
         Err(error) => {
-            eprintln!(
-                "gpui-task-manager: {}",
-                tm_core::demo::probe_failure_message(&error)
-            );
+            eprintln!("gpui-task-manager: {}", probe_init_failure_message(&error));
             std::process::exit(EXIT_PROBE);
         }
     };
@@ -507,10 +531,7 @@ fn run_export(request: &ExportRequest, demo: bool) -> i32 {
             Ok(tm_core::demo::BackendChoice::Demo) => Box::new(tm_core::demo::DemoProbe::new()),
             Ok(tm_core::demo::BackendChoice::Native(probe)) => Box::new(probe),
             Err(error) => {
-                eprintln!(
-                    "gpui-task-manager: {}",
-                    tm_core::demo::probe_failure_message(&error)
-                );
+                eprintln!("gpui-task-manager: {}", probe_init_failure_message(&error));
                 return EXIT_PROBE;
             }
         };
@@ -520,7 +541,10 @@ fn run_export(request: &ExportRequest, demo: bool) -> i32 {
     // is already meaningful on the first tick, so skip the wait there.
     if !demo {
         if let Err(error) = probe.sample() {
-            eprintln!("gpui-task-manager: スナップショット取得に失敗: {error}");
+            eprintln!(
+                "gpui-task-manager: {}",
+                probe_sample_failure_message(&error)
+            );
             return EXIT_PROBE;
         }
         std::thread::sleep(crate::export_warmup_interval());
@@ -528,7 +552,10 @@ fn run_export(request: &ExportRequest, demo: bool) -> i32 {
     let snapshot = match probe.sample() {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!("gpui-task-manager: スナップショット取得に失敗: {error}");
+            eprintln!(
+                "gpui-task-manager: {}",
+                probe_sample_failure_message(&error)
+            );
             return EXIT_PROBE;
         }
     };
@@ -958,5 +985,53 @@ mod tests {
             probe_failure_message(&tm_core::ProbeError::Io("初期化失敗".to_string()))
                 .contains("初期化失敗")
         );
+    }
+
+    #[::core::prelude::v1::test]
+    fn probe_error_label_is_fixed_per_variant() {
+        let detail = "SECRET-PATH /home/victim HOST internal.example";
+        let cases = [
+            (
+                tm_core::ProbeError::Unsupported(detail.to_string()),
+                "未対応",
+            ),
+            (tm_core::ProbeError::Io(detail.to_string()), "I/O エラー"),
+            (
+                tm_core::ProbeError::Permission(detail.to_string()),
+                "権限不足",
+            ),
+        ];
+        for (error, label) in cases {
+            assert_eq!(probe_error_label(&error), label);
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn probe_stderr_messages_never_echo_the_error_detail() {
+        // The GUI preflight and both `--export` probe paths must print only the
+        // classified label: a native ProbeError detail can carry internal paths
+        // or host names that would otherwise land in shell/CI logs.
+        let detail = "SECRET-PATH /home/victim HOST internal.example";
+        for error in [
+            tm_core::ProbeError::Unsupported(detail.to_string()),
+            tm_core::ProbeError::Io(detail.to_string()),
+            tm_core::ProbeError::Permission(detail.to_string()),
+        ] {
+            for message in [
+                probe_init_failure_message(&error),
+                probe_sample_failure_message(&error),
+            ] {
+                for secret in ["SECRET-PATH", "/home/victim", "internal.example"] {
+                    assert!(
+                        !message.contains(secret),
+                        "stderr must not echo the probe detail: {message}"
+                    );
+                }
+                assert!(
+                    message.contains(probe_error_label(&error)),
+                    "stderr must keep the classified label: {message}"
+                );
+            }
+        }
     }
 }
