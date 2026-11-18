@@ -231,13 +231,15 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - OS 由来の文字列は制御文字・ANSI エスケープ・bidi／ゼロ幅の不可視書式文字を除去して表示
 - GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて
   `cargo-deny`（ライセンス・脆弱性・重複版）を CI で実行（ルート / web とも ok）
+- Gitleaks でシークレットスキャン: `.git/hooks/pre-commit` がコミット前にステージ済み
+  差分を検査し、CI も最終ゲートとして全履歴を走査する（ローカルフックは回避可能なため）
 
 ## 検証状況（2026-11-18、Runtime Proof）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **364 passed / 0 failed**（core 134 / viewmodel 65 / platform 26 / agent 78 / app 61） |
-| web ユニットテスト | **74 passed / 0 failed**（fetch 制限 / 再接続導線 / capability 等を含む） |
+| `cargo test --workspace` | **381 passed / 0 failed**（core 140 / viewmodel 66 / platform 26 / agent 81 / app 68） |
+| web ユニットテスト | **81 passed / 0 failed**（fetch 制限 / 再接続導線 / capability / redaction 等を含む） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
