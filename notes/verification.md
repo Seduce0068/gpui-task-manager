@@ -2236,3 +2236,26 @@ worktree（round31-safe）で検証。
 （汎用 OS 名で実害なし）。
 
 - app 61 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第33弾 → wire/demo 契約の整合）
+
+3 観点（wire 境界 / テストデータ / 設定移行）の調査エージェントを並列起動。
+worktree で実装・検証。
+
+1. **未知 ProcessStatus が全 snapshot を拒否する問題**（probe-wire2・3 回連続
+   先送り項目）: `ProcessStatus::Unknown` に `#[cfg_attr(feature = "serde",
+   serde(other))]` を付与。将来 agent が新しい status を返しても Err ではなく
+   `Unknown`（表示「不明」）へ縮退。Serialize 出力は不変。回帰テスト追加。
+2. **demo と real probe の順序乖離**（probe-testdata）: demo の disks を容量
+   降順（`/home` → `/`）へ、processes を `(pid, start_time_secs)` 昇順へ変更。
+   real の `sort_disks_for_display` / PID 順と同じ契約に整合。UI はテーブル
+   側でソートするため画面は不変だが、`--export` の行順が real と揃う。
+   共通契約テスト `demo_matches_native_probe_ordering_contracts` を追加。
+3. `tm-core` に serde_json を dev-dependency 追加（回帰テスト用）。
+   root Cargo.lock に 1 行追加、web vet --locked は 560 exempted 成功。
+
+**見送り**: 未知 enum/サブフィールドの save 時上書き（保持 vs migrate の
+設計判断、probe-migration）、primitive 型不一致の corrupt 経路（契約解釈）、
+再度の version チェック前倒し（範囲が広い）。
+
+- workspace 366 passed / clippy / fmt / machete / deny / web vet --locked 成功。
