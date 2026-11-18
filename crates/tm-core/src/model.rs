@@ -70,7 +70,13 @@ impl Timestamp {
         self.unix_millis / 1_000
     }
 
-    /// Elapsed whole seconds between `earlier` and `self` (saturating).
+    /// Difference between the two timestamps' whole-second fields (saturating).
+    ///
+    /// This truncates each value to seconds *before* subtracting, so it can
+    /// differ by one second from `(self.unix_millis - earlier.unix_millis) /
+    /// 1000` when the interval crosses a second boundary (e.g. 1900 ms →
+    /// 2100 ms yields 1 here, but 0 whole elapsed seconds). Callers needing
+    /// elapsed milliseconds should use [`Timestamp::unix_millis`] directly.
     pub fn elapsed_secs_since(self, earlier: Timestamp) -> u64 {
         self.as_secs().saturating_sub(earlier.as_secs())
     }
@@ -423,6 +429,12 @@ mod tests {
         let earlier = Timestamp::from_secs(140);
         assert_eq!(now.elapsed_secs_since(earlier), 0);
         assert_eq!(Timestamp::from_millis(1_500).as_secs(), 1);
+        // Whole-second fields are subtracted, not elapsed milliseconds:
+        // 1900 ms -> 2100 ms is 200 ms of real time but 1 in second fields.
+        assert_eq!(
+            Timestamp::from_millis(2_100).elapsed_secs_since(Timestamp::from_millis(1_900)),
+            1
+        );
     }
 
     #[test]

@@ -707,15 +707,14 @@ mod tests {
                 ..crate::model::ProcessSnapshot::default()
             });
             let csv = snapshot_to_csv(&snapshot, &secret_ids());
-            let row = csv.lines().nth(1).expect("data row");
-            assert!(
-                row.contains("'"),
-                "leading whitespace must be neutralised: {row:?}"
-            );
-            assert!(
-                !row.contains(",\n="),
-                "formula must not start a row: {row:?}"
-            );
+            // `csv.lines()` would split inside a quoted newline, hiding the
+            // field shape. Check the complete CSV suffix (R39 audit).
+            let expected = if value.starts_with('\n') {
+                format!("\"'{value}\"\n")
+            } else {
+                format!("'{value}\n")
+            };
+            assert!(csv.ends_with(&expected), "unexpected field: {csv:?}");
         }
     }
 
