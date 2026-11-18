@@ -436,33 +436,38 @@ fn csv_status(status: ProcessStatus) -> &'static str {
 }
 
 fn csv_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
     // A leading newline/space (or VT/FF) can be ignored by spreadsheet
-    // importers, exposing the next character as a formula. Neutralise those
-    // too — the RFC 4180 quote check below already treats '\n' and '\r' alike.
-    if matches!(
+    // importers, exposing the next character as a formula. The apostrophe must
+    // go *inside* the RFC 4180 quotes: placing it before the opening quote
+    // makes parsers treat the field as unquoted, so commas/newlines split it
+    // and a later field can start with '=' (formula-injection bypass, R29).
+    let neutralise = matches!(
         value.chars().next(),
         Some('=' | '+' | '-' | '@' | '\t' | '\r' | '\n' | ' ' | '\u{0b}' | '\u{0c}')
-    ) {
-        out.push('\'');
-    }
+    );
     let quoted = value
         .as_bytes()
         .iter()
         .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
     if quoted {
-        out.push('"');
-    }
-    for ch in value.chars() {
-        if ch == '"' {
-            out.push('"');
+        // Build the quoted field first, then insert the apostrophe right after
+        // the opening quote so the whole value stays one field.
+        let mut escaped = String::with_capacity(value.len() + 2);
+        if neutralise {
+            escaped.push('\'');
         }
-        out.push(ch);
+        for ch in value.chars() {
+            if ch == '"' {
+                escaped.push('"');
+            }
+            escaped.push(ch);
+        }
+        format!("\"{escaped}\"")
+    } else if neutralise {
+        format!("'{value}")
+    } else {
+        value.to_string()
     }
-    if quoted {
-        out.push('"');
-    }
-    out
 }
 
 fn push_optional_csv<T: std::fmt::Display>(out: &mut String, value: Option<T>) {
@@ -647,10 +652,27 @@ mod tests {
             "a command newline must stay quoted: {csv}"
         );
         assert!(csv.contains("\"a,b\"\"c\""), "{csv}");
-        // The neutralising apostrophe precedes the RFC 4180 quote.
-        assert!(csv.contains("'\"=cmd|' /C calc'!A0\r\nnext\""), "{csv}");
+        // The apostrophe sits *inside* the RFC 4180 quotes so a comma or
+        // newline in the value cannot split the field (R29 export audit).
+        assert!(csv.contains("\"'=cmd|' /C calc'!A0\r\nnext\""), "{csv}");
         // Empty Option fields stay empty instead of inventing a value.
-        assert!(csv.contains("0,0,0,,,'\"=cmd|'"), "{csv}");
+        assert!(csv.contains("0,0,0,,,\"'=cmd|'"), "{csv}");
+    }
+
+    #[test]
+    fn csv_neutralising_apostrophe_stays_inside_quotes() {
+        // If the apostrophe precedes the opening quote, RFC 4180 parsers treat
+        // the field as unquoted and a comma splits it into a formula field.
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.processes.push(crate::model::ProcessSnapshot {
+            command: "=a,=1+1".into(),
+            ..crate::model::ProcessSnapshot::default()
+        });
+        let csv = snapshot_to_csv(&snapshot, &secret_ids());
+        let row = csv.lines().nth(1).expect("data row");
+        assert!(row.contains("\"'=a,=1+1\""), "{row}");
+        // 13 columns => 12 commas; a split field would add an extra comma.
+        assert_eq!(row.matches(',').count(), 12, "field must not split: {row}");
     }
 
     #[test]

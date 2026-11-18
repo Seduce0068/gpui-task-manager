@@ -717,6 +717,11 @@ impl Dashboard {
             tx_rate,
         );
 
+        // Distinguish "no snapshot yet", "explicitly cleared" and "selected
+        // process disappeared": only the first two cases may auto-select, and
+        // `Select(None)` must stay cleared across recompute/ingest (R29 audit).
+        let had_snapshot = self.snapshot.is_some();
+        let had_selection = self.selected.is_some();
         let selected_still_exists = self
             .selected
             .is_some_and(|key| snapshot.process(key).is_some());
@@ -725,7 +730,7 @@ impl Dashboard {
         let previous_hint = self.selection_hint;
         self.snapshot = Some(snapshot);
         self.recompute_visible();
-        if !selected_still_exists {
+        if !had_snapshot || (had_selection && !selected_still_exists) {
             let fallback_index = self
                 .visible
                 .get(previous_hint.min(self.visible.len().saturating_sub(1)))
@@ -902,6 +907,11 @@ impl Dashboard {
     }
 
     fn ensure_selection_visible(&mut self) {
+        // An explicitly cleared selection (`Select(None)`) must stay cleared;
+        // recomputing the visible rows must not auto-select the first one.
+        if self.selected.is_none() {
+            return;
+        }
         let Some(snapshot) = &self.snapshot else {
             self.selected = None;
             return;
@@ -1274,6 +1284,23 @@ mod tests {
     }
 
     #[test]
+    fn clearing_selection_stays_cleared_across_recompute_and_ingest() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        assert!(dashboard.selected_key().is_some());
+
+        dashboard.apply(Command::Select(None));
+        assert_eq!(dashboard.selected_key(), None);
+        // Both re-sync paths must respect the explicit clear (R29 audit).
+        dashboard.apply(Command::SetSortKey(SortKey::Pid));
+        assert_eq!(dashboard.selected_key(), None);
+        dashboard.ingest(demo_snapshot(1));
+        assert_eq!(dashboard.selected_key(), None);
+        dashboard.apply(Command::SetFilterText("abc".into()));
+        assert_eq!(dashboard.selected_key(), None);
+    }
+
+    #[test]
     fn selection_falls_back_when_process_disappears() {
         let mut dashboard = dashboard();
         let mut snapshot = demo_snapshot(0);
@@ -1316,12 +1343,14 @@ mod tests {
     fn kill_flow_requires_confirmation_and_is_protected() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
-        assert!(dashboard
-            .apply(Command::RequestSignal {
-                key: firefox_key(),
-                signal: Signal::Terminate,
-            })
-            .is_empty());
+        assert!(
+            dashboard
+                .apply(Command::RequestSignal {
+                    key: firefox_key(),
+                    signal: Signal::Terminate,
+                })
+                .is_empty()
+        );
         assert_eq!(
             dashboard.pending_kill().expect("pending").key,
             firefox_key()

@@ -1274,3 +1274,8 @@
 - export.rs の CSV 数式無害化に先頭空白/改行を追加、DESIGN/SECURITY の
   テスト件数を README 参照へ集約。tm-core 129 passed。
   app/src/main.rs の umask 修正は別セッション混入で見送り。
+
+## 2026-11-18（エージェント並列調査 第20弾 → UTF-8境界・CSV構造・選択クリア）
+
+- redact の char boundary panic、CSV アポストロフ位置、Select(None) 復活を
+  修正。tm-core 131 / viewmodel 63 passed。

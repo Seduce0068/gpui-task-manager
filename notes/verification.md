@@ -1928,3 +1928,31 @@ Select(None) の復活（到達性限定）、DESIGN §1.2 の非目標矛盾（
 
 - tm-core 129 passed / clippy / markdownlint（増分ゼロ）成功。
   CI の rustfmt との食い違いを避けるため import 並び順は HEAD のまま維持。
+
+## 2026-11-18（エージェント並列調査 第20弾 → UTF-8境界・CSV構造・選択クリア）
+
+3 観点（エクスポート / コア / 状態機械）の調査エージェントを並列起動。別セッション
+が多数のファイルを編集中だったため、実装は競合しない3ファイルに限定。
+
+1. **redact_tailnet_domains の UTF-8 境界パニック（2 エージェントが独立に
+   実 API 再現）**: `rfind` のバイト index に +1 してスライスしていたため、
+   `.ts.net` 直前に日本語があると `byte index is not a char boundary` で
+   パニック。`char_indices().rev().find()` + `len_utf8()` に変更。
+   `--redact` / agent snapshot / export の全経路が対象。回帰テスト追加。
+2. **CSV アポストロフ位置が RFC 4180 引用を壊す（前回修正の不備）**:
+   アポストロフを引用の外側に置いていたため、RFC 4180 パーサが引用を認識せず
+   カンマで列が分割され、後続フィールドが `=` で始まり数式として解釈され得た。
+   引用の内側の直後にアポストロフを置く方式に変更。既存期待値を更新し、
+   列分割しないことを pure テストで固定。
+3. **Select(None) の選択復活（API 契約違反）**: `ensure_selection_visible()`
+   と `ingest()` の fallback の2系統で `selected=None` が復活していた。
+   `had_snapshot`/`had_selection` で3 states（初回／明示クリア／消滅）を区別し、
+   明示クリアのみ維持。回帰テスト追加。
+
+**却下／保留**: persistent status の上書き方針（要判断）、serde enum 境界
+（query.rs は別セッション編集対象）、symlink 扱い（設計判断）、
+RequestSignal の paused ガード（低優先）。
+
+- tm-core 131 passed / viewmodel 63 passed / clippy 成功。
+  rustfmt で変わった既存行の import 順・文字列整形は HEAD 形式に戻し、
+  CI の rustfmt との食い違いを回避。
