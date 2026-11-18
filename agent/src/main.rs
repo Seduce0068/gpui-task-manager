@@ -1783,6 +1783,85 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Asserts the token-file error contract: the leaf name may be shown to the
+    /// operator, but no parent component (home path, mount point, temp dir) may
+    /// appear anywhere in the message.
+    fn assert_token_error_is_leaf_only(error: &str, path: &std::path::Path) {
+        let leaf = path
+            .file_name()
+            .expect("token file has a name")
+            .to_string_lossy();
+        assert!(error.contains(leaf.as_ref()), "leaf name missing: {error}");
+        assert!(
+            !error.contains(path.to_string_lossy().as_ref()),
+            "full token path leaked: {error}"
+        );
+        let parent = path.parent().expect("token file has a parent");
+        assert!(
+            !error.contains(parent.to_string_lossy().as_ref()),
+            "parent directory leaked: {error}"
+        );
+        let parent_name = parent
+            .file_name()
+            .expect("parent has a name")
+            .to_string_lossy();
+        assert!(
+            !error.contains(parent_name.as_ref()),
+            "parent directory name leaked: {error}"
+        );
+    }
+
+    #[test]
+    fn token_file_io_errors_hide_parent_directories() {
+        let dir = std::env::temp_dir().join(format!("tm-agent-io-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // metadata() failure: the leaf may be printed, the parent may not.
+        let missing = dir.join("missing-token.txt");
+        let error = read_token_file(&missing).expect_err("missing token file must fail");
+        assert!(error.contains("属性"), "{error}");
+        assert_token_error_is_leaf_only(&error, &missing);
+
+        // read_to_string() failure caused by invalid UTF-8. Set 0600 first so
+        // the Unix permission pre-check does not mask this branch.
+        let invalid = dir.join("invalid-utf8-token.txt");
+        std::fs::write(&invalid, [0xff, 0xfe, b'A', 0x80]).expect("write invalid UTF-8");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o600))
+                .expect("set 0600");
+        }
+        let error = read_token_file(&invalid).expect_err("invalid UTF-8 must fail");
+        assert!(error.contains("読めません"), "{error}");
+        assert_token_error_is_leaf_only(&error, &invalid);
+
+        let _ = std::fs::remove_file(&invalid);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn token_file_unreadable_error_hides_parent_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("tm-agent-io-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("unreadable-token.txt");
+        std::fs::write(&path, "secret-token\n").expect("write token file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("set 0000");
+
+        // Root (or CAP_DAC_OVERRIDE) can still open a 0000 file. Guard the
+        // permission-dependent assertion so CI stays deterministic everywhere.
+        let enforced = std::fs::File::open(&path).is_err();
+        if enforced {
+            let error = read_token_file(&path).expect_err("0000 file must be unreadable");
+            assert!(error.contains("読めません"), "{error}");
+            assert_token_error_is_leaf_only(&error, &path);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     #[test]
     fn redaction_scrubs_the_bearer_token_from_argv_echo() {
         // `--token` ends up in our own process command; "redacted" JSON must
@@ -1975,6 +2054,53 @@ mod tests {
         assert_eq!(calls.load(Ordering::Acquire), 2); // discarded + published
         assert!(request(auth, &state).starts_with("HTTP/1.1 200"));
         assert_eq!(calls.load(Ordering::Acquire), 3); // one per later request
+    }
+
+    #[test]
+    fn concurrent_authenticated_requests_share_one_warmup_sample() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = Arc::new(SharedState::new(
+            Box::new(CountingProbe {
+                inner: DemoProbe::new(),
+                calls: Arc::clone(&calls),
+            }),
+            TEST_TOKEN,
+            false,
+            true, // real probe: warm-up required
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let workers = JoinTracker::new();
+
+        // Both peers send a complete authenticated request before the server
+        // accepts either one, so the two workers genuinely overlap. The probe
+        // mutex serialises routing, which must make the warm-up check one-shot.
+        let mut clients = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let mut client = TcpStream::connect(address).expect("connect");
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+            client
+                .write_all(b"GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n")
+                .expect("write request");
+            let _ = client.shutdown(Shutdown::Write);
+            clients.push(client);
+        }
+        for _ in 0..clients.len() {
+            accept_and_spawn(&listener, &state, &workers);
+        }
+        for mut client in clients {
+            let mut response = String::new();
+            client.read_to_string(&mut response).expect("read response");
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        }
+        let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
+        assert!(!outcome.timed_out && outcome.panicked == 0, "{outcome:?}");
+        assert_eq!(outcome.joined, 2);
+
+        // One discarded warm-up sample plus one published sample per request.
+        assert_eq!(calls.load(Ordering::Acquire), 3);
     }
 
     #[test]

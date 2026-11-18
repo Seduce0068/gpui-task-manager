@@ -2996,7 +2996,11 @@ mod tests {
         let forbidden = FetchError::Forbidden;
         assert!(!next_reconnect_required(false, &forbidden));
         assert!(next_reconnect_required(true, &forbidden));
-        assert!(forbidden.to_string().contains("接続元が許可されていません"));
+        assert!(
+            forbidden
+                .to_string()
+                .contains("別ホスト／別オリジンからのアクセスはサポートしていません")
+        );
     }
 
     #[test]

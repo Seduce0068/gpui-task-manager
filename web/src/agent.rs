@@ -81,8 +81,11 @@ const SIZE_LIMIT_ERROR: &str = "エージェント応答がサイズ上限を超
 ///
 /// Unlike [`RECONNECT_GUIDANCE`] this is **not** a token problem: pasting a new
 /// URL would not help, so the DOM proof's `reconnect=` flag stays `0`. Static
-/// text with no token, endpoint, hostname or agent-supplied data.
-pub const FORBIDDEN_GUIDANCE: &str = "接続元が許可されていません。ブラウザからの接続元（Origin）が tm-agent 側で許可されているか確認してください";
+/// text with no token, endpoint, hostname or agent-supplied data. The agent's
+/// allowed origins are hard-coded to loopback with no user-facing setting, so
+/// the text describes the actual constraint instead of asking for a change
+/// the user cannot make.
+pub const FORBIDDEN_GUIDANCE: &str = "別ホスト／別オリジンからのアクセスはサポートしていません。アプリとブラウザを同一ホストで起動してください";
 
 /// Fixed, redact-safe guidance for an authentication failure (`401`).
 ///
@@ -169,7 +172,8 @@ impl fmt::Display for FetchError {
 /// Maps a non-success HTTP status to its typed error.
 ///
 /// `401` and `403` are deliberately split: only the former means "paste a new
-/// token", while the latter asks the user to fix the allowed origin (C2-WEB).
+/// token", while the latter explains that cross-host access is unsupported
+/// because the agent's allowed origins are loopback-only (C2-WEB).
 fn status_error(code: u16) -> FetchError {
     match code {
         401 => FetchError::Auth,
@@ -725,7 +729,10 @@ mod tests {
 
     #[test]
     fn forbidden_guidance_is_distinct_and_never_requests_reconnect() {
-        assert!(FORBIDDEN_GUIDANCE.contains("接続元が許可されていません"));
+        assert!(
+            FORBIDDEN_GUIDANCE.contains("別ホスト／別オリジンからのアクセスはサポートしていません")
+        );
+        assert!(FORBIDDEN_GUIDANCE.contains("同一ホストで起動してください"));
         assert_ne!(FORBIDDEN_GUIDANCE, RECONNECT_GUIDANCE);
         // No `#token=` prompt: a new token cannot fix a rejected Origin.
         assert!(!FORBIDDEN_GUIDANCE.contains('#'));

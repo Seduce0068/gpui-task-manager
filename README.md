@@ -285,7 +285,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - 優先度変更、GPU 監視、テーマの自動更新（`prefers-color-scheme` 連動）は未実装
-- DEB は未署名・リポジトリ未公開（ローカル生成のみ）
+- DEB は未署名・リポジトリ未公開（ローカル生成のみ）。`Maintainer` の既定値は
+  `gpui-task-manager contributors (security reports via GitHub Security Advisory)`
+  という中立値で、実在しないメールアドレスを含めない（報告方針は
+  [SECURITY.md](SECURITY.md) の GitHub Security Advisory を参照）。配布用に
+  ビルドする場合は環境変数 `DEB_MAINTAINER` に実在の maintainer 名と連絡先を
+  指定する（例: `DEB_MAINTAINER='Name <real-email>' bash packaging/linux/build-deb.sh`）
 - ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 最終計測、以降再ビルド未実施）
 - エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。接続は最大 8 本まで並列処理し、超過は即座に 503（アイドル接続が他のリクエストをブロックしない）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は

@@ -1618,6 +1618,45 @@ mod tests {
     }
 
     #[test]
+    fn windows_platform_rejects_unsupported_signals_without_pending_kill() {
+        let mut dashboard = Dashboard::new(
+            PlatformInfo::native("Windows 11 Pro"),
+            DEFAULT_REFRESH_INTERVAL,
+        );
+        ingest_ticks(&mut dashboard, 1);
+
+        // Process control is enabled and a valid target exists, so a rejection
+        // below can only come from the per-signal capability gate (`!supports_signal`).
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Terminate,
+        });
+        assert!(
+            dashboard.pending_kill().is_some(),
+            "Windows must still support Terminate"
+        );
+        dashboard.apply(Command::CancelKill);
+
+        for signal in [Signal::Stop, Signal::Continue] {
+            dashboard.apply(Command::RequestSignal {
+                key: firefox_key(),
+                signal,
+            });
+            assert!(
+                dashboard.pending_kill().is_none(),
+                "{signal:?} must not open a confirmation dialog"
+            );
+            let status = dashboard.status().expect("status");
+            assert!(status.is_error, "{signal:?} must be reported as an error");
+            assert_eq!(
+                status.text,
+                format!("{STATUS_PREFIX_ERROR} この環境ではこのシグナルは使用できません"),
+                "{signal:?} must report the per-signal capability message"
+            );
+        }
+    }
+
+    #[test]
     fn confirm_after_disappearance_emits_nothing() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);

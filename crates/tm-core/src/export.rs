@@ -122,6 +122,19 @@ pub fn snapshot_to_json(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_
     push_indent(&mut out, 2);
     out.push_str("},\n");
 
+    // `std::time::Duration` is a `{ "secs": u64, "nanos": u32 }` object on the
+    // wire, exactly as serde serialises `SystemSnapshot::sampled_elapsed`.
+    push_key(&mut out, 2, "sampled_elapsed");
+    out.push_str("{\n");
+    push_key(&mut out, 3, "secs");
+    push_display(&mut out, snap.sampled_elapsed.as_secs());
+    out.push_str(",\n");
+    push_key(&mut out, 3, "nanos");
+    push_display(&mut out, snap.sampled_elapsed.subsec_nanos());
+    out.push('\n');
+    push_indent(&mut out, 2);
+    out.push_str("},\n");
+
     push_key(&mut out, 2, "hostname");
     push_json_opt_string(&mut out, snap.hostname.as_deref());
     out.push_str(",\n");
@@ -759,30 +772,90 @@ mod tests {
         assert!(json.contains("\"total_process_count\": 0"), "{json}");
     }
 
-    #[test]
-    fn json_matches_the_wire_envelope_shape() {
-        let json = snapshot_to_json(&secret_snapshot(), &secret_ids());
-        for key in [
-            "\"schema_version\"",
-            "\"total_process_count\"",
-            "\"snapshot\"",
-            "\"sampled_at\"",
-            "\"unix_millis\"",
-            "\"cpu\"",
-            "\"per_core_percent\"",
-            "\"load_average\"",
-            "\"memory\"",
-            "\"network\"",
-            "\"interfaces\"",
-            "\"disks\"",
-            "\"components\"",
-            "\"key\"",
-            "\"start_time_secs\"",
-            "\"threads\"",
-            "\"parent_pid\"",
-        ] {
-            assert!(json.contains(key), "missing wire key {key}: {json}");
+    /// Local mirror of the agent's `SnapshotEnvelope` wire type
+    /// (`agent/src/main.rs`). Keeping it here lets the exporter be checked
+    /// against the exact shape serde produces from the model.
+    #[cfg(feature = "serde")]
+    #[derive(serde::Serialize)]
+    struct SnapshotEnvelope<'a> {
+        schema_version: u32,
+        total_process_count: usize,
+        snapshot: &'a SystemSnapshot,
+    }
+
+    /// Replaces every scalar with `null` while preserving object keys and array
+    /// structure. Redacted strings and normalised floats cannot cause false
+    /// positives, but a field added to any snapshot type changes this shape.
+    #[cfg(feature = "serde")]
+    fn shape_only(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(entries) => serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, shape_only(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(shape_only).collect())
+            }
+            _ => serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn json_matches_the_wire_envelope_shape() {
+        let mut snapshot = secret_snapshot();
+        // A non-zero duration makes the secs/nanos split observable.
+        snapshot.sampled_elapsed = std::time::Duration::new(3, 456_000_000);
+        let json = snapshot_to_json(&snapshot, &secret_ids());
+        let exported: serde_json::Value =
+            serde_json::from_str(&json).expect("export must be valid JSON");
+
+        // The reference is serialised from the model itself, so a new model
+        // field appears here automatically and a stale exporter fails below.
+        let wire = serde_json::to_value(SnapshotEnvelope {
+            schema_version: crate::WIRE_SCHEMA_VERSION,
+            total_process_count: snapshot.processes.len(),
+            snapshot: &snapshot,
+        })
+        .expect("envelope must serialise");
+
+        // Simulate a future model field: the shape diff must notice it, which
+        // is the whole point of comparing against the model-derived envelope.
+        let mut with_future_field = wire.clone();
+        with_future_field["snapshot"]["future_field"] = serde_json::json!(1);
+        assert_ne!(
+            shape_only(exported.clone()),
+            shape_only(with_future_field),
+            "a new model field must change the detected shape"
+        );
+
+        assert_eq!(
+            exported["snapshot"]["sampled_elapsed"], wire["snapshot"]["sampled_elapsed"],
+            "sampled_elapsed must match serde's Duration representation: {json}"
+        );
+        assert_eq!(
+            shape_only(exported),
+            shape_only(wire),
+            "JSON shape diverged from the wire envelope: {json}"
+        );
+        assert!(json.contains("\"threads\": 4"), "{json}");
+        assert!(json.contains("\"parent_pid\": null"), "{json}");
+        assert!(json.contains("\"max_c\": null"), "{json}");
+    }
+
+    /// Without tm-core's `serde` feature the model cannot be serialised, so the
+    /// full envelope diff is unavailable. Still check the new field's shape
+    /// when running the plain `cargo test -p tm-core` gate.
+    #[test]
+    #[cfg(not(feature = "serde"))]
+    fn json_export_includes_sampled_elapsed_shape() {
+        let json = snapshot_to_json(&secret_snapshot(), &secret_ids());
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let elapsed = &value["snapshot"]["sampled_elapsed"];
+        assert!(elapsed["secs"].is_number(), "{json}");
+        assert!(elapsed["nanos"].is_number(), "{json}");
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");

@@ -268,14 +268,14 @@ status: current
 
 ### 優先度: 低 — バックログ補充 2026-11-19
 
-- [ ] `app/src/settings.rs:353,365` の陳腐化した `#[allow(dead_code)]` を削除
+- [x] `app/src/settings.rs:353,365` の陳腐化した `#[allow(dead_code)]` を削除
       （load_with_notice / take_pending_notice は本番呼び出し済み）。根拠 e1-st。
-- [ ] DEB の Maintainer 既定値 `noreply@example.com` を実際の連絡先へ変更するか
+- [x] DEB の Maintainer 既定値 `noreply@example.com` を実際の連絡先へ変更するか
       ビルド時必須化。根拠 e4-dp。
-- [ ] 403 の FORBIDDEN_GUIDANCE が利用者に変更手段の無い Origin 確認を求める。
+- [x] 403 の FORBIDDEN_GUIDANCE が利用者に変更手段の無い Origin 確認を求める。
       「別オリジンは非対応」という実態へ文言修正。根拠 e5-vu。
 - [ ] 設定破損退避物の一覧・復元手順・保持上限を追加（現状は退避のみ）。根拠 e5-vu。
-- [ ] ネイティブ probe 失敗に再試行操作を追加（現状は再起動のみ）。根拠 e5-vu。
+- [x] ネイティブ probe 失敗に再試行操作を追加（現状は再起動のみ）。根拠 e5-vu。
 - [ ] wasm の inline JS ダウンロードを web-sys API へ置換するか、判断理由を ADR 化。
       根拠 e1-st。
 
@@ -290,6 +290,29 @@ status: current
       branch protection 側で代替する選択もあり。根拠 e4-dp。
 - [ ] ツール版（cargo-vet / machete / markdownlint / gitleaks / trunk 等）の
       Dependabot 対象化。mise.toml 等の一元管理が必要。根拠 e4-dp。
+
+### 優先度: 低 — テストギャップ 2026-11-19（D3-TQ01）
+
+- [x] エクスポート JSON が wire スキーマから漂移: `crates/tm-core/src/export.rs:97`
+      は「同じ envelope keys」と明言するが `sampled_elapsed` を出力しない。
+      形状テストがハードコードキーのため新規フィールドを検出できない。
+      出力するか serde envelope との差分比較へ変更。根拠 e3-tq。
+- [x] ビューモデルの per-signal capability 拒否分岐にテストが無い
+      (`crates/tm-viewmodel/src/lib.rs:829`)。Windows の Stop/Continue で
+      pending_kill が作られず固定メッセージが出ることを pin。根拠 e3-tq。
+- [x] テーマのグローバル AtomicU8 を並列テストが書き換えフレークしうる
+      (`app/src/theme.rs:70`, `web/src/theme.rs:71`)。直列化と復元を追加。根拠 e3-tq。
+- [x] SortKey の User/Status/Threads/StartTime の並び替えテストが無い
+      (`crates/tm-core/src/query.rs:266`)。9 分岐すべてを pin。根拠 e3-tq。
+- [x] CPU busy カウンタ逆行の分岐が未到達 (`crates/tm-core/src/metrics.rs:64`)。
+      total 増・busy 減のケースを追加し 0% を固定。根拠 e3-tq。
+- [x] truncate_label の境界値（0 文字・多バイト）が未テスト
+      (`app/src/app.rs:2563`)。根拠 e3-tq。
+- [x] トークンファイルの I/O エラー経路（存在しない/読み取り不能/非 UTF-8）が
+      未テストで、フルパス非漏洩契約も検証されていない
+      (`agent/src/main.rs:359`)。根拠 e3-tq。
+- [x] 並行接続時の warm-up が 1 回だけ消費されることを検証するテストが無い
+      (`agent/src/main.rs:948`)。根拠 e3-tq。
 
 ## 完了
 

@@ -126,7 +126,42 @@ pub fn format_clock(unix_secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
+
+    /// Serialises the tests that read or mutate the process-global theme.
+    static THEME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Holds `THEME_TEST_LOCK` for the whole test and restores the theme that
+    /// was active when it was created. Restoration runs from `Drop`, so the
+    /// global theme is left untouched even if the test panics.
+    struct ThemeGuard {
+        original: Theme,
+        // Held until after `Drop::drop` restores `original`; field order matters.
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ThemeGuard {
+        fn new() -> Self {
+            // Recover from a poisoned lock so one panicking test does not
+            // cascade into unrelated theme tests.
+            let lock = match THEME_TEST_LOCK.lock() {
+                Ok(lock) => lock,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            Self {
+                original: theme(),
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ThemeGuard {
+        fn drop(&mut self) {
+            set_theme(self.original);
+        }
+    }
 
     #[test]
     fn clock_formats_utc_time_of_day() {
@@ -137,6 +172,7 @@ mod tests {
 
     #[test]
     fn usage_colours_follow_thresholds() {
+        let _theme_guard = ThemeGuard::new();
         let p = palette();
         assert_eq!(usage_color(0.0), p.green);
         assert_eq!(usage_color(59.9), p.green);
@@ -152,6 +188,7 @@ mod tests {
 
     #[test]
     fn set_theme_switches_palette() {
+        let _theme_guard = ThemeGuard::new();
         set_theme(tm_viewmodel::Theme::Light);
         assert_eq!(palette().base, LIGHT.base);
         set_theme(tm_viewmodel::Theme::Dark);
