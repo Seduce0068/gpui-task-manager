@@ -31,9 +31,13 @@ feature-depth = 1
 # current rationale (non-reachability or no maintained replacement in the
 # pinned GPUI stack). cargo-deny 0.21+ supports the per-ignore `expiry` key, so
 # the 3-month review cycle is now enforced: every entry below was re-reviewed
-# on 2026-11-19 and expires on 2027-02-19. CI passes
-# `-D advisory-ignore-expired`, and scripts/check-advisory-ignores.sh rejects
-# entries without a reason/expiry or with an expiry more than 3 months out.
+# on 2026-11-19 and expires on 2027-02-18. The expiry matches the UTC-based
+# 3-month cap (2027-02-18) that scripts/check-advisory-ignores.sh required in
+# the previous CI run: the review date 2026-11-19 (JST) is 2026-11-18 in UTC,
+# so adding 3 calendar months yields 2027-02-18, not 2027-02-19. The expiry
+# values themselves are intentionally left unchanged (changing them breaks CI).
+# CI passes `-D advisory-ignore-expired`, and scripts/check-advisory-ignores.sh
+# rejects entries without a reason/expiry or with an expiry more than 3 months out.
 ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },

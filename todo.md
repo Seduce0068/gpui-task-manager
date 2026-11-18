@@ -248,22 +248,22 @@ status: current
 
 ### 優先度: 中 — バックログ補充 2026-11-19（swarm-todo-discovery）
 
-- [ ] `/metrics` の status-class 合計が `requests_total` と不一致: `agent/src/telemetry.rs:109-125`
+- [x] `/metrics` の status-class 合計が `requests_total` と不一致: `agent/src/telemetry.rs:109-125`
       は status 0 (unknown) に counter を持たず、早期リターンのリクエストが
       responses_total から零落ちる。unknown クラス用カウンタを追加し合計一致を
       テストで固定。根拠 e1-st / e5-vu（重複統合）。
-- [ ] `scripts/check.sh` が `scripts/check-advisory-ignores.sh` を呼んでいない:
+- [x] `scripts/check.sh` が `scripts/check-advisory-ignores.sh` を呼んでいない:
       CI の deny ジョブは政策を検査するがローカルは cargo deny check のみ。
       deny セクションへ追加しローカル/CI のゲートを同期。根拠 e4-dp。
-- [ ] ネイティブの絞り込み欄へ AccessKit の Role::TextInput / aria_label /
+- [x] ネイティブの絞り込み欄へ AccessKit の Role::TextInput / aria_label /
       aria_value / aria_description を付与（Web 側は実装済み）。根拠 e5-vu。
-- [ ] ドキュメントの現状不一致を一括修正: web/README の更新間隔ボタン
+- [x] ドキュメントの現状不一致を一括修正: web/README の更新間隔ボタン
       （実装済み）・CSV/JSON エクスポート・stale 表示・トレンド/温度ゲージ、
       DESIGN.md:360 の「設定ファイルを持たない」、README の TM_REDACT=1、
       Web のライブ設定ポーリング再接続。根拠 e2-fg。
-- [ ] CI のロックファイル整合性: wasm / native-windows / native-macos ジョブが
+- [x] CI のロックファイル整合性: wasm / native-windows / native-macos ジョブが
       `--locked` 未使用。全 cargo check/test へ付与。根拠 e4-dp。
-- [ ] `deny.toml` の expiry 本文（2027-02-19）と設定値（2027-02-18）を整合。
+- [x] `deny.toml` の expiry 本文（2027-02-19）と設定値（2027-02-18）を整合。
       根拠 e4-dp（前回 CI 修正で UTC 基準に合わせた経緯をコメントに残す）。
 
 ### 優先度: 低 — バックログ補充 2026-11-19

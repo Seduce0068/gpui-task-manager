@@ -65,8 +65,9 @@ reporting）に限定する。
    ユーザー名はディスクに書かない。ネイティブの設定ファイルは原子的に書き込み、
    Unix では `0600` で作成する。ブラウザは同じスキーマを `localStorage` に保存し、
    アクセスできない場合は既定値へ縮退する（パニックしない）。
-8. **公開物の衛生**: スクリーンショット・証拠 JSON は `--redact` を使い、ホスト名・
-   ユーザー名・ホームパス・コマンド引数内のホスト名 / tailnet ドメインを伏せる。
+8. **公開物の衛生**: スクリーンショット・証拠 JSON は `--redact`（または環境変数
+   `TM_REDACT=1`）を使い、ホスト名・ユーザー名・ホームパス・コマンド引数内の
+   ホスト名 / tailnet ドメインを伏せる。
 9. **入力（IME）**: ブラウザ版・ネイティブ版とも composition 中の未確定文字列を
    アプリ状態に反映せず、確定文字列だけを絞り込みに渡す。確定文字列はユーザー自身の
    入力であり、OS 由来の表示文字列とは別扱いとする。
@@ -95,8 +96,9 @@ printf '%s' "$(openssl rand -hex 32)" > ~/.config/tm-agent.token
 chmod 600 ~/.config/tm-agent.token
 ./target/debug/tm-agent --listen 127.0.0.1:18787 --token-file ~/.config/tm-agent.token
 
-# 公開用スクリーンショットは redact
+# 公開用スクリーンショットは redact（--redact または環境変数 TM_REDACT=1）
 ./target/debug/gpui-task-manager --redact
+TM_REDACT=1 ./target/debug/gpui-task-manager
 ./target/debug/tm-agent --once --redact
 ```
 
