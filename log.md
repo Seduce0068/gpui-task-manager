@@ -1357,3 +1357,8 @@
 
 - --token 値が process.command に残る問題を修正（redact 時に *** 化）。
   agent 79 / workspace 368 passed。/dev/stdout 破壊は次ラウンド候補。
+
+## 2026-11-18（エージェント並列調査 第37弾 → export の特殊出力先を拒否）
+
+- write_export に symlink_metadata 検証と /dev,/proc,/sys 拒否を追加。
+  app 63 / workspace 369 passed。

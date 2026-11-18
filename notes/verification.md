@@ -2332,3 +2332,25 @@ typed error 化 exit 2 分類も同時に判断）、token-file の 0o620 受理
 0600 付与・umask 非依存・原子性・EXIT_PROBE 分類は健全で現状維持。
 
 - agent 79 passed / workspace 368 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第37弾 → export の特殊出力先を拒否）
+
+第36弾 probe-exportio が Runtime Proof 付きで指摘した `/dev/stdout` 破壊を修正。
+worktree（round31-safe）で実装・検証。
+
+- `write_export()` の冒頭で `symlink_metadata()` を実行し、存在する出力先が
+  通常ファイルでない（ディレクトリ／symlink／FIFO／デバイス）場合は拒否。
+  存在しない場合のみ一時ファイル生成を許可。さらに `/dev` / `/proc` / `/sys`
+  配下も明示拒否（将来作られるデバイスノードも保護）。
+- `rename(2)` は symlink 自身を置換するため、root／コンテナで
+  `--export csv /dev/stdout` すると `/dev/stdout` が 0600 通常ファイルに
+  置換されて破壊されていた（親の `stat` で root:root の symlink を確認）。
+- 回帰テスト `write_export_rejects_special_destinations` を追加
+  （`/dev/stdout`・`/proc/self/status`・symlink を拒否、symlink 先は無傷）。
+
+**見送り**: typed error 化による exit 2 分類（既存の directory テストが
+exit 1 を固定しており契約変更になるため）、`sync_all()` によるクラッシュ
+永続性（要件次第）、token-file の 0o620、IPv6 origin、bond0、diverge 解消。
+0600／umask 非依存／原子的書き込みは健全で現状維持。
+
+- app 63 passed / workspace 369 passed / clippy / fmt 成功。
