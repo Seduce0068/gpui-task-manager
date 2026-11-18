@@ -82,10 +82,12 @@ status: current
 - [ ] 重複バージョンと feature 差分依存の監査方法を決定する
       （R1-OPS-03, R4-S04, R1S-OPS-03）。
 - [x] slowloris 対策と accept/spawn の graceful 化（b95fbf8 / e6b46ff）。
-- [ ] schema version の前方/後方互換方針を定義し、ディスク使用率を
-      `used_space()` 相当へ修正する（R2X-D3, R2X-D5）。
-- [ ] Windows の taskkill エラー意味論、PID 1 保護、Users 更新、
-      「空＝非対応」の区別を修正する（R2X-P5, R2X-P6, R2X-P7, R2X-P8）。
+- [x] schema version の前方/後方互換（R2X-D3）— 設定の opaque version 保持と
+      wire の旧版受け入れを実装。
+- [ ] R2X-D5 ディスク使用率を `used_space()` 相当へ修正する — sysinfo =0.40.3 に
+      API が無いため statvfs 等の手段を選ぶ判断が必要。
+- [x] Windows taskkill 意味論と PID 保護（R2X-P5〜P8）— エラー分類、Users 更新、
+      capability の実収集反映を追加。
 - [x] 重複ヘッダ拒否・Host 不一致・stale 表示（dcd9e9c / dde9bcd）。
 
 - [x] R3-S02B `app::new()` の暗黙デモ分岐を除去し明示エラーへ統一

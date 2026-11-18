@@ -19,6 +19,23 @@
 //! a load/save round-trip. Corrupt input is backed up before it is replaced and
 //! produces a fixed, redacted [`SettingsNotice`] for the status bar; no path,
 //! hostname, token or parser error text is ever put in the notice.
+//!
+//! Schema-version compatibility policy (R2X-D3), identical in the browser shell:
+//!
+//! - **Backward**: a file from an older build (or with no `version`) is read with
+//!   `#[serde(default)]` fallbacks for fields that did not exist yet, and its
+//!   in-memory version is raised to [`CURRENT_VERSION`]. The next save writes
+//!   that current version, migrating the file forward.
+//! - **Forward**: a file from a newer build keeps its greater numeric `version`
+//!   and every unknown field in the raw object. Neither load nor save downgrades
+//!   it; unrecognised fields round-trip untouched even if this build cannot
+//!   interpret them.
+//! - **Opaque version**: a `version` that is not a non-negative integer (string,
+//!   fractional, negative, or larger than `u32::MAX`) is never interpreted or
+//!   rewritten. It is written back verbatim so a newer shell still recognises
+//!   its own schema; normalising it here would be a silent downgrade.
+//! - **Corruption**: only malformed JSON or a wrong type in a *known* field
+//!   (other than `version`) falls back to defaults with a fixed redacted notice.
 
 use std::fs;
 use std::io;
@@ -147,6 +164,18 @@ fn clamped(mut settings: Settings) -> Settings {
     settings
 }
 
+/// Interprets a persisted `version` under the compatibility policy.
+///
+/// Only a non-negative integer that fits in `u32` is comparable here. Other
+/// JSON forms are opaque: they stay in `raw` and [`merged_map`] writes them back
+/// verbatim rather than replacing them with a version this build understands
+/// (R2X-D3).
+fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
+    value
+        .and_then(|value| value.as_u64())
+        .and_then(|version| u32::try_from(version).ok())
+}
+
 /// Parses a persisted JSON document, keeping its raw object for round-tripping.
 ///
 /// An older `version` is upgraded to the current schema, a newer one is kept.
@@ -154,10 +183,7 @@ fn clamped(mut settings: Settings) -> Settings {
 fn parse_document(text: &str) -> Option<SettingsDocument> {
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
     let raw = value.as_object()?.clone();
-    let stored_version = raw
-        .get("version")
-        .and_then(|value| value.as_u64())
-        .and_then(|version| u32::try_from(version).ok());
+    let stored_version = interpretable_version(raw.get("version"));
 
     // `Settings` cannot represent a version it does not know (e.g. a u64 from a
     // future schema), but that must not make the whole file look corrupt.
@@ -186,9 +212,21 @@ fn merged_map(
     };
     for (key, value) in known {
         if key == "version" {
-            let stored = map.get(&key).and_then(|value| value.as_u64()).unwrap_or(0);
-            let current = value.as_u64().unwrap_or(0);
-            map.insert(key, serde_json::json!(stored.max(current)));
+            match interpretable_version(map.get(&key)) {
+                // Comparable numeric version: upgrade older values, never
+                // downgrade newer ones.
+                Some(stored) => {
+                    let current = value.as_u64().unwrap_or(0);
+                    map.insert(key, serde_json::json!((stored as u64).max(current)));
+                }
+                // No version at all: record the version this build writes.
+                None if !map.contains_key(&key) => {
+                    map.insert(key, value);
+                }
+                // Opaque or out-of-u32-range value: keep it verbatim so a newer
+                // shell still recognises its own schema (R2X-D3).
+                None => {}
+            }
         } else {
             map.insert(key, value);
         }
@@ -764,5 +802,99 @@ mod tests {
         assert_eq!(map.get("interval_ms"), Some(&serde_json::json!(10_000)));
         // The out-of-range value was clamped, not stored verbatim.
         assert_ne!(map.get("interval_ms"), Some(&serde_json::json!(20_000)));
+    }
+
+    #[test]
+    fn schema_policy_upgrades_old_and_versionless_files_on_save() {
+        // Backward compatibility: v1 predates tree_view/theme. serde defaults
+        // fill them, and a save must record the current version.
+        let path = temporary_path("schema-backward");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        for raw in [
+            r#"{"version":1,"interval_ms":1500}"#,
+            r#"{"interval_ms":1500}"#,
+        ] {
+            fs::write(&path, raw).expect("write settings");
+            let document = load_document_from(&path).expect("load document");
+            assert_eq!(document.settings.version, CURRENT_VERSION);
+            assert!(!document.settings.tree_view);
+            assert_eq!(document.settings.theme, tm_viewmodel::Theme::Dark);
+
+            let map = merged_map(&document.settings, Some(&document.raw));
+            let json = serde_json::to_string_pretty(&map).expect("serialize");
+            fs::write(&path, json).expect("save settings");
+            let saved: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).expect("read saved"))
+                    .expect("parse saved");
+            assert_eq!(
+                saved.get("version"),
+                Some(&serde_json::json!(CURRENT_VERSION)),
+                "old/versionless file must be migrated on save"
+            );
+            assert_eq!(saved.get("interval_ms"), Some(&serde_json::json!(1500)));
+        }
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn schema_policy_future_version_survives_repeated_save_cycles() {
+        // Forward compatibility must not drift over repeated load/save cycles.
+        let path = temporary_path("schema-repeat");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(
+            &path,
+            r#"{"version":9,"interval_ms":1500,"future_flag":{"nested":[1,2]}}"#,
+        )
+        .expect("write settings");
+
+        for cycle in 0..3 {
+            let document = load_document_from(&path).expect("load document");
+            assert_eq!(document.settings.version, 9, "cycle {cycle}");
+            // The shell rebuilds a current-version Settings before saving.
+            let shell = Settings {
+                version: CURRENT_VERSION,
+                ..document.settings.clone()
+            };
+            let map = merged_map(&shell, Some(&document.raw));
+            let json = serde_json::to_string_pretty(&map).expect("serialize");
+            fs::write(&path, json).expect("save settings");
+        }
+        let final_document = load_document_from(&path).expect("final load");
+        assert_eq!(final_document.settings.version, 9);
+        assert_eq!(
+            final_document.raw.get("future_flag"),
+            Some(&serde_json::json!({"nested": [1, 2]}))
+        );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn schema_policy_opaque_version_forms_are_preserved_verbatim() {
+        // A newer schema may change the version encoding. That is not corruption:
+        // the value must survive a save unchanged so the newer build still
+        // recognises its own file (R2X-D3).
+        for raw_version in [
+            serde_json::json!("9"),
+            serde_json::json!(9.5),
+            serde_json::json!(-1),
+            serde_json::json!(u64::from(u32::MAX) + 1),
+        ] {
+            let mut raw = serde_json::json!({"interval_ms": 1500, "future_flag": 1});
+            raw["version"] = raw_version.clone();
+            let document = parse_document(&raw.to_string()).expect("opaque version must load");
+            assert_eq!(document.settings.version, CURRENT_VERSION);
+
+            let shell = Settings {
+                version: CURRENT_VERSION,
+                ..document.settings.clone()
+            };
+            let map = merged_map(&shell, Some(&document.raw));
+            assert_eq!(
+                map.get("version"),
+                Some(&raw_version),
+                "opaque version was rewritten"
+            );
+            assert_eq!(map.get("future_flag"), Some(&serde_json::json!(1)));
+        }
     }
 }
