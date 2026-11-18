@@ -1367,3 +1367,8 @@
 
 - settings.rs に FIFO/symlink/XDG 絶対パスガード、agent --log-level 注記、
   README --export 記載を追加。workspace 371 passed。
+
+## 2026-11-18（エージェント並列調査 第39弾 → 配布物の事故・ライセンス同行）
+
+- DEB 同梱一覧を 5 ファイルに訂正、web 成果物へ IBM Plex の OFL を同行。
+  workspace 371 passed。

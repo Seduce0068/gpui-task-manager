@@ -209,7 +209,12 @@ jobs:
         with:
           tool: trunk
       - name: Build web distribution
-        run: cd web && trunk build --release
+        # The bundled IBM Plex fonts are OFL-1.1; ship the license with the
+        # artifact (Trunk 0.22 has no `copy` config key).
+        run: |
+          cd web
+          trunk build --release
+          cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
       - uses: actions/upload-artifact@v7
         with:
           name: gpui-task-manager-web

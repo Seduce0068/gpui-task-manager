@@ -2378,3 +2378,24 @@ TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
 - app 65 passed / workspace 371 passed / clippy / fmt / README lint 増分ゼロ。
   `split_task_refresh_preserves_thread_counts` が並列実行で flaky 失敗したが
   再実行で成功（変更と無関係）。
+
+## 2026-11-18（エージェント並列調査 第39弾 → 配布物の事故・ライセンス同行）
+
+第38弾 probe-packaging の軽微な確定事項を実装（法的判断を伴う DEP-5 拡充は
+見送り、事実誤記とライセンス同行のみ扱う）。worktree で検証。
+
+1. `packaging/linux/README.md` の同梱一覧が `{README,NOTICE,copyright}` の
+   3 ファイルだったが、build-deb.sh は `THIRD_PARTY_NOTICES.md` と
+   `LICENSE` も install していた。5 ファイルへ訂正。
+2. web 成果物に OFL-1.1 の IBM Plex フォント 3 個を `include_bytes!` で
+   埋め込みながら `LICENSE-IBM-Plex.txt` が同行していなかった。
+   CI の web dist ビルド後に `cp` を追加。
+
+子は `web/Trunk.toml` の `[[copy]]` を提案したが、ローカルの
+`trunk 0.22.1 config generate-schema` でトップレベルに `copy` キーが
+存在しないことを確認し却下（Runtime Proof を優先）、CI ステップで対応。
+
+**見送り**: DEP-5 複数節への第三者クレート帰属追加と MIT/ISC/BSD 通知文の
+同梱（法的判断）、Depends のバージョン下限（設計判断）、bond0、diverge。
+
+- workspace 371 passed / clippy / fmt / yaml / markdownlint 増分ゼロ成功。
