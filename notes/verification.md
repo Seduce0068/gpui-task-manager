@@ -1956,3 +1956,28 @@ RequestSignal の paused ガード（低優先）。
 - tm-core 131 passed / viewmodel 63 passed / clippy 成功。
   rustfmt で変わった既存行の import 順・文字列整形は HEAD 形式に戻し、
   CI の rustfmt との食い違いを回避。
+
+## 2026-11-18（エージェント並列調査 第21弾 → status集約・redact契約・CLI表記）
+
+3 観点（状態機械 / コア / 設定CLI）の調査エージェントを並列起動。別セッション
+が多数のファイルを編集中だったため、実装は競合しない3ファイルに限定。
+前回の rustfmt 問題を踏まえ、直接 rustfmt は実行していない。
+
+1. **status 書き込みの集約（3 回以上保留の決着）**: request_signal /
+   confirm_kill の 8 箇所の直接 `StatusMessage` 代入を `set_status()` に集約。
+   生成される StatusMessage は等価で挙動変更ゼロ。SECURITY.md §5 の
+   「自動遷移は永続を保持／明示メッセージは上書き」という契約を doc に明記。
+   将来 persistent 保護方針を採用しても変更点が1箇所。
+2. **redact 全フィールド網羅テスト**: secret_snapshot の既知 secret 検査は
+   `..default()` で将来フィールドを空文字で呑み込むため漏えいを検出できない。
+   `SECRETS` 共有定数化＋`redact_for_export` の Debug dump で全フィールドを
+   検査するテストを追加（新フィールド追加時に漏えいを検出）。
+3. **CLI 表記**: help の終了コード「0/2/4」→「0/1/2/4」（EXIT_INTERNAL=1
+   が実際に返る）、ライセンス「Apache-2.0」→「AGPL-3.0-or-later」。
+   CSV 列数コメントの誤記（13列→12列+埋め込みカンマ1）も訂正。
+
+**却下／保留**: persistent status 保護方針 A/B（SECURITY §5 で上書きは許可
+済みと判明、現状維持を明文化）、network baseline スパイク（app.rs 側の
+in-flight 連携が必要）、serde enum 境界、symlink 扱い。
+
+- tm-core 132 / viewmodel 63 / app 61 passed / clippy / markdownlint 増分ゼロ。

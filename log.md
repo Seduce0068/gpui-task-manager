@@ -1279,3 +1279,8 @@
 
 - redact の char boundary panic、CSV アポストロフ位置、Select(None) 復活を
   修正。tm-core 131 / viewmodel 63 passed。
+
+## 2026-11-18（エージェント並列調査 第21弾 → status集約・redact契約・CLI表記）
+
+- status 代入を set_status へ集約、export redact の全フィールド検査、help の
+  終了コード/ライセンス表記を修正。tm-core 132 / viewmodel 63 / app 61 passed。
