@@ -485,6 +485,8 @@ mod tests {
     };
 
     /// Identifiers that must never appear in an exported file.
+    const SECRETS: [&str; 5] = ["alice", "my-host", "/home/alice", "tail1234", "ts.net"];
+
     fn secret_ids() -> RedactionIdentifiers<'static> {
         RedactionIdentifiers {
             home: "/home/alice",
@@ -577,9 +579,20 @@ mod tests {
     }
 
     #[test]
+    fn redact_for_export_covers_every_field_including_future_ones() {
+        // Debug prints every field, so adding a new string field to
+        // SystemSnapshot without redacting it fails here (R30 export audit).
+        let redacted = redact_for_export(&secret_snapshot(), &secret_ids());
+        let dump = format!("{redacted:?}");
+        for secret in SECRETS {
+            assert!(!dump.contains(secret), "redact_for_export leaked {secret:?}");
+        }
+    }
+
+    #[test]
     fn csv_export_redacts_every_display_string() {
         let csv = snapshot_to_csv(&secret_snapshot(), &secret_ids());
-        for secret in ["alice", "my-host", "/home/alice", "tail1234", "ts.net"] {
+        for secret in SECRETS {
             assert!(!csv.contains(secret), "CSV leaked {secret:?}: {csv}");
         }
         assert!(csv.contains("host"), "{csv}");
@@ -590,7 +603,7 @@ mod tests {
     #[test]
     fn json_export_redacts_every_display_string() {
         let json = snapshot_to_json(&secret_snapshot(), &secret_ids());
-        for secret in ["alice", "my-host", "/home/alice", "tail1234", "ts.net"] {
+        for secret in SECRETS {
             assert!(!json.contains(secret), "JSON leaked {secret:?}: {json}");
         }
         assert!(json.contains("\"hostname\": \"host\""), "{json}");
@@ -607,7 +620,7 @@ mod tests {
         let csv = snapshot_to_csv(&snapshot, &ids);
         let json = snapshot_to_json(&snapshot, &ids);
         for output in [&csv, &json] {
-            for secret in ["alice", "my-host", "/home/alice", "tail1234"] {
+            for secret in SECRETS {
                 assert!(!output.contains(secret), "leaked {secret:?}: {output}");
             }
         }
@@ -671,7 +684,7 @@ mod tests {
         let csv = snapshot_to_csv(&snapshot, &secret_ids());
         let row = csv.lines().nth(1).expect("data row");
         assert!(row.contains("\"'=a,=1+1\""), "{row}");
-        // 13 columns => 12 commas; a split field would add an extra comma.
+        // 12 columns + 1 embedded comma => 12 commas; a split field adds one.
         assert_eq!(row.matches(',').count(), 12, "field must not split: {row}");
     }
 

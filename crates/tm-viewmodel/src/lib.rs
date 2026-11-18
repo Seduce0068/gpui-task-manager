@@ -747,6 +747,11 @@ impl Dashboard {
     }
 
     /// Sets a transient status message (cleared on the next successful sample).
+    ///
+    /// Persistent notices survive automatic transitions (ingest / pause-resume)
+    /// but an explicit transient message replaces them, as documented in
+    /// SECURITY.md §5. All transient writes go through this method so a future
+    /// policy change (e.g. protecting persistent notices) needs one edit here.
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
         self.status = Some(if is_error {
             StatusMessage::error(text)
@@ -788,13 +793,13 @@ impl Dashboard {
 
     fn request_signal(&mut self, key: ProcessKey, signal: Signal) {
         if !self.platform.supports_process_control {
-            self.set_status("この環境ではプロセス操作は無効です（読み取り専用）",, true);
+            self.set_status("この環境ではプロセス操作は無効です（読み取り専用）", true);
             return;
         }
         // UI buttons already hide unsupported signals; reject them here too so
         // a direct Command cannot bypass the per-signal capability gate.
         if !self.platform.supports_signal(signal) {
-            self.set_status("この環境ではこのシグナルは使用できません",, true);
+            self.set_status("この環境ではこのシグナルは使用できません", true);
             return;
         }
         let Some(process) = self
@@ -806,14 +811,14 @@ impl Dashboard {
             return;
         };
         if self.is_protected(key) {
-            self.set_status("PID 1 と自分自身は操作できません（安全のため保護されています）",, true);
+            self.set_status("PID 1 と自分自身は操作できません（安全のため保護されています）", true);
             return;
         }
         // Never silently replace an unanswered confirmation with a different
         // target/signal: the dialog the user is looking at would change under
         // them (R2-F02).
         if self.pending_kill.is_some() {
-            self.set_status("確認待ちの操作があります。先に確定またはキャンセルしてください",, false);
+            self.set_status("確認待ちの操作があります。先に確定またはキャンセルしてください", false);
             return;
         }
         let confirmation_note = signal_confirmation_note(signal);
@@ -837,7 +842,7 @@ impl Dashboard {
         // confirmation (R2-F01).
         if self.paused {
             self.pending_kill = None;
-            self.set_status("更新が一時停止中のため操作できません。再開してからやり直してください",, true);
+            self.set_status("更新が一時停止中のため操作できません。再開してからやり直してください", true);
             return Vec::new();
         }
         let Some(pending) = self.pending_kill.take() else {
@@ -849,7 +854,7 @@ impl Dashboard {
             .and_then(|snapshot| snapshot.process(pending.key))
             .is_some();
         if !still_running {
-            self.set_status("対象のプロセスは既に終了しています（PID 再利用を検出）",, true);
+            self.set_status("対象のプロセスは既に終了しています（PID 再利用を検出）", true);
             return Vec::new();
         }
         vec![Effect::Signal {
