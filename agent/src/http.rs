@@ -769,6 +769,12 @@ mod tests {
         assert_eq!(query_param(query, "foo").as_deref(), Some("1"));
         assert_eq!(query_param(query, "missing"), None);
         assert_eq!(query_param(None, "token"), None);
+        // A bare key (no '=') must yield an empty value: exercises the
+        // `split_once('=')` None arm that the other cases never reach.
+        assert_eq!(
+            query_param(Some("flag&token=abc"), "flag").as_deref(),
+            Some("")
+        );
     }
 
     #[test]

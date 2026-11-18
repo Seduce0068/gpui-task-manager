@@ -42,11 +42,14 @@ pub struct PlatformInfo {
 impl PlatformInfo {
     /// Describes a native backend.
     ///
-    /// `supports_network` / `supports_disks` describe what the *host* provides,
-    /// not whether this particular probe managed to enumerate them: on Linux
-    /// both are expected, and an enumeration failure is reported through the
-    /// (empty) snapshot data instead of a wrong capability flag. Callers that
-    /// need to know whether data is present must look at the snapshot.
+    /// `supports_network` / `supports_disks` mirror what the native probe could
+    /// actually collect: they are `true` only when the corresponding collector
+    /// was created, and `false` when it could not be created (in which case
+    /// that section is empty in the snapshot too). This makes "supported but
+    /// currently empty" distinguishable from "collection unavailable" for
+    /// callers. This constructor describes the fully available native case;
+    /// a backend whose collector failed must report `false` for the affected
+    /// flag. Process control is always available on a native probe.
     pub fn native(os: impl Into<String>) -> Self {
         Self {
             os: os.into(),
@@ -94,8 +97,9 @@ impl PlatformInfo {
     /// Whether `section` can present live data or actions on this backend.
     ///
     /// `native_read_only` and `demo` still provide network/disk snapshots, so
-    /// only [`Section::ProcessControl`] is gated for them. Enumeration failure
-    /// is data, not a capability change (see [`Self::native`]); this method
+    /// only [`Section::ProcessControl`] is gated for them. The flags already
+    /// reflect whether the native probe could create each collector (see
+    /// [`Self::native`]), so this method reads only the stored capability and
     /// deliberately does not look at the current snapshot.
     pub const fn supports(&self, section: Section) -> bool {
         match section {

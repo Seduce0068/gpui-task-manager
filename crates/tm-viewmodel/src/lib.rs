@@ -2095,6 +2095,24 @@ mod tests {
     }
 
     #[test]
+    fn trend_delta_bytes_per_second_down_uses_negative_magnitude() {
+        let down = trend_delta(Some(1_556_023.0), Some(0.0), 0.0, TrendUnit::BytesPerSecond);
+        assert_eq!(down.direction, TrendDirection::Down);
+        // The Down branch must prefix the magnitude with a minus, mirroring
+        // the Up branch's leading plus (R5-I05).
+        assert!(down.amount.starts_with('-'), "{}", down.amount);
+        assert!(down.amount.ends_with("/s"), "{}", down.amount);
+        assert_eq!(down.amount, format!("-{}", format::format_rate(1_556_023)));
+
+        // The Japanese badge/a11y contract stays intact for a falling rate.
+        assert_eq!(down.badge_text(), format!("↓ {} 下降", down.amount));
+        assert_eq!(
+            down.a11y_label("ネットワーク"),
+            format!("ネットワーク の推移 下降 {}", down.amount)
+        );
+    }
+
+    #[test]
     fn trend_delta_requires_two_finite_samples() {
         let samples = [
             (None, Some(1.0)),

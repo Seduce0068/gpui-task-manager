@@ -283,7 +283,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）をヘッドレス Chrome で検証（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
-| Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions は現状バージョンタグ参照 + Dependabot 追従 |
+| Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions はコミット SHA 固定（タグはコメント併記）、Dependabot github-actions 週次更新で追従 |
 | wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、最終再計測 7,642,794 B（gzip 3,044,134 B、2026-11-17） |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |

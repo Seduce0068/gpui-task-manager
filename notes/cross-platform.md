@@ -8,6 +8,11 @@ generated: 2026-11-15T00:25:12+09:00
 status: draft
 ---
 
+> **履歴スナップショット（2026-11-15 時点）**: 本文は 2026-11-15 の調査・検証結果を
+> 記録したもので、以降の変更は反映していない。§1 の web `cargo-deny` 失敗記述、
+> §2.6 の CI YAML 抜粋、§3.4 の web workspace 失敗記述はすべて当時の状態である。
+> 現行の構成は `.github/workflows/ci.yml`、検証結果は `README.md`「検証状況」を参照。
+
 ## 1. 結論（要約）
 
 - `crates/tm-platform` を Windows / macOS でコンパイル可能にした。rustix は
@@ -23,7 +28,8 @@ status: draft
   は成功）。実機相当の検証は GitHub Actions の windows-latest / macos-latest。
 - `cargo deny --manifest-path Cargo.toml check` は成功。web ワークスペース側は
   `tm-web` の license 未設定と path 依存の wildcard で失敗中（Lead が
-  `web/Cargo.toml` を修正予定）。
+  `web/Cargo.toml` を修正予定）。**2026-11-15 時点の履歴**で、現状は
+  `README.md`「検証状況」を参照（web も現在は全カテゴリ ok）。
 
 ## 2. 変更点
 
@@ -111,6 +117,11 @@ status: draft
   全 OS で実行する。
 
 ### 2.6 `.github/workflows/ci.yml`
+
+> 以下は 2026-11-15 時点の CI YAML 抜粋（履歴スナップショット）である。現行の
+> ジョブ構成・ツール版・アクション参照は `.github/workflows/ci.yml` を参照し、
+> 検証結果は `README.md`「検証状況」に集約されている。特に `deny` ジョブの
+> web workspace check は当時失敗していたが、現在は解消済み。
 
 ```yaml
   native-windows:
@@ -205,7 +216,11 @@ error: couldn't read .../target/aarch64-apple-darwin/debug/build/gpui-pre-apple-
 GPUI に依存しない `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` は
 macOS ターゲットで成功している。
 
-### 3.4 `cargo deny` の web ワークスペースについて
+### 3.4 `cargo deny` の web ワークスペースについて（2026-11-15 時点の履歴）
+
+> 本節は 2026-11-15 時点の失敗記録（履歴スナップショット）である。現状は
+> `README.md`「検証状況」のとおりルート / web とも `cargo-deny` は
+> advisories / bans / licenses / sources すべて ok で、下記の失敗は解消済み。
 
 `cargo deny --manifest-path web/Cargo.toml check` は次の 2 件で失敗する（exit 6）。
 
@@ -215,7 +230,8 @@ macOS ターゲットで成功している。
   （`tm-core` / `tm-viewmodel` の path 依存に `version` がない）
 
 `web/Cargo.toml` と `deny.toml` は Lead のスコープのため、本タスクでは変更して
-いない。Lead が `web/Cargo.toml` を修正した後に再実行して確認する。
+いない。Lead が `web/Cargo.toml` を修正した後に再実行して確認する（当時の予定。
+修正済みで、現状は `README.md`「検証状況」を参照）。
 
 ## 4. 未検証事項
 

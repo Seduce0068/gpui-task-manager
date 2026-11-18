@@ -314,6 +314,29 @@ status: current
 - [x] 並行接続時の warm-up が 1 回だけ消費されることを検証するテストが無い
       (`agent/src/main.rs:948`)。根拠 e3-tq。
 
+### 優先度: 低 — バックログ補充 2026-11-19（第2次）
+
+- [x] `trend_delta` の BytesPerSecond 下降分岐 (`-magnitude`) が未テスト
+      (`crates/tm-viewmodel/src/lib.rs:167`)。根拠 k1-tests。
+- [x] `is_loopback_http_endpoint` の IPv6 不正形（']' 欠落・空ポート等）が未テスト
+      (`web/src/agent.rs:240`)。根拠 k1-tests。
+- [x] `ProcessStatus` の label()/id() 全 7 バリアントの pin テストが欠落
+      (`crates/tm-core/src/model.rs:110`)。根拠 k1-tests。
+- [x] `ExitCategory::as_str()` の 6 カテゴリ文字列が未テスト
+      (`agent/src/telemetry.rs:264`)。根拠 k1-tests。
+- [x] `query_param` の '=' を持たないキーだけの分岐が未テスト
+      (`agent/src/http.rs:357`)。根拠 k1-tests。
+- [x] ドキュメント整合（第2次）: DESIGN AC-12 の RESEARCH 判定を「一致」へ、
+      notes/web-shell.md の IME「（ASCII のみ）」削除、README/DESIGN の
+      Actions 記述を SHA 固定へ、notes/cross-platform.md を履歴スナップショット
+      明記、web-shell.md のスクリーンショット枚数を 26 枚へ。根拠 k2-docs。
+- [x] `disk.mount_point` のサニタイズ上限が 64 (sanitize) と 240 (native probe)
+      で不一致。`MAX_COMMAND_CHARS` へ統一。根拠 k3-bugs。
+- [x] `sanitize_display` が上限文字数ちょうど＋末尾空白で不要な省略記号を付ける
+      (`crates/tm-core/src/sanitize.rs:85`)。trim 後に判定。根拠 k3-bugs。
+- [x] `PlatformInfo` の能力フラグ契約 (`crates/tm-core/src/port.rs:43`) が
+      native probe の実挙動と矛盾。ドキュメントを実装へ合わせる。根拠 k3-bugs。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

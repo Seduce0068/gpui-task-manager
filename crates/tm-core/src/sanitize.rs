@@ -36,7 +36,11 @@ pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
         interface.name = sanitize_display(&interface.name, MAX_NAME_CHARS);
     }
     for disk in &mut snapshot.disks {
-        disk.mount_point = sanitize_display(&disk.mount_point, MAX_NAME_CHARS);
+        // A mount point is a path, not a short label: it can legitimately be
+        // far longer than a process name. Use the same limit as the native
+        // probe (see `tm-platform`'s `disk_snapshots`) so a ~100-character
+        // path is not cut on one sanitisation path but kept on the other.
+        disk.mount_point = sanitize_display(&disk.mount_point, MAX_COMMAND_CHARS);
     }
     for component in &mut snapshot.components {
         component.label = sanitize_display(&component.label, MAX_NAME_CHARS);
@@ -49,7 +53,9 @@ pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
 /// and truncates to `max_chars` characters (not bytes).
 ///
 /// Truncation happens on a character boundary and appends `…`, so CJK process
-/// names are never cut in the middle of a code point.
+/// names are never cut in the middle of a code point. Whitespace past the cap
+/// (including trailing whitespace) is trimmed and does not add an ellipsis when
+/// no visible character was lost.
 pub fn sanitize_display(input: &str, max_chars: usize) -> String {
     let stripped = strip_ansi(input);
     let mut out = String::with_capacity(stripped.len().min(max_chars.saturating_mul(4)));
@@ -83,8 +89,17 @@ pub fn sanitize_display(input: &str, max_chars: usize) -> String {
             previous_was_space = false;
         }
         if kept >= max_chars {
-            truncated = true;
-            break;
+            // Whitespace beyond the cap is dropped by the final `trim()`
+            // anyway, so it is not lost content. Only a visible character
+            // that cannot be kept is a real truncation (L6-BUGS): an input of
+            // exactly `max_chars` visible characters plus trailing spaces must
+            // not gain a spurious `…`. Keep scanning past the spaces in case a
+            // visible character follows them.
+            if ch != ' ' {
+                truncated = true;
+                break;
+            }
+            continue;
         }
         out.push(ch);
         kept += 1;
@@ -431,6 +446,44 @@ mod tests {
         assert_eq!(sanitize_display("あいう", 1), "あ…");
         assert_eq!(sanitize_display("abc", 0), "…");
         assert_eq!(sanitize_display("abc", 1), "a…");
+    }
+
+    #[test]
+    fn trailing_whitespace_at_the_limit_does_not_add_an_ellipsis() {
+        // L6-BUGS: exactly `max_chars` visible characters followed by
+        // whitespace lost no visible content, so no `…` may be appended.
+        assert_eq!(sanitize_display("abc  ", 3), "abc");
+        assert_eq!(sanitize_display("abc\n\t ", 3), "abc");
+        assert_eq!(sanitize_display("あいう ", 3), "あいう");
+
+        let exact = "a".repeat(MAX_NAME_CHARS);
+        assert_eq!(
+            sanitize_display(&format!("{exact}   "), MAX_NAME_CHARS),
+            exact
+        );
+
+        // A visible character beyond the cap still truncates.
+        assert_eq!(sanitize_display("abc  d", 3), "abc…");
+        assert_eq!(sanitize_display("あいう え", 3), "あいう…");
+    }
+
+    #[test]
+    fn mount_point_keeps_command_length_paths() {
+        // L6-BUGS: the snapshot sanitiser and the native probe must use the
+        // same limit for mount points. A ~100-character path exceeds
+        // MAX_NAME_CHARS but fits MAX_COMMAND_CHARS, so it must survive.
+        use crate::demo::demo_snapshot;
+
+        let mut snapshot = demo_snapshot(0);
+        let path = format!("/mnt/{}", "data".repeat(25));
+        snapshot.disks[0].mount_point = path.clone();
+        assert!(path.chars().count() > MAX_NAME_CHARS);
+        assert!(path.chars().count() <= MAX_COMMAND_CHARS);
+
+        sanitize_snapshot(&mut snapshot);
+
+        assert_eq!(snapshot.disks[0].mount_point, path);
+        assert!(!snapshot.disks[0].mount_point.ends_with('…'));
     }
 
     #[test]

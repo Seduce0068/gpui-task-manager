@@ -32,7 +32,7 @@ status: verified
 | `./web/README.md` | ビルド・起動・agent 連携・既知の制約 |
 | `./web/scripts/cdp_verify_web.py` | ヘッドレス Chrome を CDP 操作する検証スクリプト（デモ / ライブ / エラー時） |
 | `./web/verification/web-shell-evidence-*.json` | 検証の証拠 JSON（状態フック、ネットワーク、コンソール、チェック結果） |
-| `./notes/assets/web-shell-*.png` | スクリーンショット 18 枚（デモ 8 / ライブ 8 / エラー時 2） |
+| `./notes/assets/web-shell-*.png` | スクリーンショット 26 枚（デモ 8 / ライブ 8 / エラー時 9 / ライトテーマ 1） |
 | `./notes/web-shell.md` | 本ドキュメント |
 
 ## 構成と設計判断
@@ -126,8 +126,8 @@ sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;
 コマンド列は表示専用（ソート対象外）。
 
 キーボードは `on_key_down` で処理する: 文字入力で絞り込み、`Backspace` で削除、
-`Esc` で解除、`↑↓/PageUp/PageDown/Home/End` で選択移動。日本語 IME はブラウザ版で対応（`notes/ime.md`）
-（ASCII のみ）。
+`Esc` で解除、`↑↓/PageUp/PageDown/Home/End` で選択移動。日本語 IME はブラウザ版で
+対応（`notes/ime.md`）。
 
 ## データ経路
 

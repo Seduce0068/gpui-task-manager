@@ -489,11 +489,11 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 ### 11.3 CI
 
-- 共通ワークフロー（`Seduce0068/workflows/.github/workflows/rust-gates.yml@v1`）で
+- 共通ワークフロー（`Seduce0068/workflows/.github/workflows/rust-gates.yml` をコミット SHA 固定、末尾に `v1` をコメント併記）で
   fmt → check → test → clippy（`-D warnings`）等の標準ゲートを実行する。
 - 追加ジョブ: wasm check、cargo-deny（ルート / web）、native-windows
   （`windows-latest`）、native-macos（`macos-latest`）、sbom（CycloneDX）。
-- Actions はバージョンタグで参照し、Dependabot（GitHub Actions 週次）で更新を追従する。必要に応じて commit SHA ピン留めへの移行を検討する。
+- Actions はコミット SHA 固定（タグはコメント併記）とし、Dependabot github-actions 週次更新で追従する。
   `ubuntu-latest` は使用しない。
 - GPUI の X11 依存は CI でも `libxkbcommon-x11-dev` を導入する。
 - GitHub ラベルで領域・運用課題を分類する。public 化に伴い branch protection を
@@ -543,12 +543,12 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | notes/current-state.md | 検証状況 | 具体値を書かず README.md「検証状況」を参照 | 本文 | 一致 |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
 | notes/index.md | current-state の日付 | 2026-11-18 | 本文 | 一致 |
-| RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みだが本文未反映 | `notes/ime.md`、README.md | 要更新（R1-D02、本次 writeScope 外） |
+| RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みで本文にも反映済み（R1-D02、2026-11-18） | `notes/ime.md`、README.md | 一致（反映済み） |
 
 - 時系列ログ（`log.md`、`notes/verification.md` の個別記録、
   `notes/residual-tasks-research.md`）は履歴として保持し、現状値のみ更新する。
 - 本次の書き込み範囲は README.md / DESIGN.md / notes/*.md / docs/*.md のみ。
-  RESEARCH.md の R1-D02 は lead へ引き渡す。
+  RESEARCH.md の R1-D02 は反映済み（2026-11-18、RESEARCH.md §8 の注記を確認）。
 
 ---
 
