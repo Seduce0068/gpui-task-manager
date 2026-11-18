@@ -123,8 +123,12 @@ pub fn redact_text(value: &str, ids: &RedactionIdentifiers<'_>) -> String {
     redact_tailnet_tokens(&out)
 }
 
-/// Redacts local identifiers from every display string in a snapshot.
+/// Redacts identifier-bearing strings in a snapshot: host name, process user,
+/// name and command, and disk mount points.
 ///
+/// Network interface names, sensor labels, OS name and kernel version are
+/// deliberately left untouched (interface classification is name-based). Use
+/// [`crate::export::redact_for_export`] before writing a file or API payload.
 /// Intended for the agent's "before sending" path, where the snapshot is owned.
 /// Shells with an immutable view of the dashboard should use [`redact_text`]
 /// on individual strings instead.

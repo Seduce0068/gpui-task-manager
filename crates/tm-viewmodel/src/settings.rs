@@ -157,8 +157,13 @@ mod tests {
             theme: Theme::Light,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
-        assert!(json.contains("\"interval_ms\":2000"), "{json}");
-        assert!(json.contains("\"tree_view\":true"), "{json}");
+        // Pin the complete serialised form, not just two fragments: a field
+        // rename or a schema change must be caught here (R39 audit).
+        assert_eq!(
+            json,
+            r#"{"version":2,"interval_ms":2000,"sort":{"key":"Memory","direction":"Descending"},"details_visible":false,"tree_view":true,"theme":"Light"}"#,
+            "{json}"
+        );
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, settings);
     }

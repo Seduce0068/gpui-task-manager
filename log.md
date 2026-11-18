@@ -1323,3 +1323,8 @@
 
 - ci.yml の expiry コメント、format.rs の weak assertion、notes の件数、
   SECURITY の公開済み表記を修正。workspace 364 passed。
+
+## 2026-11-18（エージェント並列調査 第30弾 → API doc と round-trip 契約）
+
+- CSV 数式テスト、Timestamp 契約、redact_snapshot doc、settings 完全 JSON
+  比較を修正。tm-core 134 / viewmodel 65 passed。

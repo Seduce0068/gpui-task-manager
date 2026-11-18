@@ -2168,3 +2168,24 @@ Timestamp::elapsed_secs_since の契約明記（未使用 API、設計判断）�
 export.rs:711 の恒真テスト（修正範囲がやや広い）、bond0、diverge 解消。
 
 - workspace 364 passed / clippy / fmt / yaml / markdownlint 増分ゼロ成功。
+
+## 2026-11-18（エージェント並列調査 第30弾 → API doc と round-trip 契約）
+
+2 観点（API 契約 / weak assertion）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **export.rs の CSV 数式テストを実質化**（前回見送り分）: `csv.lines()` が
+   引用内改行で行を分割し 2 つ目の `contains` が恒真だった。CSV 全体の
+   suffix 比較へ変更し、4 ケースの完全フィールド形状を固定。
+2. **Timestamp::elapsed_secs_since の契約明記**: 秒丸め先行のため
+   `(unix_millis 差)/1000` と最大 1 秒ずれることを doc に明記し、
+   秒境界をまたぐケース（1900ms→2100ms → 1）をテストで固定。
+3. **redact_snapshot の doc 誤記を修正**（probe-apicontract）:
+   「every display string」とあったが実際は hostname / process user/name/
+   command / disk mount_point のみ。IF 名・センサラベル・OS/kernel は
+   意図的に対象外で `redact_for_export()` が補完することを明記。
+   doc を信じた呼び出し側が識別子を漏らすプライバシー影響を解消。
+4. **settings round-trip テストの完全 JSON 比較化**（probe-weakfinal）:
+   部分 `contains` 2 行を完全シリアライズ文字列との assert_eq に置換。
+   フィールド名変更・スキーマ変更を検出可能に。
+
+- tm-core 134 / tm-viewmodel 65 passed / clippy / fmt / rustdoc 成功。
