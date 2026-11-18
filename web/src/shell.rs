@@ -2932,7 +2932,10 @@ mod tests {
         assert!(next_reconnect_required(false, RECONNECT_GUIDANCE));
         // A generic follow-up failure must not clear the auth guidance.
         assert!(next_reconnect_required(true, "接続に失敗しました"));
-        assert!(next_reconnect_required(true, "エージェントが HTTP 500 を返しました"));
+        assert!(next_reconnect_required(
+            true,
+            "エージェントが HTTP 500 を返しました"
+        ));
         // Without a prior auth error, a generic error stays non-reconnect.
         assert!(!next_reconnect_required(false, "接続に失敗しました"));
     }
