@@ -8,6 +8,21 @@ use std::fmt;
 
 use crate::model::{ProcessKey, SystemSnapshot};
 
+/// Capability-gated section of a shell (R5-I04).
+///
+/// Shells ask this instead of reading the raw flags so a capability cannot be
+/// honoured in one widget and ignored in another. The mapping stays in the core
+/// because it is part of the backend contract, not a presentation detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    /// Network counters in the overview.
+    Network,
+    /// Mounted filesystems in the overview.
+    Disks,
+    /// Process-control actions in the header / details panel.
+    ProcessControl,
+}
+
 /// Description of the backend behind a [`SystemProbe`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -73,6 +88,20 @@ impl PlatformInfo {
             format!("{} / デモデータ", self.os)
         } else {
             self.os.clone()
+        }
+    }
+
+    /// Whether `section` can present live data or actions on this backend.
+    ///
+    /// `native_read_only` and `demo` still provide network/disk snapshots, so
+    /// only [`Section::ProcessControl`] is gated for them. Enumeration failure
+    /// is data, not a capability change (see [`Self::native`]); this method
+    /// deliberately does not look at the current snapshot.
+    pub const fn supports(&self, section: Section) -> bool {
+        match section {
+            Section::Network => self.supports_network,
+            Section::Disks => self.supports_disks,
+            Section::ProcessControl => self.supports_process_control,
         }
     }
 }
@@ -231,6 +260,44 @@ mod tests {
         assert!(info.supports_network);
         assert!(info.supports_disks);
         assert_eq!(info.label(), "Linux (エージェント経由)");
+    }
+
+    #[test]
+    fn section_availability_follows_the_capability_flags() {
+        let native = PlatformInfo::native("Linux");
+        for section in [Section::Network, Section::Disks, Section::ProcessControl] {
+            assert!(native.supports(section), "{section:?}");
+        }
+
+        // The browser shells read snapshots but can never signal processes.
+        for info in [
+            PlatformInfo::native_read_only("Linux (エージェント経由)"),
+            PlatformInfo::demo(),
+        ] {
+            assert!(info.supports(Section::Network));
+            assert!(info.supports(Section::Disks));
+            assert!(!info.supports(Section::ProcessControl));
+        }
+    }
+
+    #[test]
+    fn section_availability_is_independent_per_flag() {
+        // Gating one section must not silently gate the others (R5-I04).
+        let mut info = PlatformInfo::native("Linux");
+        info.supports_network = false;
+        assert!(!info.supports(Section::Network));
+        assert!(info.supports(Section::Disks));
+        assert!(info.supports(Section::ProcessControl));
+
+        info.supports_disks = false;
+        assert!(!info.supports(Section::Network));
+        assert!(!info.supports(Section::Disks));
+        assert!(info.supports(Section::ProcessControl));
+
+        info.supports_process_control = false;
+        assert!(!info.supports(Section::Network));
+        assert!(!info.supports(Section::Disks));
+        assert!(!info.supports(Section::ProcessControl));
     }
 
     #[test]

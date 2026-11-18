@@ -26,9 +26,8 @@ status: current
       旧スナップショット維持、DOM hook に stale=0|1 を追加。
 - [x] `?agent=` 接続先を loopback/http に制限（da48630）。
 - [x] 弱い乱数フォールバック廃止とトークン出力の見直し（01accf5 / 170e94a）。
-- [ ] 設定ファイルの破損時バックアップ、version 保持、未知フィールドの
-      ラウンドトリップ、GUI への非通知解消（R2-D01, R2-D02, R5-D02,
-      R3-U01, R3-U02）。
+- [x] 設定ファイルの互換性と通知（R2-D01/D02/R5-D02/R3-U01/U02）— version 保持、
+      未知フィールド round-trip、SettingsNotice を status / DOM alert へ接続。
 - [x] Web 版へ aria / AccessKit の代替表現を追加（R3-A01）— 表・ボタン・ステータスに role / aria-label / live を付与。
 - [ ] キーボードショートカットの cross-shell parity と入力中のナビ抑制
       （R3-A02, R3-A03, R1-D11, R1-I13）。
@@ -57,15 +56,15 @@ status: current
 
 - [x] 仮想メモリのソート・絞り込みに対応（R5-I01）— SortKey::VirtualMemory としきい値フィルタを追加。
 - [x] 温度しきい値ゲージ（R5-I03/R1-I03）— 色に加え状態語と aria 数値を表示。
-- [ ] `supports_*` Capability で取得不可セクションを出し分ける（R5-I04）。
+- [x] `supports_*` Capability で取得不可セクションを出し分け（R5-I04）— CDP 座標を維持した説明ノードを追加。
 - [x] 設定一時ファイルの nonce と query_param 検証（a232a8e）。
 - [x] `ConfirmKill` の paused ガードと pending 保護（38d954f）。
 - [x] 接続スレッドの JoinHandle を追跡し期限付き join を実装（R2-X03）— JoinTracker を追加。
 - [x] シグナル別確認文言と色非依存 status（R3-U03〜U05）— [情報]/[エラー]
       マーカー、confirmation_note、transient 自動クリアを維持。
 - [x] agent と app の CLI を揃える（R5-O05）— --version / --log-level / ヘルプ / 終了コードを統一。
-- [ ] `dashboard.apply` が返す Effect を実行するか、空である前提を明示する
-      （R2-C01, R2-C02）。
+- [x] `dashboard.apply` の Effect 契約を明示（R2-C01/C02）— 呼び出し側が必ず1回実行、
+      effect-free 判定ヘルパーとテストを追加。
 - [x] Web 版へ更新間隔変更 UI を追加（R1-C01/R2-X02）— プリセット切替とサンプラー反映、DOM hook は追加字段のみ。
 - [ ] ネイティブ probe 失敗時のデモ切替と `--demo` 不正値の扱いを統一する
       （R3-S02, R3-S03）。
