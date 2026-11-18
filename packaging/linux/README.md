@@ -22,7 +22,7 @@ Output: `packaging/linux/build/gpui-task-manager_<version>-1_<arch>.deb`
 | `/usr/share/applications/gpui-task-manager.desktop` | Desktop entry (`StartupWMClass=gpui-task-manager`) |
 | `/usr/share/icons/hicolor/scalable/apps/gpui-task-manager.svg` | Scalable icon |
 | `/usr/share/icons/hicolor/256x256/apps/gpui-task-manager.png` | Raster icon |
-| `/usr/share/doc/gpui-task-manager/{README.md,NOTICE.md,copyright}` | Documentation and attribution |
+| `/usr/share/doc/gpui-task-manager/{README.md,NOTICE.md,THIRD_PARTY_NOTICES.md,LICENSE,copyright}` | Documentation and attribution |
 
 ## Notes
 
