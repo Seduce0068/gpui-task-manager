@@ -2424,3 +2424,22 @@ TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
 永続通知の上書き（設計どおり）、nonce ラップアラウンド（三重条件）。
 
 - workspace 372 passed / clippy / fmt 成功 / flaky 30 回連続成功。
+
+## 2026-11-18（エージェント並列調査 第41弾 → reconnect ガイダンスの維持）
+
+第40弾 probe-newangle 候補2（次ラウンド候補）を実装。worktree で検証。
+
+- `web/src/shell.rs` の `handle_live_result` が、ポーリング失敗のたびに
+  `reconnect_required = requires_reconnect(&error)` で上書きしていた。
+  認証拒否後にエージェントがまだ応答しない間の汎用エラーで `false` に
+  戻り、ユーザーが取るべき唯一の導線（新しい #token= を貼り付け）が消えていた。
+- `next_reconnect_required(current, error)` pure ヘルパを追加して sticky 化。
+  クリアは成功時（342 行目）と設定変更時（304 行目）のみ。
+  `live_error` も認証エラーを汎用エラーで上書きしないよう保護。
+- 回帰テスト `reconnect_guidance_is_sticky_across_transient_failures` を追加。
+
+**見送り**: CPU% の elapsed 取得タイミング（要判断）、`--once` serialize
+失敗の exit 分類（発生確率極低）、永続通知の上書き（設計どおり）、
+bond0、diverge 解消。
+
+- web 76 passed / workspace 372 passed / clippy / fmt 成功。

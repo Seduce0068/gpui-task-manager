@@ -1378,3 +1378,8 @@
 - thread refresh の remove_dead と thread_count を硬化（flaky 27%→0%）、
   SystemSnapshot に sampled_elapsed を追加し NTP 逆行スパイクを防止。
   workspace 372 passed。
+
+## 2026-11-18（エージェント並列調査 第41弾 → reconnect ガイダンスの維持）
+
+- 認証拒否後の再入力ガイダンスを汎用エラーで消さないよう sticky 化。
+  web 76 / workspace 372 passed。
