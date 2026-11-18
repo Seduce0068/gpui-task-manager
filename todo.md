@@ -72,20 +72,21 @@ status: current
 - [x] OSC/DCS（+SOS/PM/APC）ペイロード全体を除去し、ZWJ/ZWNJ は可視ギャップ
       を残す方針を明文化（R1S-DATA-03/04）。
 - [x] EiB 表記と limit エコーのサニタイズ（a29d76c）。
-- [ ] 固定ポートの複数インスタンス方針と dev-setup shim の残置対策を
-      文書化・実装する（R3-L03, R3-L04）。
+- [x] 固定ポート運用と shim 残置対策（R3-L03/L04）— README に切替手順、dev-setup
+      に冪等生成・古い shim の除去を追加。
 - [x] `check.sh` のスキップ時挙動を明示（R1S-OPS-08）— SKIP 表示と想定外スキップは
       exit 3、--fast は意図的スキップとして exit 0。
 - [x] 全スレッド走査を二段階 refresh へ限定（R4-A01）— 約2353エントリの挿入を回避。
-- [ ] wasm レスポンス読み取りの早期 abort と並行 fetch の制限を検討する
-      （R4-A02、upstream 確保ではなく累積の問題）。
-- [ ] 重複バージョンと feature 差分依存の監査方法を決定する
-      （R1-OPS-03, R4-S04, R1S-OPS-03）。
+- [x] wasm fetch の早期 abort と並行制限（R4-A02）— FetchGate と generation
+      によるチャンク単位 abort を実装。
+- [x] 依存バージョン/feature 差分の監査方法（R1-OPS-03/R4-S04/R1S-OPS-03）—
+      notes/dependency-audit.md に runbook を追加。
 - [x] slowloris 対策と accept/spawn の graceful 化（b95fbf8 / e6b46ff）。
 - [x] schema version の前方/後方互換（R2X-D3）— 設定の opaque version 保持と
       wire の旧版受け入れを実装。
-- [ ] R2X-D5 ディスク使用率を `used_space()` 相当へ修正する — sysinfo =0.40.3 に
-      API が無いため statvfs 等の手段を選ぶ判断が必要。
+- [x] R2X-D5 ディスク使用率を checked 算術の derived 値へ修正。
+- [ ] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —
+      sysinfo 0.40.x に API が無く、新規依存または FFI の判断が必要。
 - [x] Windows taskkill 意味論と PID 保護（R2X-P5〜P8）— エラー分類、Users 更新、
       capability の実収集反映を追加。
 - [x] 重複ヘッダ拒否・Host 不一致・stale 表示（dcd9e9c / dde9bcd）。

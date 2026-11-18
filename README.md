@@ -83,6 +83,39 @@ Vulkan 対応 GPU ドライバが必要です（GTX 1660 SUPER + NVIDIA propriet
 `libxkbcommon-x11-dev` を入れられない場合は `scripts/dev-setup.sh` が
 `app/native-libs/libxkbcommon-x11.so` を作成します（システム変更なし・root 不要）。
 
+### ローカル shim の生成条件と除去
+
+`bash scripts/dev-setup.sh` は次の場合にだけ
+`app/native-libs/libxkbcommon-x11.so` を生成（または作り直し）します。
+
+- `pkg-config --exists xkbcommon-x11` が**失敗**する（`-dev` パッケージが無い）
+- `libxkbcommon-x11.so.0` がスクリプト既知のシステムパスに**存在**する
+
+shim が無い／壊れている／選択したランタイムと別の実体を指す場合は作り直し、
+正しい実体を指す場合は維持します（冪等）。`app/build.rs` は `app/native-libs/`
+が存在する限りリンカの検索パスへ追加するため、shim が残ったままだと後から
+`libxkbcommon-x11-dev` を導入・更新した際に古い shim へ誤リンクする可能性があります。
+**`-dev` 導入後・OS 更新後は、もう一度 `bash scripts/dev-setup.sh` を実行して
+shim を除去してください**（`pkg-config` が見つかれば自動除去されます）。
+
+```bash
+# Kubuntu / 開発ホスト: 状態確認 → 除去 → 再確認
+echo '--- shim の状態（事前確認）---'
+ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし'
+echo '--- shim の除去: libxkbcommon-x11-dev 導入後に実行 ---'
+bash scripts/dev-setup.sh
+echo '--- 再確認 ---'
+ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正常）'
+
+# pkg-config が使えず自動除去できない場合の手動除去
+# rm -f app/native-libs/libxkbcommon-x11.so
+# rmdir app/native-libs 2>/dev/null || true
+```
+
+`-dev` パッケージが無いホストで上記を実行すると shim が再作成されます（通常の動作）。
+スクリプトはランタイムが見つからない場合も古い shim を除去してから失敗するため、
+ビルド時に残置 shim が誤って参照されることはありません。
+
 ### 読み取り専用エージェント（ブラウザ用）
 
 ```bash
@@ -118,6 +151,37 @@ cd poc-wasm && trunk build --release
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
 `EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
+### 固定 loopback ポートの運用（複数インスタンスと切替）
+
+エージェントは `127.0.0.1:18787`、ブラウザ版シェル（`trunk serve`）は
+`127.0.0.1:8091` を既定の固定 loopback ポートとして使います（trunk 側の既定値は
+[`web/Trunk.toml`](web/Trunk.toml)）。**同じホストの同じポートに同時に使えるのは
+1 インスタンスだけ**です。2 つ目を同じポートで起動すると bind に失敗するため、
+別の worktree / ブランチを並行検証する場合は次のようにポートをずらします。
+
+```bash
+# Kubuntu / 開発ホスト: 使用中の待ち受けポートを確認
+echo '--- 待ち受けポートの確認 ---'
+ss -ltnp | grep -E ':(18787|18788|8091|8092)\b' || echo '該当なし'
+
+# 2 つ目のエージェント（--listen で別の loopback ポートを指定）
+TM_AGENT_TOKEN=test cargo run -p tm-agent -- --listen 127.0.0.1:18788
+
+# 2 つ目のブラウザ版シェル（trunk serve の --port で Trunk.toml の既定 8091 を上書き）
+cd web && trunk serve --port 8092
+```
+
+エージェントは `127.0.0.1` / `[::1]` の loopback のみ bind を許可し、`0.0.0.0` や
+ホスト名は拒否します。ブラウザ版から 2 つ目のスタックへ接続する場合は URL の
+`?agent=` も切り替えたポートに合わせてください。
+
+```text
+http://127.0.0.1:8092/?agent=http://127.0.0.1:18788#token=<token>
+```
+
+終了時は各プロセスの起動元ターミナルで `Ctrl-C` を使ってください。前述の
+クイックスタート手順（既定ポート）は 1 インスタンス前提のままです。
+
 ## アーキテクチャ
 
 ```text
@@ -139,7 +203,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 ## リポジトリ構成
 
 | パス | 内容 |
-|---|---|
+| --- | --- |
 | `crates/tm-core/` | ドメイン型、CPU/ネットワーク差分、履歴、整形、サニタイズ、ソート/フィルタ、`SystemProbe` port |
 | `crates/tm-viewmodel/` | `Dashboard` reducer、`Command` / `Effect`、確認ダイアログ状態、選択追従 |
 | `crates/tm-platform/` | `NativeProbe`（sysinfo 収集、rustix シグナル、PID 再利用防御） |
@@ -168,8 +232,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 ## 検証状況（2026-11-18、Runtime Proof）
 
 | 項目 | 結果 |
-|---|---|
-| `cargo test --workspace` | **354 passed / 0 failed**（core 131 / viewmodel 63 / platform 21 / agent 78 / app 61） |
+| --- | --- |
+| `cargo test --workspace` | **359 passed / 0 failed**（core 132 / viewmodel 63 / platform 25 / agent 78 / app 61） |
 | web ユニットテスト | **74 passed / 0 failed**（fetch 制限 / 再接続導線 / capability 等を含む） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
