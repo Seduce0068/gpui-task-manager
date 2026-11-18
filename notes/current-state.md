@@ -1,11 +1,11 @@
 ---
 type: Reference
 title: GPUI Task Manager 現状サマリ
-description: 2026-11-18 時点の実装状況・検証結果・未解決事項の俯瞰。時系列の詳細は log.md、個別の根拠は verification.md を参照
+description: 2026-11-19 時点の実装状況・検証結果・未解決事項の俯瞰。時系列の詳細は log.md、個別の根拠は verification.md を参照
 tags: [status, verification, runtime-proof, gpui, task-manager]
 resource: .
 generated: 2026-11-17T03:46:00+09:00
-verified: 2026-11-18T10:58:00+09:00
+verified: 2026-11-19T03:48:15+09:00
 status: verified
 ---
 
@@ -24,19 +24,19 @@ status: verified
   シェル（`app/` / `web/`）は描画とコマンド発行のみを行う 3 層構成。
 - ライセンス AGPL-3.0-or-later、全 crate で `#![forbid(unsafe_code)]`。
 
-## 検証状況（2026-11-18）
+## 検証状況（2026-11-19）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | 件数は README.md「検証状況」を参照（2026-11-18 時点のスナップショット） |
-| web ユニットテスト | 件数は README.md「検証状況」を参照（2026-11-18 時点のスナップショット） |
+| `cargo test --workspace` | **400 passed / 0 failed**（app 77 / tm-agent 86 / tm-core 141 / tm-platform 27 / tm-viewmodel 69、2026-11-19 再計測） |
+| web ユニットテスト | **88 passed / 0 failed**（2026-11-19 再計測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
-| `trunk build --release` | 成功（wasm 7,642,794 B / gzip 3,044,134 B、2026-11-17 計測） |
+| `trunk build --release` | 成功（wasm 7,642,794 B / gzip 3,044,134 B、2026-11-17 最終計測、以降再ビルド未実施） |
 | 依存監査 | `cargo audit`（脆弱性 0・既知 8 件のみ）、`cargo deny`（全カテゴリ ok）、`cargo vet`（root 804 / web 560 exempted）、`cargo machete`（未使用 0 件） |
-| CI | 全 8 ジョブ success を反復確認（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
+| CI | 現行定義は 10 ジョブ（gates / wasm / msrv-1-92 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認）。旧記録の「全 8 ジョブ success」は定義変更前のもので、10 ジョブの再実行は未確認 |
 | CDP ブラウザ検証 | 設定・デモ・IME（32/32）すべて pass |
 | シェル静的検証 | 4 本すべて `bash -n` / `shellcheck` / `shfmt -d -i 2` 成功 |
 | SBOM 生成 | `generate-sbom.sh` で 6 件の CycloneDX 1.3 JSON を生成・jq 検証（2026-11-17） |
@@ -56,7 +56,7 @@ status: verified
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
   未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
   ゲートを追加（root / web とも）。
-- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 364、件数は変動するため README.md を参照）。
+- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 400、件数は変動するため README.md を参照）。
 
 ## 未解決・今後の候補
 

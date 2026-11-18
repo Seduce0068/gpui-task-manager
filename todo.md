@@ -85,7 +85,7 @@ status: current
 - [x] schema version の前方/後方互換（R2X-D3）— 設定の opaque version 保持と
       wire の旧版受け入れを実装。
 - [x] R2X-D5 ディスク使用率を checked 算術の derived 値へ修正。
-- [ ] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —
+- [ ] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —（メモリではなく disk の statvfs タスク。sysinfo 0.40.3 に API が無く新規依存または unsafe FFI が必要。AGENTS §15 で unsafe 禁止のため設計判断待ち — BB-FBFREE）
       sysinfo 0.40.x に API が無く、新規依存または FFI の判断が必要。
 - [x] Windows taskkill 意味論と PID 保護（R2X-P5〜P8）— エラー分類、Users 更新、
       capability の実収集反映を追加。
@@ -113,8 +113,8 @@ status: current
 - [x] CDP クリック座標を DOM/セレクタ取得へ変更（R1S-ARCH-03/R1-OPS-11）— canvas
       rect 基準の相対座標とフォールバックを追加。
 - [x] PoC の `cdp_verify.py` に「証拠収集のみ」と明記（R1S-OPS-12）。
-- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。
-- [ ] スクリーンショットと証跡数値の鮮度、性能記述を再測定する
+- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）
+- [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 400/88・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）
       （R1-G12, R1-G13）。
 - [ ] 放置されたローカルブランチ／merged リモートブランチを整理する
       （R1-G14）。
@@ -231,7 +231,7 @@ status: current
 
 ### 残課題（swarm-coding ラウンド 3 で判明）
 
-- [ ] MSRV 1.92 を宣言しているが `sysinfo 0.40.3` が rustc 1.95 を要求し、
+- [ ] MSRV 1.92 を宣言しているが `sysinfo 0.40.3` が rustc 1.95 を要求し、（sysinfo 0.40.3 が 1.95、gpui-pre-util が slice_as_array を要求。依存変更または MSRV 引き上げの設計判断待ち — AF-CI）
       workspace 全体の `cargo +1.92 check` が Cargo に拒否される。CI の msrv-1-92
       ジョブは tm-core / tm-viewmodel にスコープ限定済み。sysinfo を 1.92 対応版へ
       変更するか MSRV を 1.95 へ引き上げる設計判断が必要（af-ci）。
