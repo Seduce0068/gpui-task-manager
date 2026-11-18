@@ -361,8 +361,12 @@ pub struct ComponentSnapshot {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SystemSnapshot {
-    /// When the sample was taken.
+    /// When the sample was taken (wall clock, for display only).
     pub sampled_at: Timestamp,
+    /// Monotonic time since the previous sample. Used for rate calculation:
+    /// wall-clock deltas can go backwards under NTP/VM resume (R49 audit).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sampled_elapsed: std::time::Duration,
     /// Host name, when available.
     pub hostname: Option<String>,
     /// Operating system description.
