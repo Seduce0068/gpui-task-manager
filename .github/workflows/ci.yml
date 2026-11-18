@@ -19,7 +19,11 @@ permissions:
 
 jobs:
   gates:
-    uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
+    # AGENTS.md §5 は共通ワークフローをタグ v1 にピン留めする方針だが、
+    # R2 の supply-chain 要件で外部参照の SHA 固定を強制するため、v1 の解決先
+    # コミットを SHA で固定する（末尾の v1 は可読性のためのコメント）。
+    # v1 タグを付け替えるときは、この SHA も同時に更新すること。
+    uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@b7675efd8a9a84ebc5b560da628d1a82f3fbf98f # v1
     with:
       working_directory: .
       apt_packages: |
@@ -102,14 +106,34 @@ jobs:
     name: wasm check (tm-core / tm-viewmodel / web)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: wasm32-unknown-unknown
       - name: Check wasm targets
         run: |
           cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
           cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
+
+  # Cargo.toml / web/Cargo.toml で宣言した rust-version = "1.92" を固定検証する。
+  # 共通ワークフロー rust-gates.yml に MSRV 入力が無いため、リポジトリ側で実行。
+  # NOTE: 現状 sysinfo 0.40.3（tm-platform 経由）が rust-version 1.95 を要求し、
+  # `cargo +1.92 check --workspace` は失敗する（cargo metadata で確認済み）。
+  # 依存側が解消されるまで MSRV 互換のクレートと web wasm を検証する。
+  # 解消後は `cargo +1.92 check --workspace --locked` へ拡張すること。
+  msrv-1-92:
+    name: MSRV 1.92 check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: "1.92"
+          targets: wasm32-unknown-unknown
+      - name: Check portable crates with MSRV
+        run: cargo +1.92 check --locked -p tm-core -p tm-viewmodel
+      - name: Check web workspace with MSRV (wasm)
+        run: cargo +1.92 check --locked --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
   # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
   # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と
@@ -136,7 +160,7 @@ jobs:
     name: cdp verify (offline self-check)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Syntax check (py_compile)
         run: python3 -m py_compile web/scripts/cdp_verify_*.py
       - name: Offline self-check
@@ -155,8 +179,8 @@ jobs:
     name: native check (windows-latest)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Check workspace
         run: cargo check --workspace
       # R1-V02: Windows 側でも tm-platform のテストを実行する（macOS と同対象）。
@@ -167,26 +191,34 @@ jobs:
     name: native check (macos-latest)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Check workspace
         run: cargo check --workspace
       - name: Test portable and platform crates
         run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
 
   # ライセンス・脆弱性・重複バージョンのゲート。ポリシーは deny.toml（ルート）に置く。
-  # advisory ignore は 3 か月ごとの手動レビュー（deny.toml の [advisories] を参照）。
-  # expiry キーは未設定のため、期限切れで check が失敗するわけではない。
+  # advisory ignore の有効期間は各 ignore の expiry（2027-02-19 = レビュー日
+  # 2026-11-19 から 3 か月）で強制する。cargo-deny 0.21 が期限切れを検知し、
+  # `-D advisory-ignore-expired` でゲートを失敗させる（手動レビュー依存ではない）。
   deny:
     name: cargo-deny (licenses / advisories / duplicates)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # ツール別タグ @cargo-deny は更新される moving tag で、上流 README も
+      # SHA 固定を非推奨とする。immutable な v2.90.6 のコミットへ固定し、
+      # 導入するツール版も明示する（pin 版のマニフェスト: cargo-deny 0.21.0）。
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-deny@0.21.0
+      - name: Validate advisory ignore policy (reason / expiry / 3-month cap)
+        run: bash scripts/check-advisory-ignores.sh
       - name: Check native workspace
-        run: cargo deny --manifest-path Cargo.toml check -A advisory-not-detected
+        run: cargo deny --manifest-path Cargo.toml check -A advisory-not-detected -D advisory-ignore-expired
       - name: Check web workspace
-        run: cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected
+        run: cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected -D advisory-ignore-expired
 
   # リリース成果物（Linux バイナリ + DEB）。検証とは分離し、必要なときだけ
   # ダウンロードできるようにする。
@@ -196,8 +228,8 @@ jobs:
     needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -214,7 +246,7 @@ jobs:
         run: cargo build --release -p gpui-task-manager
       - name: Build DEB
         run: bash packaging/linux/build-deb.sh --skip-build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-linux
           path: |
@@ -229,13 +261,14 @@ jobs:
     needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@v2
+      # immutable な v2.90.6 のコミット + ツール版を明示（マニフェストの latest）。
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          tool: trunk
+          tool: trunk@0.22.1
       - name: Build web distribution
         # The bundled IBM Plex fonts are OFL-1.1; ship the license with the
         # artifact (Trunk 0.22 has no `copy` config key).
@@ -243,7 +276,7 @@ jobs:
           cd web
           trunk build --release
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-web
           path: web/dist
@@ -257,11 +290,12 @@ jobs:
     needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      # immutable な v2.90.6 のコミット + ツール版を明示（マニフェストの latest）。
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          tool: cargo-cyclonedx
+          tool: cargo-cyclonedx@0.5.10
       - name: Generate SBOMs
         run: bash scripts/generate-sbom.sh target/sbom
       # 2 回連続で生成し、成果物のファイル集合が変わらない（古いコピーが
@@ -280,7 +314,7 @@ jobs:
             echo 'Uncollected SBOM files remain in the worktree.' >&2
             exit 1
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-sbom
           path: target/sbom

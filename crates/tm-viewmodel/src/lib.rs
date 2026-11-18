@@ -16,7 +16,7 @@ use tm_core::format;
 use tm_core::{
     filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
     ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
-    SystemSnapshot,
+    SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
@@ -351,6 +351,9 @@ pub struct Dashboard {
     pending_kill: Option<PendingKill>,
     status: Option<StatusMessage>,
     last_network: Option<(u64, u64)>,
+    /// High-water mark of ingested sample times. Only a snapshot that is at
+    /// least this new may clear transient status or become the network baseline.
+    last_ingested_at: Option<Timestamp>,
     network_rates: (u64, u64),
 }
 
@@ -376,6 +379,7 @@ impl Dashboard {
             pending_kill: None,
             status: None,
             last_network: None,
+            last_ingested_at: None,
             network_rates: (0, 0),
         }
     }
@@ -694,15 +698,31 @@ impl Dashboard {
     /// A paused dashboard stays frozen: an in-flight native sample (or the web
     /// sampler's next tick) can complete after the user pressed pause. Keep
     /// `Tick`, `ingest` and `ConfirmKill` under the same pause invariant.
+    ///
+    /// A snapshot whose `sampled_at` predates the newest sample already seen
+    /// is a late arrival. It still refreshes the display, but it leaves the
+    /// transient status and the network rate baseline untouched so a delayed
+    /// sample cannot erase the latest error or skew the next fresh rate.
     pub fn ingest(&mut self, snapshot: SystemSnapshot) {
         if self.paused {
             // Keep the "paused" notice: an in-flight sample finishing now must
             // not clear it (R23 regression from R21/R22 interaction).
             return;
         }
-        // Only a snapshot that was actually ingested may clear a transient
-        // notice. Doing this here covers every shell (native, live web, demo).
-        self.clear_transient_status();
+        // An asynchronous sampler can deliver an older sample after a newer
+        // one. Compare against the high-water mark rather than the last stored
+        // `snapshot`: a repeated late arrival must not be able to walk the mark
+        // backwards and eventually become the baseline itself.
+        let is_late = self
+            .last_ingested_at
+            .is_some_and(|last| snapshot.sampled_at < last);
+        if !is_late {
+            self.last_ingested_at = Some(snapshot.sampled_at);
+            // Only a current snapshot may clear a transient notice. Doing this
+            // here covers every shell (native, live web, demo). Persistent
+            // notices are never touched (SECURITY §5).
+            self.clear_transient_status();
+        }
         let (rx_rate, tx_rate) = match self.last_network {
             Some((previous_rx, previous_tx)) => {
                 // Use the probe's monotonic elapsed time, not a wall-clock
@@ -715,8 +735,10 @@ impl Dashboard {
             None => (0, 0),
         };
         self.network_rates = (rx_rate, tx_rate);
-        let (total_rx, total_tx) = snapshot.network_totals();
-        self.last_network = Some((total_rx, total_tx));
+        if !is_late {
+            let (total_rx, total_tx) = snapshot.network_totals();
+            self.last_network = Some((total_rx, total_tx));
+        }
 
         self.history.push(
             snapshot.cpu.total_percent,
@@ -1233,6 +1255,71 @@ mod tests {
         second.sampled_at = tm_core::Timestamp::from_millis(1);
         dashboard.ingest(second);
         assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn late_snapshot_preserves_the_latest_transient_error() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(2));
+        dashboard.set_status("直近の取得失敗", true);
+        let before = dashboard.status().expect("transient error").clone();
+        assert!(before.is_error);
+        assert!(!before.persistent);
+
+        // A sample taken before the newest one arrives out of order.
+        let late = demo_snapshot(1);
+        assert!(late.sampled_at < dashboard.snapshot().unwrap().sampled_at);
+        dashboard.ingest(late);
+
+        let after = dashboard
+            .status()
+            .expect("a late arrival must not clear the transient error");
+        assert_eq!(*after, before);
+
+        // A persistent notice is likewise untouched by a late arrival
+        // (SECURITY §5): only an explicit set/clear may replace it.
+        dashboard.set_persistent_status("起動時の警告");
+        dashboard.ingest(demo_snapshot(0));
+        let persistent = dashboard.status().expect("persistent survives");
+        assert!(persistent.persistent);
+        assert_eq!(
+            persistent.text,
+            format!("{STATUS_PREFIX_ERROR} 起動時の警告")
+        );
+    }
+
+    #[test]
+    fn late_snapshot_does_not_move_the_network_baseline() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(1)); // baseline becomes tick 1 counters
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        dashboard.ingest(demo_snapshot(2)); // one tick of traffic since tick 1
+        let expected = (1_234_567, 321_456);
+        assert_eq!(dashboard.network_rates(), expected);
+
+        // An out-of-order sample carrying older counters must not become the
+        // new baseline, otherwise the next fresh sample would measure two
+        // ticks of traffic from tick 0 and report twice the real rate.
+        dashboard.ingest(demo_snapshot(0));
+
+        dashboard.ingest(demo_snapshot(3));
+        assert_eq!(
+            dashboard.network_rates(),
+            expected,
+            "rate must still be measured from the newest baseline"
+        );
+    }
+
+    #[test]
+    fn late_snapshot_keeps_an_explicitly_cleared_selection() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(2));
+        dashboard.apply(Command::Select(None));
+        assert_eq!(dashboard.selected_key(), None);
+
+        // Re-syncing against the late snapshot must not auto-select a row.
+        dashboard.ingest(demo_snapshot(1));
+        assert_eq!(dashboard.selected_key(), None);
     }
 
     #[test]

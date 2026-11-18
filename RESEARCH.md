@@ -122,7 +122,7 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
    余地を残す（MVP では未実装）。
 5. **per-process ネットワークは取得できない**（インターフェース単位のみ）。
 6. **ディスク一覧に疑似マウントが混ざる**（overlay / lxcfs / tmpfs）。フィルタが必要。
-7. **ネットワーク一覧に仮想 IF が混ざる**（docker0, tailscale0, lo 等）。
+7. **ネットワーク一覧に仮想 IF が混ざる**（docker0, vpn0, lo 等）。
 8. **PID 再利用**: `start_time()` を併用して同一性を検証する。
 9. **ゾンビ**: kill 後も reap されるまで残る。UI は消えるまでポーリングする。
 10. **`System` インスタンスを再利用**する（コールドスタート 85 ms を毎回払わない）。
@@ -227,7 +227,7 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
     "cpu": { "total_percent": 56.2, "per_core_percent": [51.4, ...], "load_average": [8.4, 8.0, 7.3], "uptime_secs": 522800 },
     "memory": { "total_bytes": 67300000000, "used_bytes": 49000000000, "available_bytes": 18300000000, "swap_total_bytes": 68700000000, "swap_used_bytes": 21100000000 },
     "processes": [ { "key": { "pid": 1, "start_time_secs": 1794132006 }, "name": "systemd", "command": "/sbin/init", "user": "root", "status": "Sleeping", "cpu_percent": 0.1, "memory_bytes": 16800000, "virtual_memory_bytes": 26500000, "threads": 1, "parent_pid": null } ],
-    "network": { "interfaces": [ { "name": "enp4s0", "received_bytes": 98100000000, "transmitted_bytes": 13700000000 } ] },
+    "network": { "interfaces": [ { "name": "eth0", "received_bytes": 98100000000, "transmitted_bytes": 13700000000 } ] },
     "disks": [ { "mount_point": "/", "total_bytes": 629700000000, "available_bytes": 100400000000, "used_bytes": 529300000000 } ],
     "self_pid": 12345
   }
@@ -236,19 +236,24 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
 
 - `schema_version` は `tm_core::WIRE_SCHEMA_VERSION`。
 - プロセスは CPU 降順 → PID 昇順でソートして `limit` 件に絞る。
-- 認証: `Authorization: Bearer <token>` のみ。クエリ文字列のトークンは拒否する
+- 認証（`/api/v1/snapshot`）: `Authorization: Bearer <token>` のみ。クエリ文字列のトークンは拒否する
   （URL 漏洩対策）。ブラウザは URL フラグメント `#token=` から読み取り、ヘッダで送る。
 - CORS: `http://127.0.0.1[:port]` / `http://localhost[:port]` の Origin のみ反射。
   preflight は `Authorization` ヘッダを許可する。
 - `Host` ヘッダが loopback 以外なら 403（DNS リバインディング多層防御）。
-- エンドポイント: `GET /healthz`, `GET /api/v1/snapshot` のみ（読み取り専用）。
+- エンドポイント: `GET /healthz`, `GET /metrics`, `GET /api/v1/snapshot` の 3 つ（読み取り専用）。
+  `/healthz` と `/metrics` は認証不要で、`/metrics` は Prometheus テキスト形式の
+  カウンタ/ゲージのみを返し（マシンデータなし）、リスナー自体が loopback 限定。
+  Bearer トークンが必要なのは `/api/v1/snapshot` のみ（[`DESIGN.md`](DESIGN.md) 6.3 節、
+  [`SECURITY.md`](SECURITY.md) 参照）。
 
 ### 6.2 Glances / node_exporter との関係
 
 - Glances REST API v4 は OpenAPI 仕様があり実績も豊富だが、`/all` は巨大で
   psutil 固有のフィールド体系。**取り込み専用の任意アダプタ**として将来対応する。
 - node_exporter（Prometheus 形式）は pull 型の時系列メトリクス向けで、プロセス一覧には
-  向かない。将来 `/metrics` 互換出力を追加する余地はある。
+  向かない。本実装では `/metrics` を Prometheus テキスト形式で実装済み（認証不要、
+  カウンタ/ゲージのみ、loopback 限定）だが、プロセス一覧は `/api/v1/snapshot` が担う。
 
 ---
 

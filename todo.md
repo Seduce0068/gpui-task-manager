@@ -135,7 +135,7 @@ status: current
       実ホスト名・ユーザー名・ホームパスが画面と「伏せ字化済み」エクスポートへ残る。
       初回ガイドへ `--redact` 必須を明記し、未 redact 応答はエクスポート拒否または
       明示表示する。根拠 R1-AR02 (high)。
-- [ ] `--redact` のマスキング対象を agent / GUI で統一: `crates/tm-core/src/redact.rs:131`
+- [x] `--redact` のマスキング対象を agent / GUI で統一: `crates/tm-core/src/redact.rs:131`
       は `os_name` / `kernel_version` / IF 名 / センサラベルを対象外だが、
       `redact_for_export` はマスクする。agent の `--once` / API / SSE は前者のみを
       呼び、GUI も kernel・cgroup・センサラベルが `display()` を通らない。
@@ -151,33 +151,33 @@ status: current
 - [x] CI に公開前シークレットスキャンを追加: 成果物 upload 前に gitleaks /
       trufflehog とバイナリ・dist の `strings` 検査を行い検出で失敗させる。
       根拠 R4-CI01 / R3-DE02。
-- [ ] `.gitignore` へ `.env` / `.env.*` / `*.pem` / `*.key` を追加し、
+- [x] `.gitignore` へ `.env` / `.env.*` / `*.pem` / `*.key` を追加し、
       `!notes/assets/*.log` の再包含を見直す。根拠 R1-CF02。
 - [x] CI ゲートを `scripts/check.sh` 一本へ集約し、markdownlint 設定を
       `.markdownlint.json` へ一本化する（現在 3 か所に分散）。根拠 R4-CI01 / R1-CF01。
-- [ ] advisory ignore の失効を強制し、cargo-vet の `baseline-unreviewed` のみの
+- [x] advisory ignore の失効を強制し、cargo-vet の `baseline-unreviewed` のみの
       運用と `advisory-not-detected` 常時 allow を整理する。根拠 R3-DE02 / R4-CI01。
-- [ ] GitHub Actions と外部ツールをコミット SHA / 明示バージョンへピン留め。
+- [x] GitHub Actions と外部ツールをコミット SHA / 明示バージョンへピン留め。
       根拠 R3-DE02 / R4-CI01。
-- [ ] `sanitize_display` で U+2028 / U+2029 を除去し、wire 由来文字列の
+- [x] `sanitize_display` で U+2028 / U+2029 を除去し、wire 由来文字列の
       レイアウト崩れと export 混入を防ぐ。根拠 R3-IV02。
-- [ ] コード内の開発ホスト固有値を汎用名へ: `/boot/efi` / `/mnt/timeshift` /
+- [x] コード内の開発ホスト固有値を汎用名へ: `/boot/efi` / `/mnt/timeshift` /
       `tailscale0` / `enp4s0` と実測トラフィック量、デモの
       `/home/user/.../gpui-task-manager` と `127.0.0.1:8787`。根拠 R1-AR01。
-- [ ] `Dashboard::ingest` で古い/順序外スナップショットを検証し、transient status
+- [x] `Dashboard::ingest` で古い/順序外スナップショットを検証し、transient status
       と network rate 基準の汚染を防ぐ。Web の config/generation を原子取得にする。
       根拠 R2-ER02 / R2-BV02。
-- [ ] ドキュメントの現状矛盾を解消: `RESEARCH.md` の `/metrics` 欠落、
+- [x] ドキュメントの現状矛盾を解消: `RESEARCH.md` の `/metrics` 欠落、
       `SECURITY.md` の公開前プレースホルダ、wasm 計測日、検証件数、
       設定永続化が 3 項目と書かれた古い記述。根拠 R5-DC01 / R3-DE01。
-- [ ] Web の corrupt 設定 DOM 通知を正常 load 時にクリアし、corrupt 値の退避を
+- [x] Web の corrupt 設定 DOM 通知を正常 load 時にクリアし、corrupt 値の退避を
       ネイティブと揃える。根拠 R2-DI01。
-- [ ] ネイティブ版へ AccessKit の role / aria_label を付与し、ブラウザ版との
+- [x] ネイティブ版へ AccessKit の role / aria_label を付与し、ブラウザ版との
       アクセシビリティ格差を解消。根拠 R5-UX01。
 
 ### 優先度: 低 — Twitter 公開前チェック
 
-- [ ] ユーザー向け文言の内部用語を置換: `redact` / `stale` / `赤退` /
+- [x] ユーザー向け文言の内部用語を置換: `redact` / `stale` / `赤退` /
       `tm-core DemoProbe` 等。根拠 R5-UX01。
 
 ### 優先度: 高 — コンボレビュー 2026-11-19
@@ -228,6 +228,13 @@ status: current
       根拠 c1-ap01。
 - [x] 設定保存失敗を UI に通知 (`app/src/app.rs:393`, `web/src/shell.rs:391`)。
       根拠 d4-vu01。
+
+### 残課題（swarm-coding ラウンド 3 で判明）
+
+- [ ] MSRV 1.92 を宣言しているが `sysinfo 0.40.3` が rustc 1.95 を要求し、
+      workspace 全体の `cargo +1.92 check` が Cargo に拒否される。CI の msrv-1-92
+      ジョブは tm-core / tm-viewmodel にスコープ限定済み。sysinfo を 1.92 対応版へ
+      変更するか MSRV を 1.95 へ引き上げる設計判断が必要（af-ci）。
 
 ### 優先度: 低 — コンボレビュー 2026-11-19
 

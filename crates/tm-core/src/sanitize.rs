@@ -58,7 +58,14 @@ pub fn sanitize_display(input: &str, max_chars: usize) -> String {
     let mut truncated = false;
 
     for ch in stripped.chars() {
+        // U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) are Zl/Zp,
+        // not Cc, so `is_control()` misses them even though renderers treat
+        // them as line breaks. Collapse only these two explicitly: using the
+        // whole `is_whitespace()` set would also fold characters our Cf policy
+        // already handles (e.g. NBSP) and change established behaviour.
         let ch = if ch.is_control()
+            || ch == '\u{2028}'
+            || ch == '\u{2029}'
             || is_bidi_control(ch)
             || is_invisible_format(ch)
             || is_format_char(ch)
@@ -391,6 +398,23 @@ mod tests {
     #[test]
     fn whitespace_is_collapsed_and_trimmed() {
         assert_eq!(sanitize_display("  a    b  ", 64), "a b");
+    }
+
+    #[test]
+    fn line_and_paragraph_separators_are_folded_to_spaces() {
+        // U+2028 (Zl) / U+2029 (Zp) are not `char::is_control()`, but renderers
+        // treat them as line breaks. A wire-derived name must not keep them.
+        let output = sanitize_display("evil\u{2028}name\u{2029}with\u{2028}breaks", 64);
+        assert_eq!(output, "evil name with breaks");
+        assert!(!output.contains('\u{2028}'), "U+2028 survived: {output:?}");
+        assert!(!output.contains('\u{2029}'), "U+2029 survived: {output:?}");
+
+        // Separators collapse together with ordinary whitespace and are
+        // trimmed at the edges, exactly like the spaces they become.
+        assert_eq!(
+            sanitize_display("  a\u{2028}\u{2029}  b\u{2029}  ", 64),
+            "a b"
+        );
     }
 
     #[test]

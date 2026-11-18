@@ -273,9 +273,9 @@ impl NetworkSnapshot {
     ///
     /// Loopback and virtual interfaces are excluded: their traffic is already
     /// counted on the physical interface underneath, so adding them would
-    /// double-count the overview rate (Runtime Proof: `tailscale0` reported
-    /// 79.9 MB received while `enp4s0` reported 124.6 GB, i.e. the VPN traffic
-    /// was counted twice).
+    /// double-count the overview rate (Runtime Proof: a VPN interface reported
+    /// tens of MB received while the physical link reported hundreds of GB,
+    /// i.e. the VPN traffic was counted twice).
     pub fn physical_totals(&self) -> (u64, u64) {
         self.interfaces
             .iter()
@@ -297,14 +297,15 @@ impl NetworkSnapshot {
 /// interface as physical (a missing interface in the summary is worse than a
 /// rarely over-counted one).
 pub fn is_virtual_interface(name: &str) -> bool {
-    const VIRTUAL_PREFIXES: [&str; 10] = [
+    const VIRTUAL_PREFIXES: [&str; 11] = [
         "br-",
         "docker",
         "veth",
         "virbr",
         "lxcbr",
         "tailscale",
-        "wg",   // WireGuard (same tunnel-double-count as tailscale0)
+        "vpn",  // generic VPN interfaces (e.g. vpn0)
+        "wg",   // WireGuard (same tunnel-double-count as a VPN interface)
         "utun", // macOS IKEv2 / WireGuard tunnels
         "tun",
         "tap",
@@ -509,7 +510,7 @@ mod tests {
             "veth1234",
             "virbr0",
             "lxcbr0",
-            "tailscale0",
+            "vpn0",
             "wg0",
             "utun3",
             "tun0",
@@ -518,28 +519,25 @@ mod tests {
         ] {
             assert!(is_virtual_interface(name), "{name} must be virtual");
         }
-        for name in [
-            "enp4s0", "eth0", "wlan0", "wlp3s0", "en0", "wlan1", "local0",
-        ] {
+        for name in ["eth0", "eth1", "wlan0", "wlp3s0", "en0", "wlan1", "local0"] {
             assert!(!is_virtual_interface(name), "{name} must be physical");
         }
     }
 
     #[test]
     fn physical_totals_exclude_loopback_and_virtual_interfaces() {
-        // Mirrors the development host: the VPN interface duplicates traffic
-        // that is also counted on enp4s0.
+        // The VPN interface duplicates traffic that is also counted on eth0.
         let network = NetworkSnapshot {
             interfaces: vec![
                 NetworkInterfaceSnapshot {
-                    name: "enp4s0".into(),
-                    received_bytes: 124_641_412_687,
-                    transmitted_bytes: 28_381_393_862,
+                    name: "eth0".into(),
+                    received_bytes: 100_000_000_000,
+                    transmitted_bytes: 20_000_000_000,
                 },
                 NetworkInterfaceSnapshot {
-                    name: "tailscale0".into(),
-                    received_bytes: 79_901_838,
-                    transmitted_bytes: 35_192_774,
+                    name: "vpn0".into(),
+                    received_bytes: 50_000_000,
+                    transmitted_bytes: 20_000_000,
                 },
                 NetworkInterfaceSnapshot {
                     name: "docker0".into(),
@@ -553,9 +551,9 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(network.physical_totals(), (124_641_412_687, 28_381_393_862));
+        assert_eq!(network.physical_totals(), (100_000_000_000, 20_000_000_000));
         // The all-interface total still double-counts, which is why the
         // overview uses physical_totals().
-        assert_eq!(network.totals(), (124_721_315_525, 28_416_588_636));
+        assert_eq!(network.totals(), (100_050_001_000, 20_020_002_000));
     }
 }
