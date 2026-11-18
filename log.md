@@ -1388,3 +1388,8 @@
 
 - デモ値に日本語ラベルとウィンドウタイトル識別を追加、elapsed を refresh 後に
   移動。workspace 372 passed。
+
+## 2026-11-18（エージェント並列調査 第43弾 → non-UTF8 argv の panic）
+
+- tm-agent を args_os() 化し、非 UTF-8 引数を exit 2 で拒否（panic 解消）。
+  agent 79 / workspace 372 passed。
