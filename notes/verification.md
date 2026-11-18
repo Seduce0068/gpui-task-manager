@@ -2008,3 +2008,27 @@ exercise しない虚偽確信（新規型はまだ SystemSnapshot に未接続�
 （設計判断）、SECURITY の SSE 検証項目（実装側テスト未確認）。
 
 - app 61 passed / clippy / fmt / markdownlint（増分ゼロ）成功。
+
+## 2026-11-18（エージェント並列調査 第23弾 → 温度の正規化と全TODO検証）
+
+3 観点（新機能レビュー / 境界監査 / TODO整合）の調査エージェントを並列起動。
+元 checkout は別セッションの 10a8e16/6eed24d（未 push）で diverge 状態のため、
+前回同様 worktree（cb1d95a）で実装・検証した。
+
+1. **温度の正規化バグ（明確な実バグ、3 回以上保留）**: `export.rs` の
+   `push_f32` が温度にも `normalise_percent` を適用し、100°C 超 → 100、
+   負温度 → 0 に改変していた。tm-core に `normalise_temperature`（非有限のみ
+   0、負・100 超は保持）を追加し温度出力を専用ヘルパに分離。回帰テストで
+   120.5°C / -20°C / NaN の JSON 出力を固定。
+
+**監査で判明した重要事実**:
+- SSE はサーバ側 `/api/v1/stream` のみで、クライアント接続コードは 0 行。
+  さらに OPTIONS プリフライトが 401 で失敗するため「全 TODO 完了」は
+  過剰宣言（配線とプリフライト修正はセットで必要、別セッションの範囲）。
+- redact 全フィールド網羅テストと sanitize カバレッジは新機能側が追従済みで
+  第22弾の虚偽確信は解消。SSE エラー/status もクライアント未接続で影響なし。
+- 残る要判断: WireGuard wg0、symlink settings、serde enum 境界、
+  request_signal の paused ガード、恒真テスト、app への preset 未配線、
+  adaptive interval の即時反映、sysfs online 欠落時の誤判定。
+
+- tm-core 133 passed / clippy / fmt 成功。
