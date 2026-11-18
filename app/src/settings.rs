@@ -52,10 +52,13 @@ pub use tm_viewmodel::Settings;
 const APP_DIR: &str = "gpui-task-manager";
 /// Settings file name.
 const FILE_NAME: &str = "settings.json";
+/// Maximum number of corrupt backups kept on disk. Older ones are pruned after
+/// a successful backup (H1-BACKUP).
+const CORRUPT_BACKUP_LIMIT: usize = 5;
 
 /// Fixed, redacted text shown when a corrupt file was moved aside successfully.
 pub const NOTICE_BACKED_UP: &str =
-    "保存された設定を読み込めませんでした。破損した設定はバックアップし、既定値で起動します。";
+    "保存された設定を読み込めませんでした。破損した設定はバックアップし、既定値で起動します。退避物には保持上限があり、復元手順は README.md または SECURITY.md を参照してください。";
 /// Fixed, redacted text shown when the backup itself failed.
 pub const NOTICE_BACKUP_FAILED: &str =
     "保存された設定を読み込めませんでした。バックアップにも失敗したため既定値で起動します。";
@@ -430,6 +433,48 @@ fn backup_candidate(stem: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
     ))
 }
 
+/// Sort key for a corrupt backup file name: fixed-width timestamp, then the
+/// numeric `-N` collision suffix.
+///
+/// The timestamp is 16 hex digits, so lexicographic order is oldest first. The
+/// `-N` suffix must be compared numerically: string order would place `-10`
+/// before `-2` and prune the wrong backup. Anything without the exact prefix
+/// and timestamp shape (including the `-overflow` fallback) is rejected, so
+/// the retention sweep cannot delete unrelated files.
+fn backup_sort_key(name: &str, prefix: &str) -> Option<(String, u64)> {
+    let rest = name.strip_prefix(prefix)?;
+    let (timestamp, suffix) = match rest.split_once('-') {
+        Some((timestamp, suffix)) => (timestamp, suffix.parse::<u64>().ok()?),
+        None => (rest, 0),
+    };
+    if timestamp.len() != 16 || !timestamp.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((timestamp.to_string(), suffix))
+}
+
+/// Removes the oldest backups beyond [`CORRUPT_BACKUP_LIMIT`].
+///
+/// Listing or deletion failures are ignored: cleanup must never turn a backup
+/// problem into a startup failure, matching the existing backup policy.
+fn prune_corrupt_backups(parent: &Path, prefix: &str) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut backups: Vec<(PathBuf, (String, u64))> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let key = backup_sort_key(&name, prefix)?;
+            Some((entry.path(), key))
+        })
+        .collect();
+    backups.sort_by(|left, right| left.1.cmp(&right.1));
+    for (path, _) in backups.into_iter().rev().skip(CORRUPT_BACKUP_LIMIT) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// Moves a corrupt settings file aside before the next save overwrites it.
 ///
 /// Returns `true` only when the rename succeeded; failures are logged and
@@ -440,18 +485,36 @@ fn backup_corrupt_file(path: &Path) -> bool {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
+    backup_corrupt_file_at(path, nanos)
+}
+
+/// Timestamp-injected variant of [`backup_corrupt_file`].
+///
+/// Tests pin the retention order with explicit timestamps instead of relying
+/// on wall-clock resolution between consecutive backups.
+fn backup_corrupt_file_at(path: &Path, nanos: u128) -> bool {
     // Keep the path as OsString: `.display().to_string()` replaces non-UTF-8
     // bytes with U+FFFD, which could point `rename` at a different directory
     // and silently lose the corrupt data (R26 settings audit).
     let mut name = path
         .file_name()
         .map(|name| name.to_os_string())
-        .unwrap_or_else(|| std::ffi::OsString::from("settings.json"));
+        .unwrap_or_else(|| std::ffi::OsString::from(FILE_NAME));
+    let original = name.clone();
     name.push(format!(".corrupt-{nanos:016x}"));
     let stem = path.with_file_name(name);
     let candidate = backup_candidate(&stem, |candidate| candidate.exists());
     match fs::rename(path, &candidate) {
-        Ok(()) => true,
+        Ok(()) => {
+            // A non-UTF-8 file name conservatively matches nothing and leaves
+            // older backups in place rather than guessing which ones to delete.
+            let mut prefix = original.to_string_lossy().into_owned();
+            prefix.push_str(".corrupt-");
+            if let Some(parent) = candidate.parent() {
+                prune_corrupt_backups(parent, &prefix);
+            }
+            true
+        }
         Err(error) => {
             eprintln!(
                 "gpui-task-manager: 破損設定のバックアップに失敗 ({}): {error}",
@@ -570,6 +633,74 @@ mod tests {
 
         let fresh = backup_candidate(Path::new(stem), |_| false);
         assert_eq!(fresh, PathBuf::from(stem));
+    }
+
+    #[test]
+    fn backup_sort_key_orders_numeric_suffixes_and_rejects_unrelated_names() {
+        let prefix = "settings.json.corrupt-";
+        let two = backup_sort_key("settings.json.corrupt-0000000000001000-2", prefix);
+        let ten = backup_sort_key("settings.json.corrupt-0000000000001000-10", prefix);
+        assert!(two < ten, "-2 must sort before -10");
+        assert_eq!(two, Some(("0000000000001000".to_string(), 2)));
+        assert_eq!(
+            backup_sort_key("settings.json.corrupt-0000000000001000", prefix),
+            Some(("0000000000001000".to_string(), 0))
+        );
+        assert_eq!(
+            backup_sort_key("settings.json.corrupt-0000000000001000-overflow", prefix),
+            None
+        );
+        assert_eq!(backup_sort_key("settings.json.tmp.123", prefix), None);
+    }
+
+    #[test]
+    fn six_backups_keep_only_the_five_newest() {
+        let path = temporary_path("backup-retention");
+        let parent = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&parent).expect("create parent");
+        // The repeated timestamp exercises the `-1` collision suffix; the
+        // remaining backups use increasing timestamps.
+        let stamps = [0x1000, 0x1000, 0x1001, 0x1002, 0x1003, 0x1004];
+        for (index, stamp) in stamps.into_iter().enumerate() {
+            fs::write(&path, format!("{{ corrupt {index}")).expect("write corrupt file");
+            assert!(
+                backup_corrupt_file_at(&path, stamp),
+                "backup {index} must succeed"
+            );
+        }
+        let mut names: Vec<String> = fs::read_dir(&parent)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".corrupt-").then_some(name)
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names.len(),
+            CORRUPT_BACKUP_LIMIT,
+            "oldest backup must be pruned"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.ends_with("corrupt-0000000000001000")),
+            "oldest backup must be deleted: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name.ends_with("corrupt-0000000000001000-1")),
+            "same-timestamp collision backup must survive: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name.ends_with("corrupt-0000000000001004")),
+            "newest backup must survive: {names:?}"
+        );
+        let _ = fs::remove_dir_all(&parent);
     }
 
     fn temporary_path(name: &str) -> PathBuf {

@@ -56,12 +56,16 @@ pub const SETTINGS_NOTICE_DOM_ID: &str = "gpui-settings-notice";
 /// offending bytes survive for diagnosis without blocking a clean reload.
 pub const CORRUPT_BACKUP_KEY_PREFIX: &str = "gpui-task-manager.settings.corrupt.";
 
+/// Maximum number of corrupt backups kept in `localStorage`. Older ones are
+/// pruned after a successful quarantine (H1-BACKUP).
+const CORRUPT_BACKUP_LIMIT: usize = 5;
+
 /// Fixed, redacted text shown when a stored settings value is corrupt.
 ///
 /// The offending bytes are preserved under a key ending in
 /// `.corrupt.<timestamp>` before defaults are installed. Only that fixed
 /// suffix is named here: no key namespace, path, host name or token is echoed.
-pub const NOTICE_CORRUPT: &str = "保存された設定を読み込めませんでした。破損した設定は末尾が .corrupt.<timestamp> の別キーへ退避し、既定値で起動します。";
+pub const NOTICE_CORRUPT: &str = "保存された設定を読み込めませんでした。破損した設定は末尾が .corrupt.<timestamp> の別キーへ退避し、既定値で起動します。退避物には保持上限があり、復元手順は README.md を参照してください。";
 
 /// Fixed, redacted text shown when persisting settings fails.
 ///
@@ -172,19 +176,52 @@ fn quarantine_writes(nanos: u128) -> (String, String) {
     (corrupt_backup_key(nanos), default)
 }
 
+/// Sort key for a quarantine key: fixed-width timestamp, then the numeric
+/// `-N` collision suffix.
+///
+/// Only keys with the exact prefix and a 16-hex timestamp are eligible, so an
+/// unrelated `localStorage` entry is never removed by the retention sweep.
+#[cfg(any(target_family = "wasm", test))]
+fn corrupt_backup_sort_key(key: &str) -> Option<(String, u64)> {
+    let rest = key.strip_prefix(CORRUPT_BACKUP_KEY_PREFIX)?;
+    let (timestamp, suffix) = match rest.split_once('-') {
+        Some((timestamp, suffix)) => (timestamp, suffix.parse::<u64>().ok()?),
+        None => (rest, 0),
+    };
+    if timestamp.len() != 16 || !timestamp.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((timestamp.to_string(), suffix))
+}
+
 /// Quarantines `raw` through an injected writer and returns the backup key.
 ///
 /// `write` returns `true` on success. A failed backup never blocks installing
 /// the defaults at [`STORAGE_KEY`] (the native shell still starts in that case).
+/// After a successful quarantine, only the newest [`CORRUPT_BACKUP_LIMIT`]
+/// backups are kept; enumeration/removal failures are ignored so cleanup never
+/// blocks startup either.
 #[cfg(any(target_family = "wasm", test))]
 fn quarantine_corrupt_with(
     raw: &str,
     nanos: u128,
     mut write: impl FnMut(&str, &str) -> bool,
+    keys: impl Fn() -> Vec<String>,
+    remove: impl Fn(&str),
 ) -> String {
     let (backup_key, default_json) = quarantine_writes(nanos);
-    let _ = write(&backup_key, raw);
+    let backed_up = write(&backup_key, raw);
     let _ = write(STORAGE_KEY, &default_json);
+    if backed_up {
+        let mut backups: Vec<String> = keys()
+            .into_iter()
+            .filter(|key| corrupt_backup_sort_key(key).is_some())
+            .collect();
+        backups.sort_by_key(|key| corrupt_backup_sort_key(key));
+        for key in backups.into_iter().rev().skip(CORRUPT_BACKUP_LIMIT) {
+            remove(&key);
+        }
+    }
     backup_key
 }
 
@@ -195,9 +232,19 @@ fn quarantine_corrupt(raw: &str) {
     let Some(storage) = storage() else {
         return;
     };
-    let key = quarantine_corrupt_with(raw, now_nanos(), |key, value| {
-        storage.set_item(key, value).is_ok()
-    });
+    let key = quarantine_corrupt_with(
+        raw,
+        now_nanos(),
+        |key, value| storage.set_item(key, value).is_ok(),
+        || {
+            (0..storage.length().unwrap_or(0))
+                .filter_map(|index| storage.key(index).ok().flatten())
+                .collect()
+        },
+        |key| {
+            let _ = storage.remove_item(key);
+        },
+    );
     // The key is a fixed namespace plus a timestamp; `raw` is never logged.
     log::warn!("破損設定を退避しました: {key}");
 }
@@ -488,6 +535,33 @@ mod tests {
     // Tests that touch the process-wide PENDING_NOTICE must not interleave.
     static NOTICE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// In-memory stand-in for `localStorage`, shared by the quarantine tests.
+    #[derive(Default)]
+    struct MemoryStorage {
+        entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
+        writes: std::cell::RefCell<Vec<(String, String)>>,
+    }
+
+    impl MemoryStorage {
+        fn write(&self, key: &str, value: &str) -> bool {
+            self.writes
+                .borrow_mut()
+                .push((key.to_string(), value.to_string()));
+            self.entries
+                .borrow_mut()
+                .insert(key.to_string(), value.to_string());
+            true
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.entries.borrow().keys().cloned().collect()
+        }
+
+        fn remove(&self, key: &str) {
+            self.entries.borrow_mut().remove(key);
+        }
+    }
+
     #[test]
     fn storage_key_is_namespaced() {
         assert!(STORAGE_KEY.starts_with("gpui-task-manager."));
@@ -727,14 +801,18 @@ mod tests {
     fn corrupt_value_is_quarantined_then_defaults_installed() {
         let raw = "{ not json";
         let nanos = 0x0000_0000_0000_1234u128;
+        let storage = MemoryStorage::default();
 
-        let mut writes: Vec<(String, String)> = Vec::new();
-        let key = quarantine_corrupt_with(raw, nanos, |key, value| {
-            writes.push((key.to_string(), value.to_string()));
-            true
-        });
+        let key = quarantine_corrupt_with(
+            raw,
+            nanos,
+            |key, value| storage.write(key, value),
+            || storage.keys(),
+            |key| storage.remove(key),
+        );
         assert_eq!(key, format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}"));
         assert!(key.starts_with(CORRUPT_BACKUP_KEY_PREFIX));
+        let writes = storage.writes.borrow();
         assert_eq!(writes.len(), 2, "backup first, then default at primary key");
         assert_eq!(writes[0], (key.clone(), raw.to_string()));
         assert_eq!(writes[1].0, STORAGE_KEY);
@@ -743,23 +821,72 @@ mod tests {
             1_000,
             "installed value must be a healthy default document"
         );
+        drop(writes);
 
         // Each quarantine gets a distinct key so earlier backups survive.
-        let next = quarantine_corrupt_with(raw, nanos + 1, |_, _| true);
+        let next = quarantine_corrupt_with(
+            raw,
+            nanos + 1,
+            |key, value| storage.write(key, value),
+            || storage.keys(),
+            |key| storage.remove(key),
+        );
         assert_ne!(key, next);
 
         // A failed backup write must not prevent installing the defaults.
-        let mut installed: Vec<(String, String)> = Vec::new();
-        quarantine_corrupt_with(raw, nanos, |key, value| {
-            if key.starts_with(CORRUPT_BACKUP_KEY_PREFIX) {
-                false
-            } else {
-                installed.push((key.to_string(), value.to_string()));
-                true
-            }
-        });
+        let failed = MemoryStorage::default();
+        quarantine_corrupt_with(
+            raw,
+            nanos,
+            |key, value| {
+                if key.starts_with(CORRUPT_BACKUP_KEY_PREFIX) {
+                    false
+                } else {
+                    failed.write(key, value)
+                }
+            },
+            || failed.keys(),
+            |key| failed.remove(key),
+        );
+        let installed = failed.writes.borrow();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].0, STORAGE_KEY);
+    }
+
+    #[test]
+    fn corrupt_backup_sort_key_orders_numeric_suffixes() {
+        let two =
+            corrupt_backup_sort_key(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}-2", 0x1000u128));
+        let ten = corrupt_backup_sort_key(&format!(
+            "{CORRUPT_BACKUP_KEY_PREFIX}{:016x}-10",
+            0x1000u128
+        ));
+        assert!(two < ten, "-2 must sort before -10");
+        assert!(corrupt_backup_sort_key(STORAGE_KEY).is_none());
+    }
+
+    #[test]
+    fn six_quarantines_keep_only_the_five_newest_backups() {
+        let storage = MemoryStorage::default();
+        for stamp in [0x1000u128, 0x1001, 0x1002, 0x1003, 0x1004, 0x1005] {
+            quarantine_corrupt_with(
+                "{ not json",
+                stamp,
+                |key, value| storage.write(key, value),
+                || storage.keys(),
+                |key| storage.remove(key),
+            );
+        }
+        let mut backups: Vec<String> = storage
+            .keys()
+            .into_iter()
+            .filter(|key| key.starts_with(CORRUPT_BACKUP_KEY_PREFIX))
+            .collect();
+        backups.sort();
+        assert_eq!(backups.len(), CORRUPT_BACKUP_LIMIT, "oldest must be pruned");
+        assert!(!backups.contains(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}", 0x1000)));
+        assert!(backups.contains(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}", 0x1005)));
+        assert!(storage.entries.borrow().contains_key(STORAGE_KEY));
     }
 
     #[test]
