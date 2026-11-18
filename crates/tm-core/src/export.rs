@@ -64,8 +64,9 @@ pub fn redact_for_export(
 /// quoted when it contains a comma, quote or line break, and embedded quotes
 /// are doubled) and lines end with `\n`. Text fields starting with `=`, `+`,
 /// `-`, `@`, tab or carriage return get a leading apostrophe so a spreadsheet
-/// cannot interpret an attacker-supplied command line as a formula. Numeric
-/// fields are never neutralised this way.
+/// cannot interpret an attacker-supplied command line as a formula. Leading
+/// newline, space, VT and FF are neutralised too (spreadsheet importers may
+/// skip them). Numeric fields are never neutralised this way.
 pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>) -> String {
     let snap = redact_for_export(snapshot, ids);
     let mut out = String::with_capacity(PROCESS_CSV_HEADER.len() + 1 + snap.processes.len() * 192);
@@ -436,9 +437,12 @@ fn csv_status(status: ProcessStatus) -> &'static str {
 
 fn csv_text(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
+    // A leading newline/space (or VT/FF) can be ignored by spreadsheet
+    // importers, exposing the next character as a formula. Neutralise those
+    // too — the RFC 4180 quote check below already treats '\n' and '\r' alike.
     if matches!(
         value.chars().next(),
-        Some('=' | '+' | '-' | '@' | '\t' | '\r')
+        Some('=' | '+' | '-' | '@' | '\t' | '\r' | '\n' | ' ' | '\u{0b}' | '\u{0c}')
     ) {
         out.push('\'');
     }
@@ -647,6 +651,29 @@ mod tests {
         assert!(csv.contains("'\"=cmd|' /C calc'!A0\r\nnext\""), "{csv}");
         // Empty Option fields stay empty instead of inventing a value.
         assert!(csv.contains("0,0,0,,,'\"=cmd|'"), "{csv}");
+    }
+
+    #[test]
+    fn csv_neutralises_leading_whitespace_and_newline_before_formulas() {
+        // A leading newline or space can be ignored by a spreadsheet importer,
+        // exposing the '=' that follows as a formula (R28 export audit).
+        for value in ["\n=1+1", " =1+1", "\u{0b}=1+1", "\u{0c}=1+1"] {
+            let mut snapshot = SystemSnapshot::default();
+            snapshot.processes.push(crate::model::ProcessSnapshot {
+                command: value.into(),
+                ..crate::model::ProcessSnapshot::default()
+            });
+            let csv = snapshot_to_csv(&snapshot, &secret_ids());
+            let row = csv.lines().nth(1).expect("data row");
+            assert!(
+                row.contains("'"),
+                "leading whitespace must be neutralised: {row:?}"
+            );
+            assert!(
+                !row.contains(",\n="),
+                "formula must not start a row: {row:?}"
+            );
+        }
     }
 
     #[test]

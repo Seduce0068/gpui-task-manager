@@ -1903,3 +1903,27 @@ settings.rs・demo.rs・SECURITY.md に限定。調査中に別セッション�
 
 - 担当範囲: app 35 passed / tm-core 110 passed / clippy / rustfmt / markdownlint
   （増分ゼロ）成功。
+
+## 2026-11-18（エージェント並列調査 第19弾 → CSV数式対策と文書の件数参照化）
+
+3 観点（コア / 設定CLI / 文書）の調査エージェントを並列起動。別セッションが
+app/src/app.rs・tm-core/port.rs・sanitize.rs を編集中だったため、実装は競合しない
+export.rs・DESIGN.md・SECURITY.md に限定。
+
+1. **CSV 数式インジェクションの抜け道（実バグ、子が Runtime Proof）**:
+   csv_text の無害化集合が `\n` / 空白 / VT / FF を欠き、`"\n=1+1"` や
+   `" =1+1"` がスプレッドシートで数式として解釈され得た。先頭文字集合に
+   追加し、pure テスト `csv_neutralises_leading_whitespace_and_newline_before_formulas`
+   を追加。RFC 4180 の引用判定（`\n`/`\r` 両方）との非対称を解消。
+2. **テスト件数を README 参照に集約**: DESIGN.md / SECURITY.md の
+   「60 件超 / 47 / 13 / 8 / 175 件 / 28 件 / 12 件」を削除し、
+   README.md「検証状況」を参照する文言に変更。件数は別セッションが頻繁に
+   更新するため（現行 316 / web 57）、数字を書かない方式で陳腐化を防止。
+
+**見送り**: `--export` の umask 0777 下 mode 0000（app/src/main.rs に別セッション
+の未コミット変更が混在し、巻き込みリスクがあるため次ラウンドに回す）、
+symlink の settings.json 置換（設計判断）、TM_REDACT 不正値（要判断）、
+Select(None) の復活（到達性限定）、DESIGN §1.2 の非目標矛盾（次点）。
+
+- tm-core 129 passed / clippy / markdownlint（増分ゼロ）成功。
+  CI の rustfmt との食い違いを避けるため import 並び順は HEAD のまま維持。
