@@ -236,9 +236,10 @@ fn run() -> Result<(), AgentError> {
             _ => {
                 let token = auth::generate_token()
                     .map_err(|message| AgentError::new(ExitCategory::Auth, message))?;
-                // The operator needs the token to talk to the agent; this is the
-                // only place it is written to the log.
-                eprintln!("tm-agent: 認証トークン (生成): {token}");
+                // Never log the generated token: stderr is routinely captured
+                // in CI output and support bundles. Operators who need to know
+                // the credential pass --token-file or TM_AGENT_TOKEN instead.
+                eprintln!("tm-agent: 認証トークンを自動生成しました（値はログに出力しません）");
                 token
             }
         },
@@ -276,11 +277,35 @@ fn run() -> Result<(), AgentError> {
     serve(&listener, probe, &token, config.redact, !config.demo).map_err(AgentError::from)
 }
 
+/// Returns only the leaf name of a token file for operator messages.
+///
+/// The full path can include the user's home directory or an internal mount
+/// point, so error messages must never echo it.
+fn token_file_name(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
+    path.file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("(名前なし)"))
+}
+
+/// Classifies a probe error without echoing its free-form detail string.
+///
+/// `ProbeError` payloads can embed internal paths or host names. Logs and
+/// structured events keep only the variant, which is enough to triage a
+/// failure without leaking identifiers.
+fn probe_error_label(error: &tm_core::ProbeError) -> &'static str {
+    match error {
+        tm_core::ProbeError::Unsupported(_) => "未対応",
+        tm_core::ProbeError::Io(_) => "I/O エラー",
+        tm_core::ProbeError::Permission(_) => "権限不足",
+    }
+}
+
 /// Reads a bearer token from a file, trimming the trailing newline.
 ///
 /// Preferred over `--token`: file contents are not exposed through
 /// `/proc/<pid>/cmdline`. Empty files are rejected so a misconfiguration cannot
-/// start an agent with an empty token.
+/// start an agent with an empty token. Errors name the file only, never its
+/// parent directories.
 fn read_token_file(path: &std::path::Path) -> Result<String, String> {
     #[cfg(unix)]
     {
@@ -289,7 +314,7 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
             .map_err(|err| {
                 format!(
                     "トークンファイルの属性を読めません ({}): {err}",
-                    path.display()
+                    token_file_name(path)
                 )
             })?
             .permissions()
@@ -298,16 +323,23 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
         if mode & 0o044 != 0 {
             return Err(format!(
                 "トークンファイルの権限が緩すぎます ({}): 0600 にしてください (現在 {:04o})",
-                path.display(),
+                token_file_name(path),
                 mode & 0o777
             ));
         }
     }
-    let contents = std::fs::read_to_string(path)
-        .map_err(|err| format!("トークンファイルを読めません ({}): {err}", path.display()))?;
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        format!(
+            "トークンファイルを読めません ({}): {err}",
+            token_file_name(path)
+        )
+    })?;
     let token = contents.trim();
     if token.is_empty() {
-        return Err(format!("トークンファイルが空です: {}", path.display()));
+        return Err(format!(
+            "トークンファイルが空です: {}",
+            token_file_name(path)
+        ));
     }
     Ok(token.to_string())
 }
@@ -319,7 +351,12 @@ fn build_probe(config: &args::Config) -> Result<Box<dyn SystemProbe>, String> {
     } else {
         NativeProbe::new()
             .map(|probe| Box::new(probe) as Box<dyn SystemProbe>)
-            .map_err(|err| err.to_string())
+            .map_err(|err| {
+                format!(
+                    "スナップショット収集を初期化できません ({})",
+                    probe_error_label(&err)
+                )
+            })
     }
 }
 
@@ -327,9 +364,13 @@ fn build_probe(config: &args::Config) -> Result<Box<dyn SystemProbe>, String> {
 fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<(), String> {
     // CPU percentages are deltas to the previous sample, so the first sample
     // is a warm-up and is not printed.
-    probe.sample().map_err(|err| err.to_string())?;
+    probe
+        .sample()
+        .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
     std::thread::sleep(WARMUP_INTERVAL);
-    let mut snapshot = probe.sample().map_err(|err| err.to_string())?;
+    let mut snapshot = probe
+        .sample()
+        .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
     if redact {
         redact_snapshot(&mut snapshot, token);
     }
@@ -822,7 +863,10 @@ fn snapshot_response(
     // (`route`), so concurrent connections cannot race this check.
     if !warmed_up.load(Ordering::Acquire) {
         if let Err(err) = probe.sample() {
-            eprintln!("tm-agent: ウォームアップサンプルに失敗: {err}");
+            eprintln!(
+                "tm-agent: ウォームアップサンプルに失敗しました ({})",
+                probe_error_label(&err)
+            );
             emit(
                 Level::Error,
                 "probe.sample_failed",
@@ -854,9 +898,13 @@ fn snapshot_response(
             json_response(200, "OK", &envelope)
         }
         Err(err) => {
-            // Details go to the operator's log; the client gets a fixed string
-            // so a future probe implementation cannot leak paths in the body.
-            eprintln!("tm-agent: スナップショット取得に失敗: {err}");
+            // Only the error class reaches the operator's log; the free-form
+            // detail can contain paths or host names. The client always gets a
+            // fixed string as well.
+            eprintln!(
+                "tm-agent: スナップショット取得に失敗しました ({})",
+                probe_error_label(&err)
+            );
             emit(
                 Level::Error,
                 "probe.sample_failed",
@@ -1379,6 +1427,32 @@ mod tests {
     }
 
     #[test]
+    fn token_file_errors_name_only_the_file() {
+        let path = std::path::Path::new("/home/alice/private/token.txt");
+        assert_eq!(token_file_name(path), "token.txt");
+        assert!(!token_file_name(path).contains("alice"));
+        assert_eq!(token_file_name(std::path::Path::new("/")), "(名前なし)");
+    }
+
+    #[test]
+    fn probe_error_label_never_echoes_the_detail() {
+        for error in [
+            tm_core::ProbeError::Unsupported("SECRET-PATH /home/victim".to_string()),
+            tm_core::ProbeError::Io("SECRET-PATH /home/victim".to_string()),
+            tm_core::ProbeError::Permission("SECRET-PATH /home/victim".to_string()),
+        ] {
+            let label = probe_error_label(&error);
+            assert!(!label.contains("SECRET-PATH"), "{label}");
+            assert!(!label.contains("/home/victim"), "{label}");
+            assert!(!label.is_empty());
+        }
+        assert_eq!(
+            probe_error_label(&tm_core::ProbeError::Io("anything".to_string())),
+            "I/O エラー"
+        );
+    }
+
+    #[test]
     fn token_file_is_trimmed_and_empty_files_are_rejected() {
         let path =
             std::env::temp_dir().join(format!("tm-agent-token-{}-{}", std::process::id(), "read"));
@@ -1391,7 +1465,12 @@ mod tests {
         }
         assert_eq!(read_token_file(&path).expect("read token"), "secret-token");
         std::fs::write(&path, "   \n").expect("write empty token file");
-        assert!(read_token_file(&path).is_err());
+        let error = read_token_file(&path).expect_err("empty token file must fail");
+        assert!(error.contains("トークンファイルが空です"), "{error}");
+        assert!(
+            !error.contains(path.to_string_lossy().as_ref()),
+            "the full token file path must not leak: {error}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1404,6 +1483,10 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("set 0644");
         let error = read_token_file(&path).expect_err("0644 must be rejected");
         assert!(error.contains("0600"), "{error}");
+        assert!(
+            !error.contains(path.to_string_lossy().as_ref()),
+            "the full token file path must not leak: {error}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

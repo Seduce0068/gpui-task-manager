@@ -16,7 +16,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{ProcessStatus, SystemSnapshot};
-use crate::redact::{redact_snapshot, redact_text, RedactionIdentifiers};
+use crate::redact::{redact_snapshot, RedactionIdentifiers};
 
 /// Header row of the process CSV written by [`snapshot_to_csv`].
 ///
@@ -27,12 +27,11 @@ pub const PROCESS_CSV_HEADER: &str = "sampled_at_unix_millis,pid,start_time_secs
 /// Returns an owned, fully redacted copy of `snapshot`.
 ///
 /// This is the exact data the exporters convert. [`crate::redact::redact_snapshot`]
-/// covers the host name, process user/name/command and disk mount points, but
-/// deliberately leaves network interface names untouched because
-/// `is_virtual_interface()` classifies traffic by name. Classification has
-/// already happened by the time a snapshot is exported, so the exporters also
-/// mask the remaining display strings (OS name, kernel version, interface names
-/// and sensor labels) on their private copy.
+/// is the single source of truth and now masks every identifier-bearing display
+/// string: host name, OS name, kernel version, process user/name/command, mount
+/// points, interface names and sensor labels. Re-applying it to a private clone
+/// is therefore enough, with no field-specific masking left here; the operation
+/// is idempotent if the caller already redacted its snapshot.
 ///
 /// The input snapshot is never mutated and `ids` must be built from values
 /// captured **before** any redaction (see [`RedactionIdentifiers`]).
@@ -42,18 +41,6 @@ pub fn redact_for_export(
 ) -> SystemSnapshot {
     let mut copy = snapshot.clone();
     redact_snapshot(&mut copy, ids);
-    if let Some(os_name) = copy.os_name.take() {
-        copy.os_name = Some(redact_text(&os_name, ids));
-    }
-    if let Some(kernel_version) = copy.kernel_version.take() {
-        copy.kernel_version = Some(redact_text(&kernel_version, ids));
-    }
-    for interface in &mut copy.network.interfaces {
-        interface.name = redact_text(&interface.name, ids);
-    }
-    for component in &mut copy.components {
-        component.label = redact_text(&component.label, ids);
-    }
     copy
 }
 

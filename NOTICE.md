@@ -28,8 +28,7 @@
 
 ## 参考にした調査（コードはコピーしていない）
 
-- `work/gpui-file-explorer`（AGPL-3.0-or-later）の調査ノート
-  （`notes/ecosystem-notes.md`, `notes/wasm-browser-notes.md`）。
+- 別の AGPL プロジェクトの調査ノート（AGPL-3.0-or-later）。
   設計上の知見のみ参照し、ソースコードは取り込んでいません。
 
 ## ライセンス全文

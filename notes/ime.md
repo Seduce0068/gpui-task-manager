@@ -3,7 +3,7 @@ type: Implementation Report
 title: 日本語 IME 対応（ブラウザ版 / ネイティブ版とも EntityInputHandler 実装・Runtime Proof 付き）
 description: gpui-pre-web の IME ミラーと、ネイティブの EntityInputHandler を使い、ブラウザ版・ネイティブ版の絞り込み欄へ日本語 IME 対応を追加した記録。CDP の composition 検証と、ネイティブのデバッグフックによる変換中/確定の Runtime Proof、共有 FilterInput、実 IME 未検証などの制約を記載する
 tags: [gpui, wasm, ime, japanese-input, composition, entity-input-handler, runtime-proof]
-resource: work/gpui-task-manager/web
+resource: ./web
 generated: 2026-11-15T00:36:34+09:00
 status: verified
 ---
@@ -134,31 +134,31 @@ wasm32-unknown-unknown。日時 2026-11-15 00:25–00:31 JST。
 
 ```bash
 # 1. 純粋ロジックの単体テスト（ホストで実行）
-cargo test --manifest-path work/gpui-task-manager/web/Cargo.toml --lib -- filter_input
+cargo test --manifest-path ./web/Cargo.toml --lib -- filter_input
 # → test result: ok. 11 passed; 0 failed
 
 # 2. wasm ターゲットの型チェック
 cargo check --target wasm32-unknown-unknown \
-  --manifest-path work/gpui-task-manager/web/Cargo.toml
+  --manifest-path ./web/Cargo.toml
 # → Finished `dev` profile ...（warning なし）
 
 # 3. リリースビルド
-cd work/gpui-task-manager/web && trunk build --release
+cd ./web && trunk build --release
 # → ✅ success
 #   dist/tm-web-*.wasm: 7,589,230 bytes（gzip 3,024,986 bytes）
 #   wasm-opt は Team Lead が有効化済み（web/index.html）
 
 # 4. clippy（wasm ターゲット）
 cargo clippy --target wasm32-unknown-unknown \
-  --manifest-path work/gpui-task-manager/web/Cargo.toml
+  --manifest-path ./web/Cargo.toml
 # → Finished `dev` profile（warning なし）
 
 # 5. rustfmt
-rustfmt --check --edition 2024 work/gpui-task-manager/web/src/{lib.rs,shell.rs,filter_input.rs}
+rustfmt --check --edition 2024 ./web/src/{lib.rs,shell.rs,filter_input.rs}
 # → 差分なし
 
 # 6. ネイティブ版（回帰確認）
-cd work/gpui-task-manager && cargo build -p gpui-task-manager
+cd . && cargo build -p gpui-task-manager
 # → Finished `dev` profile（exit 0）
 ```
 
@@ -170,8 +170,8 @@ cd work/gpui-task-manager && cargo build -p gpui-task-manager
 
 ```bash
 python3 web/scripts/cdp_verify_ime.py \
-  --dist work/gpui-task-manager/web/dist \
-  --out work/gpui-task-manager/notes/assets \
+  --dist ./web/dist \
+  --out ./notes/assets \
   --http-port 8097 --cdp-port 9227 \
   --evidence /tmp/ime-evidence.json
 ```
@@ -221,7 +221,7 @@ python3 web/scripts/cdp_verify_web.py --port 9228 \
 ### ネイティブ版の起動確認（IME は未検証）
 
 ```bash
-cd work/gpui-task-manager
+cd .
 ./target/debug/gpui-task-manager --demo &
 spectacle -a -b -n -e -S -o /tmp/native-active.png   # Wayland のアクティブウィンドウ
 ```

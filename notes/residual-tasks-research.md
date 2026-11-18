@@ -3,7 +3,7 @@ type: Research
 title: 未知の残タスク・機能追加案の調査
 description: エージェントチームによる多角的調査（ラウンド 1〜5）と最終集約（ラウンド 6）の作業記録
 tags: [research, backlog, agent-team, gpui, task-manager]
-resource: work/gpui-task-manager
+resource: .
 generated: 2026-11-17T19:15:32+09:00
 verified: 2026-11-17T20:39:14+09:00
 status: completed
@@ -80,7 +80,7 @@ status: completed
 | R1-G11 | StartupWMClass の実 Window プロパティが未検証 | commit `90d98b7` | NEW | Low-Med |
 | R1-G12 | スクリーンショットと verification.md 数値の乖離（M5）が先送り | `verification.md:797-798`, `review-2026-11-14.md:192` | NEW | Low |
 | R1-G13 | 性能記述（sysinfo full tick 31.4ms / cold start 85ms）が未再測定 | `review-2026-11-14.md:180`（o7） | NEW | Low |
-| R1-G14 | 放置されたローカルブランチ master / archive/master と merged 済みリモートブランチ | `git branch -a`（`bc30c0b`, `dab7520`） | NEW | Low |
+| R1-G14 | 放置されたローカル開発ブランチと merged 済みリモートブランチ | `git branch -a`（`bc30c0b`, `dab7520`） | NEW | Low |
 | R1-G15 | issue/tag/release が皆無で残作業がローカル文書にのみ存在 | `list_issues` 0, `git tag -l` 空 | 一部 KNOWN | Low-Med |
 | R1-G16 | コード内未解決マーカー 0 件（否定証拠） | commit `a6de40f` | NEW | Low |
 

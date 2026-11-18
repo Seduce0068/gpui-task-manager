@@ -3,7 +3,7 @@ type: Reference
 title: GPUI Task Manager 現状サマリ
 description: 2026-11-18 時点の実装状況・検証結果・未解決事項の俯瞰。時系列の詳細は log.md、個別の根拠は verification.md を参照
 tags: [status, verification, runtime-proof, gpui, task-manager]
-resource: work/gpui-task-manager
+resource: .
 generated: 2026-11-17T03:46:00+09:00
 verified: 2026-11-18T10:58:00+09:00
 status: verified

@@ -56,8 +56,7 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
   RAM 64 GB / GTX 1660 SUPER / rustc 1.99.1。
 - 一次情報: GitHub REST API（`gh api`）、GitLab REST API、crates.io API、
   rustsec.org、各リポジトリの README / Cargo.toml / 公式 docs、crate tarball。
-- 既存調査（`work/gpui-file-explorer/notes/ecosystem-notes.md`,
-  `notes/wasm-browser-notes.md`）は手掛かりとして参照。**AGPL/GPL コードの
+- 外部プロジェクトの調査ノートは手掛かりとして参照。**AGPL/GPL コードの
   コピーは行っていない**。
 - 表記: **【検証済】** = 一次情報を取得して確認。**【推測】** = 取得情報からの推定。
   **【未確認】** = 未検証。

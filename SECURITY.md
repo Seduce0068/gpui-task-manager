@@ -9,9 +9,10 @@ generated: 2026-11-14T22:35:00+09:00
 
 ## 1. 適用範囲とサポート
 
-本ドキュメントは `gpui-task-manager` 試作（`work/gpui-task-manager/`）に適用する。
-**試作段階のため、セキュリティ修正のサポート期間は定めていない**。本リポジトリは
-public 化済みのため、サポート対象バージョンと連絡先を早急に追記する（現状は未追記）。
+本ドキュメントは `gpui-task-manager` 試作に適用する。
+**試作段階のため、セキュリティ修正のサポート期間は定めていない**。サポート対象は
+最新の `main` のみとし、報告先は GitHub Security Advisory（private vulnerability
+reporting）に限定する。
 
 ## 2. 脆弱性の報告
 
@@ -154,7 +155,7 @@ chmod 600 ~/.config/tm-agent.token
 ## 8. 検証
 
 ```bash
-cd work/gpui-task-manager
+cd .
 bash scripts/check.sh          # fmt / clippy / test / web test / wasm / deny / vet / machete（件数は README.md を参照）
 cargo audit
 ```

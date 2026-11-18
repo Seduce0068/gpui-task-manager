@@ -741,7 +741,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   `THIRD_PARTY_NOTICES.md` にアーカイブし、上流の著作権表示・許諾通知を保持する。
 - 理由: Apache-2.0 は GPLv3 互換のため AGPLv3 への変更が可能であり、NOTICE の
   保持義務は継続する。個人リポジトリ（`Seduce0068/*`）の既定ライセンスにも整合する。
-  既存の AGPL プロジェクト（`work/gpui-file-explorer`）からはコードをコピーせず、
+  別の AGPL プロジェクトからはコードをコピーせず、
   調査ノートのみ参照している。
 - 代替: Apache-2.0 の継続（個人リポジトリの既定方針と整合しないため採用せず）。
 - 結果: ADR-011 は決定の履歴として保持し、現在のライセンス決定は本 ADR とする。
@@ -793,6 +793,5 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - gpui-kit: <https://github.com/longbridge/gpui-kit> / <https://gpui-kit.com>
 - sysinfo: <https://github.com/GuillaumeGomez/sysinfo>
 - rustix: <https://github.com/bytecodealliance/rustix>
-- 既存調査ノート（同一ワークスペース、AGPL）:
-  `work/gpui-file-explorer/notes/ecosystem-notes.md`,
-  `work/gpui-file-explorer/notes/wasm-browser-notes.md`
+- 外部プロジェクトの調査ノート（AGPL）:
+  設計上の知見のみ参照し、コードはコピーしていない。

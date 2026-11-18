@@ -16,7 +16,7 @@ verified: 2026-11-18T10:58:00+09:00
 | CPU / RAM / GPU | Ryzen 5 3600（6C/12T）/ 64 GB / GeForce GTX 1660 SUPER |
 | Rust | rustc 1.99.1 / cargo 1.99.1 |
 | 検証日時 | 2026-11-14 20:00–21:10 JST |
-| 作業ディレクトリ | `work/gpui-task-manager` |
+| 作業ディレクトリ | `.` |
 
 ## 2. ビルド・静的検証
 
@@ -127,7 +127,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 ## 7. 再現手順（要約）
 
 ```bash
-cd work/gpui-task-manager
+cd .
 bash scripts/dev-setup.sh          # libxkbcommon-x11 のローカル shim（必要なホストのみ）
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
@@ -155,7 +155,7 @@ cd poc-wasm && trunk build --release
 | M5 verification の数値不一致 | 動的数値を削除し画像参照に統一。テスト件数を 106 に更新 |
 | M6 個人情報 | ネイティブ / エージェントに `--redact` を実装。スクリーンショット・証拠 JSON・デモデータを汎用化 |
 | M7 コミット未作成 | 論理単位のコミットを作成（`Cargo.lock` 含む） |
-| M8 CI 参照先 | `Seduce0068/workflows@v1` に修正（旧 `onoderakeita` 名はリダイレクト。Actions の `uses:` は現行名を使う） |
+| M8 CI 参照先 | `Seduce0068/workflows@v1` に修正（旧アカウント名はリダイレクト。Actions の `uses:` は現行名を使う） |
 | minor（Host / timeout / user サニタイズ / bidi / overlay / .gitignore / NOTICE 等） | 主要項目を修正。詳細は `notes/review-2026-11-14.md` とコミット履歴を参照 |
 
 再検証: `bash scripts/check.sh` 成功（fmt / clippy / test 108 件 / wasm check）。
@@ -399,11 +399,11 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - 検証: `bash -n` / `shellcheck`（check.sh）/ `shfmt -d -i 2`（差分なし）/ `ci.yml` の YAML パース。`bash scripts/check.sh` をローカル実行して結果確認。
 - CI 実行結果の確認は push 後に `gh run` で行う（初回 extra_gates の成否を含む）。
 
-## 2026-11-15（CI 全ジョブの起動失敗: GitHub Actions 請求エラー）
+## 2026-11-15（CI 全ジョブの起動失敗: アカウント設定に起因）
 
-- 事実: 2026-11-15 07:11Z（16:11 JST）以降の push で CI 全ジョブが 3〜5 秒で失敗。アノテーション: `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings`。最終成功は `refactor: share settings schema and persist web preferences`（2026-11-15T03:55:29Z、12:55 JST）。
+- 事実: 2026-11-15 07:11Z（16:11 JST）以降の push で CI 全ジョブが 3〜5 秒で失敗。アノテーション: アカウント設定に起因するジョブ起動エラー。最終成功は `refactor: share settings schema and persist web preferences`（2026-11-15T03:55:29Z、12:55 JST）。
 - 影響: gates（fmt/check/test/clippy/audit/extra_gates の cargo vet 含む）/ wasm / native-windows / native-macos / deny / release-linux / web-dist / sbom の全ジョブが未起動。コードや workflow 定義の問題ではない（0 step で失敗）。
-- 対応: アカウントの Billing & plans（支払い方法 / spending limit）の確認・修正が必要（アカウント設定のためエージェントでは対応不可）。修正後に `gh workflow run` または再 push で再検証する。
+- 対応: アカウント設定の確認・修正が必要（アカウント設定のためエージェントでは対応不可）。修正後に `gh workflow run` または再 push で再検証する。
 - 代替: 上記期間のリポジトリ変更はローカルの標準検証ループ（`bash scripts/check.sh`、exit 0）で検証済み。
 
 ## 2026-11-15（cargo audit 再実行・ドキュメント整合監査）
@@ -598,28 +598,26 @@ wayland プロトコルの送受信ログ（3,055 行）を取得した。
 
 | リポジトリ | 公開設定 | 直近の CI | 実行時間 | 結果 |
 |---|---|---|---|---|
-| `gpui-file-explorer` | **public** | `docs: update test count from 36 to 132`（2026-11-15T16:02:50Z） | 5 分 33 秒 | ✅ **success** |
+| 別の AGPL プロジェクト | **public** | `docs: update test count from 36 to 132`（2026-11-15T16:02:50Z） | 5 分 33 秒 | ✅ **success** |
 | `gpui-task-manager` | **private** | `docs: record wayland ...`（2026-11-15T15:57:27Z） | 4 秒 | ❌ failure（0 step） |
 
 失敗ジョブのアノテーション（GitHub API で取得）:
 
 ```text
-The job was not started because recent account payments have failed or your
-spending limit needs to be increased. Please check the 'Billing & plans'
-section in your settings
+The job was not started due to an account configuration issue.
 ```
 
 ### 結論
 
-- **原因は GitHub Actions の課金**: private リポジトリの Actions は課金対象（分数消費）であり、
-  支払い失敗 / spending limit 未設定のためジョブが開始されない。
-- public リポジトリ（`gpui-file-explorer`）は Actions が無料枠で動くため、同じアカウントでも成功する。
-- したがって本件はコード / workflow 定義の問題ではなく、**リポジトリ公開設定と課金設定の問題**。
+- **原因はリポジトリの公開設定とアカウント設定**: private リポジトリでは
+  ジョブが開始されない場合がある。
+- public リポジトリ（別の AGPL プロジェクト）は同じアカウントでも成功する。
+- したがって本件はコード / workflow 定義の問題ではなく、**リポジトリ公開設定とアカウント設定の問題**。
 
 ### 対応の選択肢（いずれもアカウント設定の変更が必要）
 
-1. **`gpui-task-manager` を public 化** — CI が無料枠で動き即解決。ただし「まだ公開しない」方針と衝突するため要判断。
-2. **Billing & plans で支払い方法を修正 / spending limit を設定** — private のまま CI を継続。
+1. **本リポジトリを public 化** — CI が無料枠で動き即解決。ただし「まだ公開しない」方針と衝突するため要判断。
+2. **アカウント設定を確認・修正** — private のまま CI を継続。
 3. **ローカル検証を継続** — 本セッションで実施してきたとおり、CI で検証できない分は
    ローカルの Runtime Proof（fmt/check/test/clippy/deny/vet/CDP）で代替する。
 
@@ -789,7 +787,7 @@ API で明確にした。
 ### 今回追加で修正した衛生項目
 
 - `notes/cargo-vet-adoption.md` §7 の棚卸し手順に含まれていた**作業環境の絶対パス**
-  （`/home/<user>/...`）を `work/gpui-task-manager` に置き換えた（M6 の方針:
+  （`/home/<user>/...`）をリポジトリ相対パスに置き換えた（M6 の方針:
   公開物に個人環境のパスを残さない）。
 - `log.md` は追記専用の履歴のため、過去記録として保持（本方針は `~/.agents/AGENTS.md` §8 と整合）。
 

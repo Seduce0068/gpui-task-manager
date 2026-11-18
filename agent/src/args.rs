@@ -56,7 +56,8 @@ pub const USAGE: &str = concat!(
     "  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)\n\n",
     "認証:\n",
     "  Authorization: Bearer <token>（クエリ文字列のトークンは拒否）\n",
-    "  トークン未指定時は起動時に生成して stderr に 1 回だけ表示する。\n",
+    "  トークン未指定時は起動時に生成しますが、値はログに出力しません。\n",
+    "  接続用トークンを制御するには --token-file または TM_AGENT_TOKEN を使ってください。\n",
     "  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。\n\n",
     "終了コード (app と共通の分類。tm-agent は 0〜5 を返します):\n",
     "  0 正常 (--help / --version を含む) / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー\n",
@@ -186,10 +187,9 @@ where
     // Host header carries that address.
     let ip = config.listen.ip();
     if ip != std::net::Ipv4Addr::LOCALHOST && ip != std::net::Ipv6Addr::LOCALHOST {
-        return Err(format!(
-            "--listen はループバックの 127.0.0.1 または [::1] のみ指定できます (指定値: {})",
-            config.listen
-        ));
+        // Never echo the supplied address: a mistaken invocation may have put
+        // an internal IP (or another identifier) in this position.
+        return Err("--listen は 127.0.0.1 または [::1] のみ指定できます".to_string());
     }
     Ok(config)
 }
@@ -325,8 +325,12 @@ mod tests {
         ] {
             let error = parse_args(&["--listen", address]).expect_err("must be rejected");
             assert!(
-                error.contains("ループバック"),
+                error.contains("127.0.0.1"),
                 "unexpected error for {address}: {error}"
+            );
+            assert!(
+                !error.contains(address),
+                "the rejected address must not be echoed: {error}"
             );
         }
         // A host name is not a socket address at all; it is rejected earlier.
@@ -395,6 +399,9 @@ mod tests {
         // Both binaries print `<binary> <version>` as the first help line and
         // use the same section order and exit-code classification.
         assert!(USAGE.starts_with(concat!("tm-agent ", env!("CARGO_PKG_VERSION"))));
+        // An auto-generated token must never be advertised as stderr output.
+        assert!(USAGE.contains("値はログに出力しません"));
+        assert!(!USAGE.contains("stderr に 1 回だけ表示"));
         for fragment in [
             "使い方:",
             "オプション:",

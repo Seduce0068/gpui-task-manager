@@ -10,6 +10,9 @@
 //!   agent as `Authorization: Bearer <token>` (never as a query parameter),
 //! - the token is never logged or embedded in the HTML; error strings are
 //!   redacted before they reach the UI,
+//! - every response snapshot is sanitised **and** redacted on arrival: the agent's
+//!   `--redact` flag defaults to false, so the web side recovers identifiers from
+//!   the snapshot itself instead of trusting the agent to mask them,
 //! - the client only ever issues GET requests (the browser shell is read-only),
 //! - exactly one fetch is in flight at a time: the sampler loop awaits each
 //!   response before sleeping, and [`AgentClient`] additionally holds a
@@ -402,8 +405,11 @@ impl AgentClient {
         check_schema_version(envelope.schema_version)?;
         // Never trust display strings from the wire: a malicious or corrupted
         // agent could inject ANSI/control characters into the canvas (R2X-D1).
+        // The agent's `--redact` flag defaults to false, so the same boundary
+        // must also mask host / user / home / tailnet identifiers recovered from
+        // the snapshot itself before anything reaches the UI or an export.
         let mut snapshot = envelope.snapshot;
-        tm_core::sanitize::sanitize_snapshot(&mut snapshot);
+        crate::redaction::sanitize_and_redact_wire_snapshot(&mut snapshot);
         Ok(SnapshotResponse {
             snapshot,
             total_process_count: envelope.total_process_count,

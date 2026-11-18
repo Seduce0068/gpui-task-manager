@@ -21,6 +21,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 package="gpui-task-manager"
 release="1"
+deb_maintainer="${DEB_MAINTAINER:-gpui-task-manager contributors <noreply@example.com>}"
 
 skip_build=false
 for argument in "$@"; do
@@ -38,6 +39,12 @@ for argument in "$@"; do
 done
 
 cd "${repo_root}"
+
+# Drop stale packages before building. Release workflows upload the
+# packaging/linux/build/*.deb wildcard, so an old artifact must not survive.
+if [ -d "${script_dir}/build" ]; then
+  find "${script_dir}/build" -maxdepth 1 -type f -name '*.deb' -delete
+fi
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
   echo "error: dpkg-deb is required (Debian/Ubuntu)." >&2
@@ -81,7 +88,7 @@ install -m 0755 "${binary}" "${staging}/usr/bin/${package}"
 install -m 0644 "${script_dir}/${package}.desktop" "${staging}/usr/share/applications/${package}.desktop"
 install -m 0644 "${script_dir}/${package}.svg" "${staging}/usr/share/icons/hicolor/scalable/apps/${package}.svg"
 install -m 0644 "${script_dir}/${package}.png" "${staging}/usr/share/icons/hicolor/256x256/apps/${package}.png"
-install -m 0644 "${repo_root}/README.md" "${staging}/usr/share/doc/${package}/README.md"
+install -m 0644 "${script_dir}/README.deb.md" "${staging}/usr/share/doc/${package}/README.md"
 install -m 0644 "${repo_root}/NOTICE.md" "${staging}/usr/share/doc/${package}/NOTICE.md"
 install -m 0644 "${repo_root}/THIRD_PARTY_NOTICES.md" \
   "${staging}/usr/share/doc/${package}/THIRD_PARTY_NOTICES.md"
@@ -129,7 +136,7 @@ Version: ${version}-${release}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Maintainer: Seduce0068 <32996406+Seduce0068@users.noreply.github.com>
+Maintainer: ${deb_maintainer}
 Installed-Size: $(($(du -sk "${staging}" | cut -f1)))
 Depends: ${depends}
 Description: GPUI-based system task manager

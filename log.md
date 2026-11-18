@@ -5,7 +5,7 @@
 - 要求: Ubuntu 系向け GPUI システムタスクマネージャーの検討・設計・試作
   （クロスプラットフォーム、wasm、ブラウザ、保守性・移植性・テスト容易性・
   セキュリティ）。
-- 既存資産 `work/gpui-file-explorer` の GPUI 調査ノート（wasm 可否・
+- 別の AGPL プロジェクトの GPUI 調査ノート（wasm 可否・
   スタック・ビルド要件）を参照。コードはコピーせず、調査のみ。
 - 調査: 既存モニタ 11 候補、crate 17 件、sysinfo 実測（31.4 ms / 3,549 スレッド、
   実プロセス 618）、GPUI スタック、wasm/ブラウザ戦略。
@@ -33,19 +33,19 @@
 
 ## 2026-11-14（GitHub 公開準備）
 
-- `gh` で認証確認（account: `onoderakeita` / 現行 login: `Seduce0068`、scopes: repo, workflow）。
+- `gh` で認証確認（account: 旧アカウント名 / 現行 login: `Seduce0068`、scopes: 必要な scope）。
 - 既存 `Seduce0068/workflows`（public）を確認し、CI 参照を現行名 `Seduce0068/workflows@v1` に修正。
 - 個人情報を含む過去履歴を push しないよう、**クリーンな1コミットの `main`** を作成して
-  private リポジトリへ push する方針（ローカル `archive/master` に旧履歴を保持）。
+  private リポジトリへ push する方針（ローカル開発ブランチに旧履歴を保持）。
 
 ## 2026-11-14（GitHub 公開）
 
 - リポジトリ: https://github.com/Seduce0068/gpui-task-manager （**private**）
-- 公開用の `main` はクリーンな1コミット（旧履歴はローカルの `master` / `archive/master` に保持、
+- 公開用の `main` はクリーンな1コミット（旧履歴はローカル開発ブランチに保持、
   push していない）。
 - CI（run 43604507187）: **成功**。gates（fmt / check / test / clippy / cargo audit）7m02s、
   wasm check（core / viewmodel / web）1m56s。
-- 認証: `gh` の account 表示は旧名 `onoderakeita`、現行 login は `Seduce0068`。
+- 認証: `gh` の account 表示は旧アカウント名、現行 login は `Seduce0068`。
   `gh repo create` の GraphQL はプロキシで失敗したため REST API で作成した。
 
 ## 2026-11-15（ツール・IME・クロスプラットフォーム）
@@ -268,7 +268,7 @@
 
 ## 2026-11-15（cargo-vet ツール導入・準備メモ更新）
 
-- 作業環境に `cargo-vet 0.10.3` を導入（`cargo install cargo-vet --version 0.10.3 --locked`、`cargo vet --version` 確認、`/home/koppe/.cargo/bin/cargo-vet`）。
+- 作業環境に `cargo-vet 0.10.3` を導入（`cargo install cargo-vet --version 0.10.3 --locked`、`cargo vet --version` 確認、`~/.cargo/bin/cargo-vet`）。
 - `notes/cargo-vet-adoption.md` を更新し、ツール導入済み・`supply-chain/` 未作成・init/imports/trust/exempt/audit 方針未決定の事実を反映。
 - `cargo vet init`、`supply-chain/` 作成、exempt/imports/audit 記録は未実施（未監査依存を監査済みとして記録していない）。
 
@@ -285,10 +285,10 @@
 - ローカル: `scripts/check.sh` に `cargo vet --locked`（root / web）の optional ゲートを追加。
 - 検証: `bash -n` / `shellcheck` / `shfmt -d -i 2` / YAML パース / `bash scripts/check.sh` ローカル実行。CI 初回実行結果は push 後に `gh run` で確認。
 
-## 2026-11-15（CI 全ジョブの起動失敗: GitHub Actions 請求エラー）
+## 2026-11-15（CI 全ジョブの起動失敗: アカウント設定に起因）
 
-- 2026-11-15 07:11Z（16:11 JST）以降、GitHub Actions の請求エラー（payments failed / spending limit）により全 CI ジョブが起動失敗（最終成功: 12:55 JST）。コード/workflow 定義の問題ではない。
-- 対応はアカウントの Billing & plans 確認が必要（ユーザー操作）。期間中の変更はローカル `bash scripts/check.sh`（exit 0）で検証済み。
+- 2026-11-15 07:11Z（16:11 JST）以降、アカウント設定に起因するエラーで全 CI ジョブが起動失敗（最終成功: 12:55 JST）。コード/workflow 定義の問題ではない。
+- 対応はアカウント設定の確認が必要（ユーザー操作）。期間中の変更はローカル `bash scripts/check.sh`（exit 0）で検証済み。
 
 ## 2026-11-15（cargo-vet 外部 imports 候補の一次調査・採否未決）
 
@@ -342,11 +342,11 @@
 - 未到達: ウィンドウがキーボードフォーカスを取得しなかったため `enable()` が発行されず（`wl_keyboard.enter` count = 0）。実 IME 経路の完全検証には対話操作またはキー注入ツールが必要。
 - 証跡: `notes/assets/native-ime-wayland-trace.txt`（プロトコル関連 70 行の抜粋）。`notes/verification.md` に所見と限界を追記。
 
-## 2026-11-16（CI 起動失敗の原因特定: private リポジトリの課金枠）
+## 2026-11-16（CI 起動失敗の原因特定: リポジトリ公開設定）
 
-- 対照実験で原因を特定: 同一アカウントでも **public な `gpui-file-explorer` の CI は success（5m33s）**、**private な `gpui-task-manager` は全ジョブが 0 step で failure**。失敗アノテーションは "recent account payments have failed or your spending limit needs to be increased"。
-- 結論: private リポジトリの Actions は課金対象のため、支払い/spending limit の問題で起動しない。コードや workflow の問題ではない。
-- 対応案: ①public 化（「まだ公開しない」方針とは要調整）、②Billing & plans の修正、③ローカル検証の継続（現在実施中）。①②はユーザー操作が必要。
+- 対照実験で原因を特定: 同一アカウントでも **public な別の AGPL プロジェクトの CI は success（5m33s）**、**private な本リポジトリは全ジョブが 0 step で failure**。失敗アノテーションはアカウント設定に起因するジョブ起動エラーだった。
+- 結論: リポジトリの公開設定とアカウント設定が原因でジョブが起動しない。コードや workflow の問題ではない。
+- 対応案: ①public 化（「まだ公開しない」方針とは要調整）、②アカウント設定の確認、③ローカル検証の継続（現在実施中）。①②はユーザー操作が必要。
 
 ## 2026-11-16（リポジトリ衛生: Python bytecode の ignore 追加）
 
@@ -442,8 +442,8 @@
   native-windows / native-macos / release-linux / web-dist / sbom の **8 ジョブすべて success**。
 - 直前の 2 件の run が `cancelled` になっているのは、同ブランチへの連続 push による
   concurrency 設定でのキャンセルであり、コードの失敗ではない（一部ジョブは success）。
-- 先の原因推定は private リポジトリの Actions 課金/spending limit だったが、
-  public 化後に解消した模様。請求設定の詳細はエージェントから確認できないため未確認。
+- 先の原因推定は private リポジトリの公開設定だったが、
+  public 化後に解消した模様。アカウント設定の詳細はエージェントから確認できないため未確認。
 
 ## 2026-11-16（エージェントを並列接続化・s1 解消）
 
@@ -454,8 +454,8 @@
   tm-agent 39 → 41 tests、workspace 合計 162 passed / clippy 0 warning / fmt OK。
 - Runtime Proof: 実エージェントで `/healthz` 0.24 ms（通常）、3.04 ms（アイドル 3 本）、
   503 を 0.03 ms（アイドル 13 本）。旧 2,059 ms から改善。プロセス停止・ポート解放確認済み。
-- 検証中に誤って既存の OpenClaw gateway（ port 18789）を停止したが、systemd user service
-  `openclaw-gateway.service` が自動再起動し ready を確認（復旧済み）。原因は
+- 検証中に誤って既存のローカルサービスを停止したが、systemd user service が
+  自動再起動し ready を確認（復旧済み）。原因は
   `cmd1 && cmd2 &` が cmd1 ごとバックグラウンド化する bash 構文の誤用。
   以降は `setsid` + 実 PID の確認を使用。
 
