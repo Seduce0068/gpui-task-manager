@@ -338,7 +338,7 @@ pub fn demo_process_key(pid: u32) -> Option<ProcessKey> {
 pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
     let jitter = |salt: u64| ((tick.wrapping_mul(31).wrapping_add(salt) % 100) as f32) / 100.0;
 
-    let processes = DEMO_PROCESSES
+    let mut processes = DEMO_PROCESSES
         .iter()
         .enumerate()
         .map(|(index, demo)| {
@@ -383,7 +383,10 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 },
             }
         })
-        .collect();
+        .collect::<Vec<ProcessSnapshot>>();
+    // Match the native probe's (pid, start_time_secs) order. The table sorts
+    // itself, but --export writes the snapshot order directly (R42 audit).
+    processes.sort_by_key(|process| (process.key.pid, process.key.start_time_secs));
 
     let per_core_percent = (0..DEMO_CPU_CORES)
         .map(|core| {
@@ -452,18 +455,20 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
         },
         processes,
         network,
+        // Keep the same order as the native probe's `sort_disks_for_display`
+        // (largest capacity first): the summary shows only the first rows.
         disks: vec![
-            DiskUsageSnapshot {
-                mount_point: "/".to_string(),
-                total_bytes: 512 * 1_024 * 1_024 * 1_024,
-                available_bytes: 94 * 1_024 * 1_024 * 1_024,
-                used_bytes: 418 * 1_024 * 1_024 * 1_024,
-            },
             DiskUsageSnapshot {
                 mount_point: "/home".to_string(),
                 total_bytes: 1_024 * 1_024 * 1_024 * 1_024,
                 available_bytes: 384 * 1_024 * 1_024 * 1_024,
                 used_bytes: 640 * 1_024 * 1_024 * 1_024,
+            },
+            DiskUsageSnapshot {
+                mount_point: "/".to_string(),
+                total_bytes: 512 * 1_024 * 1_024 * 1_024,
+                available_bytes: 94 * 1_024 * 1_024 * 1_024,
+                used_bytes: 418 * 1_024 * 1_024 * 1_024,
             },
         ],
         components,
@@ -606,6 +611,27 @@ mod tests {
                     assert_eq!(process.cpu_percent, 0.0);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn demo_matches_native_probe_ordering_contracts() {
+        let snapshot = demo_snapshot(7);
+        // The native probe sorts processes by (pid, start_time_secs).
+        for window in snapshot.processes.windows(2) {
+            let key = (window[0].key.pid, window[0].key.start_time_secs);
+            let next = (window[1].key.pid, window[1].key.start_time_secs);
+            assert!(
+                key <= next,
+                "processes must be PID-ascending: {key:?} > {next:?}"
+            );
+        }
+        // `sort_disks_for_display` puts the largest capacity first.
+        for window in snapshot.disks.windows(2) {
+            assert!(
+                window[0].total_bytes >= window[1].total_bytes,
+                "disks must be capacity-descending"
+            );
         }
     }
 

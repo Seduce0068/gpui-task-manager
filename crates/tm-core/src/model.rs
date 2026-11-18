@@ -99,7 +99,11 @@ pub enum ProcessStatus {
     /// Being traced by a debugger.
     Tracing,
     /// Unknown or platform-specific state.
+    ///
+    /// Unknown wire values from a newer agent degrade to this variant instead
+    /// of rejecting the whole snapshot (R42 wire audit).
     #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }
 
@@ -405,6 +409,16 @@ impl SystemSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn unknown_process_status_degrades_to_unknown() {
+        let status: ProcessStatus = serde_json::from_str("\"Suspended\"")
+            .expect("unknown status must not reject the whole snapshot");
+        assert_eq!(status, ProcessStatus::Unknown);
+        let known: ProcessStatus = serde_json::from_str("\"Running\"").expect("known status");
+        assert_eq!(known, ProcessStatus::Running);
+    }
 
     #[test]
     fn process_key_is_ordered_by_pid_then_start_time() {

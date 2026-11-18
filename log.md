@@ -1338,3 +1338,8 @@
 
 - 詳細/テーブル/ダイアログの process.user を redact 時 "user" 固定へ、
   kernel/component.label を display() 経由へ。app 61 passed。
+
+## 2026-11-18（エージェント並列調査 第33弾 → wire/demo 契約の整合）
+
+- 未知 ProcessStatus を Unknown へ縮退、demo の disk/process 順を real に
+  整合。workspace 366 passed / web vet --locked 成功。
