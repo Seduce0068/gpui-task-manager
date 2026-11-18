@@ -28,7 +28,7 @@ wasm32-unknown-unknown にビルドし、ブラウザ上でシステムモニタ
 ## ビルド
 
 ```bash
-cd work/gpui-task-manager/poc-wasm
+cd poc-wasm
 rustup target add wasm32-unknown-unknown   # 導入済みなら不要
 cargo check --target wasm32-unknown-unknown
 trunk build --release                      # dist/ に index.html + JS + wasm を生成
@@ -63,7 +63,7 @@ python3 cdp_verify.py --url http://127.0.0.1:8090/ --out ../../notes/assets \
 ```
 
 スクリーンショットと `*-evidence-*.json`（コンソールログ、DOM、状態フック）は
-`work/gpui-task-manager/notes/assets/` に保存される。
+`notes/assets/` に保存される。
 
 ## 検証用フック
 

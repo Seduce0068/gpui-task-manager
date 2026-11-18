@@ -39,7 +39,7 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 ## ビルド
 
 ```bash
-cd work/gpui-task-manager
+cd .
 
 # 型チェック（wasm ターゲット）
 cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
@@ -57,7 +57,7 @@ trunk build --release
 ## 起動（デモモード）
 
 ```bash
-cd work/gpui-task-manager/web
+cd web
 python3 -m http.server 8091 --bind 127.0.0.1 -d dist
 # ブラウザで http://127.0.0.1:8091/ を開く
 ```
@@ -68,7 +68,7 @@ URL クエリが無ければデモモードです。`tm-core` の決定論的デ
 ## ライブ接続（tm-agent）
 
 ```bash
-cd work/gpui-task-manager
+cd .
 cargo build -p tm-agent
 # トークンは環境変数で渡す（--token は非推奨: /proc/<pid>/cmdline から読まれ得る）
 TM_AGENT_TOKEN=test ./target/debug/tm-agent --listen 127.0.0.1:18787 --redact
@@ -123,7 +123,7 @@ http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test
 ## 検証（Runtime Proof）
 
 ```bash
-cd work/gpui-task-manager
+cd .
 
 # 1) wasm 型チェック
 cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
@@ -165,7 +165,7 @@ python3 cdp_verify_web.py \
   `body[data-gpui-proof]` に状態（mode / tick / rows / filter / selected_pid /
   sort / live_error / viewport サイズ）を書き出します。GPUI は canvas 描画なので、
   CDP から観測できるのはこのフックだけです。
-- クリック座標は `src/shell.rs` のレイアウト定数（ヘッダー 52px、概要 186px、
+- クリック座標は `src/shell.rs` のレイアウト定数（ヘッダー 52px、概要 260px、
   ツールバー 36px、行 30px など）から計算しています。レイアウトを変えたら
   `scripts/cdp_verify_web.py` の定数も更新してください。
 

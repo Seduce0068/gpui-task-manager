@@ -39,7 +39,7 @@ use tm_viewmodel::{
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use crate::agent::{AgentClient, AgentConfig};
+use crate::agent::{AgentClient, AgentConfig, FetchError};
 use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
@@ -88,10 +88,29 @@ const READONLY_DETAIL_TEXT: &str =
 /// エージェント応答を一切含まない。`;` / 改行が無いので、将来この文言が
 /// DOM フックへ鏡像されても `key=value;` の区切りを壊さない。実データ接続では
 /// `tm-agent --redact` を使うよう案内するが、Web 側でも応答の redact は必須である。
-const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには tm-agent を --redact 付きで起動し、URL に ?agent=http://127.0.0.1:18787#token=<トークン> を指定してください";
+const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには tm-agent を --redact 付きで起動し、URL に ?agent=http://127.0.0.1:8787#token=<トークン> を指定してください";
 
 /// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
 const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
+
+/// 設定保存失敗時に status へ出す固定文言（C2-WEB）。
+///
+/// `save()` の詳細メッセージは console にだけ残し、status / `aria-live` / DOM
+/// にはこの固定文言だけを流す。トークン・ホスト名・パスを含まず、`;` / 改行も
+/// ないので既存の DOM proof 契約を壊さない。
+const SETTINGS_SAVE_ERROR_NOTICE: &str =
+    "設定を保存できませんでした。ブラウザのストレージ設定（容量・権限）を確認してください";
+
+/// Maps a settings save result to the status text shown to the user.
+///
+/// Kept pure so the notification contract can be tested without a browser
+/// context; `None` on success means "do not touch the current status".
+fn settings_save_status(result: &Result<(), String>) -> Option<&'static str> {
+    match result {
+        Ok(()) => None,
+        Err(_) => Some(SETTINGS_SAVE_ERROR_NOTICE),
+    }
+}
 
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
 /// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
@@ -329,7 +348,7 @@ impl TaskManagerApp {
     }
 
     /// Ingests a live response, or surfaces the error without falling back to demo.
-    fn handle_live_result(&mut self, result: Result<crate::agent::SnapshotResponse, String>) {
+    fn handle_live_result(&mut self, result: Result<crate::agent::SnapshotResponse, FetchError>) {
         // Freshness is decided against the snapshot that is *already on screen*,
         // before the new one replaces it. A failure before the first successful
         // fetch has nothing to mark stale; `live_error` covers that case.
@@ -344,20 +363,19 @@ impl TaskManagerApp {
                 self.dashboard.ingest(response.snapshot);
             }
             Err(error) => {
-                // An auth rejection carries fixed re-entry guidance (the token
-                // itself is never echoed). Track it so the DOM proof can expose
-                // a boolean without mirroring any error text.
-                // Keep the re-entry guidance sticky: a transient follow-up
-                // failure (e.g. the restarted agent not responding yet) must
-                // not erase the one actionable path for the user (R49 audit).
-                // Cleared only on success or an actual config change.
+                // Only `401` (FetchError::Auth) carries the token re-entry
+                // guidance; `403` (Forbidden) is an origin problem and must not
+                // raise the DOM proof's `reconnect=` flag (C2-WEB). The flag
+                // stays sticky across transient follow-up failures and is
+                // cleared only on success or an actual config change.
                 let newly_required = crate::agent::requires_reconnect(&error);
                 self.reconnect_required = next_reconnect_required(self.reconnect_required, &error);
+                let text = error.to_string();
                 if !newly_required || self.live_error.is_none() {
-                    self.live_error = Some(error.clone());
+                    self.live_error = Some(text.clone());
                 }
                 self.dashboard
-                    .set_status(format!("エージェントから取得できません: {error}"), true);
+                    .set_status(format!("エージェントから取得できません: {text}"), true);
             }
         }
         self.sync_proof_dom();
@@ -389,7 +407,7 @@ impl TaskManagerApp {
     }
 
     /// 表示設定だけを `localStorage` に保存する。
-    fn persist_settings(&self) {
+    fn persist_settings(&mut self) {
         let settings = tm_viewmodel::Settings {
             version: tm_viewmodel::SETTINGS_VERSION,
             interval_ms: self.dashboard.interval().as_millis() as u64,
@@ -398,8 +416,20 @@ impl TaskManagerApp {
             tree_view: self.dashboard.tree_view(),
             theme: theme(),
         };
-        if let Err(message) = crate::settings::save(&settings) {
+        let result = crate::settings::save(&settings);
+        if let Err(message) = &result {
             log::warn!("設定を保存できません: {message}");
+        }
+        if let Some(text) = settings_save_status(&result) {
+            // Persistent so the next successful sample cannot silently erase
+            // the only signal that a preference change was not saved.
+            self.dashboard.set_persistent_status(text);
+        }
+        // settings.rs 側で保存失敗を PENDING_NOTICE に載せる仕組みが追加されても
+        // 既存の load 通知経路（restore_settings）を壊さずにここで拾う。
+        // 通常は load_with_notice が既に排出済みなので no-op になる。
+        if let Some(notice) = crate::settings::take_pending_notice() {
+            self.dashboard.set_persistent_status(notice.text);
         }
     }
 
@@ -2461,7 +2491,7 @@ fn proof_with_reconnect(proof: &str, required: bool) -> String {
 
 /// The re-entry flag is sticky until success or an explicit config change: a
 /// transient follow-up failure must not hide the auth guidance (R49 audit).
-fn next_reconnect_required(current: bool, error: &str) -> bool {
+fn next_reconnect_required(current: bool, error: &FetchError) -> bool {
     current || crate::agent::requires_reconnect(error)
 }
 
@@ -2878,6 +2908,10 @@ mod tests {
         assert!(DEMO_MODE_NOTICE.contains("--redact"));
         assert!(DEMO_MODE_NOTICE.contains("?agent="));
         assert!(DEMO_MODE_NOTICE.contains("#token="));
+        // 既定の待受ポートは 8787。README の「--listen 18787 明示例」は別担当が
+        // 残すので、ソース内の既定案内だけを確認する（C2-WEB）。
+        assert!(DEMO_MODE_NOTICE.contains("127.0.0.1:8787"));
+        assert!(!DEMO_MODE_NOTICE.contains("18787"));
         // 固定文言なので `;` / 改行 / トークンは入らず、DOM hook と redact
         // 契約を壊さない。
         assert!(!DEMO_MODE_NOTICE.contains(';'));
@@ -2903,7 +2937,9 @@ mod tests {
     #[test]
     fn auth_failure_guidance_is_announced_and_token_free() {
         let guidance = crate::agent::RECONNECT_GUIDANCE;
-        assert!(crate::agent::requires_reconnect(guidance));
+        let error = FetchError::Auth;
+        assert_eq!(error.to_string(), guidance);
+        assert!(crate::agent::requires_reconnect(&error));
         let status_text = format!("エージェントから取得できません: {guidance}");
         // ステータスバーの 160 字切り詰めでも再入力の導線が残ること。
         let displayed = truncate_label(&status_text, 160);
@@ -2928,16 +2964,48 @@ mod tests {
 
     #[test]
     fn reconnect_guidance_is_sticky_across_transient_failures() {
-        use crate::agent::RECONNECT_GUIDANCE;
-        assert!(next_reconnect_required(false, RECONNECT_GUIDANCE));
+        let auth = FetchError::Auth;
+        assert!(next_reconnect_required(false, &auth));
         // A generic follow-up failure must not clear the auth guidance.
-        assert!(next_reconnect_required(true, "接続に失敗しました"));
-        assert!(next_reconnect_required(
-            true,
-            "エージェントが HTTP 500 を返しました"
-        ));
+        assert!(next_reconnect_required(true, &FetchError::Connect));
+        assert!(next_reconnect_required(true, &FetchError::Http(500)));
         // Without a prior auth error, a generic error stays non-reconnect.
-        assert!(!next_reconnect_required(false, "接続に失敗しました"));
+        assert!(!next_reconnect_required(false, &FetchError::Connect));
+        // 403 is an origin problem: it never sets the flag and never clears a
+        // sticky 401 flag either (C2-WEB).
+        let forbidden = FetchError::Forbidden;
+        assert!(!next_reconnect_required(false, &forbidden));
+        assert!(next_reconnect_required(true, &forbidden));
+        assert!(forbidden.to_string().contains("接続元が許可されていません"));
+    }
+
+    #[test]
+    fn settings_save_failure_is_mapped_to_a_fixed_dom_safe_status() {
+        assert_eq!(settings_save_status(&Ok(())), None);
+        // The underlying message may vary; only the fixed notice is surfaced.
+        for detail in [
+            "localStorage を利用できません",
+            "設定を保存できません（ストレージ容量または権限）",
+            "設定を JSON に変換できません: path=/home/secret token=abc",
+        ] {
+            assert_eq!(
+                settings_save_status(&Err(detail.to_string())),
+                Some(SETTINGS_SAVE_ERROR_NOTICE)
+            );
+        }
+        assert!(SETTINGS_SAVE_ERROR_NOTICE.contains("設定を保存できません"));
+        assert!(!SETTINGS_SAVE_ERROR_NOTICE.contains(';'));
+        assert!(!SETTINGS_SAVE_ERROR_NOTICE.contains('\n'));
+        assert!(!SETTINGS_SAVE_ERROR_NOTICE.contains("secret"));
+        let announced = a11y_live_text(
+            Some(&StatusMessage {
+                text: SETTINGS_SAVE_ERROR_NOTICE.to_string(),
+                is_error: true,
+                persistent: true,
+            }),
+            false,
+        );
+        assert!(announced.contains("設定を保存できません"), "{announced}");
     }
 
     #[test]

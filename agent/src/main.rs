@@ -76,6 +76,18 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// between short sleeps to bound the wait without spawning a helper thread.
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// Warning emitted whenever `--token` is present on the command line.
+///
+/// `/proc/<pid>/cmdline` is world-readable by default, so the credential is
+/// visible to every user on the host — not just the owner. Kept as a constant
+/// so the exact wording can be asserted in tests and stays in sync with the
+/// `args::USAGE` authentication section.
+const TOKEN_ARGV_WARNING: &str = concat!(
+    "警告: --token の値は /proc/<pid>/cmdline に残り、既定では同一ホストの全ユーザーが読めます。",
+    "推奨順は --token-file > TM_AGENT_TOKEN > --token です。",
+    "TM_AGENT_TOKEN は /proc/<pid>/environ に残存し得ます。"
+);
+
 /// Minimum severity for structured events, set once from `--log-level`.
 ///
 /// `0` = error, `1` = warn, `2` = info. `debug` and `trace` map to `2` because
@@ -133,9 +145,49 @@ struct HealthBody {
     schema_version: u32,
 }
 
+/// Stable, machine-readable codes carried by every HTTP error body.
+///
+/// Keep this list in sync with the `HTTP エラーコード` section of `args::USAGE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ErrorCode {
+    BadRequest,
+    InvalidLimit,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    MethodNotAllowed,
+    RequestTooLarge,
+    RequestTimeout,
+    Internal,
+    Busy,
+}
+
+impl ErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BadRequest => "bad_request",
+            Self::InvalidLimit => "invalid_limit",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not_found",
+            Self::MethodNotAllowed => "method_not_allowed",
+            Self::RequestTooLarge => "request_too_large",
+            Self::RequestTimeout => "request_timeout",
+            Self::Internal => "internal",
+            Self::Busy => "busy",
+        }
+    }
+}
+
 /// Wire body returned for error responses.
+///
+/// `code` is the stable machine-readable contract; `message` is its canonical
+/// human-readable companion. `error` is a deprecated alias of `message` kept
+/// so existing clients continue to work.
 #[derive(Serialize)]
 struct ErrorBody<'a> {
+    code: &'a str,
+    message: &'a str,
     error: &'a str,
 }
 
@@ -201,9 +253,7 @@ fn run() -> Result<(), AgentError> {
     // Warn about argv exposure before the `--once` early return so operators
     // running a one-shot snapshot with `--token` see the same warning.
     if config.token.is_some() {
-        eprintln!(
-            "tm-agent: 警告: --token の値は /proc/<pid>/cmdline から同一ユーザーに読まれ得ます。常用時は --token-file か TM_AGENT_TOKEN を使ってください。"
-        );
+        eprintln!("tm-agent: {TOKEN_ARGV_WARNING}");
     }
 
     if config.once {
@@ -362,6 +412,12 @@ fn build_probe(config: &args::Config) -> Result<Box<dyn SystemProbe>, String> {
 
 /// Implements `--once`: one snapshot as JSON on stdout, then exit.
 fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<(), String> {
+    println!("{}", once_json(probe, redact, token)?);
+    Ok(())
+}
+
+/// Builds the `--once` JSON line without printing it (unit-testable).
+fn once_json(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<String, String> {
     // CPU percentages are deltas to the previous sample, so the first sample
     // is a warm-up and is not printed.
     probe
@@ -373,6 +429,11 @@ fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<
         .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
     if redact {
         redact_snapshot(&mut snapshot, token);
+    } else {
+        // `--once --token <secret>` without `--redact` still publishes stdout
+        // JSON. The token lives in this process's argv, which the probe copies
+        // into `process.command`/`process.name`; scrub it unconditionally.
+        scrub_argv_token(&mut snapshot, token);
     }
     let total = apply_process_limit(&mut snapshot, DEFAULT_PROCESS_LIMIT);
     let envelope = SnapshotEnvelope {
@@ -380,10 +441,7 @@ fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<
         total_process_count: total,
         snapshot: &snapshot,
     };
-    let json = serde_json::to_string(&envelope)
-        .map_err(|err| format!("JSON への変換に失敗しました: {err}"))?;
-    println!("{json}");
-    Ok(())
+    serde_json::to_string(&envelope).map_err(|err| format!("JSON への変換に失敗しました: {err}"))
 }
 
 /// State shared by connection threads.
@@ -575,7 +633,7 @@ fn spawn_connection(
         let response = http::Response::json(
             503,
             "Service Unavailable",
-            error_body("同時接続数が上限に達しました"),
+            error_body(ErrorCode::Busy, "同時接続数が上限に達しました"),
         );
         // The 503 path is written synchronously on the accept thread, bounded
         // by WRITE_TIMEOUT (5 s). In practice the ~240-byte response fits in
@@ -673,22 +731,29 @@ fn handle_connection(
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
         Err(parse_error) => {
-            let (status, reason, message) = match parse_error {
+            let (status, reason, code, message) = match parse_error {
                 http::ParseError::TooLarge => (
                     431,
                     "Request Header Fields Too Large",
+                    ErrorCode::RequestTooLarge,
                     "リクエストヘッダが大きすぎます",
                 ),
-                http::ParseError::Malformed => (400, "Bad Request", "リクエストを解釈できません"),
+                http::ParseError::Malformed => (
+                    400,
+                    "Bad Request",
+                    ErrorCode::BadRequest,
+                    "リクエストを解釈できません",
+                ),
                 http::ParseError::Timeout => (
                     408,
                     "Request Timeout",
+                    ErrorCode::RequestTimeout,
                     "リクエストの送信がタイムアウトしました",
                 ),
             };
             let mut trace = RequestTrace::begin_unknown(metrics);
             trace.finish(status);
-            let response = http::Response::json(status, reason, error_body(message));
+            let response = http::Response::json(status, reason, error_body(code, message));
             return http::write_response(stream, &response);
         }
     };
@@ -710,7 +775,10 @@ fn handle_connection(
             let mut response = http::Response::json(
                 403,
                 "Forbidden",
-                error_body("Host ヘッダがループバックではありません"),
+                error_body(
+                    ErrorCode::Forbidden,
+                    "Host ヘッダがループバックではありません",
+                ),
             );
             if let Some(origin) = allowed_origin {
                 http::add_cors_headers(&mut response, origin);
@@ -745,7 +813,10 @@ fn route(
         let mut response = http::Response::json(
             405,
             "Method Not Allowed",
-            error_body("このエージェントは GET のみ対応しています"),
+            error_body(
+                ErrorCode::MethodNotAllowed,
+                "このエージェントは GET のみ対応しています",
+            ),
         );
         response
             .extra_headers
@@ -759,19 +830,20 @@ fn route(
             Some(probe) => snapshot_response(request, probe, token, redact, warmed_up),
             // The caller only acquires the probe mutex for snapshot requests;
             // reaching here means the lock failed to be passed through.
-            None => json_response(
+            None => http::Response::json(
                 500,
                 "Internal Server Error",
-                &ErrorBody {
-                    error: "スナップショットを取得できませんでした",
-                },
+                error_body(
+                    ErrorCode::Internal,
+                    "スナップショットを取得できませんでした",
+                ),
             ),
         },
         METRICS_PATH => metrics_response(metrics, active),
         _ => http::Response::json(
             404,
             "Not Found",
-            error_body("エンドポイントが見つかりません"),
+            error_body(ErrorCode::NotFound, "エンドポイントが見つかりません"),
         ),
     }
 }
@@ -782,10 +854,18 @@ fn route(
 /// actual `GET` still needs one.
 fn preflight_response(request: &http::Request) -> http::Response {
     let Some(origin) = request.header("origin") else {
-        return http::Response::json(403, "Forbidden", error_body("Origin ヘッダが必要です"));
+        return http::Response::json(
+            403,
+            "Forbidden",
+            error_body(ErrorCode::Forbidden, "Origin ヘッダが必要です"),
+        );
     };
     if !http::is_allowed_origin(origin) {
-        return http::Response::json(403, "Forbidden", error_body("許可されていない Origin です"));
+        return http::Response::json(
+            403,
+            "Forbidden",
+            error_body(ErrorCode::Forbidden, "許可されていない Origin です"),
+        );
     }
     let mut response = http::Response::empty(204, "No Content");
     response.extra_headers.push((
@@ -853,7 +933,13 @@ fn snapshot_response(
 
     let limit = match parse_process_limit(request.query.as_deref()) {
         Ok(limit) => limit,
-        Err(message) => return http::Response::json(400, "Bad Request", error_body(&message)),
+        Err(message) => {
+            return http::Response::json(
+                400,
+                "Bad Request",
+                error_body(ErrorCode::InvalidLimit, &message),
+            )
+        }
     };
 
     // CPU percentages are deltas; the first native sample is always 0.0, which
@@ -872,12 +958,13 @@ fn snapshot_response(
                 "probe.sample_failed",
                 json!({ "phase": "warmup" }),
             );
-            return json_response(
+            return http::Response::json(
                 500,
                 "Internal Server Error",
-                &ErrorBody {
-                    error: "スナップショットを取得できませんでした",
-                },
+                error_body(
+                    ErrorCode::Internal,
+                    "スナップショットを取得できませんでした",
+                ),
             );
         }
         std::thread::sleep(WARMUP_INTERVAL);
@@ -888,6 +975,10 @@ fn snapshot_response(
         Ok(mut snapshot) => {
             if redact {
                 redact_snapshot(&mut snapshot, token);
+            } else {
+                // Same argv echo as `--once`: a non-redacted HTTP snapshot
+                // must not carry our own `--token` command line either.
+                scrub_argv_token(&mut snapshot, token);
             }
             let total = apply_process_limit(&mut snapshot, limit);
             let envelope = SnapshotEnvelope {
@@ -910,13 +1001,34 @@ fn snapshot_response(
                 "probe.sample_failed",
                 json!({ "phase": "snapshot" }),
             );
-            json_response(
+            http::Response::json(
                 500,
                 "Internal Server Error",
-                &ErrorBody {
-                    error: "スナップショットを取得できませんでした",
-                },
+                error_body(
+                    ErrorCode::Internal,
+                    "スナップショットを取得できませんでした",
+                ),
             )
+        }
+    }
+}
+
+/// Removes this process's `--token` value from the argv echo in a snapshot.
+///
+/// A token passed via `--token` lives in our own argv, which the native probe
+/// copies into `process.command` and `process.name`. `tm_core::redact` cannot
+/// know that value, so it must be scrubbed explicitly. This has to run even
+/// without `--redact`: `--once --token <secret>` still publishes stdout JSON.
+fn scrub_argv_token(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    for process in &mut snapshot.processes {
+        if process.command.contains(token) {
+            process.command = process.command.replace(token, "***");
+        }
+        if process.name.contains(token) {
+            process.name = process.name.replace(token, "***");
         }
     }
 }
@@ -925,7 +1037,6 @@ fn snapshot_response(
 ///
 /// Used by `--redact` so screenshots and JSON evidence can be published without
 /// exposing the host name, user names or home directory layout.
-/// Removes local identifiers from a snapshot before it is serialised.
 ///
 /// The rules live in `tm_core::redact` so the native shell (`--redact`) and
 /// this endpoint cannot drift. Values are captured before redaction and owned
@@ -942,21 +1053,13 @@ fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
         hostname: &original_hostname,
     };
     tm_core::redact::redact_snapshot(snapshot, &ids);
-    // A token passed via `--token` lives in this process's argv, which the
-    // probe copies into `process.command`. `redact_text` cannot know it, so
-    // scrub it explicitly — otherwise "redacted" evidence leaks the Bearer
-    // token (R45, previously deferred as R2X-A1).
-    if !token.is_empty() {
-        for process in &mut snapshot.processes {
-            if process.command.contains(token) {
-                process.command = process.command.replace(token, "***");
-            }
-            if process.name.contains(token) {
-                process.name = process.name.replace(token, "***");
-            }
-        }
-    }
+    // "Redacted" evidence must not leak the Bearer token either (R45).
+    scrub_argv_token(snapshot, token);
 }
+
+/// Fixed message for an invalid `?limit=`; the raw input is never echoed
+/// because it may contain a credential or other client-controlled identifier.
+const INVALID_LIMIT_MESSAGE: &str = "limit には 1 以上の整数を指定してください";
 
 /// Parses `?limit=`: default [`DEFAULT_PROCESS_LIMIT`], clamped to
 /// [`MAX_PROCESS_LIMIT`].
@@ -970,9 +1073,9 @@ fn parse_process_limit(query: Option<&str>) -> Result<usize, String> {
     let parsed = raw
         .trim()
         .parse::<u64>()
-        .map_err(|_| format!("limit には 1 以上の整数を指定してください: {raw}"))?;
+        .map_err(|_| INVALID_LIMIT_MESSAGE.to_string())?;
     if parsed == 0 {
-        return Err("limit には 1 以上の整数を指定してください: 0".to_string());
+        return Err(INVALID_LIMIT_MESSAGE.to_string());
     }
     Ok(usize::try_from(parsed)
         .unwrap_or(MAX_PROCESS_LIMIT)
@@ -996,8 +1099,11 @@ fn apply_process_limit(snapshot: &mut SystemSnapshot, limit: usize) -> usize {
 
 /// `401` with the standard bearer challenge.
 fn unauthorized_response() -> http::Response {
-    let mut response =
-        http::Response::json(401, "Unauthorized", error_body("認証トークンが必要です"));
+    let mut response = http::Response::json(
+        401,
+        "Unauthorized",
+        error_body(ErrorCode::Unauthorized, "認証トークンが必要です"),
+    );
     response
         .extra_headers
         .push(("WWW-Authenticate".to_string(), "Bearer".to_string()));
@@ -1018,16 +1124,26 @@ fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> 
             http::Response::json(
                 500,
                 "Internal Server Error",
-                error_body("JSON への変換に失敗しました"),
+                error_body(ErrorCode::Internal, "JSON への変換に失敗しました"),
             )
         }
     }
 }
 
-/// Builds an `{"error": "..."}` body.
-fn error_body(message: &str) -> Vec<u8> {
-    serde_json::to_vec(&ErrorBody { error: message })
-        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec())
+/// Builds a `{"code":"...","message":"...","error":"..."}` body.
+///
+/// `error` duplicates `message` for backward compatibility; `code` is the
+/// stable, machine-readable contract documented in `args::USAGE`.
+fn error_body(code: ErrorCode, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&ErrorBody {
+        code: code.as_str(),
+        message,
+        error: message,
+    })
+    .unwrap_or_else(|_| {
+        b"{\"code\":\"internal\",\"message\":\"internal error\",\"error\":\"internal error\"}"
+            .to_vec()
+    })
 }
 
 #[cfg(test)]
@@ -1130,6 +1246,25 @@ mod tests {
         }
     }
 
+    /// Demo snapshot whose own process echoes a token on its command line,
+    /// mimicking how a native probe copies this process's argv into a snapshot.
+    struct TokenEchoProbe {
+        inner: DemoProbe,
+        token: &'static str,
+    }
+
+    impl SystemProbe for TokenEchoProbe {
+        fn platform_info(&self) -> tm_core::PlatformInfo {
+            self.inner.platform_info()
+        }
+        fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
+            let mut snapshot = self.inner.sample()?;
+            snapshot.processes[0].command = format!("tm-agent --token {} --once", self.token);
+            snapshot.processes[0].name = format!("tm-agent-{}", self.token);
+            Ok(snapshot)
+        }
+    }
+
     #[test]
     fn snapshot_error_body_does_not_echo_probe_details() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -1162,10 +1297,9 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
         assert!(!response.contains("SECRET-PATH"));
         assert!(!response.contains("/home/victim"));
-        assert_eq!(
-            parse_body(&response)["error"],
-            "スナップショットを取得できませんでした"
-        );
+        let body = parse_body(&response);
+        assert_eq!(body["error"], "スナップショットを取得できませんでした");
+        assert_eq!(body["code"], "internal");
     }
 
     #[test]
@@ -1357,6 +1491,82 @@ mod tests {
     }
 
     #[test]
+    fn error_bodies_keep_the_legacy_error_field_alongside_code() {
+        for (code, expected) in [
+            (ErrorCode::BadRequest, "bad_request"),
+            (ErrorCode::InvalidLimit, "invalid_limit"),
+            (ErrorCode::Unauthorized, "unauthorized"),
+            (ErrorCode::Forbidden, "forbidden"),
+            (ErrorCode::NotFound, "not_found"),
+            (ErrorCode::MethodNotAllowed, "method_not_allowed"),
+            (ErrorCode::RequestTooLarge, "request_too_large"),
+            (ErrorCode::RequestTimeout, "request_timeout"),
+            (ErrorCode::Internal, "internal"),
+            (ErrorCode::Busy, "busy"),
+        ] {
+            assert_eq!(code.as_str(), expected);
+            let body: serde_json::Value =
+                serde_json::from_slice(&error_body(code, "message")).expect("error body");
+            assert_eq!(body["code"], expected);
+            assert_eq!(body["message"], "message");
+            assert_eq!(body["error"], "message", "legacy field must stay");
+            assert_eq!(body.as_object().expect("object").len(), 3);
+        }
+    }
+
+    #[test]
+    fn http_errors_carry_machine_readable_codes_and_never_echo_raw_limit() {
+        let (address, handle) = spawn_demo_server(6);
+        let cases = [
+            (
+                "GET /api/v1/snapshot?limit=SECRET-RAW HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+                400,
+                "invalid_limit",
+            ),
+            (
+                "GET /api/v1/snapshot HTTP/1.1\r\n\r\n",
+                401,
+                "unauthorized",
+            ),
+            (
+                "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
+                403,
+                "forbidden",
+            ),
+            (
+                "GET /nope HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+                404,
+                "not_found",
+            ),
+            (
+                "POST /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+                405,
+                "method_not_allowed",
+            ),
+            (
+                "OPTIONS /api/v1/snapshot HTTP/1.1\r\n\r\n",
+                403,
+                "forbidden",
+            ),
+        ];
+        for (raw, expected_status, expected_code) in cases {
+            let response = send_request(address, raw);
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {expected_status} ")),
+                "{response}"
+            );
+            let body = parse_body(&response);
+            assert_eq!(body["code"], expected_code, "{response}");
+            assert!(body["error"].is_string(), "{response}");
+            assert!(
+                !response.contains("SECRET-RAW"),
+                "the raw limit value must not be echoed: {response}"
+            );
+        }
+        join_demo_server(handle);
+    }
+
+    #[test]
     fn rejects_oversized_request_heads() {
         let (address, handle) = spawn_demo_server(1);
         let mut raw = String::from("GET /healthz HTTP/1.1\r\n");
@@ -1396,6 +1606,83 @@ mod tests {
         assert_eq!(parsed["schema_version"], 1);
         assert!(parsed["snapshot"]["processes"].is_array());
     }
+
+    #[test]
+    fn once_mode_scrubs_the_token_with_or_without_redact() {
+        // `--once --token <secret>` publishes stdout JSON even without
+        // `--redact`; the credential must never appear in that JSON (R45).
+        const SECRET: &str = "supersecret-argv-token";
+        for redact in [false, true] {
+            let mut probe = TokenEchoProbe {
+                inner: DemoProbe::new(),
+                token: SECRET,
+            };
+            let json = once_json(&mut probe, redact, SECRET).expect("once json");
+            assert!(!json.contains(SECRET), "redact={redact}: {json}");
+            assert!(json.contains("***"), "redact={redact}: {json}");
+        }
+    }
+
+    #[test]
+    fn http_snapshot_scrubs_the_token_without_redact() {
+        // The HTTP path has the same argv echo as `--once`; a non-redacted
+        // response must not carry our own --token command line either.
+        const SECRET: &str = "http-argv-secret";
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let mut probe = TokenEchoProbe {
+                inner: DemoProbe::new(),
+                token: SECRET,
+            };
+            let warm = AtomicBool::new(true); // demo data needs no warm-up
+            let metrics = Metrics::new();
+            let active = AtomicUsize::new(0);
+            let (mut stream, _) = listener.accept().expect("accept");
+            handle_connection(&mut stream, &metrics, |request| {
+                route(
+                    request,
+                    Some(&mut probe),
+                    SECRET,
+                    false, // no --redact
+                    &warm,
+                    &metrics,
+                    &active,
+                )
+            })
+            .expect("handle connection");
+        });
+        let response = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer http-argv-secret\r\n\r\n",
+        );
+        join_demo_server(handle);
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(!response.contains(SECRET), "{response}");
+    }
+
+    #[test]
+    fn token_argv_warning_states_world_readable_cmdline_and_preferred_sources() {
+        assert!(TOKEN_ARGV_WARNING.contains("/proc/<pid>/cmdline"));
+        assert!(TOKEN_ARGV_WARNING.contains("同一ホストの全ユーザー"));
+        assert!(!TOKEN_ARGV_WARNING.contains("同一ユーザーに読まれ得ます"));
+        assert!(TOKEN_ARGV_WARNING.contains("/proc/<pid>/environ"));
+        let file = TOKEN_ARGV_WARNING
+            .find("--token-file")
+            .expect("--token-file must be recommended");
+        let env = TOKEN_ARGV_WARNING
+            .find("TM_AGENT_TOKEN")
+            .expect("TM_AGENT_TOKEN must be mentioned");
+        let token = TOKEN_ARGV_WARNING
+            .find("> --token ")
+            .expect("recommendation order must be present");
+        assert!(
+            file < env && env < token,
+            "expected --token-file > TM_AGENT_TOKEN > --token: {TOKEN_ARGV_WARNING}"
+        );
+    }
+
     #[test]
     fn process_limit_defaults_and_clamps() {
         assert_eq!(
@@ -1417,6 +1704,12 @@ mod tests {
         assert!(parse_process_limit(Some("limit=0")).is_err());
         assert!(parse_process_limit(Some("limit=abc")).is_err());
         assert!(parse_process_limit(Some("limit=")).is_err());
+        // Invalid input is never echoed back (it may be a credential).
+        for raw in ["limit=SECRET-RAW", "limit=000", "limit=-1"] {
+            let error = parse_process_limit(Some(raw)).expect_err("invalid limit");
+            assert_eq!(error, INVALID_LIMIT_MESSAGE);
+            assert!(!error.contains("SECRET-RAW"), "{error}");
+        }
         // A malformed percent escape decodes to None, which is treated the same
         // as an absent `limit` (default) rather than a rejection. Pin this so a
         // future parser change cannot silently alter the response size.

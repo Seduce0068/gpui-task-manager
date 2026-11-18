@@ -34,3 +34,7 @@
 ## ライセンス全文
 
 本プロジェクト自身のコードは AGPL-3.0-or-later（[LICENSE](LICENSE)）です。
+
+配布パッケージの著作権表示は `/usr/share/doc/gpui-task-manager/copyright`、
+同梱ライセンス全文は同 `licenses/`、未同梱ライセンスの確認先は同 `README.md`
+を参照してください。

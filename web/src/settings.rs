@@ -50,6 +50,14 @@ pub const SETTINGS_NOTICE_DOM_ID: &str = "gpui-settings-notice";
 pub const NOTICE_CORRUPT: &str =
     "保存された設定を読み込めませんでした。既定値で起動します（破損した設定は保存されません）。";
 
+/// Fixed, redacted text shown when persisting settings fails.
+///
+/// Published to the additive notice node and queued in `PENDING_NOTICE`, so the
+/// shell can also copy it into the status bar without shell-side changes
+/// (C2-SETTINGS). It never contains a path, token or storage error detail.
+pub const NOTICE_SAVE_FAILED: &str =
+    "設定を保存できませんでした。ブラウザのストレージ設定（容量・権限）を確認してください";
+
 /// 更新間隔の UI プリセット（ミリ秒）。ネイティブ版と同じ 4 段階を使う。
 ///
 /// ここで定義してシェルから参照することで、ボタンの候補と保存される
@@ -87,6 +95,16 @@ impl SettingsNotice {
         Self {
             text: NOTICE_CORRUPT.to_string(),
             is_error: true,
+            persistent: true,
+        }
+    }
+
+    fn save_failed() -> Self {
+        Self {
+            text: NOTICE_SAVE_FAILED.to_string(),
+            is_error: true,
+            // A failed save is a configuration problem, not a sample result:
+            // it must survive the next successful sample (C2-SETTINGS).
             persistent: true,
         }
     }
@@ -302,21 +320,58 @@ fn parse_saved(raw: &str) -> Settings {
     }
 }
 
+/// Builds the JSON object to persist from the value currently in `localStorage`.
+///
+/// `stored` is the value re-read immediately before the write, so another tab
+/// that wrote a newer `version` or extra fields after our load cannot be rolled
+/// back by this save (C2-SETTINGS). The load-time snapshot is only a fallback
+/// for an unreadable destination. Keeping this pure lets the merge be tested
+/// without a browser context.
+fn merged_for_save(
+    settings: &Settings,
+    stored: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let raw = stored
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .or_else(|| lock(&LAST_LOADED).clone());
+    merged_map(settings, raw.as_ref())
+}
+
+/// Records a fixed, redacted save-failure notice and publishes it to the DOM
+/// node. The shell can drain `PENDING_NOTICE` later without any shell change;
+/// the DOM node shows the failure immediately (C2-SETTINGS).
+fn record_save_failure() {
+    let notice = SettingsNotice::save_failed();
+    *lock(&PENDING_NOTICE) = Some(notice.clone());
+    publish_notice_dom(&notice);
+}
+
 /// Persists settings. Returns an error message on failure so the caller can
 /// surface it, but callers are free to ignore it.
 ///
-/// Unknown fields and a newer `version` from the last load are preserved.
+/// Unknown fields and the newest `version` written by any tab are preserved.
+/// A failure also queues a redacted notice for the status bar / notice node; a
+/// success leaves any existing notice untouched.
 pub fn save(settings: &Settings) -> Result<(), String> {
-    let storage = storage().ok_or_else(|| "localStorage を利用できません".to_string())?;
-    let raw = lock(&LAST_LOADED).clone();
-    let map = merged_map(settings, raw.as_ref());
-    let json = serde_json::to_string(&map)
-        .map_err(|error| format!("設定を JSON に変換できません: {error}"))?;
-    storage
-        .set_item(STORAGE_KEY, &json)
-        .map_err(|_| "設定を保存できません（ストレージ容量または権限）".to_string())?;
-    *lock(&LAST_LOADED) = Some(map);
-    Ok(())
+    let result = (|| {
+        let storage = storage().ok_or_else(|| "localStorage を利用できません".to_string())?;
+        // Re-read first: a parallel tab may have changed the stored value since
+        // this process loaded it, and that newest value drives max(version).
+        let stored = storage.get_item(STORAGE_KEY).ok().flatten();
+        let map = merged_for_save(settings, stored.as_deref());
+        let json = serde_json::to_string(&map)
+            .map_err(|error| format!("設定を JSON に変換できません: {error}"))?;
+        storage
+            .set_item(STORAGE_KEY, &json)
+            .map_err(|_| "設定を保存できません（ストレージ容量または権限）".to_string())?;
+        *lock(&LAST_LOADED) = Some(map);
+        Ok(())
+    })();
+    if result.is_err() {
+        record_save_failure();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -461,6 +516,51 @@ mod tests {
     }
 
     #[test]
+    fn save_merges_against_the_freshly_reread_stored_value() {
+        // Another tab may have changed localStorage after this process loaded.
+        // The value passed to `merged_for_save` is the one re-read immediately
+        // before the write, and it must drive both `max(version)` and unknown
+        // field preservation (C2-SETTINGS).
+        let caller = Settings {
+            version: tm_viewmodel::SETTINGS_VERSION,
+            interval_ms: 2_000,
+            ..Settings::default()
+        };
+        let latest = r#"{"version":11,"interval_ms":1500,"newer_only":{"x":2}}"#;
+        let map = merged_for_save(&caller, Some(latest));
+        let json = serde_json::to_string(&map).expect("serialize");
+        let reloaded = parse_document(&json).expect("reload document");
+        assert_eq!(
+            reloaded.settings.version, 11,
+            "freshly read version must not be downgraded"
+        );
+        assert_eq!(reloaded.settings.interval_ms, 2_000);
+        assert_eq!(
+            reloaded.raw.get("newer_only"),
+            Some(&serde_json::json!({"x": 2}))
+        );
+
+        // A different `stored` value yields a different result: the merge is
+        // driven by the current contents, not a snapshot taken at load time.
+        let stale = r#"{"version":9,"interval_ms":1500,"stale_only":1}"#;
+        let stale_map = merged_for_save(&caller, Some(stale));
+        assert_eq!(stale_map.get("version"), Some(&serde_json::json!(9)));
+        assert!(stale_map.contains_key("stale_only"));
+        assert!(!stale_map.contains_key("newer_only"));
+
+        // If the newest value has a lower version, max(that, current) wins -
+        // an old in-memory version must not be resurrected.
+        let downgraded = r#"{"version":1,"interval_ms":1500,"fresh_only":2}"#;
+        let map = merged_for_save(&caller, Some(downgraded));
+        assert_eq!(
+            map.get("version"),
+            Some(&serde_json::json!(tm_viewmodel::SETTINGS_VERSION))
+        );
+        assert_eq!(map.get("fresh_only"), Some(&serde_json::json!(2)));
+        assert!(!map.contains_key("stale_only"));
+    }
+
+    #[test]
     fn corrupt_notice_is_redacted_and_drained_once() {
         // All assertions about the process-wide notice live in one test: the
         // test runner is parallel and these globals must not race.
@@ -478,6 +578,18 @@ mod tests {
         // A healthy value produces no notice on the next load.
         let (_settings, notice) = load_from_raw_with_notice(Some(r#"{"interval_ms":1500}"#));
         assert_eq!(notice, None);
+
+        // A failed save is queued for the shell (which already drains notices)
+        // with a fixed, redacted message; it is drained exactly once.
+        record_save_failure();
+        let notice = take_pending_notice().expect("save failure notice");
+        assert_eq!(notice, SettingsNotice::save_failed());
+        assert_eq!(notice.text, NOTICE_SAVE_FAILED);
+        assert!(notice.is_error);
+        assert!(notice.persistent, "must survive the next sample");
+        assert!(!notice.text.contains('/'), "{}", notice.text);
+        assert!(!notice.text.contains(STORAGE_KEY), "{}", notice.text);
+        assert_eq!(take_pending_notice(), None, "notice must be drained once");
     }
 
     #[test]
