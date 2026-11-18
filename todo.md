@@ -231,13 +231,13 @@ status: current
 
 ### 優先度: 低 — コンボレビュー 2026-11-19
 
-- [ ] ネイティブの確認ダイアログ/ヘルプへフォーカス移動と Tab トラップ:
+- [x] ネイティブの確認ダイアログ/ヘルプへフォーカス移動と Tab トラップ:
       `app/src/app.rs:1895,2032`。根拠 d4-vu01。
-- [ ] 温度/負荷表示の `max` / `crit` / `Load` を日本語へ (`app/src/app.rs:1035`)。
+- [x] 温度/負荷表示の `max` / `crit` / `Load` を日本語へ (`app/src/app.rs:1035`)。
       根拠 c5-ux01。
-- [ ] browser document.title から DOM 証跡フィールドを除去 (`web/src/shell.rs:2068`)。
+- [x] browser document.title から DOM 証跡フィールドを除去 (`web/src/shell.rs:2068`)。
       根拠 c5-ux01。
-- [ ] Esc の二重掲載を整理 (`app/src/app.rs:2045`)。根拠 d4-vu01 / c5-ux01。
+- [x] Esc の二重掲載を整理 (`app/src/app.rs:2045`)。根拠 d4-vu01 / c5-ux01。
 
 ## 完了
 

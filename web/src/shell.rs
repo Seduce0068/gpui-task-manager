@@ -9,9 +9,10 @@
 //!   always reported as `supports_process_control = false`,
 //! - data comes from [`tm_core::demo::DemoProbe`] or from the loopback agent,
 //!   polled once per second by a single `cx.spawn` task,
-//! - a small DOM hook (`body[data-gpui-proof]`, `document.title`) exposes the
-//!   state to the headless-Chrome verification script, because everything else
-//!   is drawn on a `<canvas>`.
+//! - a small DOM hook (`body[data-gpui-proof]`) exposes the state to the
+//!   headless-Chrome verification script, because everything else is drawn on
+//!   a `<canvas>`. `document.title` is human-facing only (a fixed label plus
+//!   the data source) and never carries DOM proof fields or user input.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -2006,8 +2007,12 @@ impl TaskManagerApp {
 
     // -------------------------------------------------------------- DOM proof
 
-    /// Writes a compact state summary into `document.title` and
-    /// `body[data-gpui-proof]` so the CDP verification script can assert on it.
+    /// Writes a compact state summary into `body[data-gpui-proof]` so the CDP
+    /// verification script can assert on it.
+    ///
+    /// `document.title` is intentionally *not* part of the proof: it is a fixed,
+    /// human-facing label plus the data source, so no `key=value` field (and no
+    /// filter text, tick count, row count, …) ever leaks into the browser tab.
     ///
     /// This is the only DOM interaction in the shell; everything else is drawn on
     /// the GPUI canvas.
@@ -2095,10 +2100,10 @@ impl TaskManagerApp {
         let proof = proof_with_interval(&proof, interval_ms);
         let proof = proof_with_export(&proof, self.last_export);
         let proof = proof_with_reconnect(&proof, self.reconnect_required);
-        document.set_title(&format!(
-            "GPUI タスクマネージャー (Web) | mode={mode} tick={} rows={rows} selected={selected} filter={filter}",
-            self.ticks
-        ));
+        // タブのタイトルは人間向けの固定文言＋データ源のみ。DOM 証跡の内部
+        // フィールド（mode/tick/rows/filter/…）は `body[data-gpui-proof]` に
+        // だけ書き、ここには一切露出させない。
+        document.set_title(document_title(live));
         if let Some(body) = document.body() {
             let _ = body.set_attribute("data-gpui-proof", &proof);
         }
@@ -2487,6 +2492,21 @@ fn proof_with_export(proof: &str, last_export: Option<ExportFormat>) -> String {
 #[cfg(any(target_family = "wasm", test))]
 fn proof_with_reconnect(proof: &str, required: bool) -> String {
     format!("{proof}reconnect={};", u8::from(required))
+}
+
+/// Builds the human-facing browser-tab title from the data source alone.
+///
+/// The DOM proof fields live exclusively in `body[data-gpui-proof]`; the title
+/// is deliberately limited to a fixed label plus a demo/live marker. It can
+/// therefore never carry a `key=value` proof field, the filter input text, a
+/// tick or row count, a PID, an interval, or the agent token.
+#[cfg(any(target_family = "wasm", test))]
+fn document_title(live: bool) -> &'static str {
+    if live {
+        "GPUI タスクマネージャー (Web) — ライブ"
+    } else {
+        "GPUI タスクマネージャー (Web) — デモ"
+    }
 }
 
 /// The re-entry flag is sticky until success or an explicit config change: a
@@ -3034,6 +3054,54 @@ mod tests {
             proof,
             "mode=demo;tick=7;interval=2000;export=none;reconnect=0;"
         );
+    }
+
+    #[test]
+    fn document_title_is_fixed_and_never_exposes_dom_proof_fields() {
+        // タブのタイトルはデータ源だけを示す固定文言。DOM 証跡の内部
+        // フィールドやユーザー入力（filter）は一切含まれないこと。
+        let demo = document_title(false);
+        let live = document_title(true);
+        assert_eq!(demo, "GPUI タスクマネージャー (Web) — デモ");
+        assert_eq!(live, "GPUI タスクマネージャー (Web) — ライブ");
+        assert_ne!(demo, live);
+        for title in [demo, live] {
+            assert!(title.contains("GPUI タスクマネージャー"), "{title}");
+            assert!(title.contains("(Web)"), "{title}");
+            // key=value; 形式の証跡フィールドはタイトルに出てこない。
+            for field in [
+                "mode=",
+                "tick=",
+                "cpu=",
+                "mem=",
+                "rows=",
+                "total=",
+                "filter=",
+                "selected_pid=",
+                "sort=",
+                "dir=",
+                "sampled=",
+                "vw=",
+                "vh=",
+                "live_error=",
+                "stale=",
+                "ime_",
+                "theme=",
+                "interval=",
+                "export=",
+                "reconnect=",
+            ] {
+                assert!(!title.contains(field), "{field} leaked into {title}");
+            }
+            // 区切り文字・改行・トークン・入力値の可能性のある文字も出ない。
+            assert!(!title.contains(';'), "{title}");
+            assert!(!title.contains('='), "{title}");
+            assert!(!title.contains('\n'), "{title}");
+            assert!(!title.contains("super-secret-agent-token"), "{title}");
+            assert!(!title.contains("firefox-filter-input"), "{title}");
+        }
+        assert!(live.contains("ライブ"), "{live}");
+        assert!(demo.contains("デモ"), "{demo}");
     }
 
     #[test]

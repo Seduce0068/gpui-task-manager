@@ -132,6 +132,16 @@ pub struct TaskManagerApp {
     show_help: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    /// 確認ダイアログの安全側ボタン（キャンセル）のフォーカス先。
+    dialog_cancel_focus: FocusHandle,
+    /// 確認ダイアログの実行ボタンのフォーカス先。
+    dialog_confirm_focus: FocusHandle,
+    /// ヘルプの「閉じる」ボタンのフォーカス先。
+    help_close_focus: FocusHandle,
+    /// 前フレームのオーバーレイ状態。表示/非表示の遷移でフォーカスを移送・復帰する。
+    last_overlay: OverlayKind,
+    /// オーバーレイ表示前にフォーカスされていた要素（閉じたら復帰する）。
+    focus_before_overlay: Option<FocusHandle>,
     demo_mode: bool,
     redact: bool,
     /// The native probe could not be created: no synthetic data is substituted,
@@ -215,6 +225,11 @@ impl TaskManagerApp {
             show_help: false,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            dialog_cancel_focus: cx.focus_handle(),
+            dialog_confirm_focus: cx.focus_handle(),
+            help_close_focus: cx.focus_handle(),
+            last_overlay: OverlayKind::None,
+            focus_before_overlay: None,
             demo_mode,
             redact,
             probe_unavailable: had_startup_error,
@@ -224,6 +239,31 @@ impl TaskManagerApp {
     /// Focus handle used by the window and by keyboard shortcuts.
     pub fn focus_handle(&self) -> &FocusHandle {
         &self.focus_handle
+    }
+
+    /// Tab / Shift+Tab cycling inside the confirmation dialog.
+    ///
+    /// This GPUI backend (gpui-pre 0.3) has no built-in modal focus scope and no
+    /// default Tab keybinding, so a framework-level trap is not available. With
+    /// exactly two buttons, toggling between these two handles keeps focus in
+    /// the dialog. If more focusable controls are added to the dialog, the
+    /// `DialogButton` order above must be extended as well.
+    fn cycle_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = if window
+            .focused(cx)
+            .map(|handle| handle == self.dialog_confirm_focus)
+            .unwrap_or(false)
+        {
+            DialogButton::Confirm
+        } else {
+            DialogButton::Cancel
+        };
+        let next = match current.next() {
+            DialogButton::Cancel => &self.dialog_cancel_focus,
+            DialogButton::Confirm => &self.dialog_confirm_focus,
+        };
+        next.focus(window, cx);
+        cx.stop_propagation();
     }
 
     /// Starts the sampling loop and requests the first sample.
@@ -519,6 +559,12 @@ impl TaskManagerApp {
         // text editing so an Enter pressed with the dialog open never edits the
         // filter instead.
         if self.dashboard.pending_kill().is_some() {
+            // Tab / Shift+Tab keep keyboard focus inside the modal by cycling
+            // between キャンセル and 実行 (see `cycle_dialog_focus`).
+            if key == "tab" {
+                self.cycle_dialog_focus(window, cx);
+                return;
+            }
             if let Some(command) = dialog_command(&key, modifiers) {
                 self.handle_command(command, cx);
             }
@@ -534,6 +580,13 @@ impl TaskManagerApp {
                 && !modifiers.alt
                 && !modifiers.shift
                 && !modifiers.function;
+            // Tab / Shift+Tab re-focus the single "閉じる" control so keyboard
+            // focus cannot leave the help overlay.
+            if key == "tab" {
+                self.help_close_focus.focus(window, cx);
+                cx.stop_propagation();
+                return;
+            }
             if unmodified && (key == "escape" || key == "f1") {
                 self.show_help = false;
                 cx.notify();
@@ -857,7 +910,7 @@ impl TaskManagerApp {
                         .text_xs()
                         .text_color(rgb(palette().muted))
                         .child(format!(
-                            "Load {}",
+                            "負荷 {}",
                             format::format_load_average(summary.load)
                         )),
                 ),
@@ -1043,10 +1096,10 @@ impl TaskManagerApp {
                     component.critical_c,
                 ) {
                     (Some(t), Some(max), Some(crit)) => {
-                        format!("{t:.0}°C (max {max:.0}°C / crit {crit:.0}°C)")
+                        format!("{t:.0}°C (上限 {max:.0}°C / 危険しきい値 {crit:.0}°C)")
                     }
                     (Some(t), Some(max), None) => format!("{t:.0}°C (max {max:.0}°C)"),
-                    (Some(t), None, Some(crit)) => format!("{t:.0}°C (crit {crit:.0}°C)"),
+                    (Some(t), None, Some(crit)) => format!("{t:.0}°C (危険しきい値 {crit:.0}°C)"),
                     (Some(t), None, None) => format!("{t:.0}°C"),
                     _ => "—".to_string(),
                 };
@@ -1791,7 +1844,7 @@ impl TaskManagerApp {
                     value.push_str(&format!(" / max {max:.0}°C"));
                 }
                 if let Some(critical) = component.critical_c {
-                    value.push_str(&format!(" / crit {critical:.0}°C"));
+                    value.push_str(&format!(" / 危険しきい値 {critical:.0}°C"));
                 }
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
@@ -2015,26 +2068,32 @@ impl TaskManagerApp {
                             h_flex()
                                 .justify_end()
                                 .gap_2()
-                                .child(action_button(
-                                    "kill-cancel",
-                                    "キャンセル",
-                                    palette().surface_hi,
-                                    true,
-                                    cx.listener(|this, _event, window, cx| {
-                                        this.focus_handle.focus(window, cx);
-                                        this.handle_command(Command::CancelKill, cx);
-                                    }),
-                                ))
-                                .child(action_button(
-                                    "kill-confirm",
-                                    label,
-                                    color,
-                                    true,
-                                    cx.listener(|this, _event, window, cx| {
-                                        this.focus_handle.focus(window, cx);
-                                        this.handle_command(Command::ConfirmKill, cx);
-                                    }),
-                                )),
+                                .child(
+                                    action_button(
+                                        "kill-cancel",
+                                        "キャンセル",
+                                        palette().surface_hi,
+                                        true,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.focus_handle.focus(window, cx);
+                                            this.handle_command(Command::CancelKill, cx);
+                                        }),
+                                    )
+                                    .track_focus(&self.dialog_cancel_focus),
+                                )
+                                .child(
+                                    action_button(
+                                        "kill-confirm",
+                                        label,
+                                        color,
+                                        true,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.focus_handle.focus(window, cx);
+                                            this.handle_command(Command::ConfirmKill, cx);
+                                        }),
+                                    )
+                                    .track_focus(&self.dialog_confirm_focus),
+                                ),
                         ),
                 ),
         )
@@ -2044,20 +2103,7 @@ impl TaskManagerApp {
         if !self.show_help {
             return None;
         }
-        let shortcuts = [
-            ("↑ / ↓", "行の選択"),
-            ("PgUp / PgDn", "10 行移動"),
-            ("Home / End", "先頭 / 末尾"),
-            ("Space", "更新の一時停止・再開"),
-            ("Ctrl+F / Cmd+F", "絞り込み入力"),
-            ("Ctrl+K / Cmd+K", "選択プロセスの終了"),
-            ("F2", "詳細パネルの表示切替"),
-            ("F5", "今すぐ更新"),
-            ("F1 / Esc", "このヘルプを開く / 閉じる"),
-            ("Enter", "確認ダイアログをキャンセル（安全側）"),
-            ("Ctrl/Cmd+Enter", "確認ダイアログでシグナルを実行"),
-            ("Esc", "絞り込み解除 / ダイアログを閉じる"),
-        ];
+        let shortcuts = help_shortcuts();
         let rows: Vec<Div> = shortcuts
             .iter()
             .map(|(keys, description)| {
@@ -2117,17 +2163,20 @@ impl TaskManagerApp {
                                         .font_weight(FontWeight::BOLD)
                                         .child("キーボード操作"),
                                 )
-                                .child(action_button(
-                                    "help-close",
-                                    "閉じる",
-                                    palette().surface_hi,
-                                    true,
-                                    cx.listener(|this, _event, window, cx| {
-                                        this.focus_handle.focus(window, cx);
-                                        this.show_help = false;
-                                        cx.notify();
-                                    }),
-                                )),
+                                .child(
+                                    action_button(
+                                        "help-close",
+                                        "閉じる",
+                                        palette().surface_hi,
+                                        true,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.focus_handle.focus(window, cx);
+                                            this.show_help = false;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .track_focus(&self.help_close_focus),
+                                ),
                         )
                         .children(rows),
                 ),
@@ -2265,7 +2314,48 @@ impl EntityInputHandler for TaskManagerApp {
 }
 
 impl Render for TaskManagerApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Overlay focus is driven in one place so it applies regardless of how
+        // the overlay opened (keyboard shortcut or button click). On open, the
+        // safe default control receives focus; on close, the previously focused
+        // element (the root handle used for row navigation) is restored.
+        let overlay_now = if self.dashboard.pending_kill().is_some() {
+            OverlayKind::Dialog
+        } else if self.show_help {
+            OverlayKind::Help
+        } else {
+            OverlayKind::None
+        };
+        if overlay_now != self.last_overlay {
+            match overlay_now {
+                OverlayKind::None => {
+                    if let Some(previous) = self.focus_before_overlay.take() {
+                        previous.focus(window, cx);
+                    } else {
+                        self.focus_handle.focus(window, cx);
+                    }
+                }
+                OverlayKind::Dialog => {
+                    self.focus_before_overlay = Some(
+                        window
+                            .focused(cx)
+                            .unwrap_or_else(|| self.focus_handle.clone()),
+                    );
+                    // 安全側（キャンセル）を初期フォーカスにする。
+                    self.dialog_cancel_focus.focus(window, cx);
+                }
+                OverlayKind::Help => {
+                    self.focus_before_overlay = Some(
+                        window
+                            .focused(cx)
+                            .unwrap_or_else(|| self.focus_handle.clone()),
+                    );
+                    self.help_close_focus.focus(window, cx);
+                }
+            }
+            self.last_overlay = overlay_now;
+        }
+
         let top = self.top_bar(cx);
         let overview = self.overview();
         let toolbar = self.toolbar(cx);
@@ -2424,6 +2514,61 @@ fn key_action(key: &str, modifiers: Modifiers, editing_text: bool) -> Option<Key
     }
 }
 
+/// Help overlay shortcuts. Kept as a pure table so the wording can be asserted
+/// in unit tests (in particular that `Esc` is listed exactly once and that its
+/// description matches the real `on_key_down` priority).
+///
+/// `Esc` is intentionally consolidated into a single row: the shell resolves it
+/// with the priority dialog > help > filter, so while the help overlay is open a
+/// bare `Esc` only closes the help (it never clears the filter). F1 is a plain
+/// toggle and no longer shares a row with `Esc`.
+fn help_shortcuts() -> [(&'static str, &'static str); 12] {
+    [
+        ("↑ / ↓", "行の選択"),
+        ("PgUp / PgDn", "10 行移動"),
+        ("Home / End", "先頭 / 末尾"),
+        ("Space", "更新の一時停止・再開"),
+        ("Ctrl+F / Cmd+F", "絞り込み入力"),
+        ("Ctrl+K / Cmd+K", "選択プロセスの終了"),
+        ("F2", "詳細パネルの表示切替"),
+        ("F5", "今すぐ更新"),
+        ("F1", "このヘルプを開く / 閉じる"),
+        ("Enter", "確認ダイアログをキャンセル（安全側）"),
+        ("Ctrl/Cmd+Enter", "確認ダイアログでシグナルを実行"),
+        (
+            "Esc",
+            "ダイアログ/ヘルプを閉じる · 絞り込み解除（表示中は閉じる操作が優先）",
+        ),
+    ]
+}
+
+/// Which overlay was visible in the last rendered frame. Focusing on open and
+/// restoring on close is driven by transitions of this value in `Render::render`,
+/// so it works for both keyboard shortcuts and button clicks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayKind {
+    None,
+    Dialog,
+    Help,
+}
+
+/// The two focusable controls of the confirmation dialog. Both Tab and
+/// Shift+Tab toggle between them, which is enough to keep focus in the modal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DialogButton {
+    Cancel,
+    Confirm,
+}
+
+impl DialogButton {
+    fn next(self) -> Self {
+        match self {
+            Self::Cancel => Self::Confirm,
+            Self::Confirm => Self::Cancel,
+        }
+    }
+}
+
 /// Maps a key press while the confirmation dialog is open to a safe action.
 ///
 /// A single Enter always cancels; confirming a signal requires Ctrl/Cmd+Enter or
@@ -2444,7 +2589,8 @@ mod tests {
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
     use super::{
-        dialog_command, key_action, report_save_result, signal_enabled, BackendInit, KeyAction,
+        dialog_command, help_shortcuts, key_action, report_save_result, signal_enabled,
+        BackendInit, DialogButton, KeyAction,
     };
     use gpui_kit::Modifiers;
     use tm_core::{PlatformInfo, Signal};
@@ -2492,8 +2638,44 @@ mod tests {
     fn other_keys_are_ignored_while_the_dialog_is_open() {
         assert_eq!(dialog_command("down", plain()), None);
         assert_eq!(dialog_command("space", plain()), None);
+        // Tab is handled by the focus-cycling path, never as a dialog command.
+        assert_eq!(dialog_command("tab", plain()), None);
         assert_eq!(dialog_command("enter", ctrl()), Some(Command::ConfirmKill));
         assert_eq!(dialog_command("enter", cmd()), Some(Command::ConfirmKill));
+    }
+
+    #[test]
+    fn dialog_tab_cycles_between_the_two_buttons_in_both_directions() {
+        // With two buttons, forward and backward Tab both toggle, which keeps
+        // keyboard focus inside the modal (there is no built-in focus scope in
+        // this GPUI backend).
+        assert_eq!(DialogButton::Cancel.next(), DialogButton::Confirm);
+        assert_eq!(DialogButton::Confirm.next(), DialogButton::Cancel);
+        assert_eq!(
+            DialogButton::Cancel.next().next(),
+            DialogButton::Cancel,
+            "tab must cycle back to the first button"
+        );
+    }
+
+    #[test]
+    fn help_lists_esc_exactly_once_with_priority_wording() {
+        let shortcuts = help_shortcuts();
+        let esc_rows: Vec<_> = shortcuts.iter().filter(|(key, _)| *key == "Esc").collect();
+        assert_eq!(esc_rows.len(), 1, "Esc must appear in exactly one row");
+        let (_, description) = esc_rows[0];
+        assert!(
+            description.contains("ダイアログ") && description.contains("ヘルプ"),
+            "the Esc description must cover both overlays: {description}"
+        );
+        assert!(
+            description.contains("閉じる") && description.contains("絞り込み解除"),
+            "the Esc description must state both actions: {description}"
+        );
+        // F1 no longer shares a row with Esc, so the two keys are unambiguous.
+        let f1_rows: Vec<_> = shortcuts.iter().filter(|(key, _)| *key == "F1").collect();
+        assert_eq!(f1_rows.len(), 1);
+        assert!(!f1_rows[0].1.contains("Esc"), "F1 row must not re-list Esc");
     }
 
     #[test]
