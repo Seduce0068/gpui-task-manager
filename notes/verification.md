@@ -2311,3 +2311,24 @@ bond0、diverge 解消。
 - workspace 367 passed / clippy / fmt / markdownlint 増分ゼロ成功。
   `split_task_refresh_preserves_thread_counts` が並列実行で 2 回 flaky 失敗
   したが、単体実行と全体再実行で成功（変更と無関係）。
+
+## 2026-11-18（エージェント並列調査 第36弾 → --token の redact 漏えい）
+
+2 観点（agent CLI / export I/O）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **`--token` が redact 済み出力に残る機密漏えい（probe-agentcli B3、
+   R2X-A1 として先送り済み）**: tm-platform が argv を `process.command` に
+   コピーするため `tm-agent --token <secret> --redact --once` の JSON に
+   トークンが残っていた。`redact_snapshot()` ヘルパに解決済み token を渡し、
+   `process.command` / `process.name` から `***` へ置換。`--once` は
+   `config.token`、HTTP は `SharedState.token` を渡す。回帰テスト追加。
+   置換対象は argv 由来の 2 フィールドに限定（他フィールドは設計判断）。
+
+**見送り（次ラウンド候補）**: `--export /dev/stdout` が root／コンテナで
+`/dev/stdout` シンボリックリンクを 0600 通常ファイルで置換して破壊する
+実バグ（probe-exportio 候補7、Runtime Proof あり。symlink/fifo の方針と
+typed error 化 exit 2 分類も同時に判断）、token-file の 0o620 受理
+（完全性の設計判断）、IPv6 origin の CORS、--once の serialize 失敗分類。
+0600 付与・umask 非依存・原子性・EXIT_PROBE 分類は健全で現状維持。
+
+- agent 79 passed / workspace 368 passed / clippy / fmt 成功。

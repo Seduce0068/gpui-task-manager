@@ -1352,3 +1352,8 @@
 
 - --export の real probe warm-up を追加、ADR 4 件と README/UI 文言を訂正。
   workspace 367 passed。
+
+## 2026-11-18（エージェント並列調査 第36弾 → --token の redact 漏えい）
+
+- --token 値が process.command に残る問題を修正（redact 時に *** 化）。
+  agent 79 / workspace 368 passed。/dev/stdout 破壊は次ラウンド候補。

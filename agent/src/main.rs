@@ -193,8 +193,12 @@ fn run() -> Result<(), AgentError> {
     }
 
     if config.once {
-        return print_once(probe.as_mut(), config.redact)
-            .map_err(|message| AgentError::new(ExitCategory::Probe, message));
+        return print_once(
+            probe.as_mut(),
+            config.redact,
+            config.token.as_deref().unwrap_or_default(),
+        )
+        .map_err(|message| AgentError::new(ExitCategory::Probe, message));
     }
 
     let token = match (config.token, config.token_file.as_deref()) {
@@ -306,14 +310,14 @@ fn build_probe(config: &args::Config) -> Result<Box<dyn SystemProbe>, String> {
 }
 
 /// Implements `--once`: one snapshot as JSON on stdout, then exit.
-fn print_once(probe: &mut dyn SystemProbe, redact: bool) -> Result<(), String> {
+fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<(), String> {
     // CPU percentages are deltas to the previous sample, so the first sample
     // is a warm-up and is not printed.
     probe.sample().map_err(|err| err.to_string())?;
     std::thread::sleep(WARMUP_INTERVAL);
     let mut snapshot = probe.sample().map_err(|err| err.to_string())?;
     if redact {
-        redact_snapshot(&mut snapshot);
+        redact_snapshot(&mut snapshot, token);
     }
     let total = apply_process_limit(&mut snapshot, DEFAULT_PROCESS_LIMIT);
     let envelope = SnapshotEnvelope {
@@ -825,7 +829,7 @@ fn snapshot_response(
     match probe.sample() {
         Ok(mut snapshot) => {
             if redact {
-                redact_snapshot(&mut snapshot);
+                redact_snapshot(&mut snapshot, token);
             }
             let total = apply_process_limit(&mut snapshot, limit);
             let envelope = SnapshotEnvelope {
@@ -864,7 +868,7 @@ fn snapshot_response(
 /// The rules live in `tm_core::redact` so the native shell (`--redact`) and
 /// this endpoint cannot drift. Values are captured before redaction and owned
 /// as Strings to avoid borrowing a snapshot we are about to mutate.
-fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot) {
+fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
     let original_hostname = snapshot.hostname.clone().unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     let user = std::env::var("USER")
@@ -876,6 +880,20 @@ fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot) {
         hostname: &original_hostname,
     };
     tm_core::redact::redact_snapshot(snapshot, &ids);
+    // A token passed via `--token` lives in this process's argv, which the
+    // probe copies into `process.command`. `redact_text` cannot know it, so
+    // scrub it explicitly — otherwise "redacted" evidence leaks the Bearer
+    // token (R45, previously deferred as R2X-A1).
+    if !token.is_empty() {
+        for process in &mut snapshot.processes {
+            if process.command.contains(token) {
+                process.command = process.command.replace(token, "***");
+            }
+            if process.name.contains(token) {
+                process.name = process.name.replace(token, "***");
+            }
+        }
+    }
 }
 
 /// Parses `?limit=`: default [`DEFAULT_PROCESS_LIMIT`], clamped to
@@ -1376,6 +1394,19 @@ mod tests {
     }
 
     #[test]
+    fn redaction_scrubs_the_bearer_token_from_argv_echo() {
+        // `--token` ends up in our own process command; "redacted" JSON must
+        // not carry the credential itself (R45 / R2X-A1).
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.processes[0].command = "tm-agent --token supersecret123 --once".to_string();
+        snapshot.processes[0].name = "tm-agent-supersecret123".to_string();
+        redact_snapshot(&mut snapshot, "supersecret123");
+        assert!(!snapshot.processes[0].command.contains("supersecret123"));
+        assert!(!snapshot.processes[0].name.contains("supersecret123"));
+        assert!(snapshot.processes[0].command.contains("***"));
+    }
+
+    #[test]
     fn redaction_removes_host_user_and_home_paths() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/alice".to_string());
         let user = std::env::var("USER").unwrap_or_else(|_| "alice".to_string());
@@ -1386,7 +1417,7 @@ mod tests {
             "{home}/private/app --issuer=https://my-host.tail1234.ts.net:8443 --host=my-host"
         );
         snapshot.disks[0].mount_point = format!("{home}/work/project");
-        redact_snapshot(&mut snapshot);
+        redact_snapshot(&mut snapshot, "");
         assert_eq!(snapshot.hostname.as_deref(), Some("host"));
         assert_eq!(snapshot.processes[0].user.as_deref(), Some("user"));
         assert!(!snapshot.processes[0].command.contains(&home));
@@ -1398,7 +1429,7 @@ mod tests {
         // Truncated commands (240 chars) can lose the `.ts.net` suffix.
         snapshot.processes[0].command =
             "app --url=https://host.tail1234.t… --id=tail1234abcd".to_string();
-        redact_snapshot(&mut snapshot);
+        redact_snapshot(&mut snapshot, "");
         assert!(!snapshot.processes[0].command.contains("tail1234"));
         assert!(snapshot.processes[0].command.contains("host"));
     }
