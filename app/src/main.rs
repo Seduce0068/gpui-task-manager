@@ -144,6 +144,12 @@ const EXIT_INTERNAL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_PROBE: i32 = 4;
 
+/// Discarded-sample delay for `--export` with a native probe. Matches the
+/// agent's warm-up (must exceed sysinfo's ~200 ms minimum CPU interval).
+fn export_warmup_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(250)
+}
+
 /// Severity accepted by `--log-level` (same accept set as `tm-agent`).
 /// Matching is ASCII case-insensitive; the canonical spelling is lowercase.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -455,6 +461,17 @@ fn run_export(request: &ExportRequest, demo: bool) -> i32 {
                 return EXIT_PROBE;
             }
         };
+    // The native probe needs two samples for per-process CPU: the first one
+    // has no previous counters and reports 0 for every process (R44 export
+    // audit). Discard it, matching the agent's HTTP/--once warm-up. Demo data
+    // is already meaningful on the first tick, so skip the wait there.
+    if !demo {
+        if let Err(error) = probe.sample() {
+            eprintln!("gpui-task-manager: スナップショット取得に失敗: {error}");
+            return EXIT_PROBE;
+        }
+        std::thread::sleep(crate::export_warmup_interval());
+    }
     let snapshot = match probe.sample() {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -786,6 +803,13 @@ mod tests {
         assert!(error.contains("out.csv"), "{error}");
         assert!(!path.exists(), "a failed export must not create output");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn export_warmup_exceeds_sysinfo_minimum_cpu_interval() {
+        // A shorter delay would produce all-zero per-process CPU in `--export`
+        // (the first sample has no previous counters) — R44 audit.
+        assert_eq!(export_warmup_interval().as_millis(), 250);
     }
 
     #[::core::prelude::v1::test]

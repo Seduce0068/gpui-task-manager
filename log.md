@@ -1347,3 +1347,8 @@
 ## 2026-11-18（エージェント並列調査 第34弾 → collapse 選択と前方互換の契約）
 
 - collapse 時の選択行暴走を修正、settings の二層契約を明記。workspace 366 passed。
+
+## 2026-11-18（エージェント並列調査 第35弾 → export CPU と ADR の実態）
+
+- --export の real probe warm-up を追加、ADR 4 件と README/UI 文言を訂正。
+  workspace 367 passed。

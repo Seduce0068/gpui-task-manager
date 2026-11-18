@@ -1858,7 +1858,7 @@ impl TaskManagerApp {
             None => div()
                 .text_xs()
                 .text_color(rgb(palette().dim))
-                .child("↑↓ 選択 · Space 一時停止 · Ctrl+F 検索 · Ctrl+K 終了 · F1 ヘルプ")
+                .child("↑↓ 選択 · Space 表示の一時停止 · Ctrl+F 検索 · Ctrl+K 終了 · F1 ヘルプ")
                 .into_any_element(),
         };
         h_flex()

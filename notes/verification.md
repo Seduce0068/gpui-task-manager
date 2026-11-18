@@ -2283,3 +2283,31 @@ TOCTOU 窓の pidfd 化解消（カーネルレベル変更）、app/web の Cor
 drift（worktree 外）。
 
 - workspace 366 passed / clippy / fmt / rustdoc 成功。
+
+## 2026-11-18（エージェント並列調査 第35弾 → export CPU と ADR の実態）
+
+3 観点（ADR / 用語 / 出力形式）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **`--export` の初回サンプルで全 CPU 0.0（実バグ）**: real probe の
+   初回 sample は前回カウンタが無く全プロセス 0.0 を返す。HTTP 側と
+   `agent --once` は warm-up 済みだったが `--export` だけ取り残されていた。
+   `run_export` で real のときだけ 1 回捨てサンプル＋250ms 待機を追加
+   （demo は初回から非零のためスキップ）。`export_warmup_interval()` を
+   定数化し 250ms を回帰テストで固定。app 62 passed。
+2. **ADR の実態乖離を訂正**（probe-adrfinal）:
+   - ADR-001「更新は隔週」→ dependabot 実態の週次へ
+   - ADR-008「エクスポートは MVP 外」→ スナップショット CSV/JSON は実装済み
+   - ADR-012「未知フィールドは無視」→ 二層前方互換契約を明記
+   - ADR-017 wasm 計測日付 11-18 → 実態の 11-17 へ訂正＋要再測定
+3. **README の「阻塞」を「ブロック」へ**（probe-terminology、DESIGN と統一）。
+   ステータスバーの「Space 一時停止」を「Space 表示の一時停止」へ明記
+   （SIGSTOP 操作との同名衝突を回避）。
+
+**見送り**: 更新側ラベル全体の「表示を一時停止」化（viewmodel の文言テストと
+SIGSTOP 側 DOM フックへの波及）、CSV 数式無害化の Unicode 空白拡張
+（実経路で sanitize が先に trim し到達不可）、MAC アドレスの redact、
+bond0、diverge 解消。
+
+- workspace 367 passed / clippy / fmt / markdownlint 増分ゼロ成功。
+  `split_task_refresh_preserves_thread_counts` が並列実行で 2 回 flaky 失敗
+  したが、単体実行と全体再実行で成功（変更と無関係）。
