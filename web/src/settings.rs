@@ -15,6 +15,24 @@ use tm_viewmodel::Settings;
 /// Key used in `localStorage`.
 pub const STORAGE_KEY: &str = "gpui-task-manager.settings";
 
+/// 更新間隔の UI プリセット（ミリ秒）。ネイティブ版と同じ 4 段階を使う。
+///
+/// ここで定義してシェルから参照することで、ボタンの候補と保存される
+/// `settings.interval_ms` がずれないようにする。値はすべて
+/// [`tm_viewmodel::MIN_REFRESH_INTERVAL`]〜[`MAX_REFRESH_INTERVAL`] の範囲内。
+pub const INTERVAL_PRESETS_MS: [u64; 4] = [500, 1_000, 2_000, 5_000];
+
+/// 更新間隔プリセットの表示ラベル（ネイティブ版と同じ表記）。
+pub fn interval_label(interval_ms: u64) -> String {
+    match interval_ms {
+        500 => "0.5s".to_string(),
+        1_000 => "1s".to_string(),
+        2_000 => "2s".to_string(),
+        5_000 => "5s".to_string(),
+        other => format!("{other}ms"),
+    }
+}
+
 /// Returns the `localStorage` handle, if the browser exposes one.
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
@@ -113,5 +131,50 @@ mod tests {
             restored.interval_ms,
             tm_viewmodel::MIN_REFRESH_INTERVAL.as_millis() as u64
         );
+    }
+
+    #[test]
+    fn interval_presets_are_supported_and_distinct() {
+        let minimum = tm_viewmodel::MIN_REFRESH_INTERVAL.as_millis() as u64;
+        let maximum = tm_viewmodel::MAX_REFRESH_INTERVAL.as_millis() as u64;
+        for (index, &millis) in INTERVAL_PRESETS_MS.iter().enumerate() {
+            assert!(
+                (minimum..=maximum).contains(&millis),
+                "preset {millis} is outside the sampler range"
+            );
+            // 正規化で値が変わらない = ボタンの表示値と保存値が一致する。
+            let normalized = Settings {
+                interval_ms: millis,
+                ..Settings::default()
+            }
+            .normalized();
+            assert_eq!(normalized.interval_ms, millis);
+            for &other in &INTERVAL_PRESETS_MS[index + 1..] {
+                assert_ne!(millis, other, "presets must be unique");
+            }
+        }
+    }
+
+    #[test]
+    fn interval_preset_round_trips_through_persisted_json() {
+        // UI で選んだ更新間隔が localStorage の JSON を往復しても保たれること。
+        for &millis in &INTERVAL_PRESETS_MS {
+            let settings = Settings {
+                interval_ms: millis,
+                ..Settings::default()
+            }
+            .normalized();
+            let json = serde_json::to_string(&settings).expect("serialize");
+            assert_eq!(parse_saved(&json).interval_ms, millis);
+        }
+    }
+
+    #[test]
+    fn interval_labels_match_the_native_shell() {
+        assert_eq!(interval_label(500), "0.5s");
+        assert_eq!(interval_label(1_000), "1s");
+        assert_eq!(interval_label(2_000), "2s");
+        assert_eq!(interval_label(5_000), "5s");
+        assert_eq!(interval_label(1_234), "1234ms");
     }
 }

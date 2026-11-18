@@ -27,10 +27,12 @@ use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe};
 use tm_viewmodel::{
-    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput, StatusMessage,
+    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput,
+    MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
 };
 
 use crate::agent::{AgentClient, AgentConfig};
+use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, h_flex, kv, section_title, sparkline,
@@ -149,14 +151,14 @@ impl TaskManagerApp {
     ///
     /// One task handles both modes. It awaits the current sample before sleeping,
     /// so at most one fetch is in flight (no request pile-up if the agent stalls).
+    /// The wait is re-read from the dashboard on every cycle: a restored
+    /// `settings.interval_ms` and a UI preset change both reach the sampler
+    /// without restarting the task.
     fn spawn_sampler(&self, cx: &mut Context<Self>) {
         let live = match &self.source {
             DataSource::Live(client) => Some(client.clone()),
             DataSource::Demo(_) => None,
         };
-        // `restore_settings()` runs before this, so a persisted interval is
-        // honoured rather than silently falling back to the default 1 s.
-        let interval_ms = self.dashboard.interval().as_millis() as u64;
         cx.spawn(async move |this, cx| {
             loop {
                 match &live {
@@ -180,9 +182,15 @@ impl TaskManagerApp {
                         }
                     }
                 }
-                cx.background_executor()
-                    .timer(Duration::from_millis(interval_ms))
-                    .await;
+                // Read *after* the sample so the newest applied interval (preset
+                // click or persisted settings) decides the next wait. Never
+                // freeze the cadence at startup.
+                let interval =
+                    match this.update(cx, |app, _| sampler_wait(app.dashboard.interval())) {
+                        Ok(interval) => interval,
+                        Err(_) => break,
+                    };
+                cx.background_executor().timer(interval).await;
             }
         })
         .detach();
@@ -890,6 +898,54 @@ impl TaskManagerApp {
         };
 
         let sort = self.dashboard.sort_spec();
+        let active_interval = self.dashboard.interval();
+        // 更新間隔ボタン（ネイティブ版と同じプリセット）。クリックで
+        // Command::SetInterval を発行し、Dashboard → localStorage → サンプラー
+        // の順に同じ値が反映される。
+        let interval_buttons: Vec<Stateful<Div>> = INTERVAL_PRESETS_MS
+            .iter()
+            .map(|&millis| {
+                let label = interval_label(millis);
+                let active = active_interval == Duration::from_millis(millis);
+                div()
+                    .id(("interval-web", millis))
+                    .role(Role::Button)
+                    .aria_label(format!(
+                        "更新間隔 {label}（{}）",
+                        if active { "選択中" } else { "未選択" }
+                    ))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(palette().surface))
+                    .bg(rgb(if active {
+                        palette().surface
+                    } else {
+                        palette().mantle
+                    }))
+                    .text_color(rgb(if active {
+                        palette().blue
+                    } else {
+                        palette().muted
+                    }))
+                    .hover(|style| {
+                        style
+                            .bg(rgb(palette().surface))
+                            .text_color(rgb(palette().text))
+                    })
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.handle_command(
+                            Command::SetInterval(Duration::from_millis(millis)),
+                            cx,
+                        );
+                    }))
+                    .child(label)
+            })
+            .collect();
         let filter_box = div()
             .id("filter-box")
             .role(Role::TextInput)
@@ -963,6 +1019,18 @@ impl TaskManagerApp {
                                 sort.key.label(),
                                 sort.direction.arrow()
                             )),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(palette().dim))
+                                    .child("更新間隔"),
+                            )
+                            .children(interval_buttons),
                     )
                     .child(
                         div()
@@ -1743,7 +1811,9 @@ impl TaskManagerApp {
             .map(|value| value as u32)
             .unwrap_or(0);
         let rows = self.dashboard.visible_count();
-        let interval_ms = self.dashboard.interval().as_millis() as u64;
+        // Same helper as the sampler uses, so the reported value is exactly the
+        // cadence the next sample will wait for.
+        let interval_ms = sampler_wait(self.dashboard.interval()).as_millis() as u64;
         let theme_label = match theme() {
             tm_viewmodel::Theme::Dark => "dark",
             tm_viewmodel::Theme::Light => "light",
@@ -1753,11 +1823,12 @@ impl TaskManagerApp {
              filter={filter};selected_pid={selected};sort={};dir={direction};\
              sampled={sampled};vw={viewport_width};vh={viewport_height};live_error={};\
              stale={stale};ime_composing={ime_composing};ime_field={ime_field};ime_marked={ime_marked};\
-             ime_selection={ime_selection};theme={theme_label};interval={interval_ms};",
+             ime_selection={ime_selection};theme={theme_label};",
             self.ticks,
             sort.key.label(),
             if self.live_error.is_some() { 1 } else { 0 },
         );
+        let proof = proof_with_interval(&proof, interval_ms);
         document.set_title(&format!(
             "GPUI タスクマネージャー (Web) | mode={mode} tick={} rows={rows} selected={selected} filter={filter}",
             self.ticks
@@ -2076,6 +2147,28 @@ fn status_color(status: ProcessStatus) -> u32 {
     }
 }
 
+/// Resolves the sampler's timer wait from the interval currently applied to the
+/// dashboard.
+///
+/// `Dashboard::interval()` is already clamped by `Command::SetInterval` and
+/// `Settings::normalized`; clamping here too keeps the cadence inside the
+/// supported range even if a future caller applies a raw value. Kept pure so
+/// the `settings.interval_ms` → sampler mapping is testable on the native host.
+fn sampler_wait(interval: Duration) -> Duration {
+    interval.clamp(MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL)
+}
+
+/// Appends the refresh-interval field to the DOM proof string.
+///
+/// Additive only: existing `key=value;` pairs stay byte-for-byte identical, so
+/// the headless-Chrome assertions keep parsing the hook. The value is a plain
+/// millisecond count derived from the clamped sampler interval — it can never
+/// carry user text or an agent token.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_interval(proof: &str, interval_ms: u64) -> String {
+    format!("{proof}interval={interval_ms};")
+}
+
 /// Whether the snapshot left on screen after a poll must be shown as stale.
 ///
 /// Only a failed refresh of an already-populated dashboard makes displayed data
@@ -2223,5 +2316,56 @@ mod tests {
     fn sort_direction_has_a_textual_name() {
         assert_eq!(a11y_sort_direction(SortDirection::Ascending), "昇順");
         assert_eq!(a11y_sort_direction(SortDirection::Descending), "降順");
+    }
+
+    #[test]
+    fn sampler_wait_tracks_the_applied_interval_and_clamps() {
+        // UI / 復元後の interval_ms がサンプラーへそのまま渡ること。
+        assert_eq!(
+            sampler_wait(Duration::from_millis(2_000)),
+            Duration::from_millis(2_000)
+        );
+        assert_eq!(sampler_wait(Duration::from_millis(1)), MIN_REFRESH_INTERVAL);
+        assert_eq!(
+            sampler_wait(Duration::from_secs(3_600)),
+            MAX_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn interval_presets_produce_distinct_sampler_waits() {
+        let waits: Vec<Duration> = INTERVAL_PRESETS_MS
+            .iter()
+            .map(|&millis| sampler_wait(Duration::from_millis(millis)))
+            .collect();
+        assert_eq!(waits.len(), INTERVAL_PRESETS_MS.len());
+        assert!(waits.windows(2).all(|pair| pair[0] != pair[1]));
+        for (&millis, wait) in INTERVAL_PRESETS_MS.iter().zip(waits) {
+            assert_eq!(wait, Duration::from_millis(millis));
+        }
+    }
+
+    #[test]
+    fn dom_proof_interval_field_is_additive_and_token_free() {
+        // 既存 DOM hook の key=value; は壊さず、末尾に interval を足すだけ。
+        // エージェントのトークンは数値フィールドへ一切入らない。
+        let token = "super-secret-agent-token";
+        let legacy = "mode=demo;tick=7;rows=3;theme=dark;";
+        let proof = proof_with_interval(legacy, 2_000);
+        assert!(proof.starts_with(legacy), "{proof}");
+        assert_eq!(proof, "mode=demo;tick=7;rows=3;theme=dark;interval=2000;");
+        assert!(!proof.contains(token), "{proof}");
+        for field in [
+            "mode=demo",
+            "tick=7",
+            "rows=3",
+            "theme=dark",
+            "interval=2000",
+        ] {
+            assert!(
+                proof.split(';').any(|part| part == field),
+                "{field} missing from {proof}"
+            );
+        }
     }
 }

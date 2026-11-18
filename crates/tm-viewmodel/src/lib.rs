@@ -51,6 +51,8 @@ pub enum Command {
     SetFilterText(String),
     /// Clear every filter field.
     ClearFilter,
+    /// Set the minimum virtual memory in bytes (`None` clears the threshold).
+    SetMinVirtualMemoryBytes(Option<u64>),
     /// Change the refresh interval (clamped to the supported range).
     SetInterval(Duration),
     /// Pause or resume sampling.
@@ -369,6 +371,11 @@ impl Dashboard {
             }
             Command::ClearFilter => {
                 self.filter = Filter::default();
+                self.recompute_visible();
+                Vec::new()
+            }
+            Command::SetMinVirtualMemoryBytes(bytes) => {
+                self.filter.min_virtual_memory_bytes = bytes;
                 self.recompute_visible();
                 Vec::new()
             }
@@ -831,6 +838,25 @@ mod tests {
     }
 
     #[test]
+    fn sorting_by_virtual_memory_defaults_to_descending() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        dashboard.apply(Command::SetSortKey(SortKey::VirtualMemory));
+        let spec = dashboard.sort_spec();
+        assert_eq!(spec.key, SortKey::VirtualMemory);
+        assert_eq!(spec.direction, SortDirection::Descending);
+        assert_eq!(spec.direction.arrow(), SortDirection::Descending.arrow());
+        assert_eq!(spec.key.label(), "仮想メモリ");
+        let snapshot = dashboard.snapshot().expect("snapshot");
+        let values: Vec<u64> = dashboard
+            .visible_indices()
+            .iter()
+            .map(|&index| snapshot.processes[index].virtual_memory_bytes)
+            .collect();
+        assert!(values.windows(2).all(|pair| pair[0] >= pair[1]));
+    }
+
+    #[test]
     fn filter_reduces_visible_rows() {
         let mut dashboard = dashboard();
         ingest_ticks(&mut dashboard, 1);
@@ -843,6 +869,48 @@ mod tests {
         );
         dashboard.apply(Command::ClearFilter);
         assert!(dashboard.visible_count() > 1);
+    }
+
+    #[test]
+    fn virtual_memory_filter_limits_visible_rows_and_clears() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let snapshot = dashboard.snapshot().expect("snapshot").clone();
+        let max_vm = snapshot
+            .processes
+            .iter()
+            .map(|process| process.virtual_memory_bytes)
+            .max()
+            .expect("processes");
+        let min_vm = snapshot
+            .processes
+            .iter()
+            .map(|process| process.virtual_memory_bytes)
+            .min()
+            .expect("processes");
+
+        dashboard.apply(Command::SetMinVirtualMemoryBytes(Some(max_vm)));
+        assert_eq!(dashboard.filter().min_virtual_memory_bytes, Some(max_vm));
+        assert!(dashboard.filter().is_active());
+        assert_eq!(
+            dashboard.visible_count(),
+            snapshot
+                .processes
+                .iter()
+                .filter(|process| process.virtual_memory_bytes >= max_vm)
+                .count()
+        );
+
+        dashboard.apply(Command::SetMinVirtualMemoryBytes(None));
+        assert_eq!(dashboard.filter().min_virtual_memory_bytes, None);
+        assert!(!dashboard.filter().is_active());
+        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+
+        // Both the dedicated clear and ClearFilter must reset the threshold.
+        dashboard.apply(Command::SetMinVirtualMemoryBytes(Some(min_vm)));
+        dashboard.apply(Command::ClearFilter);
+        assert_eq!(dashboard.filter().min_virtual_memory_bytes, None);
+        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
     }
 
     #[test]

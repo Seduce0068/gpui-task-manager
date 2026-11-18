@@ -27,6 +27,7 @@ use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -64,6 +65,16 @@ const MAX_PROCESS_LIMIT: usize = 2000;
 /// of waiting behind idle peers; the agent is loopback-only, but an unbounded
 /// thread-per-connection server would still be a local resource exhaustion vector.
 const MAX_CONNECTIONS: usize = 8;
+
+/// How long the accept loop waits for in-flight connection workers once it
+/// stops accepting. A worker can hold a 1 s read timeout plus a ~250 ms probe
+/// warm-up, so 2 s is enough for a well-behaved peer without blocking shutdown
+/// forever (R2-X03).
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// `JoinHandle::join` has no deadline, so the tracker checks `is_finished`
+/// between short sleeps to bound the wait without spawning a helper thread.
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Minimum severity for structured events, set once from `--log-level`.
 ///
@@ -346,6 +357,92 @@ impl SharedState {
     }
 }
 
+/// Outcome of [`JoinTracker::join_all`].
+#[derive(Debug, Default, PartialEq, Eq)]
+struct JoinOutcome {
+    /// Workers that exited and were joined.
+    joined: usize,
+    /// Joined workers that unwound instead of returning normally.
+    panicked: usize,
+    /// Whether the deadline expired before every tracked worker was joined.
+    timed_out: bool,
+}
+
+/// Tracks the `JoinHandle` of every spawned worker thread (R2-X03).
+///
+/// `spawn_connection` used to drop each handle, so shutdown could neither
+/// observe nor wait for in-flight connections. Handles live behind a mutex
+/// because the accept loop and the workers run on different threads. Handles
+/// whose thread already exited are pruned on registration, keeping the vector
+/// bounded during a long-running service.
+#[derive(Clone)]
+struct JoinTracker {
+    handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+}
+
+impl JoinTracker {
+    fn new() -> Self {
+        Self {
+            handles: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Registers a worker handle, dropping handles whose thread already exited.
+    fn track(&self, handle: JoinHandle<()>) {
+        let mut handles = self.lock_handles();
+        handles.retain(|candidate| !candidate.is_finished());
+        handles.push(handle);
+    }
+
+    /// Number of handles still awaiting a join.
+    fn tracked_count(&self) -> usize {
+        self.lock_handles().len()
+    }
+
+    /// Joins every tracked worker, returning when they are all done or when
+    /// `timeout` elapses. Workers still running on timeout stay tracked so a
+    /// later call can retry; this method never waits longer than `timeout`.
+    fn join_all(&self, timeout: Duration) -> JoinOutcome {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut outcome = JoinOutcome::default();
+
+        loop {
+            let handles = std::mem::take(&mut *self.lock_handles());
+            let mut pending = Vec::with_capacity(handles.len());
+            for handle in handles {
+                if handle.is_finished() {
+                    if handle.join().is_err() {
+                        outcome.panicked += 1;
+                    }
+                    outcome.joined += 1;
+                } else {
+                    pending.push(handle);
+                }
+            }
+            {
+                let mut live = self.lock_handles();
+                // Preserve handles registered while we were joining.
+                pending.append(&mut live);
+                *live = pending;
+            }
+
+            if self.tracked_count() == 0 {
+                return outcome;
+            }
+            if std::time::Instant::now() >= deadline {
+                outcome.timed_out = true;
+                return outcome;
+            }
+            std::thread::sleep(JOIN_POLL_INTERVAL);
+        }
+    }
+
+    /// Locks the handle list, recovering it if a previous holder panicked.
+    fn lock_handles(&self) -> std::sync::MutexGuard<'_, Vec<JoinHandle<()>>> {
+        self.handles.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
 /// Accepts connections until the process is terminated.
 ///
 /// One thread per connection. An idle peer waiting for the read timeout can no
@@ -359,10 +456,11 @@ fn serve(
     needs_warmup: bool,
 ) -> Result<(), String> {
     let state = Arc::new(SharedState::new(probe, token, redact, needs_warmup));
+    let workers = JoinTracker::new();
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                if let Err(err) = spawn_connection(Arc::clone(&state), stream) {
+                if let Err(err) = spawn_connection(Arc::clone(&state), stream, &workers) {
                     eprintln!("tm-agent: {err}");
                 }
             }
@@ -374,6 +472,18 @@ fn serve(
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
+    }
+    // R2-X03: the accept loop has ended, so no new workers can appear. Reap the
+    // in-flight ones with a deadline instead of dropping their handles. This
+    // adds no telemetry events and leaves the CLI/error contract untouched.
+    let outcome = workers.join_all(SHUTDOWN_JOIN_TIMEOUT);
+    if outcome.timed_out || outcome.panicked > 0 {
+        eprintln!(
+            "tm-agent: 接続スレッドの終了を確認できませんでした (join={}, panic={}, 未完了={})",
+            outcome.joined,
+            outcome.panicked,
+            workers.tracked_count()
+        );
     }
     Ok(())
 }
@@ -388,7 +498,14 @@ impl Drop for ActiveConnection {
 }
 
 /// Handles one accepted connection, enforcing [`MAX_CONNECTIONS`].
-fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<(), String> {
+///
+/// The worker's `JoinHandle` is registered with `workers` (R2-X03); the 503
+/// rejection path spawns no thread and therefore registers nothing.
+fn spawn_connection(
+    state: Arc<SharedState>,
+    mut stream: TcpStream,
+    workers: &JoinTracker,
+) -> Result<(), String> {
     let previous = state.active.fetch_add(1, Ordering::AcqRel);
     if previous >= MAX_CONNECTIONS {
         // Drop guard returns the slot even if writing the rejection panics.
@@ -418,7 +535,7 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
 
     let _slot = ActiveConnection(Arc::clone(&state));
     let worker_state = Arc::clone(&state);
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name("tm-agent-connection".to_string())
         .spawn(move || {
             // `_slot` is moved into the worker so the counter is released when the
@@ -463,6 +580,9 @@ fn spawn_connection(state: Arc<SharedState>, mut stream: TcpStream) -> Result<()
             // wrap to usize::MAX and reject every later connection with 503.
             format!("接続スレッドを起動できません: {err}")
         })?;
+    // Only a successfully spawned worker is tracked; on spawn failure the
+    // builder already dropped the closure (and its connection-slot guard).
+    workers.track(worker);
     Ok(())
 }
 
@@ -814,10 +934,28 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{Shutdown, SocketAddr};
-    use std::thread::JoinHandle;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     const TEST_TOKEN: &str = "test-token";
+
+    /// Bounded join for demo-server threads: a stuck server must fail its test
+    /// instead of hanging the whole suite (R2-X03).
+    const TEST_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Joins a test server thread through the same tracker as production
+    /// workers, asserting that it stopped cleanly within [`TEST_JOIN_TIMEOUT`].
+    fn join_demo_server(handle: JoinHandle<()>) {
+        let tracker = JoinTracker::new();
+        tracker.track(handle);
+        let outcome = tracker.join_all(TEST_JOIN_TIMEOUT);
+        assert!(
+            !outcome.timed_out,
+            "demo server did not exit within {TEST_JOIN_TIMEOUT:?}"
+        );
+        assert_eq!(outcome.panicked, 0, "demo server thread panicked");
+        assert_eq!(outcome.joined, 1);
+        assert_eq!(tracker.tracked_count(), 0);
+    }
 
     /// Starts a demo-mode server that accepts exactly `connections` requests.
     fn spawn_demo_server(connections: usize) -> (SocketAddr, JoinHandle<()>) {
@@ -906,7 +1044,7 @@ mod tests {
             address,
             "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n",
         );
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
         assert!(!response.contains("SECRET-PATH"));
@@ -921,7 +1059,7 @@ mod tests {
     fn health_endpoint_is_public() {
         let (address, handle) = spawn_demo_server(1);
         let response = send_request(address, "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         let body = parse_body(&response);
@@ -960,7 +1098,7 @@ mod tests {
         );
         assert!(via_query.starts_with("HTTP/1.1 401"), "{via_query}");
 
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     #[test]
@@ -970,7 +1108,7 @@ mod tests {
             address,
             "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
         );
-        handle.join().expect("server thread");
+        join_demo_server(handle);
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
     }
 
@@ -987,7 +1125,7 @@ mod tests {
             address,
             "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nOrigin: https://evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
         );
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         assert!(allowed.starts_with("HTTP/1.1 403"), "{allowed}");
         assert!(
@@ -1010,7 +1148,7 @@ mod tests {
             address,
             "GET /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
         );
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         let body = parse_body(&response);
         assert_eq!(body["schema_version"], 1);
@@ -1061,7 +1199,7 @@ mod tests {
             "foreign origins must not receive CORS headers: {foreign}"
         );
 
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     #[test]
@@ -1082,7 +1220,7 @@ mod tests {
         );
         assert!(foreign.starts_with("HTTP/1.1 403 Forbidden"), "{foreign}");
 
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     #[test]
@@ -1102,7 +1240,7 @@ mod tests {
         );
         assert!(method_not_allowed.contains("Allow: GET, OPTIONS"));
 
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     #[test]
@@ -1114,7 +1252,7 @@ mod tests {
         }
         raw.push_str("\r\n");
         let response = send_request(address, &raw);
-        handle.join().expect("server thread");
+        join_demo_server(handle);
         assert!(
             response.starts_with("HTTP/1.1 431"),
             "oversized head must be rejected: {}",
@@ -1128,7 +1266,7 @@ mod tests {
         let stream = TcpStream::connect(address).expect("connect");
         // Half-close can race with server-side handling on some platforms.
         let _ = stream.shutdown(Shutdown::Write);
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     #[test]
@@ -1305,14 +1443,14 @@ mod tests {
         );
         assert!(invalid.starts_with("HTTP/1.1 400 Bad Request"), "{invalid}");
 
-        handle.join().expect("server thread");
+        join_demo_server(handle);
     }
 
     /// Accepts one connection from `listener` and hands it to the production
     /// dispatcher, so tests exercise the same shared-state path as `serve()`.
-    fn accept_and_spawn(listener: &TcpListener, state: &Arc<SharedState>) {
+    fn accept_and_spawn(listener: &TcpListener, state: &Arc<SharedState>, workers: &JoinTracker) {
         let (stream, _) = listener.accept().expect("accept");
-        spawn_connection(Arc::clone(state), stream).expect("spawn connection");
+        spawn_connection(Arc::clone(state), stream, workers).expect("spawn connection");
     }
 
     struct CountingProbe {
@@ -1347,13 +1485,21 @@ mod tests {
         let request = |raw: &str, state: &Arc<SharedState>| -> String {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             let address = listener.local_addr().expect("local addr");
+            let workers = JoinTracker::new();
             let server = std::thread::spawn({
                 let state = Arc::clone(state);
-                move || accept_and_spawn(&listener, &state)
+                let workers = workers.clone();
+                move || accept_and_spawn(&listener, &state, &workers)
             });
             let _ = address;
             let response = send_request(address, raw);
-            server.join().expect("server thread");
+            join_demo_server(server);
+            let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
+            assert!(
+                !outcome.timed_out && outcome.panicked == 0,
+                "connection worker did not exit cleanly: {outcome:?}"
+            );
+            assert_eq!(outcome.joined, 1);
             response
         };
 
@@ -1413,6 +1559,7 @@ mod tests {
         ));
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
+        let workers = JoinTracker::new();
 
         // Idle peers that connect but never send a request head. Under the old
         // serial server each one stalled the loop for READ_TIMEOUT (1 s), so
@@ -1422,7 +1569,7 @@ mod tests {
             TcpStream::connect(address).expect("connect idle 2"),
         ];
         for _ in 0..idle.len() {
-            accept_and_spawn(&listener, &state);
+            accept_and_spawn(&listener, &state, &workers);
         }
 
         let start = Instant::now();
@@ -1433,7 +1580,7 @@ mod tests {
         client
             .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .expect("write request");
-        accept_and_spawn(&listener, &state);
+        accept_and_spawn(&listener, &state, &workers);
         let mut response = String::new();
         client.read_to_string(&mut response).expect("read response");
         let elapsed = start.elapsed();
@@ -1443,7 +1590,12 @@ mod tests {
             elapsed < Duration::from_millis(800),
             "health check waited {elapsed:?} behind idle peers"
         );
+        let expected_workers = idle.len() + 1;
+        assert_eq!(workers.tracked_count(), expected_workers);
         drop(idle);
+        let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
+        assert!(!outcome.timed_out && outcome.panicked == 0, "{outcome:?}");
+        assert_eq!(outcome.joined, expected_workers);
     }
 
     #[test]
@@ -1456,6 +1608,7 @@ mod tests {
         ));
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let address = listener.local_addr().expect("local addr");
+        let workers = JoinTracker::new();
 
         // Hold every slot with a partial request head. A peer that keeps
         // sending bytes (without the final CRLF) never hits READ_TIMEOUT, so
@@ -1482,9 +1635,10 @@ mod tests {
                 let _ = keeper.shutdown(Shutdown::Write);
             }));
             idle.push(peer);
-            accept_and_spawn(&listener, &state);
+            accept_and_spawn(&listener, &state, &workers);
         }
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
+        assert_eq!(workers.tracked_count(), MAX_CONNECTIONS);
 
         let mut client = TcpStream::connect(address).expect("connect extra client");
         client
@@ -1493,7 +1647,7 @@ mod tests {
         client
             .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .expect("write request");
-        accept_and_spawn(&listener, &state);
+        accept_and_spawn(&listener, &state, &workers);
         let mut response = String::new();
         client.read_to_string(&mut response).expect("read response");
 
@@ -1502,10 +1656,16 @@ mod tests {
             "{response}"
         );
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
+        // The 503 path is synchronous on the accept thread: it must not add a
+        // worker handle, or repeated rejections would grow the tracker forever.
+        assert_eq!(workers.tracked_count(), MAX_CONNECTIONS);
         drop(idle);
         for keeper in keepers {
             keeper.join().expect("keeper thread");
         }
+        let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
+        assert!(!outcome.timed_out && outcome.panicked == 0, "{outcome:?}");
+        assert_eq!(outcome.joined, MAX_CONNECTIONS);
     }
 
     #[test]
@@ -1516,7 +1676,7 @@ mod tests {
         assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
 
         let metrics = send_request(address, "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         assert!(metrics.starts_with("HTTP/1.1 200 OK"), "{metrics}");
         let (head, body) = metrics.split_once("\r\n\r\n").expect("body separator");
@@ -1551,7 +1711,7 @@ mod tests {
             address,
             "GET /api/v1/snapshot HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
         );
-        handle.join().expect("server thread");
+        join_demo_server(handle);
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         let body = parse_body(&response);
@@ -1587,6 +1747,123 @@ mod tests {
         assert_eq!(
             LOG_THRESHOLD.load(Ordering::Relaxed),
             threshold_rank(args::LogLevel::Info)
+        );
+    }
+
+    #[test]
+    fn join_tracker_empty_returns_immediately() {
+        let tracker = JoinTracker::new();
+        let start = Instant::now();
+        let outcome = tracker.join_all(TEST_JOIN_TIMEOUT);
+        assert_eq!(outcome, JoinOutcome::default());
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "an empty tracker must not wait for the deadline"
+        );
+    }
+
+    #[test]
+    fn join_tracker_joins_finished_workers_and_counts_panics() {
+        let tracker = JoinTracker::new();
+        // Keep every worker alive until all four are registered; otherwise the
+        // quick ones are pruned by `track` before the final assertion.
+        let release = Arc::new(AtomicBool::new(false));
+        for _ in 0..3 {
+            let flag = Arc::clone(&release);
+            tracker.track(std::thread::spawn(move || {
+                while !flag.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }));
+        }
+        let flag = Arc::clone(&release);
+        tracker.track(std::thread::spawn(move || {
+            while !flag.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            panic!("simulated worker failure");
+        }));
+        assert_eq!(tracker.tracked_count(), 4);
+
+        release.store(true, Ordering::Release);
+        let outcome = tracker.join_all(TEST_JOIN_TIMEOUT);
+        assert_eq!(
+            outcome,
+            JoinOutcome {
+                joined: 4,
+                panicked: 1,
+                timed_out: false,
+            }
+        );
+        assert_eq!(tracker.tracked_count(), 0);
+    }
+
+    #[test]
+    fn join_tracker_timeout_is_bounded_and_retryable() {
+        let tracker = JoinTracker::new();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        tracker.track(std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        }));
+
+        let start = Instant::now();
+        let outcome = tracker.join_all(Duration::from_millis(120));
+        let elapsed = start.elapsed();
+        assert!(outcome.timed_out, "a blocked worker must hit the deadline");
+        assert_eq!(outcome.joined, 0);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "join_all waited {elapsed:?} despite a 120 ms deadline"
+        );
+        assert_eq!(
+            tracker.tracked_count(),
+            1,
+            "a worker still running on timeout must stay tracked"
+        );
+
+        release_tx.send(()).expect("release worker");
+        let outcome = tracker.join_all(TEST_JOIN_TIMEOUT);
+        assert_eq!(
+            outcome,
+            JoinOutcome {
+                joined: 1,
+                panicked: 0,
+                timed_out: false,
+            }
+        );
+        assert_eq!(tracker.tracked_count(), 0);
+    }
+
+    #[test]
+    fn join_tracker_prunes_finished_handles_on_track() {
+        let tracker = JoinTracker::new();
+        let finished = std::thread::spawn(|| {});
+        while !finished.is_finished() {
+            std::thread::yield_now();
+        }
+        tracker.track(finished);
+        assert_eq!(tracker.tracked_count(), 1);
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let live = std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        });
+        tracker.track(live);
+        assert_eq!(
+            tracker.tracked_count(),
+            1,
+            "registering a new worker must prune the already-finished one"
+        );
+
+        release_tx.send(()).expect("release worker");
+        let outcome = tracker.join_all(TEST_JOIN_TIMEOUT);
+        assert_eq!(
+            outcome,
+            JoinOutcome {
+                joined: 1,
+                panicked: 0,
+                timed_out: false,
+            }
         );
     }
 }
