@@ -246,6 +246,51 @@ status: current
       根拠 c5-ux01。
 - [x] Esc の二重掲載を整理 (`app/src/app.rs:2045`)。根拠 d4-vu01 / c5-ux01。
 
+### 優先度: 中 — バックログ補充 2026-11-19（swarm-todo-discovery）
+
+- [ ] `/metrics` の status-class 合計が `requests_total` と不一致: `agent/src/telemetry.rs:109-125`
+      は status 0 (unknown) に counter を持たず、早期リターンのリクエストが
+      responses_total から零落ちる。unknown クラス用カウンタを追加し合計一致を
+      テストで固定。根拠 e1-st / e5-vu（重複統合）。
+- [ ] `scripts/check.sh` が `scripts/check-advisory-ignores.sh` を呼んでいない:
+      CI の deny ジョブは政策を検査するがローカルは cargo deny check のみ。
+      deny セクションへ追加しローカル/CI のゲートを同期。根拠 e4-dp。
+- [ ] ネイティブの絞り込み欄へ AccessKit の Role::TextInput / aria_label /
+      aria_value / aria_description を付与（Web 側は実装済み）。根拠 e5-vu。
+- [ ] ドキュメントの現状不一致を一括修正: web/README の更新間隔ボタン
+      （実装済み）・CSV/JSON エクスポート・stale 表示・トレンド/温度ゲージ、
+      DESIGN.md:360 の「設定ファイルを持たない」、README の TM_REDACT=1、
+      Web のライブ設定ポーリング再接続。根拠 e2-fg。
+- [ ] CI のロックファイル整合性: wasm / native-windows / native-macos ジョブが
+      `--locked` 未使用。全 cargo check/test へ付与。根拠 e4-dp。
+- [ ] `deny.toml` の expiry 本文（2027-02-19）と設定値（2027-02-18）を整合。
+      根拠 e4-dp（前回 CI 修正で UTC 基準に合わせた経緯をコメントに残す）。
+
+### 優先度: 低 — バックログ補充 2026-11-19
+
+- [ ] `app/src/settings.rs:353,365` の陳腐化した `#[allow(dead_code)]` を削除
+      （load_with_notice / take_pending_notice は本番呼び出し済み）。根拠 e1-st。
+- [ ] DEB の Maintainer 既定値 `noreply@example.com` を実際の連絡先へ変更するか
+      ビルド時必須化。根拠 e4-dp。
+- [ ] 403 の FORBIDDEN_GUIDANCE が利用者に変更手段の無い Origin 確認を求める。
+      「別オリジンは非対応」という実態へ文言修正。根拠 e5-vu。
+- [ ] 設定破損退避物の一覧・復元手順・保持上限を追加（現状は退避のみ）。根拠 e5-vu。
+- [ ] ネイティブ probe 失敗に再試行操作を追加（現状は再起動のみ）。根拠 e5-vu。
+- [ ] wasm の inline JS ダウンロードを web-sys API へ置換するか、判断理由を ADR 化。
+      根拠 e1-st。
+
+### 要判断（設計・外部依存）
+
+- [ ] トークン自動生成時の受け渡し経路: 値をログに出さない現状は security 上正しいが、
+      既定起動ではブラウザ接続が完了しない（README の #token= 案内と矛盾）。
+      0600 ファイル保存＋パス案内、またはトークン源未指定時に起動拒否、等の判断が必要。
+      根拠 e5-vu。
+- [ ] 全成果物ジョブの needs に wasm / native-windows / native-macos / msrv-1-92 を追加
+      （現状は [gates, deny] のみで、他プラットフォーム失敗時に成果物が残る）。
+      branch protection 側で代替する選択もあり。根拠 e4-dp。
+- [ ] ツール版（cargo-vet / machete / markdownlint / gitleaks / trunk 等）の
+      Dependabot 対象化。mise.toml 等の一元管理が必要。根拠 e4-dp。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
