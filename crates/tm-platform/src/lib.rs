@@ -1135,7 +1135,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn control_protects_pid_zero_and_self() {
         let mut probe = NativeProbe::new().expect("native probe");
         for pid in [0, std::process::id()] {
