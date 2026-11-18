@@ -1170,8 +1170,19 @@ impl TaskManagerApp {
         let input_view = cx.entity();
         let input_focus_handle = self.focus_handle.clone();
 
+        // Mirror the browser shell's text-input semantics in AccessKit. The
+        // `aria_value` is the *display* (possibly 伏せ字化済み) text, never the
+        // raw filter input, so a screen reader cannot announce an identifier
+        // that the redacted UI deliberately hides.
+        let filter_aria_value = self.display(self.dashboard.filter_text());
+        let filter_a11y_hint = a11y_filter_hint(composing_active, editing);
         let filter_box = div()
             .id("filter-box")
+            .role(Role::TextInput)
+            .aria_label(a11y_filter_label())
+            .aria_placeholder("名前・コマンド・ユーザー・PID")
+            .aria_value(filter_aria_value)
+            .aria_description(filter_a11y_hint)
             .relative()
             .flex()
             .items_center()
@@ -2482,6 +2493,24 @@ fn a11y_sort_direction(direction: SortDirection) -> &'static str {
     }
 }
 
+/// Accessible name of the filter box, matching the browser shell.
+fn a11y_filter_label() -> &'static str {
+    "プロセスの絞り込み"
+}
+
+/// Accessible description (hint) of the filter box, matching the browser
+/// shell: announcement follows the composed / editing / idle state, and never
+/// contains the filter text itself.
+fn a11y_filter_hint(composing_active: bool, editing: bool) -> &'static str {
+    if composing_active {
+        "変換中"
+    } else if editing {
+        "入力可"
+    } else {
+        "クリックで入力"
+    }
+}
+
 /// Accessible name of a sortable column header, matching the browser shell.
 fn sort_header_label(label: &str, active: bool, direction: SortDirection) -> String {
     if active {
@@ -2735,9 +2764,9 @@ mod tests {
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
     use super::{
-        a11y_live_text, a11y_row_label, a11y_sort_direction, dialog_command, help_shortcuts,
-        key_action, report_save_result, signal_enabled, sort_header_label, usage_severity,
-        BackendInit, DialogButton, KeyAction,
+        a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
+        dialog_command, help_shortcuts, key_action, report_save_result, signal_enabled,
+        sort_header_label, usage_severity, BackendInit, DialogButton, KeyAction,
     };
     use gpui_kit::Modifiers;
     use tm_core::{PlatformInfo, ProcessStatus, Signal, SortDirection};
@@ -3060,6 +3089,69 @@ mod tests {
             sort_header_label("名前", false, SortDirection::Ascending),
             "名前 列で並び替え"
         );
+    }
+
+    #[test]
+    fn filter_box_accessible_name_matches_browser_shell() {
+        assert_eq!(a11y_filter_label(), "プロセスの絞り込み");
+    }
+
+    #[test]
+    fn filter_box_hint_follows_composition_and_editing_state() {
+        assert_eq!(a11y_filter_hint(true, true), "変換中");
+        assert_eq!(a11y_filter_hint(true, false), "変換中");
+        assert_eq!(a11y_filter_hint(false, true), "入力可");
+        assert_eq!(a11y_filter_hint(false, false), "クリックで入力");
+    }
+
+    #[test]
+    fn filter_box_wires_textinput_role_and_redacted_value() {
+        // `Div`'s role / aria fields are private to gpui-pre and this repo has
+        // no window-rendering test harness, so check the wiring at the source
+        // level. Split needles keep the test from matching its own literals.
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains(concat!(".role(", "Role::TextInput)")),
+            "filter box must expose the AccessKit text-input role"
+        );
+        assert!(
+            source.contains(concat!(".aria_label(", "a11y_filter_label())")),
+            "filter box must expose the Japanese accessible name"
+        );
+        assert!(
+            source.contains(concat!(
+                "let filter_aria_value = self.display(self.dashboard.",
+                "filter_text());"
+            )),
+            "aria_value must be fed the redacted display text"
+        );
+        assert!(
+            source.contains(concat!(".aria_value(", "filter_aria_value)")),
+            "filter box must expose the display text as its value"
+        );
+        assert!(
+            source.contains(concat!(".aria_description(", "filter_a11y_hint)")),
+            "filter box must expose the state hint as its description"
+        );
+    }
+
+    #[test]
+    fn filter_aria_value_never_speaks_raw_local_identifier() {
+        // `aria_value` is fed `self.display(filter_text)`, which delegates to
+        // the shared redaction boundary under `--redact`. A local identifier
+        // typed into the filter must not survive into the announced value.
+        use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
+
+        let ids = RedactionIdentifiers {
+            home: "/home/koppe",
+            user: "koppe",
+            hostname: "nuc",
+        };
+        let redacted = core_redact_text("secret /home/koppe/project user:koppe host:nuc", &ids);
+        assert!(!redacted.contains("koppe"), "{redacted}");
+        assert!(!redacted.contains("/home/koppe"), "{redacted}");
+        assert!(!redacted.contains("host:nuc"), "{redacted}");
+        assert!(redacted.contains("/home/user"), "{redacted}");
     }
 
     #[test]

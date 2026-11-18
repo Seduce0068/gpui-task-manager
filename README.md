@@ -48,6 +48,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - `--demo` で決定的な合成データ起動（スクリーンショット・回帰用）
 - `--export csv|json PATH` で伏せ字化済みスナップショットを 0600 で書き出して終了
   （ウィンドウを開かず、CLI 証跡や回帰比較に使える）
+- ブラウザ版でもツールバーの **CSV / JSON エクスポートボタン**で伏せ字化済み
+  スナップショットをダウンロード可能（ネイティブの `--export` と同じ
+  `tm_core::export` を共有し、DOM proof の `export=csv|json` で確認できる）
 - **設定の永続化（ネイティブ / ブラウザ両方）**: 更新間隔・ソート列/方向・
   詳細パネルの表示・ツリー表示を保存し、次回起動時に復元。ネイティブは XDG 設定
   (`~/.config/gpui-task-manager/settings.json`、Windows/macOS も対応パス、
@@ -228,6 +231,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - シグナル操作は確認ダイアログ必須。PID 1 / 自分自身は拒否。PID + 起動時刻の
   一致を送信直前に再確認
 - ブラウザ / デモは**読み取り専用**（操作ボタン無効、エージェントに操作 API なし）
+- 公開用スクリーンショット / 証跡は `--redact`（または環境変数 `TM_REDACT=1`）で
+  ホスト名・ユーザー名・ホームパスを伏せ字化（[SECURITY.md](SECURITY.md) の「公開物の衛生」）
 - エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、トークン必須、CORS は loopback origin のみ
 - OS 由来の文字列は制御文字・ANSI エスケープ・bidi／ゼロ幅の不可視書式文字を除去して表示
 - GPUI / sysinfo / rustix は完全一致ピン、`Cargo.lock` をコミット。`cargo audit` に加えて

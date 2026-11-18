@@ -26,6 +26,9 @@ jobs:
     uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@b7675efd8a9a84ebc5b560da628d1a82f3fbf98f # v1
     with:
       working_directory: .
+      # 再利用ワークフローの `locked` 入力（既定 true）で check/test/clippy に
+      # --locked を明示的に付ける。Cargo.lock の暗黙の更新を防ぐ。
+      locked: true
       apt_packages: |
         pkg-config
         libfontconfig-dev
@@ -112,8 +115,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Check wasm targets
         run: |
-          cargo check --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
-          cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
+          cargo check --locked --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
+          cargo check --locked --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
   # Cargo.toml / web/Cargo.toml で宣言した rust-version = "1.92" を固定検証する。
   # 共通ワークフロー rust-gates.yml に MSRV 入力が無いため、リポジトリ側で実行。
@@ -180,10 +183,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Check workspace
-        run: cargo check --workspace
+        run: cargo check --locked --workspace
       # R1-V02: Windows 側でも tm-platform のテストを実行する（macOS と同対象）。
       - name: Test portable and platform crates
-        run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
+        run: cargo test --locked -p tm-core -p tm-viewmodel -p tm-platform
 
   native-macos:
     name: native check (macos-latest)
@@ -192,13 +195,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Check workspace
-        run: cargo check --workspace
+        run: cargo check --locked --workspace
       - name: Test portable and platform crates
-        run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
+        run: cargo test --locked -p tm-core -p tm-viewmodel -p tm-platform
 
   # ライセンス・脆弱性・重複バージョンのゲート。ポリシーは deny.toml（ルート）に置く。
-  # advisory ignore の有効期間は各 ignore の expiry（2027-02-19 = レビュー日
-  # 2026-11-19 から 3 か月）で強制する。cargo-deny 0.21 が期限切れを検知し、
+  # advisory ignore の有効期間は各 ignore の expiry（2027-02-18）で強制する。
+  # レビュー日 2026-11-19（JST）は UTC では 2026-11-18 相当なので、
+  # check-advisory-ignores.sh の UTC 基準 3 か月上限は 2027-02-18 となる
+  # （deny.toml の 9 件の expiry と一致）。cargo-deny 0.21 が期限切れを検知し、
   # `-D advisory-ignore-expired` でゲートを失敗させる（手動レビュー依存ではない）。
   deny:
     name: cargo-deny (licenses / advisories / duplicates)

@@ -134,6 +134,14 @@ if [ -f web/Cargo.toml ]; then
   cargo test --manifest-path web/Cargo.toml --lib
 fi
 
+# Advisory-ignore policy (always on, no external tool required). Mirrors the
+# "Validate advisory ignore policy" step in the deny job of
+# .github/workflows/ci.yml: enforce reason/expiry/3-month-cap locally too.
+# Kept outside `optional_gate_enabled cargo-deny` so --fast or a missing
+# cargo-deny cannot silently skip a policy check that CI always runs.
+echo '==> check-advisory-ignores policy'
+bash "${repo_root}/scripts/check-advisory-ignores.sh"
+
 if optional_gate_enabled cargo-deny; then
   echo '==> cargo deny check (root / web)'
   cargo deny check

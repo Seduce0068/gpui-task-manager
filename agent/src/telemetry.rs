@@ -86,6 +86,7 @@ pub struct Metrics {
     responses_3xx: AtomicU64,
     responses_4xx: AtomicU64,
     responses_5xx: AtomicU64,
+    responses_unknown: AtomicU64,
 }
 
 impl Metrics {
@@ -98,6 +99,7 @@ impl Metrics {
             responses_3xx: AtomicU64::new(0),
             responses_4xx: AtomicU64::new(0),
             responses_5xx: AtomicU64::new(0),
+            responses_unknown: AtomicU64::new(0),
         }
     }
 
@@ -112,6 +114,7 @@ impl Metrics {
             "3xx" => Some(&self.responses_3xx),
             "4xx" => Some(&self.responses_4xx),
             "5xx" => Some(&self.responses_5xx),
+            "unknown" => Some(&self.responses_unknown),
             _ => None,
         }
     }
@@ -141,6 +144,7 @@ tm_agent_responses_total{{class=\"2xx\"}} {responses_2xx}
 tm_agent_responses_total{{class=\"3xx\"}} {responses_3xx}
 tm_agent_responses_total{{class=\"4xx\"}} {responses_4xx}
 tm_agent_responses_total{{class=\"5xx\"}} {responses_5xx}
+tm_agent_responses_total{{class=\"unknown\"}} {responses_unknown}
 # HELP tm_agent_active_connections Currently admitted connections.
 # TYPE tm_agent_active_connections gauge
 tm_agent_active_connections {active}
@@ -153,6 +157,7 @@ tm_agent_uptime_seconds {uptime}
             responses_3xx = self.responses_3xx.load(Ordering::Relaxed),
             responses_4xx = self.responses_4xx.load(Ordering::Relaxed),
             responses_5xx = self.responses_5xx.load(Ordering::Relaxed),
+            responses_unknown = self.responses_unknown.load(Ordering::Relaxed),
         )
         .into_bytes()
     }
@@ -316,6 +321,29 @@ impl std::error::Error for AgentError {}
 mod tests {
     use super::*;
 
+    /// Reads one counter line by its (space-terminated) prefix.
+    fn counter_value(rendered: &str, line_prefix: &str) -> u64 {
+        rendered
+            .lines()
+            .find(|line| line.starts_with(line_prefix))
+            .and_then(|line| line.rsplit_once(' '))
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("missing counter {line_prefix} in:\n{rendered}"))
+    }
+
+    /// Synchronous-sum check: every counted request must land in a class.
+    fn total_responses(rendered: &str) -> u64 {
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("tm_agent_responses_total{class="))
+            .map(|line| {
+                line.rsplit_once(' ')
+                    .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+                    .expect("response counter line must end with a number")
+            })
+            .sum()
+    }
+
     #[test]
     fn structured_event_is_json_with_severity_and_timestamp() {
         let line = format_event(
@@ -374,6 +402,28 @@ mod tests {
     }
 
     #[test]
+    fn status_zero_record_response_keeps_totals_consistent() {
+        let metrics = Metrics::new();
+        metrics.record_response(0);
+        metrics.record_response(200);
+        metrics.record_response(503);
+
+        let rendered = String::from_utf8(metrics.render_prometheus(0)).expect("utf8");
+        let requests = counter_value(&rendered, "tm_agent_requests_total ");
+        let responses = total_responses(&rendered);
+        assert_eq!(requests, 3, "{rendered}");
+        assert_eq!(
+            responses, requests,
+            "every request must land in a class: {rendered}"
+        );
+        assert_eq!(
+            counter_value(&rendered, "tm_agent_responses_total{class=\"unknown\"} "),
+            1,
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn dropped_trace_is_still_counted_as_unknown() {
         let metrics = Metrics::new();
         drop(RequestTrace::begin_unknown(&metrics));
@@ -382,6 +432,16 @@ mod tests {
         assert!(
             rendered.contains("tm_agent_active_connections 0"),
             "{rendered}"
+        );
+        assert_eq!(
+            counter_value(&rendered, "tm_agent_responses_total{class=\"unknown\"} "),
+            1,
+            "the drop safety net must land in the unknown class: {rendered}"
+        );
+        assert_eq!(
+            total_responses(&rendered),
+            counter_value(&rendered, "tm_agent_requests_total "),
+            "the drop path must not lose the response from the totals: {rendered}"
         );
     }
 
