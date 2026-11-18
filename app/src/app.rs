@@ -668,6 +668,7 @@ impl TaskManagerApp {
                 .unwrap_or_else(|| "—".to_string()),
             kernel: snapshot
                 .and_then(|s| s.kernel_version.clone())
+                .map(|kernel| self.display(&kernel))
                 .unwrap_or_else(|| "—".to_string()),
             sampled_at: snapshot.map(|s| s.sampled_at),
             paused: self.dashboard.paused(),
@@ -1005,7 +1006,7 @@ impl TaskManagerApp {
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
                 } else {
-                    component.label.clone()
+                    self.display(&component.label)
                 };
                 let value = match (
                     component.temperature_c,
@@ -1405,7 +1406,13 @@ impl TaskManagerApp {
 
         let tree_view = self.dashboard.tree_view();
         let collapsed = self.dashboard.is_collapsed(key);
-        let user = self.display(&user);
+        // All process users collapse to "user" under --redact, matching the
+        // agent snapshot (not just the login account) — R41 audit.
+        let user = if self.redact && user != "—" {
+            "user".to_string()
+        } else {
+            self.display(&user)
+        };
         let command = self.display(&command);
         let marker = if tree_view && has_children {
             if collapsed {
@@ -1576,7 +1583,13 @@ impl TaskManagerApp {
                     )
                     .child(kv(
                         "ユーザー",
-                        self.display(&process.user.clone().unwrap_or_else(|| "—".to_string())),
+                        // Match the agent's redact_snapshot: every process user
+                        // becomes "user", not just the login account (R41).
+                        if self.redact && process.user.is_some() {
+                            "user".to_string()
+                        } else {
+                            process.user.clone().unwrap_or_else(|| "—".to_string())
+                        },
                     ))
                     .child(kv(
                         "起動から",
@@ -1754,7 +1767,7 @@ impl TaskManagerApp {
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
                 } else {
-                    component.label.clone()
+                    self.display(&component.label)
                 };
                 content = content.child(kv(label, value));
             }
@@ -1873,7 +1886,13 @@ impl TaskManagerApp {
                 )
             })
             .unwrap_or_else(|| "—".to_string());
-        let user = self.display(pending.user.as_deref().unwrap_or("—"));
+        // Match the table/detail paths: every process user becomes "user"
+        // under --redact (not just the login account) — R41 follow-up.
+        let user = if self.redact && pending.user.is_some() {
+            "user".to_string()
+        } else {
+            self.display(pending.user.as_deref().unwrap_or("—"))
+        };
         let command = self.display(&pending.command);
         let (color, label) = match pending.signal {
             Signal::Kill => (palette().red, "強制終了"),

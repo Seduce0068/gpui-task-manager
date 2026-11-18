@@ -2212,3 +2212,27 @@ AGENTS §3 に従い機能バグと区別）、--redact の GUI 側 user/kernel/
 JoinTracker の panic 統計、RequestTrace::finish のタイミング（計測精度のみ）。
 
 - workspace 364 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第32弾 → GUI redact の漏れを三段階で塞ぐ）
+
+probe-errmsgs（第31弾）が最優先で指摘し rustfmt リスクで見送った
+「--redact の GUI 側ギャップ」を、直接 rustfmt を使わず edit のみで実装。
+worktree（round31-safe）で検証。
+
+1. 詳細パネルの process.user → `self.redact` 時は "user" 固定
+   （display() はログイン名しか置換せず、root 等が残っていた）。
+2. テーブル行の user 列 → 同上。
+3. summary.kernel → `self.display()` 経由。
+4. component.label（2 箇所）→ `self.display()` 経由。
+5. probe-redactfinal の最終監査で残っていた確認ダイアログの user も
+   同上の "user" 固定へ修正（テーブル／詳細との不整合を解消）。
+
+エージェント側 `redact_snapshot()` と export 側 `redact_for_export()` は
+全 process.user を "user" に置換しており、GUI のみが約束を満たして
+いなかった。公開スクリーンショットの機密性約束を充足。
+
+**見送り**: フィルタ入力のエコー（ユーザー入力で IME 変換中文字列を
+書き換えると候補位置がずれる、設計判断）、ステータスバーの OS ラベル
+（汎用 OS 名で実害なし）。
+
+- app 61 passed / clippy / fmt 成功。
