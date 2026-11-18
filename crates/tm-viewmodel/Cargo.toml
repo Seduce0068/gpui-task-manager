@@ -10,6 +10,5 @@ description = "UI-independent presentation state machine for the GPUI task manag
 [dependencies]
 tm-core = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
-
-[dev-dependencies]
+# `lenient` settings deserialisation needs Value at runtime, not only in tests.
 serde_json = { workspace = true }

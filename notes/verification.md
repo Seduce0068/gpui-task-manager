@@ -2073,3 +2073,26 @@ worktree（round31-safe、HEAD a96e823）で実装・検証。
 bond0（実機確認が必要な設計判断）。
 
 - tm-core 134 / tm-platform 26 passed / clippy / fmt / markdownlint 増分ゼロ。
+
+## 2026-11-18（エージェント並列調査 第26弾 → settings 未知 enum の寛容化）
+
+probe-vmfinal が「文書化された前方互換契約の破壊」と判定した項目を修正。
+worktree（round31-safe）で実装・検証。
+
+1. **未知 enum 値が settings 全体を無効化する問題**: `#[serde(default)]` は
+   フィールド欠落しか吸収せず、`sort.key="FutureKey"` や `theme="FutureTheme"`
+   は解析失敗 → native は設定退避＋赤警告、web は `LAST_LOADED` 消失 →
+   次回 save で将来版 `version` と未知フィールドが失われていた。
+   `crates/tm-viewmodel/src/settings.rs` に `lenient()` デシリアライザ
+   （`Value` 経由で失敗時 `Default`）を追加し `sort` / `theme` に適用。
+   部分 struct（`{"key":"Pid"}`）も既定 direction へフォールバック。
+   `serde_json` を dev-dependency から通常依存へ昇格。
+   `normalized()` の version 強制は触らず、shell の `clamped()` 契約を維持。
+2. **README 件数**: 実測 363（viewmodel 63 → 64）に追随。
+
+**見送り**: request_signal の paused ガード（低優先・UX 不一致のみ）、
+bond0 の仮想 IF 追加（実機確認が必要）、diverge 解消（rebase は破壊的
+操作で委任外、別セッションの未 push 2 コミットは触れない）。
+
+- viewmodel 64 passed / workspace 363 passed / clippy / fmt / machete / deny
+  成功。

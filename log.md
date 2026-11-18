@@ -1304,3 +1304,8 @@
 
 - wg/utun/lo0 を仮想IF判定へ、SSE 文書を未実装に合わせ、README 件数を
   実測 362 へ更新。tm-core 134 / platform 26 passed。
+
+## 2026-11-18（エージェント並列調査 第26弾 → settings 未知 enum の寛容化）
+
+- 未知 enum 値で settings 全体が Corrupt 扱いになる問題を修正。
+  lenient deserializer を追加し前方互換契約を回復。workspace 363 passed。
