@@ -1981,3 +1981,30 @@ RequestSignal の paused ガード（低優先）。
 in-flight 連携が必要）、serde enum 境界、symlink 扱い。
 
 - tm-core 132 / viewmodel 63 / app 61 passed / clippy / markdownlint 増分ゼロ。
+
+## 2026-11-18（エージェント並列調査 第22弾 → status redact と SSE 文書）
+
+3 観点（コア / app / 文書）の調査エージェントを並列起動。別セッションが
+agent/web/crates を活発に編集し、10a8e16（プリセット・電源・SSE）自体が
+未コミット差分でコンパイル不能だったため、クリーンな worktree（d55552b）
+を作成して本来の checkout を汚さずに実装・検証した。
+
+1. **status bar / overlay の --redact 漏れ（実バグ）**: シグナル送信失敗時に
+   `ControlError::Failed` の詳細（taskkill のパス等）が status テキストとして
+   生表示されていた。status bar と overlay の 2 箇所を `self.display()` 経由に。
+2. **NaN の CPU 色矛盾（軽微）**: `usage_color(cpu.min(100.0))` は NaN を
+   無視して 100.0（赤）を返す一方、ラベルは `0.0%` だった。NaN を green に
+   フォールバックする `usage_color(cpu)` に変更し表示と色を整合。
+3. **SECURITY.md の SSE 方針追記**: 「読み取りタイムアウト 1 秒・同時接続
+   8 本」とだけ書かれ、SSE はタイムアウト無し・別枠であることを運用者が
+   誤認する状態を解消。Bearer/Host/CORS は共通、クエリトークン禁止、
+   専用枠・切断まで配信を明記（数値・パスは書かない）。
+4. **DESIGN.md**: エンドポイント「3 つ」→ SSE を含む記述に変更。テスト件数の
+   数値（334/57）を削除し README「検証状況」参照へ集約（陳腐化防止）。
+
+**見送り**: export.rs の redact 全フィールドテストが新規型（power/cgroup）を
+exercise しない虚偽確信（新規型はまだ SystemSnapshot に未接続、別セッション
+の migration 時に同時修正が必要）、app への power/preset/cgroup 未配線
+（設計判断）、SECURITY の SSE 検証項目（実装側テスト未確認）。
+
+- app 61 passed / clippy / fmt / markdownlint（増分ゼロ）成功。

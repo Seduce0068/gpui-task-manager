@@ -1284,3 +1284,8 @@
 
 - status 代入を set_status へ集約、export redact の全フィールド検査、help の
   終了コード/ライセンス表記を修正。tm-core 132 / viewmodel 63 / app 61 passed。
+
+## 2026-11-18（エージェント並列調査 第22弾 → status redact と SSE 文書）
+
+- 別セッションの未完成変更を避け worktree で実装。status の redact、NaN 色、
+  SECURITY の SSE 方針、DESIGN のエンドポイント/件数を修正。app 61 passed。
