@@ -122,10 +122,26 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|directory| directory.join(FILE_NAME))
 }
 
+/// Refuse to create persistent files on virtual filesystems, matching the
+/// `--export` writer (R47 settings-I/O audit).
+fn is_virtual_fs_root(path: &Path) -> bool {
+    path.components()
+        .next()
+        .is_some_and(|first| matches!(first, std::path::Component::RootDir))
+        && path
+            .components()
+            .nth(1)
+            .and_then(|first| first.as_os_str().to_str())
+            .is_some_and(|top| matches!(top, "dev" | "proc" | "sys"))
+}
+
 fn config_dir() -> Option<PathBuf> {
     if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !value.is_empty() {
-            return Some(PathBuf::from(value).join(APP_DIR));
+        // XDG: a relative path must be ignored. Accepting it would write to
+        // $CWD (R47 settings-I/O audit).
+        let path = PathBuf::from(value);
+        if path.is_absolute() && !is_virtual_fs_root(&path) {
+            return Some(path.join(APP_DIR));
         }
     }
 
@@ -149,7 +165,10 @@ fn config_dir() -> Option<PathBuf> {
         }
     }
 
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config").join(APP_DIR))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute() && !is_virtual_fs_root(home))
+        .map(|home| home.join(".config").join(APP_DIR))
 }
 
 /// Clamps into the supported range without rewriting the schema `version`.
@@ -245,6 +264,16 @@ enum ReadOutcome {
 /// Reads and classifies the settings file. Corrupt input is moved aside here
 /// so the public loader and the regression tests share one backup path.
 fn read_document(path: &Path) -> ReadOutcome {
+    // A FIFO at the settings path blocks `read_to_string` forever waiting for
+    // a writer. Treat every non-regular destination as corrupt and back it up
+    // instead (R47 settings-I/O audit, same guard as the --export writer).
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if !meta.file_type().is_file() {
+            return ReadOutcome::Corrupt {
+                backed_up: backup_corrupt_file(path),
+            };
+        }
+    }
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) => {
@@ -470,8 +499,9 @@ fn save_raw_to(path: &Path, json: &str) -> io::Result<()> {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             let mut file = fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                // Refuse to follow a pre-planted symlink at the temporary
+                // path; a stale file must never be truncated (R47 audit).
+                .create_new(true)
                 .mode(0o600)
                 .open(&temporary)?;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -683,6 +713,37 @@ mod tests {
         );
         assert_eq!(settings.version, CURRENT_VERSION);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn virtual_fs_roots_are_rejected_for_persistent_settings() {
+        assert!(is_virtual_fs_root(std::path::Path::new("/dev")));
+        assert!(is_virtual_fs_root(std::path::Path::new("/proc/self")));
+        assert!(is_virtual_fs_root(std::path::Path::new("/sys/kernel")));
+        assert!(!is_virtual_fs_root(std::path::Path::new("/home/user")));
+        assert!(!is_virtual_fs_root(std::path::Path::new("config")));
+    }
+
+    #[test]
+    fn non_regular_settings_paths_are_treated_as_corrupt() {
+        // A FIFO would block `read_to_string` forever; it must be backed up
+        // instead (R47 settings-I/O audit).
+        let dir = std::env::temp_dir().join(format!("gtm-settings-special-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("settings.json");
+        let _ = std::fs::write(&path, "{}");
+        assert!(matches!(
+            read_document(&path),
+            ReadOutcome::Loaded(_) | ReadOutcome::Missing
+        ));
+        // A directory at the path is already handled via `path.is_dir()`.
+        let dir_path = dir.join("as-dir");
+        let _ = std::fs::create_dir(&dir_path);
+        assert!(matches!(
+            read_document(&dir_path),
+            ReadOutcome::Corrupt { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
