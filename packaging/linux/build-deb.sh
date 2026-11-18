@@ -15,6 +15,7 @@
 #   /usr/share/applications/gpui-task-manager.desktop
 #   /usr/share/icons/hicolor/{scalable,256x256}/apps/gpui-task-manager.*
 #   /usr/share/doc/gpui-task-manager/{README.md,NOTICE.md,THIRD_PARTY_NOTICES.md,LICENSE,copyright}
+#   /usr/share/doc/gpui-task-manager/licenses/ (vendored third-party license texts)
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,7 +29,7 @@ for argument in "$@"; do
   case "${argument}" in
   --skip-build) skip_build=true ;;
   -h | --help)
-    sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
@@ -82,7 +83,8 @@ mkdir -p \
   "${staging}/usr/share/applications" \
   "${staging}/usr/share/icons/hicolor/scalable/apps" \
   "${staging}/usr/share/icons/hicolor/256x256/apps" \
-  "${staging}/usr/share/doc/${package}"
+  "${staging}/usr/share/doc/${package}" \
+  "${staging}/usr/share/doc/${package}/licenses"
 
 install -m 0755 "${binary}" "${staging}/usr/bin/${package}"
 install -m 0644 "${script_dir}/${package}.desktop" "${staging}/usr/share/applications/${package}.desktop"
@@ -94,6 +96,21 @@ install -m 0644 "${repo_root}/THIRD_PARTY_NOTICES.md" \
   "${staging}/usr/share/doc/${package}/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${repo_root}/LICENSE" "${staging}/usr/share/doc/${package}/LICENSE"
 install -m 0644 "${script_dir}/copyright" "${staging}/usr/share/doc/${package}/copyright"
+
+# Bundle the third-party license full texts that are actually vendored in this
+# repository. A missing source is a hard error so the .deb never silently ships
+# without a text that is known to exist. Texts that are not vendored are listed
+# in README.deb.md with authoritative places to verify them; never invent one.
+licenses_dir="${staging}/usr/share/doc/${package}/licenses"
+vendored_licenses=("web/assets/fonts/LICENSE-IBM-Plex.txt")
+for source_file in "${vendored_licenses[@]}"; do
+  if [ ! -f "${repo_root}/${source_file}" ]; then
+    echo "error: vendored license text is missing: ${source_file}" >&2
+    exit 1
+  fi
+  install -m 0644 "${repo_root}/${source_file}" \
+    "${licenses_dir}/$(basename -- "${source_file}")"
+done
 
 # Compute runtime dependencies from ldd + dpkg -S. The Vulkan loader is
 # dlopen()ed by wgpu/Blade, so it does not appear in ldd and is added explicitly.

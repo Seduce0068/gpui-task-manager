@@ -199,34 +199,34 @@ status: current
 
 ### 優先度: 中 — コンボレビュー 2026-11-19
 
-- [ ] `--once --token` の stdout から自プロセス command のトークンを除去:
+- [x] `--once --token` の stdout から自プロセス command のトークンを除去:
       `agent/src/main.rs:364` は `--redact` 時のみ redact するため未指定時に平文が残る。
       `--once` では常にマスク。根拠 c3-au01。
-- [ ] `--token` 警告文を訂正: `agent/src/main.rs:203` は「同一ユーザー」とあるが
+- [x] `--token` 警告文を訂正: `agent/src/main.rs:203` は「同一ユーザー」とあるが
       `/proc/<pid>/cmdline` は world-readable。`TM_AGENT_TOKEN` も environ 経由で
       読める旨を記載し推奨順を `--token-file` 優先へ。根拠 c3-au01。
-- [ ] 設定保存の CAS / 再読込: `app/src/settings.rs:111` の LAST_LOADED 固定により
+- [x] 設定保存の CAS / 再読込: `app/src/settings.rs:111` の LAST_LOADED 固定により
       並行タブ／インスタンスが将来 version を書き下げる。保存直前に再読込。
       根拠 c2-di01 / c4-dr01。
-- [ ] `ControlError::Failed` が taskkill 生出力を保持: `crates/tm-platform/src/lib.rs:719`
+- [x] `ControlError::Failed` が taskkill 生出力を保持: `crates/tm-platform/src/lib.rs:719`
       の detail にフルパス/アカウント名が入り得る。固定文言＋exit code のみへ。
       根拠 c2-er01。
-- [ ] `control()` が 1 PID の refresh で `remove_not_listed_processes=true` を渡し
+- [x] `control()` が 1 PID の refresh で `remove_not_listed_processes=true` を渡し
       全プロセスをキャッシュから削除: `crates/tm-platform/src/lib.rs:553`。false へ。
       根拠 c2-er01。
-- [ ] README の既定ポート 18787 → 8787 (`README.md:158`)、web/README の
+- [x] README の既定ポート 18787 → 8787 (`README.md:158`)、web/README の
       概要 186px → 260px (`web/README.md:168`)、検証件数 364 → 372 / web 76。
       根拠 d2-fg01 / c5-dc01。
-- [ ] CI: gitleaks の checksum 検証と `fetch-depth: 0`、成果物ジョブの `needs` に
+- [x] CI: gitleaks の checksum 検証と `fetch-depth: 0`、成果物ジョブの `needs` に
       deny を追加、check-public-docs の走査対象を動的集合へ＋一致行を redact。
       根拠 c1-cf01 / c4-dr01。
-- [ ] 第三者ライセンス全文を DEB へ同梱 (`packaging/linux/build-deb.sh:91`)。
+- [x] 第三者ライセンス全文を DEB へ同梱 (`packaging/linux/build-deb.sh:91`)。
       web-dist は IBM Plex OFL をコピー済みで不均一。根拠 c3-de01。
-- [ ] HTTP エラーへ機械可読 `code` を追加し、400 の raw 値エコーを廃止:
+- [x] HTTP エラーへ機械可読 `code` を追加し、400 の raw 値エコーを廃止:
       `agent/src/main.rs:136`。根拠 c1-ap01。
-- [ ] FetchError を enum 化し 403 を認証失敗と分ける (`web/src/agent.rs:98`)。
+- [x] FetchError を enum 化し 403 を認証失敗と分ける (`web/src/agent.rs:98`)。
       根拠 c1-ap01。
-- [ ] 設定保存失敗を UI に通知 (`app/src/app.rs:393`, `web/src/shell.rs:391`)。
+- [x] 設定保存失敗を UI に通知 (`app/src/app.rs:393`, `web/src/shell.rs:391`)。
       根拠 d4-vu01。
 
 ### 優先度: 低 — コンボレビュー 2026-11-19

@@ -140,6 +140,19 @@ pub struct TaskManagerApp {
     probe_unavailable: bool,
 }
 
+/// Surfaces a failed settings save on the status bar.
+///
+/// Success deliberately leaves the current status untouched: a startup or
+/// action notice must not be erased by an unrelated save (C2-SETTINGS). The
+/// message is a fixed, redacted constant, so no path or I/O detail leaks into
+/// the UI. Factored out of the shell so the policy is directly testable.
+fn report_save_result(dashboard: &mut Dashboard, result: Result<(), std::io::Error>) {
+    if let Err(error) = result {
+        eprintln!("gpui-task-manager: 設定を保存できません: {error}");
+        dashboard.set_status(crate::settings::NOTICE_SAVE_FAILED, true);
+    }
+}
+
 impl TaskManagerApp {
     /// Creates the application with the requested backend.
     pub fn new(cx: &mut Context<Self>, demo: bool, redact: bool) -> Self {
@@ -391,7 +404,7 @@ impl TaskManagerApp {
     }
 
     /// Persists the current presentation preferences.
-    fn save_settings(&self) {
+    fn save_settings(&mut self) {
         let settings = Settings {
             version: crate::settings::CURRENT_VERSION,
             interval_ms: self.dashboard.interval().as_millis() as u64,
@@ -400,9 +413,7 @@ impl TaskManagerApp {
             tree_view: self.dashboard.tree_view(),
             theme: crate::theme::theme(),
         };
-        if let Err(error) = crate::settings::save(&settings) {
-            eprintln!("gpui-task-manager: 設定を保存できません: {error}");
-        }
+        report_save_result(&mut self.dashboard, crate::settings::save(&settings));
     }
 
     /// 絞り込み編集を開始する。現在の確定文字列を入力欄へ引き継ぐ。
@@ -2432,10 +2443,12 @@ mod tests {
     // Explicit imports: the crate-root `use gpui_kit::*` re-exports a `test`
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
-    use super::{dialog_command, key_action, signal_enabled, BackendInit, KeyAction};
+    use super::{
+        dialog_command, key_action, report_save_result, signal_enabled, BackendInit, KeyAction,
+    };
     use gpui_kit::Modifiers;
     use tm_core::{PlatformInfo, Signal};
-    use tm_viewmodel::Command;
+    use tm_viewmodel::{Command, Dashboard, DEFAULT_REFRESH_INTERVAL};
 
     fn plain() -> Modifiers {
         Modifiers::default()
@@ -2704,5 +2717,35 @@ mod tests {
             assert_eq!(init.startup_status(), Some(expected.as_str()));
             assert!(!init.is_demo());
         }
+    }
+
+    #[test]
+    fn failed_settings_save_is_visible_but_success_preserves_status() {
+        use crate::settings::NOTICE_SAVE_FAILED;
+        use std::io;
+
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.set_persistent_status("起動時の警告");
+        report_save_result(
+            &mut dashboard,
+            Err(io::Error::other("secret /home/user/settings.json")),
+        );
+        let status = dashboard.status().expect("failed save must be visible");
+        assert!(status.is_error);
+        assert!(status.text.ends_with(NOTICE_SAVE_FAILED), "{}", status.text);
+        assert!(
+            !status.text.contains("/home"),
+            "I/O detail must not leak into the status: {}",
+            status.text
+        );
+
+        // A successful save must not erase an existing (startup) notice.
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.set_persistent_status("起動時の警告");
+        report_save_result(&mut dashboard, Ok(()));
+        let status = dashboard
+            .status()
+            .expect("success must not clear an existing status");
+        assert!(status.text.ends_with("起動時の警告"), "{}", status.text);
     }
 }

@@ -21,3 +21,9 @@ License: AGPL-3.0-or-later
  The full text is also shipped as /usr/share/doc/gpui-task-manager/LICENSE.
  The previous Apache-2.0 license text is preserved in
  /usr/share/doc/gpui-task-manager/THIRD_PARTY_NOTICES.md.
+ .
+ Third-party components and their licenses are listed in
+ /usr/share/doc/gpui-task-manager/NOTICE.md. Vendored third-party license full
+ texts are installed under /usr/share/doc/gpui-task-manager/licenses/; the
+ licenses that are not vendored, and where to verify them, are documented in
+ /usr/share/doc/gpui-task-manager/README.md.

@@ -552,7 +552,12 @@ impl SystemProbe for NativeProbe {
         // caller's last snapshot.
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[sysinfo_pid]),
-            true,
+            // This is a targeted re-read for the start-time check, not a full
+            // refresh. `true` would tell sysinfo to evict every process not in
+            // the list from its cache, destroying the observed process map (and
+            // with it the CPU/thread bookkeeping) as a side effect of a control
+            // request. Keep the rest of the map intact.
+            false,
             // `nothing()` enables tasks by default; the start-time check needs
             // no thread information, so avoid that extra work here too.
             ProcessRefreshKind::nothing().without_tasks(),
@@ -654,7 +659,12 @@ fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), Con
         Ok(()) => Ok(()),
         Err(err) if err == Errno::PERM => Err(ControlError::PermissionDenied),
         Err(err) if err == Errno::SRCH => Err(ControlError::NotFound),
-        Err(err) => Err(ControlError::Failed(format!("kill: {err}"))),
+        // OS error text is untrusted display data too: sanitise it so no control
+        // character can reach the status bar through `ControlError`'s `Display`.
+        Err(err) => Err(ControlError::Failed(format!(
+            "kill: {}",
+            sanitize_display(&err.to_string(), MAX_NAME_CHARS)
+        ))),
     }
 }
 
@@ -688,9 +698,12 @@ fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), Con
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = command
-        .output()
-        .map_err(|err| ControlError::Failed(format!("taskkill の実行に失敗: {err}")))?;
+    let output = command.output().map_err(|err| {
+        ControlError::Failed(format!(
+            "taskkill の実行に失敗: {}",
+            sanitize_display(&err.to_string(), MAX_NAME_CHARS)
+        ))
+    })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -707,10 +720,15 @@ fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), Con
 /// `taskkill` exits with code 1 for every failure, so the localised message is
 /// the only discriminator. English and Japanese messages for the two common
 /// cases are recognised; a process that no longer exists is [`NotFound`], an
-/// access refusal is [`PermissionDenied`], and anything else stays [`Failed`]
-/// with the original output attached for diagnostics. Both streams are scanned
-/// because Windows versions differ in which one carries the error, and
-/// `exit_code` is kept even for unmapped failures so it is not lost.
+/// access refusal is [`PermissionDenied`], and anything else stays [`Failed`].
+///
+/// The raw stdout/stderr bytes are consumed **only** for this known-text
+/// mapping. They are never stored in [`Failed`]: `taskkill` output can contain
+/// internal paths, account names, localised text and control characters, and
+/// `ControlError::Failed` is rendered verbatim through `Display` into the
+/// status bar. An unmapped failure therefore carries a fixed, sanitised message
+/// plus the exit code only. Both streams are scanned because Windows versions
+/// differ in which one carries the error.
 ///
 /// [`NotFound`]: ControlError::NotFound
 /// [`PermissionDenied`]: ControlError::PermissionDenied
@@ -732,15 +750,12 @@ fn classify_taskkill_failure(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8
         return ControlError::NotFound;
     }
 
-    let detail = output.trim();
+    // `output` has served its purpose as a classifier input; do not let any of
+    // its bytes escape into the error that `Display` renders in the UI.
     let code = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    if detail.is_empty() {
-        ControlError::Failed(format!("taskkill が失敗しました (exit={code})"))
-    } else {
-        ControlError::Failed(format!("taskkill が失敗しました (exit={code}): {detail}"))
-    }
+    ControlError::Failed(format!("taskkill が失敗しました (exit={code})"))
 }
 
 /// Absolute path of the Windows `taskkill.exe`.
@@ -1215,6 +1230,40 @@ mod tests {
         );
     }
 
+    /// Regression: the start-time re-check refreshes a single PID with
+    /// `ProcessesToUpdate::Some(&[pid])`. Its `remove_not_listed_processes`
+    /// argument must be `false`, otherwise sysinfo evicts every other process
+    /// from its cache and a control request destroys the observed process map.
+    #[test]
+    fn control_refresh_preserves_the_process_map() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        let self_pid = std::process::id();
+        let target = snapshot
+            .processes
+            .iter()
+            .find(|process| !pid_is_protected(process.key.pid, self_pid, cfg!(unix)))
+            .expect("the machine must have a controllable process besides the sampler");
+        // A stale start time reaches the re-check refresh but delivers no signal.
+        let stale = ProcessKey::new(target.key.pid, target.key.start_time_secs.wrapping_add(1));
+        assert_eq!(
+            probe.control(stale, Signal::Terminate),
+            Err(ControlError::NotFound),
+            "the stale key must be rejected"
+        );
+
+        // With `true` above, only `target.key.pid` would remain in the map.
+        assert!(
+            probe.system.process(Pid::from_u32(self_pid)).is_some(),
+            "control() evicted the sampler itself from the process map"
+        );
+        let remaining = probe.system.processes().len();
+        assert!(
+            remaining > 1,
+            "control() collapsed the process map to {remaining} entry/entries"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn terminate_ends_a_child_process() {
@@ -1409,15 +1458,39 @@ mod tests {
         }
     }
 
+    /// R2X-P5 regression: raw `taskkill` output must never reach `Display`.
     #[test]
-    fn taskkill_unknown_failure_stays_failed_with_diagnostics() {
+    fn taskkill_unknown_failure_never_leaks_raw_output() {
         let error = classify_taskkill_failure(Some(1), b"", b"ERROR: Invalid argument.");
         assert!(
-            matches!(error, ControlError::Failed(ref message) if message.contains("exit=1") && message.contains("Invalid argument"))
+            matches!(error, ControlError::Failed(ref message) if message.contains("exit=1") && !message.contains("Invalid argument")),
+            "unmapped failures carry only fixed text and the exit code: {error:?}"
         );
         // Preserve the exit code even when no message was written.
         let silent = classify_taskkill_failure(Some(5), b"", b"");
-        assert!(matches!(silent, ControlError::Failed(ref message) if message.contains("exit=5")));
+        assert!(
+            matches!(silent, ControlError::Failed(ref message) if message.contains("exit=5")),
+            "the exit code must survive: {silent:?}"
+        );
+
+        // An adversarial taskkill message must not smuggle an internal path,
+        // an account name or control characters into the status bar through
+        // `ControlError`'s `Display`.
+        let hostile = b"ERROR: C:\\Users\\alice\\secret could not be terminated for DOMAIN\\bob.\n\x1b[31mRED\x1b[0m";
+        let leaked = classify_taskkill_failure(Some(1), hostile, b"");
+        let rendered = leaked.to_string();
+        assert!(
+            !rendered.contains("alice"),
+            "internal path leaked: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("DOMAIN"),
+            "account name leaked: {rendered:?}"
+        );
+        assert!(
+            !rendered.chars().any(char::is_control),
+            "control character leaked: {rendered:?}"
+        );
     }
 
     /// R2X-P7 regression: refreshing the user list must not drop the uid ->

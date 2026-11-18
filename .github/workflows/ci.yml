@@ -73,12 +73,28 @@ jobs:
         # back into published docs (regression guard for the publication review).
         bash scripts/check-public-docs.sh
         # Secret scanning with gitleaks (both working tree and git history).
-        # Pin the version and verify the release checksum is not required here:
-        # the tarball comes directly from the gitleaks GitHub release.
+        # Pin the version and verify the tarball against the official release
+        # checksums before extracting/executing it: a mismatch fails the gate.
         GITLEAKS_VERSION=8.30.1
-        curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-          -o /tmp/gitleaks.tar.gz
-        tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+        GITLEAKS_ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        (
+          cd /tmp
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_ARCHIVE}" \
+            -o "${GITLEAKS_ARCHIVE}"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+            -o gitleaks_checksums.txt
+          awk -v name="${GITLEAKS_ARCHIVE}" '$2 == name' gitleaks_checksums.txt > gitleaks_expected.txt
+          if [ ! -s gitleaks_expected.txt ]; then
+            echo "gitleaks: checksum entry for ${GITLEAKS_ARCHIVE} not found" >&2
+            exit 1
+          fi
+          sha256sum -c gitleaks_expected.txt || exit 1
+          tar -xzf "${GITLEAKS_ARCHIVE}" gitleaks
+        )
+        # gates is a reusable-workflow delegation, so the checkout depth here
+        # is not controlled by this repository. Ensure full history is present
+        # before scanning; `detect` below covers working tree + history.
+        git fetch --unshallow || true
         /tmp/gitleaks version
         /tmp/gitleaks detect --source . --redact --exit-code 1
 
@@ -177,7 +193,7 @@ jobs:
   release-linux:
     name: release artifacts (linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: gates
+    needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -210,7 +226,7 @@ jobs:
   web-dist:
     name: web dist artifact
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: gates
+    needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -238,7 +254,7 @@ jobs:
   sbom:
     name: sbom (cyclonedx)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: gates
+    needs: [gates, deny]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

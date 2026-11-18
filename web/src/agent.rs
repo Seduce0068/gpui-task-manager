@@ -26,6 +26,7 @@
 //!   exceeds the cap), so a superseded fetch cannot keep pinning up to 8 MiB
 //!   of the wasm heap (R4-A02).
 
+use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
@@ -76,16 +77,14 @@ const BODY_ABORTED_ERROR: &str = "接続設定が変更されたため応答の�
 const BODY_READ_ERROR: &str = "応答の読み取りに失敗しました";
 const SIZE_LIMIT_ERROR: &str = "エージェント応答がサイズ上限を超えました";
 
-/// HTTP status codes that mean the loopback agent rejected our credentials.
+/// Fixed guidance for a rejected connection origin (`403`).
 ///
-/// The agent answers `401` for a missing/wrong bearer token and `403` for a
-/// rejected `Origin`. Both need the same user-facing action: paste the fresh
-/// URL (with the new `#token=` fragment) into the address bar (R3-S04/S05).
-pub(crate) fn is_auth_failure_status(status: u16) -> bool {
-    matches!(status, 401 | 403)
-}
+/// Unlike [`RECONNECT_GUIDANCE`] this is **not** a token problem: pasting a new
+/// URL would not help, so the DOM proof's `reconnect=` flag stays `0`. Static
+/// text with no token, endpoint, hostname or agent-supplied data.
+pub const FORBIDDEN_GUIDANCE: &str = "接続元が許可されていません。ブラウザからの接続元（Origin）が tm-agent 側で許可されているか確認してください";
 
-/// Fixed, redact-safe guidance for an authentication failure.
+/// Fixed, redact-safe guidance for an authentication failure (`401`).
 ///
 /// It is a static string with no token, endpoint, hostname or agent-supplied
 /// text, so it can flow into the status bar, the `aria-live` mirror and the DOM
@@ -93,16 +92,103 @@ pub(crate) fn is_auth_failure_status(status: u16) -> bool {
 /// pasting the URL the restarted agent printed.
 pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。エージェント再起動後に表示された新しい URL の #token= をアドレスバーへ貼り付けて更新してください";
 
-/// Whether a fetch error must be surfaced as the re-entry flow rather than a
-/// generic connectivity error. Kept as a pure predicate for the shell tests.
-pub(crate) fn requires_reconnect(error: &str) -> bool {
-    error == RECONNECT_GUIDANCE
+/// Fixed guidance for a transport failure. The underlying error detail is
+/// written to `console` after redaction; only this summary reaches the UI.
+const CONNECT_ERROR: &str =
+    "接続に失敗しました（エージェントが起動しているか、URL とトークンを確認してください）";
+
+/// Fixed guidance for a non-loopback endpoint.
+const INVALID_ENDPOINT_ERROR: &str = "エージェントの接続先は loopback の http URL のみ許可されます";
+
+/// Every failure mode of one snapshot fetch.
+///
+/// The enum carries only typed data (status codes, versions and already
+/// redacted detail strings); all user-facing Japanese text is produced by the
+/// [`Display`](fmt::Display) impl below. This keeps the redaction boundary in
+/// one place and lets the DOM proof decide `reconnect=` by *variant* instead
+/// of comparing display strings (R3-S04/S05, C2-WEB).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FetchError {
+    /// `401`: missing/wrong bearer token — the only reconnect trigger.
+    Auth,
+    /// `403`: rejected `Origin` — actionable, but a new token will not help.
+    Forbidden,
+    /// Any other non-success HTTP status.
+    Http(u16),
+    /// The whole fetch exceeded [`FETCH_TIMEOUT`].
+    Timeout,
+    /// A second fetch was rejected by the single-flight gate.
+    Busy,
+    /// The body read was cancelled because connection settings changed.
+    BodyAborted,
+    /// The response body reached [`MAX_SNAPSHOT_BYTES`].
+    SizeLimit,
+    /// The body stream failed to read (detail stays in `console`).
+    BodyRead,
+    /// The snapshot JSON could not be parsed (detail already redacted).
+    Parse(String),
+    /// The HTTP request could not be assembled (detail already redacted).
+    Build(String),
+    /// The transport failed before a response arrived (detail in `console`).
+    Connect,
+    /// The configured endpoint is not a loopback `http://` URL.
+    InvalidEndpoint,
+    /// The agent speaks a wire version this build does not understand.
+    SchemaVersion { agent: u32, web: u32 },
+}
+
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auth => f.write_str(RECONNECT_GUIDANCE),
+            Self::Forbidden => f.write_str(FORBIDDEN_GUIDANCE),
+            Self::Http(code) => write!(f, "エージェントが HTTP {code} を返しました"),
+            Self::Timeout => f.write_str(&fetch_timeout_error()),
+            Self::Busy => f.write_str(FETCH_BUSY_ERROR),
+            Self::BodyAborted => f.write_str(BODY_ABORTED_ERROR),
+            Self::SizeLimit => f.write_str(SIZE_LIMIT_ERROR),
+            Self::BodyRead => f.write_str(BODY_READ_ERROR),
+            Self::Parse(detail) => {
+                write!(f, "スナップショット JSON の解析に失敗しました: {detail}")
+            }
+            Self::Build(detail) => {
+                write!(f, "リクエストの組み立てに失敗しました: {detail}")
+            }
+            Self::Connect => f.write_str(CONNECT_ERROR),
+            Self::InvalidEndpoint => f.write_str(INVALID_ENDPOINT_ERROR),
+            Self::SchemaVersion { agent, web } => {
+                write!(
+                    f,
+                    "スキーマバージョンが新しすぎます (agent={agent}, web={web})"
+                )
+            }
+        }
+    }
+}
+
+/// Maps a non-success HTTP status to its typed error.
+///
+/// `401` and `403` are deliberately split: only the former means "paste a new
+/// token", while the latter asks the user to fix the allowed origin (C2-WEB).
+fn status_error(code: u16) -> FetchError {
+    match code {
+        401 => FetchError::Auth,
+        403 => FetchError::Forbidden,
+        other => FetchError::Http(other),
+    }
+}
+
+/// Whether a fetch error must be surfaced as the token re-entry flow rather
+/// than a generic connectivity error. Kept as a pure predicate on the variant
+/// so the DOM proof never depends on a display string (R3-S04/S05).
+pub(crate) fn requires_reconnect(error: &FetchError) -> bool {
+    matches!(error, FetchError::Auth)
 }
 
 /// Endpoint and token parsed from the page URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
-    /// Base URL such as `http://127.0.0.1:18787` (no trailing slash).
+    /// Base URL such as `http://127.0.0.1:8787` (no trailing slash).
     pub endpoint: String,
     /// Optional token, read from the URL fragment and sent as an
     /// `Authorization: Bearer` header (never as a query parameter).
@@ -308,16 +394,16 @@ impl AgentClient {
 
     /// Requests and parses one snapshot, with a hard [`FETCH_TIMEOUT`] deadline.
     ///
-    /// Errors are returned as user-facing Japanese strings with the token
-    /// redacted; they never trigger a silent fallback to demo data. The
-    /// single-flight permit is held until this method resolves (success, error
-    /// or deadline cancellation), so no second request can overlap this one.
-    pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, String> {
+    /// Errors are typed [`FetchError`] values whose display text is redacted;
+    /// they never trigger a silent fallback to demo data. The single-flight
+    /// permit is held until this method resolves (success, error or deadline
+    /// cancellation), so no second request can overlap this one.
+    pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, FetchError> {
         // Losing callers never reach `http.send`: a parallel fetch cannot
         // start, which is the wasm heap bound R4-A02 asks for.
         let _permit = match self.gate.try_acquire() {
             Some(permit) => permit,
-            None => return Err(FETCH_BUSY_ERROR.to_string()),
+            None => return Err(FetchError::Busy),
         };
         let deadline = self.executor.timer(FETCH_TIMEOUT);
         with_deadline(self.fetch_snapshot_inner(), deadline).await
@@ -325,7 +411,7 @@ impl AgentClient {
 
     /// The actual request/parse pipeline, kept separate so the deadline can
     /// cover the body read as well as the response headers.
-    async fn fetch_snapshot_inner(&self) -> Result<SnapshotResponse, String> {
+    async fn fetch_snapshot_inner(&self) -> Result<SnapshotResponse, FetchError> {
         // Snapshot once per request, after the shell may have re-read the URL.
         // The guard is dropped here, never held across the awaits below.
         let config = self.config.snapshot();
@@ -334,7 +420,7 @@ impl AgentClient {
         let generation = self.config.generation();
         // Never attach the bearer token before checking the destination.
         if !is_loopback_http_endpoint(&config.endpoint) {
-            return Err("エージェントの接続先は loopback の http URL のみ許可されます".to_string());
+            return Err(FetchError::InvalidEndpoint);
         }
         let url = snapshot_url(&config.endpoint);
         let mut builder = Request::builder().method("GET").uri(&url);
@@ -343,10 +429,7 @@ impl AgentClient {
             builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
         let request = builder.body(AsyncBody::empty()).map_err(|error| {
-            format!(
-                "リクエストの組み立てに失敗しました: {}",
-                redact_token(&format!("{error:#}"), config.token.as_deref())
-            )
+            FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
         })?;
         let response = self.http.send(request).await.map_err(|error| {
             // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
@@ -355,21 +438,17 @@ impl AgentClient {
                 "エージェントへの fetch に失敗: {}",
                 redact_token(&format!("{error:#}"), config.token.as_deref())
             );
-            "接続に失敗しました（エージェントが起動しているか、URL とトークンを確認してください）"
-                .to_string()
+            FetchError::Connect
         })?;
 
         let status = response.status();
         if !status.is_success() {
             let code = status.as_u16();
-            if is_auth_failure_status(code) {
-                // A restarted agent invalidates its token. Never echo the
-                // response body or the token: the fixed guidance is the whole
-                // re-entry flow, safe for the DOM and the aria-live mirror.
-                // No body is read at all, so the reconnect path stays cheap.
-                return Err(RECONNECT_GUIDANCE.to_string());
-            }
-            return Err(format!("エージェントが HTTP {code} を返しました"));
+            // `401` invalidates the token and is the only reconnect trigger;
+            // `403` is a rejected Origin and gets its own guidance, so the DOM
+            // proof's `reconnect=` flag stays false for it (C2-WEB).
+            // No body is read at all, so the error path stays cheap.
+            return Err(status_error(code));
         }
 
         // Earliest possible abort: a declared oversized body is rejected from
@@ -379,7 +458,7 @@ impl AgentClient {
             .get(header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok());
         if content_length_exceeds_cap(declared_length) {
-            return Err(SIZE_LIMIT_ERROR.to_string());
+            return Err(FetchError::SizeLimit);
         }
         let body = response.into_body();
         let mut buffer = Vec::new();
@@ -393,14 +472,10 @@ impl AgentClient {
             config.token.as_deref(),
             || self.config.generation() != generation,
         )
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
 
         let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
-            format!(
-                "スナップショット JSON の解析に失敗しました: {}",
-                redact_token(&format!("{error:#}"), config.token.as_deref())
-            )
+            FetchError::Parse(redact_token(&format!("{error:#}"), config.token.as_deref()))
         })?;
         check_schema_version(envelope.schema_version)?;
         // Never trust display strings from the wire: a malicious or corrupted
@@ -422,16 +497,17 @@ impl AgentClient {
 /// Both futures are injected by the caller: the operation is the real fetch,
 /// the deadline is `BackgroundExecutor::timer` on wasm (or any future in unit
 /// tests). When the deadline wins, the still-pending operation is dropped —
-/// cancelling the request — and a redaction-free timeout error is returned.
-async fn with_deadline<T, F, Deadline>(future: F, deadline: Deadline) -> Result<T, String>
+/// cancelling the request — and a redaction-free [`FetchError::Timeout`] is
+/// returned.
+async fn with_deadline<T, F, Deadline>(future: F, deadline: Deadline) -> Result<T, FetchError>
 where
-    F: Future<Output = Result<T, String>>,
+    F: Future<Output = Result<T, FetchError>>,
     Deadline: Future<Output = ()>,
 {
     futures::pin_mut!(future, deadline);
     match futures::future::select(future, deadline).await {
         Either::Left((result, _deadline)) => result,
-        Either::Right(((), _cancelled_fetch)) => Err(fetch_timeout_error()),
+        Either::Right(((), _cancelled_fetch)) => Err(FetchError::Timeout),
     }
 }
 
@@ -453,15 +529,15 @@ fn content_length_exceeds_cap(declared: Option<&str>) -> bool {
 /// after the request is no longer wanted, pinning heap on wasm. Chunking makes
 /// the read cancellable between chunks: a superseded fetch releases its buffer
 /// and drops the underlying stream after at most one extra chunk of work.
-/// Returns one of the static error keys above; no token or agent text is ever
-/// embedded in the result.
+/// Returns a typed [`FetchError`]; no token or agent text is ever embedded in
+/// it (the display strings are fixed constants).
 async fn read_body_abortable<R, F>(
     mut body: R,
     out: &mut Vec<u8>,
     limit: u64,
     token: Option<&str>,
     aborted: F,
-) -> Result<(), &'static str>
+) -> Result<(), FetchError>
 where
     R: AsyncRead + Unpin,
     F: Fn() -> bool,
@@ -469,11 +545,11 @@ where
     let mut scratch = [0u8; BODY_READ_CHUNK];
     loop {
         if aborted() {
-            return Err(BODY_ABORTED_ERROR);
+            return Err(FetchError::BodyAborted);
         }
         let used = out.len() as u64;
         if used >= limit {
-            return Err(SIZE_LIMIT_ERROR);
+            return Err(FetchError::SizeLimit);
         }
         let want = (limit - used).min(BODY_READ_CHUNK as u64) as usize;
         let read = body.read(&mut scratch[..want]).await.map_err(|error| {
@@ -483,7 +559,7 @@ where
                 "エージェント応答の読み取りに失敗: {}",
                 redact_token(&format!("{error:#}"), token)
             );
-            BODY_READ_ERROR
+            FetchError::BodyRead
         })?;
         if read == 0 {
             return Ok(());
@@ -506,13 +582,14 @@ fn fetch_timeout_error() -> String {
 ///
 /// A newer agent may add fields that serde defaults can ignore; only a
 /// *future* version (which may change field meaning) is rejected.
-fn check_schema_version(version: u32) -> Result<(), String> {
+fn check_schema_version(version: u32) -> Result<(), FetchError> {
     if version <= WIRE_SCHEMA_VERSION {
         Ok(())
     } else {
-        Err(format!(
-            "スキーマバージョンが新しすぎます (agent={version}, web={WIRE_SCHEMA_VERSION})"
-        ))
+        Err(FetchError::SchemaVersion {
+            agent: version,
+            web: WIRE_SCHEMA_VERSION,
+        })
     }
 }
 
@@ -554,8 +631,16 @@ mod tests {
         assert!(check_schema_version(WIRE_SCHEMA_VERSION).is_ok());
         assert!(check_schema_version(WIRE_SCHEMA_VERSION - 1).is_ok());
         let error = check_schema_version(WIRE_SCHEMA_VERSION + 1).expect_err("must reject");
-        assert!(error.contains("スキーマバージョン"));
-        assert!(error.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
+        assert_eq!(
+            error,
+            FetchError::SchemaVersion {
+                agent: WIRE_SCHEMA_VERSION + 1,
+                web: WIRE_SCHEMA_VERSION,
+            }
+        );
+        let text = error.to_string();
+        assert!(text.contains("スキーマバージョン"));
+        assert!(text.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
     }
 
     #[test]
@@ -622,16 +707,38 @@ mod tests {
     }
 
     #[test]
-    fn auth_statuses_are_classified_for_the_reentry_flow() {
-        for auth in [401, 403] {
-            assert!(is_auth_failure_status(auth), "{auth} must need re-entry");
-        }
-        for not_auth in [200, 204, 400, 404, 429, 500, 503] {
-            assert!(
-                !is_auth_failure_status(not_auth),
-                "{not_auth} must stay a generic error"
+    fn http_status_errors_are_classified_by_variant() {
+        assert_eq!(status_error(401), FetchError::Auth);
+        assert_eq!(status_error(403), FetchError::Forbidden);
+        for other in [200, 204, 400, 404, 429, 500, 503] {
+            assert_eq!(
+                status_error(other),
+                FetchError::Http(other),
+                "{other} must stay a generic error"
             );
         }
+        // Only 401 drives the token re-entry flow; 403 is an origin problem.
+        assert!(requires_reconnect(&status_error(401)));
+        assert!(!requires_reconnect(&status_error(403)));
+        assert!(!requires_reconnect(&status_error(500)));
+    }
+
+    #[test]
+    fn forbidden_guidance_is_distinct_and_never_requests_reconnect() {
+        assert!(FORBIDDEN_GUIDANCE.contains("接続元が許可されていません"));
+        assert_ne!(FORBIDDEN_GUIDANCE, RECONNECT_GUIDANCE);
+        // No `#token=` prompt: a new token cannot fix a rejected Origin.
+        assert!(!FORBIDDEN_GUIDANCE.contains('#'));
+        assert!(!FORBIDDEN_GUIDANCE.contains(';'));
+        assert!(!FORBIDDEN_GUIDANCE.contains('\n'));
+        assert_eq!(
+            redact_token(FORBIDDEN_GUIDANCE, Some("super-secret-agent-token")),
+            FORBIDDEN_GUIDANCE
+        );
+        let error = status_error(403);
+        assert_eq!(error, FetchError::Forbidden);
+        assert!(!requires_reconnect(&error), "403 must not set reconnect=1");
+        assert_eq!(error.to_string(), FORBIDDEN_GUIDANCE);
     }
 
     #[test]
@@ -647,9 +754,45 @@ mod tests {
             redact_token(RECONNECT_GUIDANCE, Some("super-secret-agent-token")),
             RECONNECT_GUIDANCE
         );
-        assert!(requires_reconnect(RECONNECT_GUIDANCE));
-        assert!(!requires_reconnect("接続に失敗しました"));
-        assert!(!requires_reconnect("エージェントが HTTP 500 を返しました"));
+        let error = FetchError::Auth;
+        assert_eq!(error.to_string(), RECONNECT_GUIDANCE);
+        assert!(requires_reconnect(&error));
+        assert!(!requires_reconnect(&FetchError::Connect));
+        assert!(!requires_reconnect(&FetchError::Http(500)));
+    }
+
+    #[test]
+    fn every_display_string_is_dom_safe_and_token_free() {
+        // The DOM proof mirrors status text only through a boolean, but the
+        // status bar/aria-live path still requires `;`-free, newline-free,
+        // redaction-safe text for every variant (C2-WEB).
+        for error in [
+            FetchError::Auth,
+            FetchError::Forbidden,
+            FetchError::Http(500),
+            FetchError::Timeout,
+            FetchError::Busy,
+            FetchError::BodyAborted,
+            FetchError::SizeLimit,
+            FetchError::BodyRead,
+            FetchError::Parse("invalid json".to_string()),
+            FetchError::Build("bad uri".to_string()),
+            FetchError::Connect,
+            FetchError::InvalidEndpoint,
+            FetchError::SchemaVersion {
+                agent: 99,
+                web: WIRE_SCHEMA_VERSION,
+            },
+        ] {
+            let text = error.to_string();
+            assert!(!text.contains(';'), "{text}");
+            assert!(!text.contains('\n'), "{text}");
+            assert_eq!(
+                redact_token(&text, Some("super-secret-agent-token")),
+                text,
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -697,7 +840,7 @@ mod tests {
     #[test]
     fn deadline_passes_through_a_fast_success() {
         let result = futures::executor::block_on(with_deadline(
-            async { Ok::<u32, String>(42) },
+            async { Ok::<u32, FetchError>(42) },
             futures::future::pending::<()>(),
         ));
         assert_eq!(result, Ok(42));
@@ -706,10 +849,10 @@ mod tests {
     #[test]
     fn deadline_passes_through_the_inner_error_unchanged() {
         let result = futures::executor::block_on(with_deadline(
-            async { Err::<u32, String>("接続に失敗しました".to_string()) },
+            async { Err::<u32, FetchError>(FetchError::Connect) },
             futures::future::pending::<()>(),
         ));
-        assert_eq!(result, Err("接続に失敗しました".to_string()));
+        assert_eq!(result, Err(FetchError::Connect));
     }
 
     #[test]
@@ -728,17 +871,19 @@ mod tests {
         let result = futures::executor::block_on(with_deadline(
             async move {
                 let _flag = DropFlag(observed);
-                futures::future::pending::<Result<u32, String>>().await
+                futures::future::pending::<Result<u32, FetchError>>().await
             },
             async {},
         ));
 
         let error = result.expect_err("a stalled fetch must time out");
-        assert_eq!(error, fetch_timeout_error());
-        assert!(error.contains("タイムアウト"));
+        assert_eq!(error, FetchError::Timeout);
+        let text = error.to_string();
+        assert_eq!(text, fetch_timeout_error());
+        assert!(text.contains("タイムアウト"));
         // No token/endpoint interpolation — the message itself is redaction-safe.
-        assert_eq!(redact_token(&error, Some("super-secret-token")), error);
-        assert!(!error.contains("secret"));
+        assert_eq!(redact_token(&text, Some("super-secret-token")), text);
+        assert!(!text.contains("secret"));
         // Cancelling the request is what keeps at most one fetch in flight.
         assert!(
             dropped.load(Ordering::SeqCst),
@@ -770,11 +915,11 @@ mod tests {
         let result = futures::executor::block_on(with_deadline(
             async move {
                 let _permit = observed.try_acquire().expect("free slot");
-                futures::future::pending::<Result<u32, String>>().await
+                futures::future::pending::<Result<u32, FetchError>>().await
             },
             async {},
         ));
-        assert_eq!(result, Err(fetch_timeout_error()));
+        assert_eq!(result, Err(FetchError::Timeout));
         assert!(
             gate.try_acquire().is_some(),
             "a cancelled fetch must not leave the gate stuck"
@@ -812,7 +957,7 @@ mod tests {
             || seen.fetch_add(1, Ordering::SeqCst) >= 1,
         ))
         .expect_err("a superseded read must abort early");
-        assert_eq!(error, BODY_ABORTED_ERROR);
+        assert_eq!(error, FetchError::BodyAborted);
         assert_eq!(
             out.len(),
             BODY_READ_CHUNK,
@@ -821,7 +966,9 @@ mod tests {
         assert!(out.len() < BODY_READ_CHUNK * 3);
         assert!(checks.load(Ordering::SeqCst) >= 2);
         // Static error: safe for the DOM/aria-live mirror and token-free.
-        assert_eq!(redact_token(error, Some("secret-token")), error);
+        let text = error.to_string();
+        assert_eq!(text, BODY_ABORTED_ERROR);
+        assert_eq!(redact_token(&text, Some("secret-token")), text);
     }
 
     #[test]
@@ -836,7 +983,8 @@ mod tests {
             || false,
         ))
         .expect_err("a body that reaches the cap must be rejected");
-        assert_eq!(error, SIZE_LIMIT_ERROR);
+        assert_eq!(error, FetchError::SizeLimit);
+        assert_eq!(error.to_string(), SIZE_LIMIT_ERROR);
         assert_eq!(at_cap.len(), 10);
 
         let small_bytes = vec![1u8, 2, 3];
@@ -874,9 +1022,11 @@ mod tests {
             || false,
         ))
         .expect_err("an IO error must be reported");
-        assert_eq!(error, BODY_READ_ERROR);
-        assert_eq!(redact_token(error, Some("secret")), error);
-        assert!(!error.contains("secret"));
+        assert_eq!(error, FetchError::BodyRead);
+        let text = error.to_string();
+        assert_eq!(text, BODY_READ_ERROR);
+        assert_eq!(redact_token(&text, Some("secret")), text);
+        assert!(!text.contains("secret"));
     }
 
     #[test]
@@ -900,13 +1050,27 @@ mod tests {
     }
 
     #[test]
-    fn new_abort_errors_are_redaction_safe_and_not_auth_failures() {
-        for error in [FETCH_BUSY_ERROR, BODY_ABORTED_ERROR] {
-            assert_eq!(redact_token(error, Some("secret-agent-token")), error);
-            assert!(!error.contains("secret"));
+    fn non_auth_errors_are_redaction_safe_and_do_not_request_reconnect() {
+        for error in [
+            FetchError::Busy,
+            FetchError::BodyAborted,
+            FetchError::SizeLimit,
+            FetchError::BodyRead,
+            FetchError::Timeout,
+            FetchError::Connect,
+            FetchError::Forbidden,
+            FetchError::InvalidEndpoint,
+            FetchError::Http(500),
+        ] {
+            let text = error.to_string();
+            assert_eq!(redact_token(&text, Some("secret-agent-token")), text);
+            assert!(!text.contains("secret"));
             // The DOM proof's reconnect flag is driven by requires_reconnect;
-            // neither new path may flip it (R3-S04/S05 hook stays intact).
-            assert!(!requires_reconnect(error));
+            // only `401` may flip it (R3-S04/S05 hook stays intact, C2-WEB).
+            assert!(
+                !requires_reconnect(&error),
+                "{text} must not set reconnect=1"
+            );
         }
     }
 }

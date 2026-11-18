@@ -61,6 +61,12 @@ pub const NOTICE_BACKUP_FAILED: &str =
     "保存された設定を読み込めませんでした。バックアップにも失敗したため既定値で起動します。";
 /// Fixed, redacted text shown when the settings file cannot be read at all.
 pub const NOTICE_UNREADABLE: &str = "保存された設定を読み込めませんでした。既定値で起動します。";
+/// Fixed, redacted text shown when persisting settings fails.
+///
+/// Shells put this on the status bar; it never contains a path, host name,
+/// token or I/O error detail (C2-SETTINGS).
+pub const NOTICE_SAVE_FAILED: &str =
+    "設定を保存できませんでした。表示設定はこのセッション中のみ有効です。";
 
 /// A configuration notice safe to pass to `Dashboard::set_persistent_status`.
 ///
@@ -361,20 +367,42 @@ pub fn take_pending_notice() -> Option<SettingsNotice> {
     lock(&PENDING_NOTICE).take()
 }
 
+/// Reads the raw JSON object currently at `path` without interpreting it.
+///
+/// Unlike [`read_document`] this has no backup side effect and accepts any JSON
+/// object, so a value written by a newer shell is usable as the merge base even
+/// when a known field has a type this build cannot deserialize (C2-SETTINGS).
+fn raw_from_path(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.as_object().cloned()
+}
+
+/// Merges against the destination's latest raw object and writes it atomically.
+///
+/// The destination is re-read immediately before merging so a parallel tab or
+/// instance that wrote a newer `version` or extra fields after our load cannot
+/// be silently rolled back by this save (C2-SETTINGS). The in-memory snapshot is
+/// used only when the destination cannot be read at all.
+fn save_to_path(path: &Path, settings: &Settings) -> io::Result<()> {
+    let raw = raw_from_path(path).or_else(|| lock(&LAST_LOADED).clone());
+    let map = merged_map(settings, raw.as_ref());
+    let json = serde_json::to_string_pretty(&map)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    save_raw_to(path, &json)?;
+    *lock(&LAST_LOADED) = Some(map);
+    Ok(())
+}
+
 /// Saves settings atomically to the platform configuration directory.
 ///
-/// Unknown fields and a newer `version` from the last load are preserved.
+/// Unknown fields and a newer `version` written by any instance are preserved,
+/// including values written since the last load in this process.
 pub fn save(settings: &Settings) -> io::Result<()> {
     let path = config_path().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "設定ディレクトリを特定できません")
     })?;
-    let raw = lock(&LAST_LOADED).clone();
-    let map = merged_map(settings, raw.as_ref());
-    let json = serde_json::to_string_pretty(&map)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    save_raw_to(&path, &json)?;
-    *lock(&LAST_LOADED) = Some(map);
-    Ok(())
+    save_to_path(&path, settings)
 }
 
 /// Picks the first unused backup path for `stem`.
@@ -808,6 +836,73 @@ mod tests {
             reloaded.raw.get("future_nested"),
             Some(&serde_json::json!({"a": [1, 2]}))
         );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn save_rereads_the_destination_before_merging() {
+        // A parallel instance writes a newer schema and extra fields after our
+        // load. Saving must merge against that fresh value, not the stale raw
+        // captured at load time (C2-SETTINGS).
+        let path = temporary_path("save-reread");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(&path, r#"{"version":9,"interval_ms":1500,"loaded_only":1}"#)
+            .expect("write initial settings");
+        let _loaded = load_from_path(Some(&path));
+
+        fs::write(
+            &path,
+            r#"{"version":11,"interval_ms":1500,"loaded_only":1,"newer_only":{"x":2}}"#,
+        )
+        .expect("write settings from the other instance");
+        let caller = Settings {
+            version: CURRENT_VERSION,
+            interval_ms: 2_000,
+            ..Settings::default()
+        };
+        save_to_path(&path, &caller).expect("save merged settings");
+
+        let reloaded = load_document_from(&path).expect("reload document");
+        assert_eq!(
+            reloaded.settings.version, 11,
+            "a stale load must not downgrade the newest stored version"
+        );
+        assert_eq!(reloaded.settings.interval_ms, 2_000);
+        assert_eq!(
+            reloaded.raw.get("newer_only"),
+            Some(&serde_json::json!({"x": 2})),
+            "fields written after our load must survive"
+        );
+        assert_eq!(reloaded.raw.get("loaded_only"), Some(&serde_json::json!(1)));
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn save_computes_max_version_against_the_latest_stored_value() {
+        // The stale snapshot has a higher version than the destination now has.
+        // `max(stored, current)` must use the freshly read `stored`, so the old
+        // in-memory value is not resurrected (C2-SETTINGS).
+        let path = temporary_path("save-latest-version");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(&path, r#"{"version":9,"interval_ms":1500,"stale_only":1}"#)
+            .expect("write initial settings");
+        let _loaded = load_from_path(Some(&path));
+
+        fs::write(&path, r#"{"version":1,"interval_ms":1500,"fresh_only":2}"#)
+            .expect("write settings from the other instance");
+        let caller = Settings {
+            version: CURRENT_VERSION,
+            ..Settings::default()
+        };
+        save_to_path(&path, &caller).expect("save merged settings");
+
+        let reloaded = load_document_from(&path).expect("reload document");
+        assert_eq!(
+            reloaded.settings.version, CURRENT_VERSION,
+            "max(1, current) must win over the stale version 9"
+        );
+        assert_eq!(reloaded.raw.get("fresh_only"), Some(&serde_json::json!(2)));
+        assert_eq!(reloaded.raw.get("stale_only"), None);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
