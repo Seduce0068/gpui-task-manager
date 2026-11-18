@@ -148,7 +148,7 @@ chmod 600 ~/.config/tm-agent.token
 
 ```bash
 cd work/gpui-task-manager
-bash scripts/check.sh          # fmt / clippy / test 175 件 / web 11 件 / wasm / deny / vet / machete
+bash scripts/check.sh          # fmt / clippy / test / web test / wasm / deny / vet / machete（件数は README.md を参照）
 cargo audit
 ```
 
@@ -163,11 +163,11 @@ cargo audit
 - `tm-agent`: クエリトークン拒否、Host 検証、Bearer 認証、CORS、`--token-file`、
   `--redact`（コマンド引数内ホスト名・tailnet ドメインを含む）。
 - `tm-viewmodel`: `FilterInput` の UTF-16 / selection / marked range の状態機械
-  （Web/ネイティブ共有、28 件）。`web` は agent 4 件。
+  （Web/ネイティブ共有。件数は README.md「検証状況」を参照）。`web` にも agent テストあり。
   IME は CDP の composition 32 チェック + ネイティブ `TM_DEBUG_IME=1` 検証
   （確定前は反映しない）。
 - クロスプラットフォーム: Windows ターゲットの workspace check、macOS 4 crate の
   check、CI の windows-latest / macos-latest。
 - `app`: 設定ファイルの往復・原子的書き込み・`0600` 権限・範囲クランプ・
-  未知フィールド無視（12 件）。デバッグフック `TM_DEBUG_SETTINGS=1` で保存経路を
+  未知フィールド無視。デバッグフック `TM_DEBUG_SETTINGS=1` で保存経路を
   実行時確認し、設定ファイルを置いた起動で復元を確認。

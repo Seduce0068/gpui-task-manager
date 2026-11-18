@@ -1268,3 +1268,9 @@
 
 - 非UTF-8 パスのバックアップ保全、umask 非依存の 0600、demo の 0 RSS、
   SECURITY §5 の status 運用を修正。app 35 / tm-core 110 passed。
+
+## 2026-11-18（エージェント並列調査 第19弾 → CSV数式対策と文書の件数参照化）
+
+- export.rs の CSV 数式無害化に先頭空白/改行を追加、DESIGN/SECURITY の
+  テスト件数を README 参照へ集約。tm-core 129 passed。
+  app/src/main.rs の umask 修正は別セッション混入で見送り。

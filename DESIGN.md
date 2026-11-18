@@ -41,7 +41,7 @@ Ubuntu 系デスクトップ（Kubuntu / KDE Plasma / Wayland を第一ターゲ
 | 効率性 | 1 秒間隔の差分サンプリング、固定長履歴、仮想リスト、描画時の全件 clone 禁止 | サンプル所要時間の実測、UI 応答確認 |
 | 移植性 | コア・ビューモデルは `std` のみで wasm 対応、OS 依存は trait の裏 | wasm32 ビルド、Linux 実機 |
 | 共通部品 | 表示整形・サニタイズ・ソート/フィルタ・履歴を `tm-core` に集約 | 単体テスト（golden） |
-| テスト容易性 | 純粋関数 + reducer + `DemoProbe`。I/O は trait 境界のみ | `cargo test` 60 件超 |
+| テスト容易性 | 純粋関数 + reducer + `DemoProbe`。I/O は trait 境界のみ | `cargo test`（件数は README.md「検証状況」を参照） |
 | 操作容易性 | キーボード完結（↑↓/Space/Ctrl+F/Ctrl+K/F1）、クリック選択、確認ダイアログ | 起動検証・手動確認 |
 | 拡張性 | `SystemProbe` の差し替え、`Command`/`Effect` の追加、エージェントのスキーマ版管理 | 設計レビュー |
 | 美しさ | トークン化した配色、カード + テーブル + 詳細パネルの一貫レイアウト | スクリーンショット |
@@ -91,9 +91,9 @@ agent/ : tm-platform を読み取り専用 HTTP に変換（ブラウザのラ�
 
 | crate | 役割 | 主な依存 | テスト |
 |---|---|---|---|
-| `tm-core` | 型・メトリクス・整形・サニタイズ・ソート/フィルタ・ポート | なし（任意 serde） | 47 |
-| `tm-viewmodel` | 画面状態 reducer、選択・ダイアログ・更新間隔 | `tm-core` | 13 |
-| `tm-platform` | sysinfo 収集、rustix シグナル、PID 再利用防御 | `tm-core`, sysinfo, rustix | 8 |
+| `tm-core` | 型・メトリクス・整形・サニタイズ・ソート/フィルタ・ポート | なし（任意 serde） | 単体（件数は README.md を参照） |
+| `tm-viewmodel` | 画面状態 reducer、選択・ダイアログ・更新間隔 | `tm-core` | 単体（同上） |
+| `tm-platform` | sysinfo 収集、rustix シグナル、PID 再利用防御 | `tm-core`, sysinfo, rustix | 単体（同上） |
 | `gpui-task-manager` | ネイティブ GPUI シェル | `gpui-kit`, core, viewmodel, platform | UI スモーク |
 | `tm-agent` | 読み取り専用ループバック HTTP | `tm-core`, `tm-platform`, serde_json | 単体 + curl |
 
@@ -312,7 +312,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - 日本語 IME: `EntityInputHandler` + composition を実装。CDP の
   `Input.imeSetComposition` / `Input.insertText` で「にほんご」→「日本語」の
   変換・確定・Esc 復帰を 32 チェックで検証（JS 例外 0）。`FilterInput` のテストは
-  `tm-viewmodel` に移設（13 件、2026-11-17 時点）、`web/` の単体テストは 12 件。
+  `tm-viewmodel` に移設、`web/` にも単体テストあり（件数は README.md「検証状況」を参照）。
 - wasm-opt（-Oz）適用後もデモ / ライブ / エラー時の CDP 検証は pass。
 - 証拠: `notes/web-shell.md`、`notes/ime.md`、`notes/assets/web-shell-*.png`、
   `notes/assets/ime-*.png`、`web/verification/*.json`。
@@ -391,7 +391,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | エージェント | JSON 応答、認証、CORS、読み取り専用 | `cargo test -p tm-agent` + curl |
 | UI スモーク | Wayland 起動、ウィンドウ確認、スクリーンショット | 手動 + KWin D-Bus |
 | wasm | `cargo check --target wasm32-unknown-unknown`、`trunk build`、ブラウザ表示 | スパイク + CDP |
-| 入力状態 | `FilterInput` の状態機械（UTF-16・選択・marked range、Web/ネイティブ共有） | `cargo test -p tm-viewmodel`（FilterInput 13 件、viewmodel 全体 37 件） |
+| 入力状態 | `FilterInput` の状態機械（UTF-16・選択・marked range、Web/ネイティブ共有） | `cargo test -p tm-viewmodel`（件数は README.md を参照） |
 | IME（Web） | composition 中は確定しない・確定後に反映・Esc 復帰 | CDP `Input.imeSetComposition`（32 チェック） |
 | IME（native） | `EntityInputHandler` 経由の変換中表示と確定反映 | `TM_DEBUG_IME=1` + スクリーンショット |
 | クロスプラットフォーム | Windows/macOS ターゲットの check、CI ランナー | `cargo check --target ...` / GitHub Actions |
