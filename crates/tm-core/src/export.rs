@@ -302,13 +302,13 @@ pub fn snapshot_to_json(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_
         push_json_string(out, &component.label);
         out.push_str(",\n");
         push_key(out, 4, "temperature_c");
-        push_optional(out, component.temperature_c, push_f32);
+        push_optional(out, component.temperature_c, push_temperature);
         out.push_str(",\n");
         push_key(out, 4, "max_c");
-        push_optional(out, component.max_c, push_f32);
+        push_optional(out, component.max_c, push_temperature);
         out.push_str(",\n");
         push_key(out, 4, "critical_c");
-        push_optional(out, component.critical_c, push_f32);
+        push_optional(out, component.critical_c, push_temperature);
         out.push('\n');
     });
     out.push_str(",\n");
@@ -336,6 +336,11 @@ fn push_display<T: std::fmt::Display>(out: &mut String, value: T) {
 
 fn push_f32(out: &mut String, value: f32) {
     push_display(out, crate::normalise_percent(value));
+}
+
+/// Temperatures are not percentages: do not clamp them to 0..100.
+fn push_temperature(out: &mut String, value: f32) {
+    push_display(out, crate::normalise_temperature(value));
 }
 
 fn push_optional<T>(out: &mut String, value: Option<T>, push: fn(&mut String, T)) {
@@ -732,6 +737,24 @@ mod tests {
         );
         assert!(json.contains("\"cpu_percent\": 0"), "{json}");
         assert!(json.contains("\"total_percent\": 0"), "{json}");
+    }
+
+    #[test]
+    fn temperatures_are_not_clamped_like_percentages() {
+        // Sensors can legitimately exceed 100 °C or read below zero; only
+        // non-finite values are unusable in JSON (R32 audit).
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.components.push(crate::model::ComponentSnapshot {
+            label: "CPU".into(),
+            temperature_c: Some(120.5),
+            max_c: Some(-20.0),
+            critical_c: Some(f32::NAN),
+        });
+        let json = snapshot_to_json(&snapshot, &secret_ids());
+        assert_well_formed_json(&json);
+        assert!(json.contains("\"temperature_c\": 120.5"), "{json}");
+        assert!(json.contains("\"max_c\": -20"), "{json}");
+        assert!(json.contains("\"critical_c\": 0"), "{json}");
     }
 
     #[test]

@@ -38,8 +38,9 @@ pub mod sanitize;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
-    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
-    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    normalise_temperature, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot,
+    NetworkInterfaceSnapshot, NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus,
+    SystemSnapshot, Timestamp,
 };
 pub use port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 pub use query::{

@@ -182,6 +182,19 @@ impl MemorySnapshot {
     }
 }
 
+/// Normalises a temperature reading for wire/export output.
+///
+/// Unlike CPU percentages, temperatures are not bounded by 100: a hot sensor
+/// may legitimately report 120 °C and a cold one -20 °C. Only non-finite
+/// values (which JSON cannot represent) collapse to zero (R32 audit).
+pub fn normalise_temperature(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
 fn percent_of(part: u64, total: u64) -> f32 {
     if total == 0 {
         return 0.0;

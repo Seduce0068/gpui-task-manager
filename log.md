@@ -1289,3 +1289,9 @@
 
 - 別セッションの未完成変更を避け worktree で実装。status の redact、NaN 色、
   SECURITY の SSE 方針、DESIGN のエンドポイント/件数を修正。app 61 passed。
+
+## 2026-11-18（エージェント並列調査 第23弾 → 温度の正規化）
+
+- export.rs が温度に normalise_percent を流用していた問題を修正。
+  normalise_temperature を追加し 120.5/-20/NaN を正しく出力。tm-core 133 passed。
+  SSE クライアント未配線を確認（別セッション範囲として記録）。
