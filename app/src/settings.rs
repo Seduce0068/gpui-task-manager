@@ -99,21 +99,28 @@ pub fn save(settings: &Settings) -> io::Result<()> {
 /// `exists` is injected so this stays testable without touching the disk. The
 /// counter is unbounded: a finite range could exhaust and fall back to an
 /// existing path, silently overwriting an earlier backup (R25 audit).
-fn backup_candidate(stem: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+fn backup_candidate(stem: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let mut os = stem.as_os_str().to_os_string();
     for counter in 0..u64::MAX {
-        let candidate = if counter == 0 {
-            PathBuf::from(stem)
-        } else {
-            PathBuf::from(format!("{stem}-{counter}"))
-        };
+        if counter > 0 {
+            os.push(format!("-{counter}"));
+        }
+        let candidate = PathBuf::from(&os);
         if !exists(&candidate) {
             return candidate;
+        }
+        if counter > 0 {
+            // Drop the previous suffix before appending the next one.
+            os = stem.as_os_str().to_os_string();
         }
     }
     // `u64::MAX` candidates exhausted: never overwrite an existing backup.
     // The caller will still move the corrupt file aside under this name only
     // if it does not exist; otherwise it logs and leaves the original in place.
-    PathBuf::from(format!("{stem}-overflow"))
+    stem.with_file_name(format!(
+        "{}-overflow",
+        stem.file_name().unwrap_or_default().to_string_lossy()
+    ))
 }
 
 /// Moves a corrupt settings file aside before the next save overwrites it.
@@ -125,14 +132,15 @@ fn backup_corrupt_file(path: &Path) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
-    let name = path
+    // Keep the path as OsString: `.display().to_string()` replaces non-UTF-8
+    // bytes with U+FFFD, which could point `rename` at a different directory
+    // and silently lose the corrupt data (R26 settings audit).
+    let mut name = path
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "settings.json".to_string());
-    let stem = path
-        .with_file_name(format!("{name}.corrupt-{nanos:016x}"))
-        .display()
-        .to_string();
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("settings.json"));
+    name.push(format!(".corrupt-{nanos:016x}"));
+    let stem = path.with_file_name(name);
     let candidate = backup_candidate(&stem, |candidate| candidate.exists());
     if let Err(error) = fs::rename(path, &candidate) {
         eprintln!(
@@ -189,16 +197,17 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
     let written = (|| {
         #[cfg(unix)]
         {
-            // Create with 0600 from the start: `fs::write` would use the process
-            // umask (typically 0644), leaving a window where group/other could
-            // read the file before the explicit chmod below.
-            use std::os::unix::fs::OpenOptionsExt;
+            // `.mode(0o600)` alone is still masked by the process umask (e.g.
+            // `umask 0777` yields 0000). `set_permissions` uses fchmod, which
+            // ignores umask, so the final file stays readable next launch.
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
                 .open(&temporary)?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.write_all(json.as_bytes())?;
         }
         #[cfg(not(unix))]
@@ -232,13 +241,13 @@ mod tests {
                 }
             })
             .collect();
-        let candidate = backup_candidate(stem, |path| taken.contains(path));
+        let candidate = backup_candidate(Path::new(stem), |path| taken.contains(path));
         assert!(!taken.contains(&candidate), "{candidate:?} must be unused");
         // The finite u16 range is exhausted at 65535; the unbounded counter
         // proceeds to 65536 instead of falling back onto an existing backup.
         assert_eq!(candidate, PathBuf::from(format!("{stem}-65536")));
 
-        let fresh = backup_candidate(stem, |_| false);
+        let fresh = backup_candidate(Path::new(stem), |_| false);
         assert_eq!(fresh, PathBuf::from(stem));
     }
 

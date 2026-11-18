@@ -1874,3 +1874,32 @@ SECURITY/DESIGN のテスト件数（別セッションが 261 に追随中）�
 - 担当範囲: app 28 passed / tm-core の該当テスト成功 / clippy / rustfmt OK。
   `crates/tm-core/src/export.rs`（別セッションの未コミット作業）のテスト
   1 件失敗は担当外のため修正せず。
+
+## 2026-11-18（エージェント並列調査 第18弾 → 設定保全・demo・SECURITY）
+
+3 観点（コア / 設定 / ドキュメント）の調査エージェントを並列起動。別セッション
+が app/src/main.rs・tm-viewmodel・web を活発に編集中だったため、実装は競合しない
+settings.rs・demo.rs・SECURITY.md に限定。調査中に別セッションが 9e8ca34
+（温度ゲージ、CSV/JSON 変換、status 整理）をコミット。
+
+1. **非UTF-8 パスでバックアップが壊れ破損データが失われる（実バグ）**:
+   `.display().to_string()` が 0xFF を U+FFFD に化け、rename 先が別ディレクトリ
+   になって ENOENT → その後の save で破損データが上書き消失していた。
+   backup_candidate / backup_corrupt_file を OsString / Path ベースに変更。
+2. **umask で 0600 保証が破られる**: `.mode(0o600)` は umask でマスクされる
+   （umask 0777 で 0000）。open 直後に `set_permissions(0o600)`（fchmod、
+   umask 非依存）を追加し次回起動の EACCES を防止。
+3. **demo の base_memory=0 プロセスが非ゼロ RSS**: kthreadd / zombie-proc が
+   tick ごとに RSS/VM が揺れていた。CPU と同じパターンで 0 固定。回帰テスト
+   `zero_rss_demo_processes_stay_at_zero` 追加。
+4. **SECURITY.md §5 に status 運用を追記**: `[情報]`/`[エラー]` 接頭辞、
+   transient は成功 ingest 時のみクリア（paused 中は維持）、persistent は
+   サンプル・pause/resume をまたいで保持。3 回以上保留だった項目を解消。
+
+**保留**: Cf タグ文字（Cf 全般の設計判断）、redact 2 文字ユーザ名（漏らさない
+優先で現状維持、恒真テストは別途修正）、温度の normalise_temperature helper
+（export.rs 側の引き継ぎ必要）、symlink 扱い（設計判断）、テスト件数
+（別セッションが 276/42 に追随中で数字を書かない方式を検討）。
+
+- 担当範囲: app 35 passed / tm-core 110 passed / clippy / rustfmt / markdownlint
+  （増分ゼロ）成功。
