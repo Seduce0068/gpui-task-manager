@@ -167,9 +167,10 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **334 passed / 0 failed**（core 129 / viewmodel 62 / platform 11 / agent 78 / app 54） |
-| web ユニットテスト | **57 passed / 0 failed**（capability / 通知 / トレンド / エクスポート 等を含む） |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
+| `cargo test --workspace` | **338 passed / 0 failed**（core 129 / viewmodel 62 / platform 11 / agent 78 / app 58） |
+| web ユニットテスト | **63 passed / 0 failed**（再接続導線 / capability / 通知 / トレンド 等を含む） |
+| `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
 | デモ起動 | 成功（`--demo`、合成データ） |

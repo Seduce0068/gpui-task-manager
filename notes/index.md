@@ -19,7 +19,7 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 
 ## 検証
 
-- [current-state.md](current-state.md) — 2026-11-17 時点の到達点・検証結果・未解決事項の俯瞰
+- [current-state.md](current-state.md) — 2026-11-18 時点の到達点・検証結果・未解決事項の俯瞰
 - [verification.md](verification.md) — ビルド・テスト・clippy・ネイティブ起動・
   エージェント・wasm の Runtime Proof と既知の制限
 - [web-shell.md](web-shell.md) — ブラウザ版シェル（`web/`）の実装と検証
