@@ -19,8 +19,10 @@
 //!   `Kill` both end the process forcefully and `Stop` / `Continue` return
 //!   [`ControlError::Unsupported`].
 //!
-//! The safety rules (never PID 0, PID 1 or the app itself; re-check the start
-//! time immediately before signalling) are shared by every platform.
+//! The safety rules (never PID 0, never PID 1 on Unix where it is the init
+//! system, never the app itself; re-check the start time immediately before
+//! signalling) are applied before the platform-specific branch. PID 1 is an
+//! ordinary, legitimately controllable process on Windows (R2X-P6).
 //!
 //! The UI never depends on this crate; it only sees [`tm_core::model`] value
 //! objects. Keeping the platform code behind the [`SystemProbe`] port is what
@@ -213,6 +215,12 @@ impl NativeProbe {
         }
         if let Some(disks) = self.disks.as_mut() {
             disks.refresh(true);
+        }
+        // The uid -> name mapping is not static: users and groups can be added
+        // or renamed while the app runs. `Users` was only populated once in
+        // `new()`, so without this refresh the user column goes stale (R2X-P7).
+        if let Some(users) = self.users.as_mut() {
+            users.refresh();
         }
     }
 
@@ -443,9 +451,49 @@ fn sort_disks_for_display(disks: &mut [DiskUsageSnapshot]) {
     });
 }
 
+/// Whether `pid` must never be signalled (R2X-P6).
+///
+/// PID 0 always denotes a special target (the caller's process group on Unix,
+/// the System Idle pseudo-process on Windows) and the application must never
+/// signal itself, so both rules apply everywhere. PID 1 is the init system only
+/// on Unix; on Windows it is a normal process and must stay controllable.
+/// `pid_one_is_init` carries that platform decision into this pure function so
+/// both branches can be regression-tested on any host.
+fn pid_is_protected(pid: u32, self_pid: u32, pid_one_is_init: bool) -> bool {
+    pid == 0 || pid == self_pid || (pid_one_is_init && pid == 1)
+}
+
+/// Builds the capability description for a native probe (R2X-P8).
+///
+/// `supports_network` / `supports_disks` mirror whether the corresponding
+/// collector could be created. A failed collector therefore reports both an
+/// empty section and `false`, which makes "supported but empty" distinguishable
+/// from "collection unavailable" for callers. Process-control capability — and
+/// with it the per-signal contract in `tm-core` — is always available for a
+/// native probe.
+fn native_platform_info(os: String, supports_network: bool, supports_disks: bool) -> PlatformInfo {
+    PlatformInfo {
+        os,
+        supports_process_control: true,
+        supports_network,
+        supports_disks,
+        is_demo: false,
+    }
+}
+
 impl SystemProbe for NativeProbe {
     fn platform_info(&self) -> PlatformInfo {
-        PlatformInfo::native(self.os_label.clone())
+        // A collector that could not be created yields an empty section in the
+        // snapshot. Report that as an unavailable capability as well, so a
+        // caller can tell "supported but currently empty" from "no data at all"
+        // instead of reading the two as identical (R2X-P8). This only touches
+        // network/disk flags; process-control capability (including the
+        // per-signal contract in tm-core) stays unchanged.
+        native_platform_info(
+            self.os_label.clone(),
+            self.networks.is_some(),
+            self.disks.is_some(),
+        )
     }
 
     fn sample(&mut self) -> Result<SystemSnapshot, ProbeError> {
@@ -453,12 +501,14 @@ impl SystemProbe for NativeProbe {
     }
 
     fn control(&mut self, key: ProcessKey, signal: Signal) -> Result<(), ControlError> {
-        // Safety rules first: `kill(0, ...)` targets the whole process group
-        // and PID 1 is the init system. The application must never signal
-        // either, and it must never signal itself. These rules are the same on
-        // every platform, so they live outside the platform-specific branch.
+        // Safety rules first. `kill(0, ...)` targets the whole process group
+        // and PID 1 is the init system on Unix; the app must never signal
+        // either, and must never signal itself. PID 1 has no special meaning on
+        // Windows, where it is an ordinary process, so that part of the rule is
+        // Unix-only (R2X-P6). `cfg!(unix)` makes the decision explicit and
+        // testable on every host.
         let pid = key.pid;
-        if pid == 0 || pid == 1 || pid == std::process::id() {
+        if pid_is_protected(pid, std::process::id(), cfg!(unix)) {
             return Err(ControlError::Protected);
         }
         // A PID that cannot be represented as `pid_t` cannot exist. Windows
@@ -611,12 +661,52 @@ fn control_process(process: &sysinfo::Process, signal: Signal) -> Result<(), Con
     if output.status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(ControlError::Failed(format!(
-            "taskkill が失敗しました ({}): {}",
-            output.status,
-            stderr.trim()
-        )))
+        Err(classify_taskkill_failure(
+            output.status.code(),
+            &output.stdout,
+            &output.stderr,
+        ))
+    }
+}
+
+/// Maps a failed `taskkill` invocation onto a [`ControlError`] (R2X-P5).
+///
+/// `taskkill` exits with code 1 for every failure, so the localised message is
+/// the only discriminator. English and Japanese messages for the two common
+/// cases are recognised; a process that no longer exists is [`NotFound`], an
+/// access refusal is [`PermissionDenied`], and anything else stays [`Failed`]
+/// with the original output attached for diagnostics. Both streams are scanned
+/// because Windows versions differ in which one carries the error, and
+/// `exit_code` is kept even for unmapped failures so it is not lost.
+///
+/// [`NotFound`]: ControlError::NotFound
+/// [`PermissionDenied`]: ControlError::PermissionDenied
+/// [`Failed`]: ControlError::Failed
+#[cfg(any(windows, test))]
+fn classify_taskkill_failure(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> ControlError {
+    let mut output = String::from_utf8_lossy(stdout).into_owned();
+    output.push('\n');
+    output.push_str(&String::from_utf8_lossy(stderr));
+    let ascii_lower = output.to_ascii_lowercase();
+
+    if ascii_lower.contains("access is denied") || output.contains("アクセスが拒否") {
+        return ControlError::PermissionDenied;
+    }
+    if ascii_lower.contains("not found")
+        || ascii_lower.contains("no running instance")
+        || output.contains("が見つかりません")
+    {
+        return ControlError::NotFound;
+    }
+
+    let detail = output.trim();
+    let code = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if detail.is_empty() {
+        ControlError::Failed(format!("taskkill が失敗しました (exit={code})"))
+    } else {
+        ControlError::Failed(format!("taskkill が失敗しました (exit={code}): {detail}"))
     }
 }
 
@@ -814,8 +904,9 @@ mod tests {
         let probe = NativeProbe::new().expect("native probe");
         let info = probe.platform_info();
         assert!(info.supports_process_control);
-        assert!(info.supports_network);
-        assert!(info.supports_disks);
+        // R2X-P8: the flags follow what this probe could actually enumerate.
+        assert_eq!(info.supports_network, probe.networks.is_some());
+        assert_eq!(info.supports_disks, probe.disks.is_some());
         assert!(!info.is_demo);
         assert!(!info.os.is_empty());
     }
@@ -1126,5 +1217,113 @@ mod tests {
         sort_disks_for_display(&mut disks);
         let order: Vec<&str> = disks.iter().map(|d| d.mount_point.as_str()).collect();
         assert_eq!(order, vec!["/a", "/m", "/z"]);
+    }
+
+    /// R2X-P6 regression: PID 1 is init only on Unix, never on Windows.
+    #[test]
+    fn pid_one_protection_is_platform_specific() {
+        const SELF: u32 = 4242;
+        // Unix: PID 1 is the init system and must stay protected.
+        assert!(pid_is_protected(1, SELF, true));
+        // Windows: PID 1 is an ordinary process and must be controllable.
+        assert!(!pid_is_protected(1, SELF, false));
+        // Universal rules must not depend on the PID 1 decision.
+        for pid_one_is_init in [true, false] {
+            assert!(pid_is_protected(0, SELF, pid_one_is_init), "PID 0");
+            assert!(pid_is_protected(SELF, SELF, pid_one_is_init), "self");
+            assert!(!pid_is_protected(2, SELF, pid_one_is_init), "ordinary PID");
+        }
+    }
+
+    /// R2X-P8 regression: capability flags must describe actual enumeration,
+    /// while process control and the demo flag stay fixed.
+    #[test]
+    fn native_capability_flags_distinguish_empty_from_unavailable() {
+        for (network, disks) in [(true, true), (true, false), (false, true), (false, false)] {
+            let info = native_platform_info("Linux".to_string(), network, disks);
+            assert_eq!(info.supports_network, network);
+            assert_eq!(info.supports_disks, disks);
+            assert!(info.supports_process_control);
+            assert!(!info.is_demo);
+            // Signal capability is owned by tm-core and must be unaffected by
+            // a collector failure (existing contract).
+            assert!(info.supports_signal(Signal::Terminate));
+            assert!(info.supports_signal(Signal::Stop));
+        }
+    }
+
+    /// R2X-P5 regression: taskkill's single exit code is not enough; the
+    /// localised message must select the domain error.
+    #[test]
+    fn taskkill_access_denied_maps_to_permission_denied() {
+        let english =
+            b"ERROR: The process with PID 1234 could not be terminated.\nReason: Access is denied.";
+        let japanese =
+            "エラー: PID が 1234 のプロセスを終了できません。\n理由: アクセスが拒否されました。"
+                .as_bytes();
+        for (stdout, stderr) in [
+            (b"".as_slice(), english.as_slice()),
+            (japanese, b"".as_slice()),
+        ] {
+            assert_eq!(
+                classify_taskkill_failure(Some(1), stdout, stderr),
+                ControlError::PermissionDenied
+            );
+        }
+    }
+
+    #[test]
+    fn taskkill_not_found_maps_to_not_found() {
+        let english = b"ERROR: The process \"1234\" not found.";
+        let japanese = "エラー: プロセス \"1234\" が見つかりません。".as_bytes();
+        for (stdout, stderr) in [
+            (b"".as_slice(), english.as_slice()),
+            (japanese, b"".as_slice()),
+        ] {
+            assert_eq!(
+                classify_taskkill_failure(Some(1), stdout, stderr),
+                ControlError::NotFound
+            );
+        }
+    }
+
+    #[test]
+    fn taskkill_unknown_failure_stays_failed_with_diagnostics() {
+        let error = classify_taskkill_failure(Some(1), b"", b"ERROR: Invalid argument.");
+        assert!(
+            matches!(error, ControlError::Failed(ref message) if message.contains("exit=1") && message.contains("Invalid argument"))
+        );
+        // Preserve the exit code even when no message was written.
+        let silent = classify_taskkill_failure(Some(5), b"", b"");
+        assert!(matches!(silent, ControlError::Failed(ref message) if message.contains("exit=5")));
+    }
+
+    /// R2X-P7 regression: refreshing the user list must not drop the uid ->
+    /// name mapping used by the user column across repeated samples.
+    #[test]
+    fn user_column_stays_resolved_across_samples() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        for _ in 0..2 {
+            let snapshot = probe.sample().expect("sample");
+            if probe.users.is_none() {
+                continue; // no collector on this host; nothing to check
+            }
+            let own = snapshot
+                .processes
+                .iter()
+                .find(|process| process.key.pid == std::process::id())
+                .expect("the sampler must see itself");
+            if probe
+                .system
+                .process(Pid::from_u32(own.key.pid))
+                .and_then(|process| process.user_id())
+                .is_some()
+            {
+                assert!(
+                    own.user.as_ref().is_some_and(|user| !user.is_empty()),
+                    "the user column must survive Users::refresh()"
+                );
+            }
+        }
     }
 }

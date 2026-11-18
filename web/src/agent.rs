@@ -12,17 +12,24 @@
 //!   redacted before they reach the UI,
 //! - the client only ever issues GET requests (the browser shell is read-only),
 //! - exactly one fetch is in flight at a time: the sampler loop awaits each
-//!   response before sleeping, so a slow agent cannot build a request pile-up,
+//!   response before sleeping, and [`AgentClient`] additionally holds a
+//!   non-blocking single-flight permit so a second caller cannot open a
+//!   parallel request even if the sampler contract changes (R4-A02),
 //! - one fetch is bounded by [`FETCH_TIMEOUT`]; the deadline is driven by
 //!   GPUI's executor timer, so the same code path runs on wasm and on the
-//!   native test host (no `tokio::time` dependency in the browser).
+//!   native test host (no `tokio::time` dependency in the browser),
+//! - a response body is read in small chunks and aborted as soon as the
+//!   connection settings change mid-read (or the declared size already
+//!   exceeds the cap), so a superseded fetch cannot keep pinning up to 8 MiB
+//!   of the wasm heap (R4-A02).
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use futures::AsyncReadExt as _;
 use futures::future::Either;
+use futures::{AsyncRead, AsyncReadExt as _};
 use gpui::BackgroundExecutor;
 use gpui::http_client::http::{Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
@@ -47,6 +54,24 @@ pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
 /// future is dropped (which cancels the underlying request) and the sampler
 /// is free to retry on its next tick — still one request at a time.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read granularity for the abortable body reader. A superseded fetch drops
+/// at most one chunk of work (and heap) before its read is cancelled; small
+/// enough to stay comfortably within a wasm stack frame.
+const BODY_READ_CHUNK: usize = 16 * 1024;
+
+/// Fixed, redaction-safe error returned to a caller that tries to start a
+/// second fetch while one is already in flight. No request is issued at all,
+/// so the single-flight contract cannot be broken by a concurrent caller.
+const FETCH_BUSY_ERROR: &str = "エージェントへの取得が多重実行中のため、この取得はスキップしました";
+
+/// Fixed error for a body read cancelled because the connection settings
+/// changed while it was streaming. Static text: no token or agent data.
+const BODY_ABORTED_ERROR: &str = "接続設定が変更されたため応答の読み取りを中止しました";
+
+/// Fixed error strings shared by the abortable reader and its tests.
+const BODY_READ_ERROR: &str = "応答の読み取りに失敗しました";
+const SIZE_LIMIT_ERROR: &str = "エージェント応答がサイズ上限を超えました";
 
 /// HTTP status codes that mean the loopback agent rejected our credentials.
 ///
@@ -164,30 +189,77 @@ pub struct SnapshotResponse {
 /// settings to the *same* client, so the single in-flight fetch contract stays
 /// intact (R3-S04).
 #[derive(Debug)]
-struct SharedConfig(RwLock<AgentConfig>);
+struct SharedConfig {
+    config: RwLock<AgentConfig>,
+    /// Bumped only on a real change. An in-flight body read captures this value
+    /// at fetch start and aborts early if it changes mid-read, so a stale
+    /// response stops consuming wasm heap as soon as new settings arrive.
+    generation: AtomicU64,
+}
 
 impl SharedConfig {
     fn new(config: AgentConfig) -> Self {
-        Self(RwLock::new(config))
+        Self {
+            config: RwLock::new(config),
+            generation: AtomicU64::new(0),
+        }
     }
 
     /// Snapshot for one request. Cloned out of the lock so no guard is held
     /// across an `await`.
     fn snapshot(&self) -> AgentConfig {
-        self.0
+        self.config
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
+    /// Current settings generation, safe to poll from an async body read
+    /// without holding the config lock across an `await`.
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
     /// Replaces the settings, returning `true` only when they really changed.
+    /// A real change also invalidates any body read already in flight.
     fn replace(&self, fresh: AgentConfig) -> bool {
-        let mut current = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let mut current = self.config.write().unwrap_or_else(PoisonError::into_inner);
         if *current == fresh {
             return false;
         }
         *current = fresh;
+        self.generation.fetch_add(1, Ordering::SeqCst);
         true
+    }
+}
+
+/// Non-blocking single-flight permit, enforced at the client boundary.
+///
+/// The sampler awaits each poll, but that is a caller-side convention: a
+/// restarted agent's config reload (or any second caller) must not be able to
+/// start a parallel HTTP request, since each in-flight body pins heap on wasm.
+/// A losing caller gets [`FETCH_BUSY_ERROR`] immediately and issues no request.
+#[derive(Clone, Debug, Default)]
+struct FetchGate(Arc<AtomicBool>);
+
+impl FetchGate {
+    /// Reserves the only slot, or returns `None` when a fetch is in flight.
+    fn try_acquire(&self) -> Option<FetchGuard> {
+        self.0
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| FetchGuard(Arc::clone(&self.0)))
+    }
+}
+
+/// RAII permit for [`FetchGate`]. Dropped on success, error *or* cancellation
+/// (a deadline drop unwinds the future holding this guard), releasing the slot.
+#[derive(Debug)]
+struct FetchGuard(Arc<AtomicBool>);
+
+impl Drop for FetchGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -197,6 +269,8 @@ pub struct AgentClient {
     http: Arc<dyn HttpClient>,
     /// Supplies [`FETCH_TIMEOUT`] deadlines on both wasm and native hosts.
     executor: BackgroundExecutor,
+    /// Enforces at most one in-flight fetch regardless of caller behaviour.
+    gate: FetchGate,
 }
 
 impl AgentClient {
@@ -210,6 +284,7 @@ impl AgentClient {
             config: SharedConfig::new(config),
             http,
             executor,
+            gate: FetchGate::default(),
         }
     }
 
@@ -231,11 +306,16 @@ impl AgentClient {
     /// Requests and parses one snapshot, with a hard [`FETCH_TIMEOUT`] deadline.
     ///
     /// Errors are returned as user-facing Japanese strings with the token
-    /// redacted; they never trigger a silent fallback to demo data. Racing the
-    /// inner future against the timer leaves the "one fetch in flight" contract
-    /// untouched: this method still resolves (success or error) before the
-    /// sampler sleeps and issues the next request.
+    /// redacted; they never trigger a silent fallback to demo data. The
+    /// single-flight permit is held until this method resolves (success, error
+    /// or deadline cancellation), so no second request can overlap this one.
     pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, String> {
+        // Losing callers never reach `http.send`: a parallel fetch cannot
+        // start, which is the wasm heap bound R4-A02 asks for.
+        let _permit = match self.gate.try_acquire() {
+            Some(permit) => permit,
+            None => return Err(FETCH_BUSY_ERROR.to_string()),
+        };
         let deadline = self.executor.timer(FETCH_TIMEOUT);
         with_deadline(self.fetch_snapshot_inner(), deadline).await
     }
@@ -246,6 +326,9 @@ impl AgentClient {
         // Snapshot once per request, after the shell may have re-read the URL.
         // The guard is dropped here, never held across the awaits below.
         let config = self.config.snapshot();
+        // Remember the settings generation so the body read can abort early if
+        // a reload supersedes this request while it is streaming (R4-A02).
+        let generation = self.config.generation();
         // Never attach the bearer token before checking the destination.
         if !is_loopback_http_endpoint(&config.endpoint) {
             return Err("エージェントの接続先は loopback の http URL のみ許可されます".to_string());
@@ -274,35 +357,41 @@ impl AgentClient {
         })?;
 
         let status = response.status();
-        let body = response.into_body();
-        let mut buffer = Vec::new();
-        // A broken or hostile loopback agent must not be able to exhaust the
-        // wasm heap with an unbounded response. The normal 500-process payload
-        // is far below this cap; 8 MiB leaves ample headroom.
-        body.take(MAX_SNAPSHOT_BYTES)
-            .read_to_end(&mut buffer)
-            .await
-            .map_err(|error| {
-                log::warn!(
-                    "エージェント応答の読み取りに失敗: {}",
-                    redact_token(&format!("{error:#}"), config.token.as_deref())
-                );
-                "応答の読み取りに失敗しました".to_string()
-            })?;
-        if buffer.len() as u64 >= MAX_SNAPSHOT_BYTES {
-            return Err("エージェント応答がサイズ上限を超えました".to_string());
-        }
-
         if !status.is_success() {
             let code = status.as_u16();
             if is_auth_failure_status(code) {
                 // A restarted agent invalidates its token. Never echo the
                 // response body or the token: the fixed guidance is the whole
                 // re-entry flow, safe for the DOM and the aria-live mirror.
+                // No body is read at all, so the reconnect path stays cheap.
                 return Err(RECONNECT_GUIDANCE.to_string());
             }
             return Err(format!("エージェントが HTTP {code} を返しました"));
         }
+
+        // Earliest possible abort: a declared oversized body is rejected from
+        // the header alone, before a single byte is pulled into the wasm heap.
+        let declared_length = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok());
+        if content_length_exceeds_cap(declared_length) {
+            return Err(SIZE_LIMIT_ERROR.to_string());
+        }
+        let body = response.into_body();
+        let mut buffer = Vec::new();
+        // Chunked and abortable: if the settings change mid-read, drop the
+        // stream immediately instead of accumulating up to 8 MiB of heap for a
+        // response we will no longer use (R4-A02).
+        read_body_abortable(
+            body,
+            &mut buffer,
+            MAX_SNAPSHOT_BYTES,
+            config.token.as_deref(),
+            || self.config.generation() != generation,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
 
         let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
             format!(
@@ -340,6 +429,63 @@ where
     }
 }
 
+/// Whether a declared `Content-Length` already proves the body is too large.
+///
+/// Used before reading anything, so an oversized response never enters the
+/// wasm heap. Missing, malformed or small values are left to the streaming
+/// reader, which enforces the same cap incrementally.
+fn content_length_exceeds_cap(declared: Option<&str>) -> bool {
+    declared
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|len| len >= MAX_SNAPSHOT_BYTES)
+}
+
+/// Reads `body` into `out`, stopping as soon as `aborted()` turns true or the
+/// `limit` would be exceeded.
+///
+/// `read_to_end` would keep pulling until EOF (or the whole 8 MiB cap) even
+/// after the request is no longer wanted, pinning heap on wasm. Chunking makes
+/// the read cancellable between chunks: a superseded fetch releases its buffer
+/// and drops the underlying stream after at most one extra chunk of work.
+/// Returns one of the static error keys above; no token or agent text is ever
+/// embedded in the result.
+async fn read_body_abortable<R, F>(
+    mut body: R,
+    out: &mut Vec<u8>,
+    limit: u64,
+    token: Option<&str>,
+    aborted: F,
+) -> Result<(), &'static str>
+where
+    R: AsyncRead + Unpin,
+    F: Fn() -> bool,
+{
+    let mut scratch = [0u8; BODY_READ_CHUNK];
+    loop {
+        if aborted() {
+            return Err(BODY_ABORTED_ERROR);
+        }
+        let used = out.len() as u64;
+        if used >= limit {
+            return Err(SIZE_LIMIT_ERROR);
+        }
+        let want = (limit - used).min(BODY_READ_CHUNK as u64) as usize;
+        let read = body.read(&mut scratch[..want]).await.map_err(|error| {
+            // Same detail-to-console / summary-to-UI split as the old reader:
+            // the token is masked before anything is logged.
+            log::warn!(
+                "エージェント応答の読み取りに失敗: {}",
+                redact_token(&format!("{error:#}"), token)
+            );
+            BODY_READ_ERROR
+        })?;
+        if read == 0 {
+            return Ok(());
+        }
+        out.extend_from_slice(&scratch[..read]);
+    }
+}
+
 /// User-facing timeout message. Intentionally static: no token, endpoint or
 /// agent-supplied text is interpolated, so it is safe for the DOM (redact
 /// contract) and identical on every failure path.
@@ -350,13 +496,16 @@ fn fetch_timeout_error() -> String {
     )
 }
 
-/// Rejects a wire schema version this client does not understand.
+/// Accepts wire versions this client understands, including older agents.
+///
+/// A newer agent may add fields that serde defaults can ignore; only a
+/// *future* version (which may change field meaning) is rejected.
 fn check_schema_version(version: u32) -> Result<(), String> {
-    if version == WIRE_SCHEMA_VERSION {
+    if version <= WIRE_SCHEMA_VERSION {
         Ok(())
     } else {
         Err(format!(
-            "スキーマバージョンが一致しません (agent={version}, web={WIRE_SCHEMA_VERSION})"
+            "スキーマバージョンが新しすぎます (agent={version}, web={WIRE_SCHEMA_VERSION})"
         ))
     }
 }
@@ -397,6 +546,7 @@ mod tests {
     #[test]
     fn unknown_wire_schema_version_is_rejected() {
         assert!(check_schema_version(WIRE_SCHEMA_VERSION).is_ok());
+        assert!(check_schema_version(WIRE_SCHEMA_VERSION - 1).is_ok());
         let error = check_schema_version(WIRE_SCHEMA_VERSION + 1).expect_err("must reject");
         assert!(error.contains("スキーマバージョン"));
         assert!(error.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
@@ -588,5 +738,169 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             "timeout must drop the pending fetch"
         );
+    }
+
+    #[test]
+    fn single_flight_gate_allows_one_fetch_and_releases_on_drop() {
+        let gate = FetchGate::default();
+        let permit = gate.try_acquire().expect("the first slot must be free");
+        assert!(
+            gate.try_acquire().is_none(),
+            "a parallel fetch must be rejected before any request is sent"
+        );
+        drop(permit);
+        assert!(
+            gate.try_acquire().is_some(),
+            "the slot must be reusable after the fetch resolves"
+        );
+    }
+
+    #[test]
+    fn deadline_cancellation_releases_the_single_flight_permit() {
+        // A timed-out fetch drops the inner future; the guard lives in the
+        // outer future and must be released too, or every later poll is busy.
+        let gate = FetchGate::default();
+        let observed = gate.clone();
+        let result = futures::executor::block_on(with_deadline(
+            async move {
+                let _permit = observed.try_acquire().expect("free slot");
+                futures::future::pending::<Result<u32, String>>().await
+            },
+            async {},
+        ));
+        assert_eq!(result, Err(fetch_timeout_error()));
+        assert!(
+            gate.try_acquire().is_some(),
+            "a cancelled fetch must not leave the gate stuck"
+        );
+    }
+
+    #[test]
+    fn content_length_precheck_rejects_only_oversized_values() {
+        assert!(content_length_exceeds_cap(Some("9000000")));
+        assert!(content_length_exceeds_cap(Some(
+            &MAX_SNAPSHOT_BYTES.to_string()
+        )));
+        for acceptable in [Some("140000"), Some("0"), Some("garbage"), Some("-1"), None] {
+            assert!(
+                !content_length_exceeds_cap(acceptable),
+                "{acceptable:?} must fall through to the streaming cap"
+            );
+        }
+    }
+
+    #[test]
+    fn body_reader_aborts_after_one_chunk_when_superseded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let checks = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = checks.clone();
+        let bytes = vec![7u8; BODY_READ_CHUNK * 3];
+        let body = bytes.as_slice(); // `&[u8]` implements `futures::AsyncRead`.
+        let mut out = Vec::new();
+        let error = futures::executor::block_on(read_body_abortable(
+            body,
+            &mut out,
+            MAX_SNAPSHOT_BYTES,
+            None,
+            || seen.fetch_add(1, Ordering::SeqCst) >= 1,
+        ))
+        .expect_err("a superseded read must abort early");
+        assert_eq!(error, BODY_ABORTED_ERROR);
+        assert_eq!(
+            out.len(),
+            BODY_READ_CHUNK,
+            "at most one chunk is consumed after a config change"
+        );
+        assert!(out.len() < BODY_READ_CHUNK * 3);
+        assert!(checks.load(Ordering::SeqCst) >= 2);
+        // Static error: safe for the DOM/aria-live mirror and token-free.
+        assert_eq!(redact_token(error, Some("secret-token")), error);
+    }
+
+    #[test]
+    fn body_reader_enforces_the_cap_with_the_original_boundary() {
+        let exact = vec![1u8; 10];
+        let mut at_cap = Vec::new();
+        let error = futures::executor::block_on(read_body_abortable(
+            exact.as_slice(),
+            &mut at_cap,
+            10,
+            None,
+            || false,
+        ))
+        .expect_err("a body that reaches the cap must be rejected");
+        assert_eq!(error, SIZE_LIMIT_ERROR);
+        assert_eq!(at_cap.len(), 10);
+
+        let small_bytes = vec![1u8, 2, 3];
+        let mut small = Vec::new();
+        futures::executor::block_on(read_body_abortable(
+            small_bytes.as_slice(),
+            &mut small,
+            10,
+            None,
+            || false,
+        ))
+        .expect("a body below the cap must stream in full");
+        assert_eq!(small, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn body_reader_io_failure_stays_redaction_safe() {
+        struct Failing;
+        impl AsyncRead for Failing {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &mut [u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("token=secret")))
+            }
+        }
+
+        let mut out = Vec::new();
+        let error = futures::executor::block_on(read_body_abortable(
+            Failing,
+            &mut out,
+            10,
+            Some("secret"),
+            || false,
+        ))
+        .expect_err("an IO error must be reported");
+        assert_eq!(error, BODY_READ_ERROR);
+        assert_eq!(redact_token(error, Some("secret")), error);
+        assert!(!error.contains("secret"));
+    }
+
+    #[test]
+    fn config_reload_bumps_generation_only_on_a_real_change() {
+        use std::sync::atomic::Ordering;
+
+        let shared = SharedConfig::new(AgentConfig::new("http://127.0.0.1:18787", None));
+        let before = shared.generation();
+        assert!(!shared.replace(AgentConfig::new("http://127.0.0.1:18787", None)));
+        assert_eq!(
+            shared.generation(),
+            before,
+            "an unchanged URL must not abort an in-flight read"
+        );
+        assert!(shared.replace(AgentConfig::new("http://127.0.0.1:18788", None)));
+        assert_eq!(
+            shared.generation(),
+            before + 1,
+            "a real change must invalidate the old read"
+        );
+    }
+
+    #[test]
+    fn new_abort_errors_are_redaction_safe_and_not_auth_failures() {
+        for error in [FETCH_BUSY_ERROR, BODY_ABORTED_ERROR] {
+            assert_eq!(redact_token(error, Some("secret-agent-token")), error);
+            assert!(!error.contains("secret"));
+            // The DOM proof's reconnect flag is driven by requires_reconnect;
+            // neither new path may flip it (R3-S04/S05 hook stays intact).
+            assert!(!requires_reconnect(error));
+        }
     }
 }
