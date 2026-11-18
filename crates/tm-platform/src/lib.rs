@@ -1135,15 +1135,28 @@ mod tests {
     }
 
     #[test]
-    fn control_protects_pid_zero_pid_one_and_self() {
+    #[test]
+    fn control_protects_pid_zero_and_self() {
         let mut probe = NativeProbe::new().expect("native probe");
-        for pid in [0, 1, std::process::id()] {
+        for pid in [0, std::process::id()] {
             assert_eq!(
                 probe.control(ProcessKey::new(pid, 0), Signal::Terminate),
                 Err(ControlError::Protected),
                 "pid {pid} must be protected"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_protects_pid_one_on_unix() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        // PID 1 is init on Unix and must never be signalled. On Windows it is
+        // an ordinary process (`R2X-P6`); the flag-table test covers that case.
+        assert_eq!(
+            probe.control(ProcessKey::new(1, 0), Signal::Terminate),
+            Err(ControlError::Protected)
+        );
     }
 
     #[cfg(unix)]
