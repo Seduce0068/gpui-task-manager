@@ -168,8 +168,22 @@ fn main() {
 /// Error categories map to stable exit codes (see [`ExitCategory`]); the legacy
 /// human-readable message is preserved verbatim on stderr.
 fn run() -> Result<(), AgentError> {
-    let config = args::parse(std::env::args().skip(1))
-        .map_err(|message| AgentError::new(ExitCategory::Usage, message))?;
+    // `args()` panics on non-UTF-8 argv; `args_os()` keeps a stray byte from
+    // aborting the agent. Reject it as a usage error without echoing the raw
+    // bytes (tokens must never be logged, R49 audit).
+    let arguments = std::env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument.into_string().map_err(|_| {
+                AgentError::new(
+                    ExitCategory::Usage,
+                    "引数に UTF-8 として解釈できないバイトがあります",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let config =
+        args::parse(arguments).map_err(|message| AgentError::new(ExitCategory::Usage, message))?;
     LOG_THRESHOLD.store(threshold_rank(config.log_level), Ordering::Relaxed);
     if config.version {
         // Same one-line shape as `gpui-task-manager --version`; stdout only.

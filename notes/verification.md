@@ -2466,3 +2466,23 @@ TM_DEBUG_SETTINGS フルパス（opt-in）、non-UTF8 argv の panic（型変更
 bond0、diverge 解消。
 
 - workspace 372 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第43弾 → non-UTF8 argv の panic）
+
+probe-argv が将来候補として挙げた `tm-agent` の non-UTF8 argv panic を修正。
+worktree で実装・検証。
+
+- `agent/src/main.rs` の `std::env::args()` を `args_os()` に変更。
+  非 UTF-8 引数は生バイトをエコーせず固定文言の Usage エラー（exit 2）に変換。
+  app 側（args_os + to_string_lossy）と異なり、認証トークンを黙って
+  U+FFFD に置換しないよう strict に拒否する（agent/src/args.rs の parse
+  シグネチャは変更せず、呼び出し側 1 箇所のみの最小修正）。
+- Runtime Proof: `tm-agent $'\xff\xfe' --once` →
+  `{"category":"usage","exit_code":2}`、panic せず生バイト非出力。
+  通常の `--version` は exit 0 で従来どおり。
+
+**見送り**: `args::parse` の AsRef<OsStr> 総称化（将来的に --token-file の
+非 UTF-8 パスを lossless に扱いたい場合の拡張）、--version の exit code
+を app に揃える（設計判断）、DEB Depends 下限、bond0、diverge。
+
+- agent 79 / workspace 372 passed / clippy / fmt 成功。
