@@ -2926,7 +2926,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn reconnect_guidance_is_sticky_across_transient_failures() {
         use crate::agent::RECONNECT_GUIDANCE;
         assert!(next_reconnect_required(false, RECONNECT_GUIDANCE));
