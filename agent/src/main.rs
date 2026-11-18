@@ -542,26 +542,36 @@ fn spawn_connection(
             // worker exits — or unwinds after a panic — never on the accept thread.
             let _slot = _slot;
             let result = handle_connection(&mut stream, &worker_state.metrics, |request| {
-                // Rust の Mutex はパニックで poison する可能性があるが、プローブ側の
-                // 致命的失敗でエージェント全体を止めないよう guard を回収して続行する。
-                // 回収した場合はログに残し、無ログの fail-open にならないようにする。
-                let mut guard = match worker_state.probe.lock() {
-                    Ok(guard) => guard,
-                    Err(err) => {
-                        eprintln!(
-                            "tm-agent: プローブの mutex が poison しました; 回収して続行します"
-                        );
-                        emit(
-                            Level::Warn,
-                            "probe.mutex_poisoned",
-                            json!({ "recovered": true }),
-                        );
-                        err.into_inner()
-                    }
+                // Only snapshot requests need the probe. Acquiring it for
+                // /healthz and /metrics would make liveness wait for a slow
+                // sample (including the 250 ms warm-up sleep) — R40 audit.
+                let needs_probe = request.path == SNAPSHOT_PATH;
+                let mut guard = if needs_probe {
+                    // Rust の Mutex はパニックで poison する可能性があるが、
+                    // プローブ側の致命的失敗でエージェント全体を止めないよう
+                    // guard を回収して続行する（無ログの fail-open は避ける）。
+                    Some(match worker_state.probe.lock() {
+                        Ok(guard) => guard,
+                        Err(err) => {
+                            eprintln!(
+                                "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                            );
+                            emit(
+                                Level::Warn,
+                                "probe.mutex_poisoned",
+                                json!({ "recovered": true }),
+                            );
+                            err.into_inner()
+                        }
+                    })
+                } else {
+                    None
                 };
                 route(
                     request,
-                    guard.as_mut(),
+                    guard
+                        .as_deref_mut()
+                        .map(|guard| &mut **guard as &mut dyn SystemProbe),
                     &worker_state.token,
                     worker_state.redact,
                     &worker_state.warmed_up,
@@ -662,7 +672,7 @@ fn handle_connection(
 /// Routes a parsed request to its handler.
 fn route(
     request: &http::Request,
-    probe: &mut dyn SystemProbe,
+    probe: Option<&mut dyn SystemProbe>,
     token: &str,
     redact: bool,
     warmed_up: &AtomicBool,
@@ -686,7 +696,18 @@ fn route(
 
     match request.path.as_str() {
         HEALTH_PATH => health_response(),
-        SNAPSHOT_PATH => snapshot_response(request, probe, token, redact, warmed_up),
+        SNAPSHOT_PATH => match probe {
+            Some(probe) => snapshot_response(request, probe, token, redact, warmed_up),
+            // The caller only acquires the probe mutex for snapshot requests;
+            // reaching here means the lock failed to be passed through.
+            None => json_response(
+                500,
+                "Internal Server Error",
+                &ErrorBody {
+                    error: "スナップショットを取得できませんでした",
+                },
+            ),
+        },
         METRICS_PATH => metrics_response(metrics, active),
         _ => http::Response::json(
             404,
@@ -978,7 +999,13 @@ mod tests {
                 let (mut stream, _) = listener.accept().expect("accept");
                 handle_connection(&mut stream, &metrics, |request| {
                     route(
-                        request, &mut probe, TEST_TOKEN, redact, &warm, &metrics, &active,
+                        request,
+                        Some(&mut probe),
+                        TEST_TOKEN,
+                        redact,
+                        &warm,
+                        &metrics,
+                        &active,
                     )
                 })
                 .expect("handle connection");
@@ -1035,7 +1062,13 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept");
             handle_connection(&mut stream, &metrics, |request| {
                 route(
-                    request, &mut probe, TEST_TOKEN, false, &warm, &metrics, &active,
+                    request,
+                    Some(&mut probe),
+                    TEST_TOKEN,
+                    false,
+                    &warm,
+                    &metrics,
+                    &active,
                 )
             })
             .expect("handle connection");

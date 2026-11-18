@@ -1328,3 +1328,8 @@
 
 - CSV 数式テスト、Timestamp 契約、redact_snapshot doc、settings 完全 JSON
   比較を修正。tm-core 134 / viewmodel 65 passed。
+
+## 2026-11-18（エージェント並列調査 第31弾 → probe ロック範囲とヘルプ終了コード）
+
+- probe Mutex を snapshot 要求のみに限定、help の終了コード 3/5 を
+  tm-agent 固有と明記。workspace 364 passed。

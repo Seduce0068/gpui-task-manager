@@ -2189,3 +2189,26 @@ export.rs:711 の恒真テスト（修正範囲がやや広い）、bond0、dive
    フィールド名変更・スキーマ変更を検出可能に。
 
 - tm-core 134 / tm-viewmodel 65 passed / clippy / fmt / rustdoc 成功。
+
+## 2026-11-18（エージェント並列調査 第31弾 → probe ロック範囲とヘルプ終了コード）
+
+3 観点（エラーメッセージ / ホットパス / 並行性）の調査エージェントを並列起動。
+worktree で実装・検証。
+
+1. **probe Mutex の過剰取得を修正**（probe-concurrency・実バグ）: 全リクエストで
+   `worker_state.probe.lock()` していたため、初回 warm-up の 250ms sleep 中に
+   `/healthz` / `/metrics` まで待たされていた。`route()` の probe 引数を
+   `Option<&mut dyn SystemProbe>` に変更し、SNAPSHOT_PATH のときだけロック。
+   probe 不要なエンドポイント（health/metrics/OPTIONS/405/404）はロック外で
+   dispatch される。hotpath エージェントも同じmutex保持時間を指摘していた。
+2. **help の終了コード自矛盾を修正**（probe-errmsgs）: 見出しは「0/1/2/4」なのに
+   一覧に「3 ネットワークエラー」「5 認証・トークンエラー」が残っていた。
+   これらは tm-agent 固有で gpui-task-manager は返さないことを明記。
+   テスト期待値も新しい文言へ更新。
+
+**見送り**: nfc_fold の sort_by_cached_key 最適化（性能改善だが計測根拠なし、
+AGENTS §3 に従い機能バグと区別）、--redact の GUI 側 user/kernel/label ギャップ
+（app/app.rs の変更が必要で rustfmt 既存行リスクあり、次ラウンド候補）、
+JoinTracker の panic 統計、RequestTrace::finish のタイミング（計測精度のみ）。
+
+- workspace 364 passed / clippy / fmt 成功。
