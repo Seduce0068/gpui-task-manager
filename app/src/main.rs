@@ -389,6 +389,42 @@ fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> St
 fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
     use std::io::Write as _;
 
+    // Reject non-regular destinations before creating a temporary file.
+    // `rename(2)` replaces a symlink/FIFO/device node *itself*, so exporting to
+    // `/dev/stdout` as root would destroy the symlink (R45 export-I/O audit).
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(format!(
+                "エクスポート先は通常ファイルではありません: {}",
+                path.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "エクスポート先を確認できません ({}): {error}",
+                path.display()
+            ));
+        }
+    }
+    // Even when the path does not exist yet, refuse to create files under
+    // virtual filesystems where a rename could clobber a device node.
+    if path
+        .components()
+        .next()
+        .and_then(|first| match first {
+            std::path::Component::RootDir => path.components().nth(1),
+            _ => None,
+        })
+        .and_then(|first| first.as_os_str().to_str())
+        .is_some_and(|top| matches!(top, "dev" | "proc" | "sys"))
+    {
+        return Err(format!(
+            "エクスポート先が仮想ファイルシステム配下です: {}",
+            path.display()
+        ));
+    }
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let name = path
         .file_name()
@@ -849,6 +885,27 @@ mod tests {
             path: dir.clone(),
         };
         assert_eq!(run_export(&request, true), EXIT_INTERNAL);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn write_export_rejects_special_destinations() {
+        // A rename would replace a symlink or device node instead of writing
+        // through it; exporting to /dev/stdout as root breaks the system (R45).
+        assert!(write_export(std::path::Path::new("/dev/stdout"), "x").is_err());
+        assert!(write_export(std::path::Path::new("/proc/self/status"), "x").is_err());
+
+        let dir = std::env::temp_dir().join(format!("gtm-export-special-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let link = dir.join("link.json");
+        let target = dir.join("target.json");
+        let _ = std::fs::write(&target, "original");
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(&target, &link);
+            assert!(write_export(&link, "overwrite").is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
