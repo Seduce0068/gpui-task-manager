@@ -8,6 +8,14 @@ app/native-libs/
 *.log
 !notes/assets/*.log
 !poc-crates/**/*.log
+
+# Local credentials / keys must never be committed to the public repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
 .DS_Store
 packaging/linux/build/
 

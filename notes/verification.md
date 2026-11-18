@@ -1934,7 +1934,7 @@ Select(None) の復活（到達性限定）、DESIGN §1.2 の非目標矛盾（
 
 1. **redact_tailnet_domains の UTF-8 境界パニック（2 エージェントが独立に
    実 API 再現）**: `rfind` のバイト index に +1 してスライスしていたため、
-   `.ts.net` 直前に日本語があると `byte index is not a char boundary` で
+   ドメイン区切り直前に日本語があると `byte index is not a char boundary` で
    パニック。`char_indices().rev().find()` + `len_utf8()` に変更。
    `--redact` / agent snapshot / export の全経路が対象。回帰テスト追加。
 2. **CSV アポストロフ位置が RFC 4180 引用を壊す（前回修正の不備）**:
