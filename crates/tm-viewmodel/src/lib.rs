@@ -16,7 +16,7 @@ use tm_core::format;
 use tm_core::{
     filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
     ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
-    SystemSnapshot, Timestamp,
+    SystemSnapshot,
 };
 
 pub mod filter_input;
@@ -350,7 +350,7 @@ pub struct Dashboard {
     interval: Duration,
     pending_kill: Option<PendingKill>,
     status: Option<StatusMessage>,
-    last_network: Option<(u64, u64, Timestamp)>,
+    last_network: Option<(u64, u64)>,
     network_rates: (u64, u64),
 }
 
@@ -704,13 +704,11 @@ impl Dashboard {
         // notice. Doing this here covers every shell (native, live web, demo).
         self.clear_transient_status();
         let (rx_rate, tx_rate) = match self.last_network {
-            Some((previous_rx, previous_tx, previous_at)) => {
-                let elapsed = Duration::from_millis(
-                    snapshot
-                        .sampled_at
-                        .unix_millis
-                        .saturating_sub(previous_at.unix_millis),
-                );
+            Some((previous_rx, previous_tx)) => {
+                // Use the probe's monotonic elapsed time, not a wall-clock
+                // delta: NTP/VM resume can move `sampled_at` backwards and
+                // produce a 1000x rate spike (R49 audit).
+                let elapsed = snapshot.sampled_elapsed;
                 NetworkCounters::new(snapshot.network_totals().0, snapshot.network_totals().1)
                     .rate_since(NetworkCounters::new(previous_rx, previous_tx), elapsed)
             }
@@ -718,7 +716,7 @@ impl Dashboard {
         };
         self.network_rates = (rx_rate, tx_rate);
         let (total_rx, total_tx) = snapshot.network_totals();
-        self.last_network = Some((total_rx, total_tx, snapshot.sampled_at));
+        self.last_network = Some((total_rx, total_tx));
 
         self.history.push(
             snapshot.cpu.total_percent,
@@ -1221,6 +1219,19 @@ mod tests {
         // wlan0 rx +1_234_567 over one second. The demo snapshot also carries a
         // `lo` interface (+4_096), which the overview must ignore: loopback
         // traffic is not network usage and would otherwise be double-counted.
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn network_rates_ignore_wall_clock_regressions() {
+        let mut dashboard = dashboard();
+        let first = demo_snapshot(0);
+        dashboard.ingest(first);
+        let mut second = demo_snapshot(1);
+        // Simulate an NTP step back: wall clock moves backwards while the
+        // probe still reports a full one-second monotonic interval (R49).
+        second.sampled_at = tm_core::Timestamp::from_millis(1);
+        dashboard.ingest(second);
         assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
     }
 

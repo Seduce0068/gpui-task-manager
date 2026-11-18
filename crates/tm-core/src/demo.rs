@@ -432,6 +432,7 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
 
     SystemSnapshot {
         sampled_at: Timestamp::from_secs(DEMO_BASE_UNIX_SECS.saturating_add(tick)),
+        sampled_elapsed: std::time::Duration::from_secs(1),
         hostname: Some("kubuntu-demo".to_string()),
         os_name: Some("Linux".to_string()),
         kernel_version: Some("6.11.0-demo".to_string()),
