@@ -223,6 +223,39 @@ pub enum Command {
     CancelKill,
 }
 
+impl Command {
+    /// Whether applying this command can never produce an [`Effect`] (R2-C01/C02).
+    ///
+    /// An effect-free command only mutates presentation state, so a caller that
+    /// restores or applies it may rely on [`Dashboard::apply`] returning an empty
+    /// vector. This is a `const`, allocation-free classification of the command
+    /// itself: it holds in every dashboard state. The settings-restore commands
+    /// are all effect-free. The remaining commands ([`Command::Tick`],
+    /// [`Command::SetPaused`] on resume, and [`Command::ConfirmKill`]) emit an
+    /// effect only in certain states, so their result must always be executed
+    /// by the shell.
+    pub const fn is_effect_free(&self) -> bool {
+        matches!(
+            self,
+            Self::Select(_)
+                | Self::SelectRelative(_)
+                | Self::SetSortKey(_)
+                | Self::SetSortSpec(_)
+                | Self::SetFilterText(_)
+                | Self::ClearFilter
+                | Self::SetMinVirtualMemoryBytes(_)
+                | Self::SetInterval(_)
+                | Self::ToggleDetails
+                | Self::SetDetailsVisible(_)
+                | Self::ToggleTreeView
+                | Self::SetTreeView(_)
+                | Self::ToggleTreeNode(_)
+                | Self::RequestSignal { .. }
+                | Self::CancelKill
+        )
+    }
+}
+
 /// Side effect the shell must perform.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -515,7 +548,25 @@ impl Dashboard {
             .is_some_and(|self_pid| self_pid == key.pid)
     }
 
-    /// Applies a command and returns the effects the shell must execute.
+    /// Applies a command to the presentation state and returns the effects the
+    /// shell must execute (R2-C01/C02).
+    ///
+    /// # Effect contract
+    ///
+    /// This method performs no I/O: every returned [`Effect`] is a request that
+    /// the calling shell MUST execute exactly once ([`Effect::SampleNow`]
+    /// requests a fresh probe sample, [`Effect::Signal`] sends a confirmed
+    /// signal). Discarding the vector silently loses the user's intent, so the
+    /// shells iterate over and execute the whole result rather than inspecting
+    /// a single case.
+    ///
+    /// Commands for which [`Command::is_effect_free`] is `true` only change
+    /// display state and are guaranteed to return an empty vector in every
+    /// state — this is the "empty" precondition the settings-restore path relies
+    /// on. The three stateful commands ([`Command::Tick`], [`Command::SetPaused`]
+    /// on resume, [`Command::ConfirmKill`]) emit an effect only in some states,
+    /// so their result must never be dropped. Tests in this module pin both
+    /// halves of the contract.
     pub fn apply(&mut self, command: Command) -> Vec<Effect> {
         match command {
             Command::Tick => {
@@ -1384,19 +1435,111 @@ mod tests {
         // The native shell checks this contract when restoring settings; keep
         // it pinned here so a future effect cannot be silently dropped (R2-C01).
         let mut dashboard = dashboard();
-        assert!(dashboard
-            .apply(Command::SetInterval(Duration::from_millis(1_500)))
-            .is_empty());
-        assert!(dashboard
-            .apply(Command::SetSortSpec(SortSpec {
+        for command in [
+            Command::SetInterval(Duration::from_millis(1_500)),
+            Command::SetSortSpec(SortSpec {
                 key: SortKey::Name,
                 direction: SortDirection::Ascending,
-            }))
-            .is_empty());
-        assert!(dashboard
-            .apply(Command::SetDetailsVisible(false))
-            .is_empty());
-        assert!(dashboard.apply(Command::SetTreeView(true)).is_empty());
+            }),
+            Command::SetDetailsVisible(false),
+            Command::SetTreeView(true),
+        ] {
+            assert!(
+                command.is_effect_free(),
+                "{command:?} is a settings-restore command and must be effect-free"
+            );
+            assert!(
+                dashboard.apply(command).is_empty(),
+                "settings restore must not emit effects (R2-C01)"
+            );
+        }
+    }
+
+    #[test]
+    fn effect_free_commands_return_no_effects_in_every_state() {
+        // Effect-free commands only mutate presentation state. Their empty
+        // return is the "empty" precondition every display-only caller relies
+        // on; pin it on a fresh dashboard, with a snapshot, and while paused.
+        let commands = [
+            Command::Select(None),
+            Command::SelectRelative(1),
+            Command::SetSortKey(SortKey::Pid),
+            Command::SetSortSpec(SortSpec::default()),
+            Command::SetFilterText("firefox".to_string()),
+            Command::ClearFilter,
+            Command::SetMinVirtualMemoryBytes(Some(1)),
+            Command::SetInterval(DEFAULT_REFRESH_INTERVAL),
+            Command::ToggleDetails,
+            Command::SetDetailsVisible(true),
+            Command::ToggleTreeView,
+            Command::SetTreeView(false),
+            Command::ToggleTreeNode(firefox_key()),
+            Command::RequestSignal {
+                key: firefox_key(),
+                signal: Signal::Terminate,
+            },
+            Command::CancelKill,
+        ];
+
+        for command in commands {
+            assert!(
+                command.is_effect_free(),
+                "{command:?} must be classified effect-free"
+            );
+
+            let mut fresh = dashboard();
+            assert!(
+                fresh.apply(command.clone()).is_empty(),
+                "{command:?} on an empty dashboard"
+            );
+
+            let mut loaded = dashboard();
+            ingest_ticks(&mut loaded, 1);
+            assert!(
+                loaded.apply(command.clone()).is_empty(),
+                "{command:?} with a snapshot"
+            );
+
+            loaded.apply(Command::SetPaused(true));
+            assert!(
+                loaded.apply(command.clone()).is_empty(),
+                "{command:?} while paused"
+            );
+        }
+    }
+
+    #[test]
+    fn stateful_commands_are_not_effect_free_and_do_emit() {
+        // The three commands whose effects depend on state must never be
+        // classified as effect-free, otherwise a caller could drop their result.
+        for command in [
+            Command::Tick,
+            Command::SetPaused(false),
+            Command::ConfirmKill,
+        ] {
+            assert!(!command.is_effect_free(), "{command:?} may emit an effect");
+        }
+
+        let mut dashboard = dashboard();
+        assert_eq!(dashboard.apply(Command::Tick), vec![Effect::SampleNow]);
+        dashboard.apply(Command::SetPaused(true));
+        assert_eq!(
+            dashboard.apply(Command::SetPaused(false)),
+            vec![Effect::SampleNow]
+        );
+
+        ingest_ticks(&mut dashboard, 1);
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Kill,
+        });
+        assert_eq!(
+            dashboard.apply(Command::ConfirmKill),
+            vec![Effect::Signal {
+                key: firefox_key(),
+                signal: Signal::Kill
+            }]
+        );
     }
 
     #[test]

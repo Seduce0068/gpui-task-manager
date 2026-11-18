@@ -26,6 +26,7 @@ use gpui::{
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv, snapshot_to_json};
 use tm_core::format;
+use tm_core::port::Section;
 use tm_core::redact::RedactionIdentifiers;
 use tm_core::{
     PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
@@ -74,6 +75,12 @@ const DETAILS_WIDTH: f32 = 320.0;
 /// itself carries no semantics, so this is the browser-side `aria-live`
 /// counterpart of the AccessKit status node in `status_bar()`.
 const A11Y_LIVE_DOM_ID: &str = "tm-web-a11y-live";
+
+/// 既存の読み取り専用マーカーに使われている固定文言。headless 検証と aria の
+/// 回帰を避けるため、`supports_process_control` の判定を追加しても変更しない。
+const READONLY_PILL_ARIA: &str = "ブラウザ版ではプロセスを操作できません";
+const READONLY_DETAIL_TEXT: &str =
+    "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。";
 
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
 /// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
@@ -292,7 +299,10 @@ impl TaskManagerApp {
     ///
     /// 保存対象は表示設定だけで、プロセス情報・フィルタ・トークンは含まない。
     fn restore_settings(&mut self) {
-        let settings = crate::settings::load();
+        let (settings, notice) = crate::settings::load_with_notice();
+        if let Some(notice) = notice {
+            self.dashboard.set_persistent_status(notice.text);
+        }
         // パレットは Dashboard の状態ではなくシェル側の表示状態なので、
         // 設定の復元時にここで直接切り替える（ネイティブ版と同じ手順）。
         set_theme(settings.theme);
@@ -523,6 +533,7 @@ impl TaskManagerApp {
             DataSource::Demo(_) => ("デモ", palette().yellow),
             DataSource::Live(_) => ("ライブ", palette().teal),
         };
+        let platform = self.dashboard.platform_info();
         let show_stale = is_stale(live, self.stale);
         let (theme_now, theme_next) = if theme() == tm_viewmodel::Theme::Dark {
             ("ダーク", "ライト")
@@ -603,13 +614,15 @@ impl TaskManagerApp {
                             "表示中のデータは古いです",
                         )
                     }))
-                    .child(accessible_pill(
-                        "header-readonly",
-                        "読み取り専用",
-                        palette().base,
-                        palette().red,
-                        "ブラウザ版ではプロセスを操作できません",
-                    ))
+                    .children((!platform.supports(Section::ProcessControl)).then(|| {
+                        accessible_pill(
+                            "header-readonly",
+                            "読み取り専用",
+                            palette().base,
+                            palette().red,
+                            READONLY_PILL_ARIA,
+                        )
+                    }))
                     .child(
                         // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
                         // （CDP 検証スクリプトがこのボタンをクリックする）。
@@ -841,9 +854,9 @@ impl TaskManagerApp {
         .role(Role::Group)
         .aria_label(a11y_usage_label("メモリ使用率", mem_percent));
 
-        let network_card = card(
-            "ネットワーク",
-            palette().teal,
+        // 取得不可でもカード枠と既存の id / aria は残す（CDP の座標定数を壊さない）。
+        // 中身を説明へ差し替えるだけで、4 枚のカード構成は常に不変。
+        let network_body = if self.dashboard.platform_info().supports(Section::Network) {
             v_flex()
                 .gap_1()
                 .child(trend_badge(
@@ -903,43 +916,53 @@ impl TaskManagerApp {
                             "ネットワーク送信レートの推移、現在 {}",
                             format::format_rate(tx_rate)
                         )),
-                ),
-        )
-        .h_full()
-        .flex_1()
-        .min_w_0()
-        .id("overview-network")
-        .role(Role::Group)
-        .aria_label(format!(
-            "ネットワーク、受信 {rx}、送信 {tx}",
-            rx = format::format_rate(rx_rate),
-            tx = format::format_rate(tx_rate),
-        ));
+                )
+        } else {
+            v_flex()
+                .gap_1()
+                .justify_center()
+                .child(unavailable_node(Section::Network, "network-unavailable"))
+        };
+        let network_card = card("ネットワーク", palette().teal, network_body)
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .id("overview-network")
+            .role(Role::Group)
+            .aria_label(format!(
+                "ネットワーク、受信 {rx}、送信 {tx}",
+                rx = format::format_rate(rx_rate),
+                tx = format::format_rate(tx_rate),
+            ));
 
         let mut system_body = v_flex()
             .gap_1()
             .child(kv("ホスト", hostname.clone()))
             .child(kv("稼働時間", format::format_duration(uptime)))
             .child(kv("プロセス", format::format_count(process_count)));
-        for (index, (mount, percent)) in disks.into_iter().enumerate() {
-            system_body = system_body.child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(rgb(palette().muted))
-                            .child(mount.clone())
-                            .child(format!("{percent:.0}%")),
-                    )
-                    .child(accessible_metric_bar(
-                        ("disk-usage-bar", index),
-                        percent,
-                        usage_color(percent),
-                        a11y_usage_label(&format!("ディスク {mount} 使用率"), percent),
-                    )),
-            );
+        if self.dashboard.platform_info().supports(Section::Disks) {
+            for (index, (mount, percent)) in disks.into_iter().enumerate() {
+                system_body = system_body.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child(mount.clone())
+                                .child(format!("{percent:.0}%")),
+                        )
+                        .child(accessible_metric_bar(
+                            ("disk-usage-bar", index),
+                            percent,
+                            usage_color(percent),
+                            a11y_usage_label(&format!("ディスク {mount} 使用率"), percent),
+                        )),
+                );
+            }
+        } else {
+            system_body = system_body.child(unavailable_node(Section::Disks, "disks-unavailable"));
         }
         let components = snapshot.map(|s| s.components.as_slice()).unwrap_or(&[]);
         if components.is_empty() {
@@ -1769,9 +1792,18 @@ impl TaskManagerApp {
                     .child(process.command.clone()),
             )
             .child(div().h(px(1.0)).w_full().bg(rgb(palette().surface)))
-            .child(div().text_xs().text_color(rgb(palette().yellow)).child(
-                "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。",
-            ))
+            .children(
+                (!self
+                    .dashboard
+                    .platform_info()
+                    .supports(Section::ProcessControl))
+                .then(|| {
+                    div()
+                        .text_xs()
+                        .text_color(rgb(palette().yellow))
+                        .child(READONLY_DETAIL_TEXT)
+                }),
+            )
     }
 
     // ------------------------------------------------------------ status bar
@@ -2275,6 +2307,33 @@ fn a11y_sort_direction(direction: SortDirection) -> &'static str {
     }
 }
 
+/// Text shown in place of a capability-gated section (R5-I04).
+///
+/// Fixed strings only: no user input or agent data, and no `;` / newline that
+/// could corrupt the `key=value;` DOM proof if a future check mirrors them.
+/// Section ids and aria labels of the surrounding cards stay untouched; the
+/// explanation is an additional child node, never an aria-label override.
+fn unavailable_text(section: Section) -> &'static str {
+    match section {
+        Section::Network => "この環境ではネットワーク情報を取得できません",
+        Section::Disks => "この環境ではディスク情報を取得できません",
+        Section::ProcessControl => READONLY_PILL_ARIA,
+    }
+}
+
+/// Renders the explanation for an unavailable section without changing the
+/// surrounding card's geometry (CDP click coordinates stay valid).
+fn unavailable_node(section: Section, id: &'static str) -> Stateful<Div> {
+    let text = unavailable_text(section);
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(text)
+        .text_xs()
+        .text_color(rgb(palette().muted))
+        .child(text)
+}
+
 fn status_color(status: ProcessStatus) -> u32 {
     match status {
         ProcessStatus::Running => palette().green,
@@ -2725,5 +2784,62 @@ mod tests {
                 "{field} missing from {proof}"
             );
         }
+    }
+
+    #[test]
+    fn capability_gating_preserves_existing_dom_aria_and_cdp_constants() {
+        // CDP 検証スクリプトはこれらの数値からクリック座標を再計算する。
+        // 取得不可セクションを追加してもカード枠を残すので、値は不変。
+        assert_eq!(HEADER_HEIGHT, 52.0);
+        assert_eq!(OVERVIEW_HEIGHT, 260.0);
+        assert_eq!(TOOLBAR_HEIGHT, 36.0);
+        assert_eq!(STATUS_HEIGHT, 26.0);
+        assert_eq!(GAP, 12.0);
+        assert_eq!(ROOT_PAD, 12.0);
+        assert_eq!(DETAILS_WIDTH, 320.0);
+
+        // 既存 DOM hook の key=value; はバイト単位で不変（末尾追加のみ）。
+        let proof = proof_with_export(&proof_with_interval("mode=demo;tick=7;", 2_000), None);
+        assert_eq!(proof, "mode=demo;tick=7;interval=2000;export=none;");
+        assert_eq!(A11Y_LIVE_DOM_ID, "tm-web-a11y-live");
+        assert_eq!(READONLY_PILL_ARIA, "ブラウザ版ではプロセスを操作できません");
+        assert_eq!(
+            READONLY_DETAIL_TEXT,
+            "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。"
+        );
+    }
+
+    #[test]
+    fn unavailable_section_text_is_fixed_and_dom_safe() {
+        for section in [Section::Network, Section::Disks, Section::ProcessControl] {
+            let text = unavailable_text(section);
+            assert!(!text.is_empty(), "{section:?}");
+            assert!(!text.contains(';'), "{section:?}: {text}");
+            assert!(!text.contains('\n'), "{section:?}: {text}");
+        }
+        assert!(unavailable_text(Section::Network).contains("ネットワーク"));
+        assert!(unavailable_text(Section::Disks).contains("ディスク"));
+        assert_eq!(
+            unavailable_text(Section::ProcessControl),
+            READONLY_PILL_ARIA
+        );
+    }
+
+    #[test]
+    fn web_shell_sections_follow_platform_capabilities() {
+        // web の実データソース（デモ / エージェント経由）は network/disks を
+        // 提供し、プロセス制御だけが無効。カード枠は残し中身だけ差し替える。
+        for info in [
+            PlatformInfo::demo(),
+            PlatformInfo::native_read_only("Linux (エージェント経由)"),
+        ] {
+            assert!(info.supports(Section::Network));
+            assert!(info.supports(Section::Disks));
+            assert!(!info.supports(Section::ProcessControl));
+        }
+        let capable = PlatformInfo::native("Linux");
+        assert!(capable.supports(Section::Network));
+        assert!(capable.supports(Section::Disks));
+        assert!(capable.supports(Section::ProcessControl));
     }
 }

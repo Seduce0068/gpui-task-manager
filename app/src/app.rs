@@ -111,11 +111,19 @@ impl TaskManagerApp {
         let platform = probe.platform_info();
         let demo_mode = platform.is_demo;
         let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
+        let had_init_error = init_error.is_some();
         if let Some(error) = init_error {
             // Startup failures must stay visible until the user acts.
             dashboard.set_persistent_status(error);
         }
-        let settings = crate::settings::load();
+        let (settings, notice) = crate::settings::load_with_notice();
+        // A startup failure takes precedence; otherwise surface a settings
+        // load/backup notice as a persistent status message.
+        if !had_init_error {
+            if let Some(notice) = notice {
+                dashboard.set_persistent_status(notice.text);
+            }
+        }
         for command in [
             Command::SetInterval(Duration::from_millis(settings.interval_ms)),
             Command::SetSortSpec(settings.sort),

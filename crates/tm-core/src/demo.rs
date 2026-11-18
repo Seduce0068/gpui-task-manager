@@ -580,18 +580,14 @@ mod tests {
         assert!(snapshot.process(ProcessKey::new(4242, 0)).is_none());
         assert!(snapshot.processes.iter().any(|p| p.key.pid == 4242));
         assert_eq!(snapshot.self_pid, Some(4242));
-        assert!(
-            snapshot
-                .processes
-                .iter()
-                .any(|p| p.status == ProcessStatus::Zombie)
-        );
-        assert!(
-            snapshot
-                .processes
-                .iter()
-                .any(|p| p.status == ProcessStatus::Stopped)
-        );
+        assert!(snapshot
+            .processes
+            .iter()
+            .any(|p| p.status == ProcessStatus::Zombie));
+        assert!(snapshot
+            .processes
+            .iter()
+            .any(|p| p.status == ProcessStatus::Stopped));
     }
 
     #[test]
@@ -607,13 +603,11 @@ mod tests {
         let snapshot = demo_snapshot(42);
         assert_eq!(snapshot.cpu.core_count(), DEMO_CPU_CORES);
         assert!((0.0..=100.0).contains(&snapshot.cpu.total_percent));
-        assert!(
-            snapshot
-                .cpu
-                .per_core_percent
-                .iter()
-                .all(|percent| (0.0..=100.0).contains(percent))
-        );
+        assert!(snapshot
+            .cpu
+            .per_core_percent
+            .iter()
+            .all(|percent| (0.0..=100.0).contains(percent)));
         assert!(snapshot.memory.used_percent() <= 100.0);
     }
 
