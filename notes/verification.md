@@ -2259,3 +2259,27 @@ worktree で実装・検証。
 再度の version チェック前倒し（範囲が広い）。
 
 - workspace 366 passed / clippy / fmt / machete / deny / web vet --locked 成功。
+
+## 2026-11-18（エージェント並列調査 第34弾 → collapse 選択と前方互換の契約）
+
+2 観点（未調査観点 / 前方互換設計）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **collapse で選択行が無関係な先頭へ飛ぶ実バグ**（probe-lastdrop）:
+   tree view で子を選択して親を collapse すると、`flatten_process_tree` が
+   子を visible から除外し `ensure_selection_visible` が `visible.first()`
+   へフォールバックしていた。`ToggleTreeNode` で collapse する際、
+   選択が対象ノードの子孫なら選択をそのノード自身へ付け替える
+   （`is_descendant` pure ヘルパを追加、cycle と missing parent を防御）。
+   既存ツリーテストに選択アサーションを追加（33 回の監査をすり抜けていた）。
+2. **前方互換の二層契約を明記**（probe-fwdcompat 推奨 (b)）:
+   `settings.rs` のモジュール doc に「未知トップレベル／future version は
+   round-trip、known field 内の未知値は既定値へ migrate して保存」を明記。
+   既存テストに「既定化が serialize 表現へ現れる」ことを追加。
+   (a) の raw 保持は `merged_map`（app/web）変更＋dirty tracking が必要で
+   worktree 外かつリスク大のため却下。
+
+**見送り**: expand 後の子選択復元（`selection_hint` 拡張、設計判断）、
+TOCTOU 窓の pidfd 化解消（カーネルレベル変更）、app/web の Corruption 条項
+drift（worktree 外）。
+
+- workspace 366 passed / clippy / fmt / rustdoc 成功。

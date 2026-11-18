@@ -661,6 +661,16 @@ impl Dashboard {
                     if self.collapsed.contains(&key) {
                         self.collapsed.remove(&key);
                     } else {
+                        // A selected row hidden by this collapse would make
+                        // `ensure_selection_visible` fall back to the first
+                        // visible row (an unrelated process). Move the
+                        // selection to the collapsed node itself instead
+                        // (R42 audit).
+                        if self.selected.is_some_and(|selected| {
+                            selected != key && self.is_descendant(selected, key)
+                        }) {
+                            self.selected = Some(key);
+                        }
                         self.collapsed.insert(key);
                     }
                     self.recompute_visible();
@@ -919,6 +929,37 @@ impl Dashboard {
         }
         self.ensure_selection_visible();
         self.sync_selection_hint();
+    }
+
+    /// Whether `candidate` is a descendant of `ancestor` via `parent_pid`.
+    /// Guards against cycles and missing parents so a corrupt snapshot cannot
+    /// make this loop forever.
+    fn is_descendant(&self, candidate: ProcessKey, ancestor: ProcessKey) -> bool {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return false;
+        };
+        let mut current = candidate;
+        let mut seen = std::collections::HashSet::new();
+        while seen.insert(current) {
+            let Some(process) = snapshot.process(current) else {
+                return false;
+            };
+            let Some(parent) = process.parent_pid else {
+                return false;
+            };
+            if parent == ancestor.pid {
+                return true;
+            }
+            let Some(parent_process) = snapshot
+                .processes
+                .iter()
+                .find(|candidate| candidate.key.pid == parent)
+            else {
+                return false;
+            };
+            current = parent_process.key;
+        }
+        false
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -1852,9 +1893,14 @@ mod tests {
         assert_eq!(dashboard.visible_indices(), &[0, 1]);
         assert!(dashboard.visible_rows().next().unwrap().has_children);
 
+        // Selecting the child and collapsing its parent must move the
+        // selection to the parent, not to an unrelated first row (R42 audit).
+        dashboard.apply(Command::Select(Some(child)));
+        assert_eq!(dashboard.selected_key(), Some(child));
         dashboard.apply(Command::ToggleTreeNode(parent));
         assert!(dashboard.is_collapsed(parent));
         assert_eq!(dashboard.visible_indices(), &[0]);
+        assert_eq!(dashboard.selected_key(), Some(parent));
         let row = dashboard.visible_rows().next().unwrap();
         assert_eq!(row.index, 0);
         assert!(row.has_children);

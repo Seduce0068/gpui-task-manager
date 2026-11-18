@@ -6,6 +6,18 @@
 //!
 //! The shells own the storage medium (a JSON file on native, `localStorage` in
 //! the browser); this module owns the schema so both stay compatible.
+//!
+//! # Forward compatibility (two layers)
+//!
+//! * Unknown **top-level** fields and a future/opaque `version` are kept by
+//!   the shell's raw map and round-trip untouched on save.
+//! * Unknown values **inside** a known field (`sort` / `theme`) — an unknown
+//!   enum variant, a partial nested struct, or an unknown nested key — are
+//!   migrated to this build's defaults and persisted on the next save. Only
+//!   `sort` and `theme` are lenient; a wrong type in `interval_ms`,
+//!   `details_visible` or `tree_view` still takes the shell's corrupt path.
+//!   `SortSpec::default()` is `Cpu` / `Descending`, and a partial `sort`
+//!   resets the whole field (not just the missing sub-field) (R42 audit).
 
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use tm_core::SortSpec;
@@ -101,7 +113,14 @@ mod tests {
         assert_eq!(restored.sort, SortSpec::default());
         assert_eq!(restored.theme, Theme::default());
 
-        // A partial nested struct (missing `direction`) is tolerated too.
+        // The migration is persisted: serialising the restored settings emits
+        // this build's defaults, not the future values (two-layer contract).
+        let saved = serde_json::to_value(&restored).expect("serialize");
+        assert_eq!(saved["theme"], "Dark");
+        assert_eq!(saved["sort"]["key"], "Cpu");
+        assert_eq!(saved["sort"]["direction"], "Descending");
+
+        // A partial nested struct (missing `direction`) resets the whole field.
         let partial: Settings =
             serde_json::from_str(r#"{"sort":{"key":"Pid"}}"#).expect("partial sort");
         assert_eq!(partial.sort, SortSpec::default());
