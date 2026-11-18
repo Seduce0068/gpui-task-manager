@@ -287,17 +287,21 @@ impl NetworkSnapshot {
 /// interface as physical (a missing interface in the summary is worse than a
 /// rarely over-counted one).
 pub fn is_virtual_interface(name: &str) -> bool {
-    const VIRTUAL_PREFIXES: [&str; 8] = [
+    const VIRTUAL_PREFIXES: [&str; 10] = [
         "br-",
         "docker",
         "veth",
         "virbr",
         "lxcbr",
         "tailscale",
+        "wg",   // WireGuard (same tunnel-double-count as tailscale0)
+        "utun", // macOS IKEv2 / WireGuard tunnels
         "tun",
         "tap",
     ];
-    if name == "lo" {
+    // Linux "lo", macOS "lo0". Do not use starts_with("lo"): that would
+    // misclassify physical names such as "local0".
+    if name == "lo" || name == "lo0" {
         return true;
     }
     VIRTUAL_PREFIXES
@@ -476,12 +480,17 @@ mod tests {
             "virbr0",
             "lxcbr0",
             "tailscale0",
+            "wg0",
+            "utun3",
             "tun0",
             "tap0",
+            "lo0", // macOS loopback
         ] {
             assert!(is_virtual_interface(name), "{name} must be virtual");
         }
-        for name in ["enp4s0", "eth0", "wlan0", "wlp3s0", "en0", "wlan1"] {
+        for name in [
+            "enp4s0", "eth0", "wlan0", "wlp3s0", "en0", "wlan1", "local0",
+        ] {
             assert!(!is_virtual_interface(name), "{name} must be physical");
         }
     }

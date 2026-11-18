@@ -2048,3 +2048,28 @@ probe-todofinal が「全 TODO 完了」を検証し、紅真テスト（常に�
    実装（>= 3）に合わせて訂正。
 
 - tm-core 134 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第25弾 → 仮想IF判定とSSE文書の整合）
+
+3 観点（状態機械 / データ境界 / 文書）の調査エージェントを並列起動。
+worktree（round31-safe、HEAD a96e823）で実装・検証。
+
+1. **仮想 IF 判定の漏れ（実バグ）**: `is_virtual_interface()` の
+   `VIRTUAL_PREFIXES` に WireGuard `wg` と macOS `utun` が無く、`lo0` も
+   loopback 判定から漏れていた。tailscale0 と同種の二重計上が起きる。
+   `wg`/`utun` を追加し `lo`/`lo0` を明示判定（`starts_with("lo")` は
+   `local0` を誤判定するため避ける）。`tm-platform` の重複 `name == "lo"`
+   判定を共通 pure ヘルパに集約。`local0` が物理のままであることを固定。
+2. **SSE 文書の矛盾**: 第22弾で DESIGN/SECURITY に追加した詳細な SSE 方針は、
+   このブランチに SSE が未実装（`route()` は 3 パスのみ）ため運用者が
+   `/api/v1/stream` へ接続して 404 になる／誤監査を招く状態だった。
+   「このブランチでは未実装・ポーリングが唯一のライブ経路」と明記。
+3. **README 件数**: 実測 362（core 134 / viewmodel 63 / platform 26 /
+   agent 78 / app 61）に追随。
+
+**見送り**: settings の未知 enum 値が Corrupt 扱いになる前方互換契約の破壊
+（viewmodel/settings.rs の Lenient デシリアライザで直せるが契約解釈に幅あり、
+次の候補）、request_signal の paused ガード（低優先・UX 不一致のみ）、
+bond0（実機確認が必要な設計判断）。
+
+- tm-core 134 / tm-platform 26 passed / clippy / fmt / markdownlint 増分ゼロ。
