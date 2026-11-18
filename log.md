@@ -1313,3 +1313,8 @@
 ## 2026-11-18（エージェント並列調査 第27弾 → request_signal の paused ガード）
 
 - 一時停止中に確認ダイアログが開く問題を修正。viewmodel 65 / workspace 364 passed。
+
+## 2026-11-18（エージェント並列調査 第28弾 → web lock と weak assertion）
+
+- web/Cargo.lock の serde_json 欠落を修正、同語反復の weak assertion を
+  実検証へ変更。workspace 364 passed / web vet --locked 成功。

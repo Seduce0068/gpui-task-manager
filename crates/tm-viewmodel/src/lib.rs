@@ -1218,7 +1218,7 @@ mod tests {
         let spec = dashboard.sort_spec();
         assert_eq!(spec.key, SortKey::VirtualMemory);
         assert_eq!(spec.direction, SortDirection::Descending);
-        assert_eq!(spec.direction.arrow(), SortDirection::Descending.arrow());
+        assert_eq!(spec.direction.arrow(), "▼");
         assert_eq!(spec.key.label(), "仮想メモリ");
         let snapshot = dashboard.snapshot().expect("snapshot");
         let values: Vec<u64> = dashboard

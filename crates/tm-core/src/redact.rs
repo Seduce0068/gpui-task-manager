@@ -177,9 +177,10 @@ mod tests {
         let out = redact_text(value, &ids);
         assert!(!out.contains("alice"), "{out}");
         assert!(!out.contains("user-laptop"), "{out}");
-        // An unrelated word containing a substring of the user name stays
-        // intact (a tautological assertion here would verify nothing, R33).
-        assert!(out.contains("java"), "short words untouched: {out}");
+        // Pin the complete output: "java" contains a substring of the user
+        // name and must survive. Both the full hostname ("alice-laptop") and
+        // the short host ("alice") map to "host", as does the user name.
+        assert_eq!(out, "https://host host java");
     }
 
     #[test]

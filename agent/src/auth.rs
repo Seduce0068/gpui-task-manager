@@ -110,10 +110,6 @@ mod tests {
         )
         .expect("valid request");
         assert_eq!(request_token(&request).as_deref(), Some("secret"));
-        assert!(constant_time_eq(
-            "secret",
-            &request_token(&request).unwrap()
-        ));
     }
 
     #[test]
