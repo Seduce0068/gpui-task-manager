@@ -44,7 +44,24 @@ fn main() {
         }
         return;
     }
-    let demo = flags.demo;
+    // A failed native probe is a classified error for every shell entry point:
+    // demo data is only ever an explicit, validated `--demo` opt-in (R3-S02/S03).
+    // `NativeProbe::new` only refreshes its own process table, and the GUI's
+    // viewmodel creates its own probe when the window opens, so the probe
+    // created for this preflight is intentionally discarded.
+    let demo = match tm_core::demo::choose_backend(flags.demo, || {
+        tm_platform::NativeProbe::new().map(|_| ())
+    }) {
+        Ok(tm_core::demo::BackendChoice::Demo) => true,
+        Ok(tm_core::demo::BackendChoice::Native(())) => false,
+        Err(error) => {
+            eprintln!(
+                "gpui-task-manager: {}",
+                tm_core::demo::probe_failure_message(&error)
+            );
+            std::process::exit(EXIT_PROBE);
+        }
+    };
     let redact = flags.redact || std::env::var("TM_REDACT").is_ok_and(|value| value == "1");
 
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
@@ -153,7 +170,8 @@ fn help_text() -> String {
             "  gpui-task-manager [--demo] [--redact] [--log-level LEVEL]\n",
             "                    [--export csv|json PATH] [-V, --version] [-h, --help]\n\n",
             "オプション:\n",
-            "  --demo            合成データで起動します（スクリーンショット・ブラウザ比較用）\n",
+            "  --demo            合成データで起動します（スクリーンショット・ブラウザ比較用）。\n",
+            "                     probe 失敗時の暗黙切替は行いません（不正値は終了コード 2）\n",
             "  --redact          ホスト名・ユーザー名・ホームパスを表示時に伏せます（公開用スクリーンショット）\n",
             "  --log-level LEVEL ログレベル (error/warn/info/debug/trace、既定 info、受け付け・検証のみ)\n",
             "  --export csv|json PATH  スナップショットを 1 回取得し、伏せ字化した CSV/JSON を\n",
@@ -162,7 +180,7 @@ fn help_text() -> String {
             "  -h, --help        このヘルプを表示\n\n",
             "主なキー: ↑↓ 選択 / Space 一時停止 / Ctrl+F 絞り込み /\n",
             "Ctrl+K 選択プロセスの終了 / F2 詳細パネル / F5 更新 / F1 ヘルプ\n\n",
-            "終了コード (agent と共通の分類。gpui-task-manager は 0 / 2 を返します):\n",
+            "終了コード (agent と共通の分類。gpui-task-manager は 0 / 2 / 4 を返します):\n",
             "  0 正常 (--help / --version を含む) / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー\n",
             "  4 プローブエラー / 5 認証・トークンエラー\n\n",
             "ライセンス: Apache-2.0\n",
@@ -314,7 +332,7 @@ fn parse_log_level(value: &str) -> Result<LogLevel, String> {
             return Err(
                 "--log-level には error/warn/info/debug/trace のいずれかを指定してください"
                     .to_string(),
-            )
+            );
         }
     };
     Ok(level)
@@ -411,21 +429,24 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
 /// Samples one snapshot and writes the requested format.
 ///
 /// Returns a classified exit status: `4` when the probe cannot be created or
-/// sampled, `1` when the file cannot be written, `0` on success. Unlike the GUI
+/// sampled, `1` when the file cannot be written, `0` on success. As on the GUI
 /// startup path, a failed native probe is an error here: silently exporting
-/// demo data would produce misleading evidence.
+/// demo data would produce misleading evidence (R3-S02).
 fn run_export(request: &ExportRequest, demo: bool) -> i32 {
-    let mut probe: Box<dyn tm_core::SystemProbe> = if demo {
-        Box::new(tm_core::demo::DemoProbe::new())
-    } else {
-        match tm_platform::NativeProbe::new() {
-            Ok(probe) => Box::new(probe),
+    // Same policy as the GUI startup: `--demo` is the only route to synthetic
+    // data, and a native probe failure is an error rather than a silent switch.
+    let mut probe: Box<dyn tm_core::SystemProbe> =
+        match tm_core::demo::choose_backend(demo, tm_platform::NativeProbe::new) {
+            Ok(tm_core::demo::BackendChoice::Demo) => Box::new(tm_core::demo::DemoProbe::new()),
+            Ok(tm_core::demo::BackendChoice::Native(probe)) => Box::new(probe),
             Err(error) => {
-                eprintln!("gpui-task-manager: スナップショット収集を初期化できません: {error}");
+                eprintln!(
+                    "gpui-task-manager: {}",
+                    tm_core::demo::probe_failure_message(&error)
+                );
                 return EXIT_PROBE;
             }
-        }
-    };
+        };
     let snapshot = match probe.sample() {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -502,6 +523,8 @@ mod tests {
             "終了コード",
             "0 正常",
             "2 引数・設定エラー",
+            "0 / 2 / 4",
+            "暗黙切替は行いません",
         ] {
             assert!(help.contains(fragment), "missing {fragment:?}: {help}");
         }
@@ -585,6 +608,38 @@ mod tests {
         assert!(parse_gui_flags(&args(&["--log-level"])).is_err());
         // Non-flag positional arguments remain ignored as before.
         assert!(parse_gui_flags(&args(&["some/path"])).is_ok());
+    }
+
+    #[::core::prelude::v1::test]
+    fn invalid_demo_values_keep_the_exit_2_contract() {
+        // R3-S03: an invalid `--demo` must never be silently ignored and fall
+        // back to live data. The strict parser rejects every inline form so
+        // `main` exits with EXIT_USAGE before GPUI starts.
+        for value in [
+            "--demo=yes",
+            "--demo=1",
+            "--demo=0",
+            "--demo=false",
+            "--demo=",
+        ] {
+            let error = parse_gui_flags(&args(&[value])).expect_err("invalid demo value");
+            assert!(error.contains("--demo"), "{error}");
+            // The raw value is never echoed: `--demo=<secret>` must not leak.
+            if let Some((_, payload)) = value.split_once('=') {
+                if !payload.is_empty() {
+                    assert!(!error.contains(payload), "{error}");
+                }
+            }
+        }
+        assert!(parse_gui_flags(&args(&["--DEMO"])).is_err());
+        assert!(parse_gui_flags(&args(&["--dem"])).is_err());
+        // Valid forms still work, including when combined with other flags.
+        assert!(parse_gui_flags(&args(&["--demo"])).expect("demo").demo);
+        assert!(
+            parse_gui_flags(&args(&["--demo", "--redact"]))
+                .expect("demo + redact")
+                .demo
+        );
     }
 
     #[::core::prelude::v1::test]
@@ -763,5 +818,27 @@ mod tests {
         };
         assert_eq!(run_export(&request, true), EXIT_INTERNAL);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn probe_failure_is_reported_instead_of_switching_to_demo() {
+        // R3-S02: both the GUI preflight and `--export` use this policy.
+        // Without `--demo`, a failed native probe is an error (exit 4); with
+        // `--demo`, synthetic data is used even when the native probe fails.
+        use tm_core::demo::{choose_backend, probe_failure_message, BackendChoice};
+        let failure = || Err::<(), _>(tm_core::ProbeError::Io("初期化失敗".to_string()));
+        assert!(matches!(
+            choose_backend(false, failure),
+            Err(tm_core::ProbeError::Io(_))
+        ));
+        assert_eq!(choose_backend(true, failure), Ok(BackendChoice::Demo));
+        assert_eq!(
+            EXIT_PROBE, 4,
+            "the classified probe status is part of the CLI contract"
+        );
+        assert!(
+            probe_failure_message(&tm_core::ProbeError::Io("初期化失敗".to_string()))
+                .contains("初期化失敗")
+        );
     }
 }

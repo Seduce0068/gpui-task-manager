@@ -514,6 +514,48 @@ impl SystemProbe for DemoProbe {
     }
 }
 
+/// Backend chosen by [`choose_backend`].
+///
+/// A failed native probe is deliberately *not* a variant: callers report it
+/// with a classified exit status instead of substituting synthetic data behind
+/// the user's back (R3-S02 / R1-V05 demo-vs-live distinction).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendChoice<P> {
+    /// Synthetic data, requested explicitly with a validated `--demo`.
+    Demo,
+    /// Live data from a successfully created native probe.
+    Native(P),
+}
+
+/// Resolves the data source for a shell entry point.
+///
+/// `requested_demo` must come from a strict parser that rejects inline values
+/// (`--demo=yes`) and typos; silently ignoring a malformed value used to start
+/// the GUI with live data (R3-S03). `native` is called only when demo data was
+/// *not* requested, so `--demo` stays usable on hosts where the native probe
+/// cannot be created. A native probe failure is returned to the caller and is
+/// never converted into [`BackendChoice::Demo`]: both the GUI and `--export`
+/// therefore share one policy — demo is an explicit, validated opt-in and a
+/// probe failure is an error (R3-S02).
+pub fn choose_backend<P>(
+    requested_demo: bool,
+    native: impl FnOnce() -> Result<P, ProbeError>,
+) -> Result<BackendChoice<P>, ProbeError> {
+    if requested_demo {
+        Ok(BackendChoice::Demo)
+    } else {
+        native().map(BackendChoice::Native)
+    }
+}
+
+/// Standard shell message for a native probe failure.
+///
+/// Shared by the GUI startup and `--export` so both report the same classified
+/// failure instead of one of them quietly switching to demo data (R3-S02).
+pub fn probe_failure_message(error: &ProbeError) -> String {
+    format!("スナップショット収集を初期化できません: {error}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,5 +690,49 @@ mod tests {
             probe.control(ProcessKey::new(1, 0), crate::port::Signal::Terminate),
             Err(ControlError::Unsupported)
         );
+    }
+
+    #[test]
+    fn choose_backend_never_falls_back_to_demo_on_probe_failure() {
+        // R3-S02: a failed native probe is an error for every shell, not an
+        // implicit switch to synthetic data. `--demo` remains an explicit
+        // opt-in that works even when the native backend is unavailable.
+        let failure = || Err::<(), _>(ProbeError::Io("sysinfo の初期化に失敗".to_string()));
+        assert_eq!(
+            choose_backend(false, failure),
+            Err(ProbeError::Io("sysinfo の初期化に失敗".to_string()))
+        );
+        assert_eq!(choose_backend(true, failure), Ok(BackendChoice::Demo));
+
+        let available = || Ok::<_, ProbeError>(42);
+        assert_eq!(
+            choose_backend(false, available),
+            Ok(BackendChoice::Native(42))
+        );
+        assert_eq!(choose_backend(true, available), Ok(BackendChoice::Demo));
+    }
+
+    #[test]
+    fn choose_backend_does_not_touch_native_probe_when_demo_is_requested() {
+        // A `--demo` run must not depend on native probe availability at all.
+        let called = std::cell::Cell::new(false);
+        let selection = choose_backend(true, || {
+            called.set(true);
+            Ok::<_, ProbeError>(())
+        });
+        assert_eq!(selection, Ok(BackendChoice::Demo));
+        assert!(!called.get(), "demo mode must not create a native probe");
+    }
+
+    #[test]
+    fn probe_failure_message_keeps_the_classified_reason() {
+        let message = probe_failure_message(&ProbeError::Io("初期化失敗".to_string()));
+        assert!(
+            message.starts_with("スナップショット収集を初期化できません:"),
+            "{message}"
+        );
+        assert!(message.contains("初期化失敗"), "{message}");
+        let message = probe_failure_message(&ProbeError::Permission("権限不足".to_string()));
+        assert!(message.contains("権限不足"), "{message}");
     }
 }

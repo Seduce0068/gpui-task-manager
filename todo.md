@@ -45,8 +45,8 @@ status: current
 - [x] Unicode 不可視文字と NFC 比較（R1S-DATA-01/02/05/06/11）— Cf 全21レンジ拒否、
       UCD 16.0 の NFC を自前実装（新規依存なし・理由をコードに記録）。
 - [x] トークンの argv 漏えい対策とファイル権限検証（170e94a）。
-- [ ] Web の `details_visible` 設定を実効化し、Windows の Stop/Continue を
-      per-signal capability で隠す（R2X-P1, R2X-P2, R2X-P4, R5-I04）。
+- [x] per-signal capability で Stop/Continue を無効化（R2X-P1/P2/P4/R5-I04）—
+      Web の details_visible は既に実効化済みと確認。viewmodel 側も防御。
 - [x] `unmark()` の EditOutcome 契約と UTF-16 範囲丸め（R2X-S1/S8）— 確定文字列不変
       を維持し、サロゲート途中の selection を修正。
 - [x] ワイヤ境界のサニタイズと redact 対象拡張（7880663 / 3fa8ea1 / b7c256b）。
@@ -65,12 +65,12 @@ status: current
 - [x] `dashboard.apply` の Effect 契約を明示（R2-C01/C02）— 呼び出し側が必ず1回実行、
       effect-free 判定ヘルパーとテストを追加。
 - [x] Web 版へ更新間隔変更 UI を追加（R1-C01/R2-X02）— プリセット切替とサンプラー反映、DOM hook は追加字段のみ。
-- [ ] ネイティブ probe 失敗時のデモ切替と `--demo` 不正値の扱いを統一する
-      （R3-S02, R3-S03）。
+- [x] probe 失敗時は暗黙デモへ落とさず EXIT_PROBE、--demo 不正値は exit 2
+      （R3-S02/S03）。app::new の到達不能な暗黙分岐は R3-S02B として残す。
 - [ ] エージェント再起動時の接続設定再読込／利用者再入力の導線を設ける
       （R3-S04, R3-S05）。
-- [ ] OSC/DCS ペイロードの除去方針と ZWJ/ZWNJ の扱いを決める
-      （R1S-DATA-03, R1S-DATA-04）。
+- [x] OSC/DCS（+SOS/PM/APC）ペイロード全体を除去し、ZWJ/ZWNJ は可視ギャップ
+      を残す方針を明文化（R1S-DATA-03/04）。
 - [x] EiB 表記と limit エコーのサニタイズ（a29d76c）。
 - [ ] 固定ポートの複数インスタンス方針と dev-setup shim の残置対策を
       文書化・実装する（R3-L03, R3-L04）。
@@ -87,6 +87,8 @@ status: current
 - [ ] Windows の taskkill エラー意味論、PID 1 保護、Users 更新、
       「空＝非対応」の区別を修正する（R2X-P5, R2X-P6, R2X-P7, R2X-P8）。
 - [x] 重複ヘッダ拒否・Host 不一致・stale 表示（dcd9e9c / dde9bcd）。
+
+- [ ] R3-S02B `app::new()` の到達不能な暗黙デモ分岐を明示エラーへ置き換える
 
 ### 優先度: 低
 

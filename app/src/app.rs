@@ -16,7 +16,7 @@ use gpui_kit::*;
 
 use tm_core::demo::DemoProbe;
 use tm_core::format;
-use tm_core::{ProcessKey, ProcessStatus, Signal, SortKey, SystemProbe, Timestamp};
+use tm_core::{PlatformInfo, ProcessKey, ProcessStatus, Signal, SortKey, SystemProbe, Timestamp};
 use tm_viewmodel::{
     Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
 };
@@ -1474,14 +1474,14 @@ impl TaskManagerApp {
 
     fn details_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let selected = self.dashboard.selected_process().cloned();
-        let supports_control = self.dashboard.platform_info().supports_process_control;
+        let platform = self.dashboard.platform_info();
+        let supports_control = platform.supports_process_control;
         let mut content = v_flex().gap_2();
 
         match selected {
             Some(process) => {
                 let key = process.key;
                 let protected = self.dashboard.is_protected(key);
-                let enabled = supports_control && !protected;
                 let now = self
                     .dashboard
                     .snapshot()
@@ -1558,7 +1558,7 @@ impl TaskManagerApp {
                                         "signal-term",
                                         "終了",
                                         palette().blue,
-                                        enabled,
+                                        signal_enabled(platform, protected, Signal::Terminate),
                                         cx.listener(move |this, _event, window, cx| {
                                             this.focus_handle.focus(window, cx);
                                             this.handle_command(
@@ -1574,7 +1574,7 @@ impl TaskManagerApp {
                                         "signal-kill",
                                         "強制終了",
                                         palette().red,
-                                        enabled,
+                                        signal_enabled(platform, protected, Signal::Kill),
                                         cx.listener(move |this, _event, window, cx| {
                                             this.focus_handle.focus(window, cx);
                                             this.handle_command(
@@ -1594,7 +1594,7 @@ impl TaskManagerApp {
                                         "signal-stop",
                                         "一時停止",
                                         palette().yellow,
-                                        enabled,
+                                        signal_enabled(platform, protected, Signal::Stop),
                                         cx.listener(move |this, _event, window, cx| {
                                             this.focus_handle.focus(window, cx);
                                             this.handle_command(
@@ -1610,7 +1610,7 @@ impl TaskManagerApp {
                                         "signal-cont",
                                         "再開",
                                         palette().green,
-                                        enabled,
+                                        signal_enabled(platform, protected, Signal::Continue),
                                         cx.listener(move |this, _event, window, cx| {
                                             this.focus_handle.focus(window, cx);
                                             this.handle_command(
@@ -1623,6 +1623,19 @@ impl TaskManagerApp {
                                         }),
                                     )),
                             ),
+                    )
+                    .when(
+                        supports_control
+                            && (!platform.supports_signal(Signal::Stop)
+                                || !platform.supports_signal(Signal::Continue)),
+                        |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(palette().yellow))
+                                    .child("この OS では一時停止 / 再開は利用できません"),
+                            )
+                        },
                     )
                     .when(!supports_control, |this| {
                         this.child(
@@ -1803,6 +1816,10 @@ impl TaskManagerApp {
             Signal::Stop => (palette().yellow, "一時停止"),
             Signal::Continue => (palette().green, "再開"),
         };
+        // R2X-P4: keep the stable label for DOM hooks, but state what Windows
+        // actually does (`taskkill /F`) before the user confirms.
+        let terminate_is_forceful = pending.signal == Signal::Terminate
+            && !Signal::terminate_is_graceful_on(&self.dashboard.platform_info().os);
         Some(
             div()
                 .id("kill-overlay")
@@ -1873,6 +1890,14 @@ impl TaskManagerApp {
                                     ),
                                 ),
                         )
+                        .when(terminate_is_forceful, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(palette().yellow))
+                                    .child("この OS では「終了」も強制終了 (taskkill /F) として実行されます。"),
+                            )
+                        })
                         .child(
                             h_flex()
                                 .justify_end()
@@ -2156,6 +2181,16 @@ impl Render for TaskManagerApp {
     }
 }
 
+/// Whether a signal button must be interactive for the selected process.
+///
+/// Kept pure so the per-signal capability gate can be regression-tested without
+/// a GPUI window. `protected` is the view model's PID 1 / self safety rule;
+/// button ids (`signal-term`, `signal-kill`, `signal-stop`, `signal-cont`) stay
+/// unchanged so existing DOM hooks keep working.
+fn signal_enabled(platform: &PlatformInfo, protected: bool, signal: Signal) -> bool {
+    !protected && platform.supports_signal(signal)
+}
+
 fn overlay_text(message: &'static str, color: u32) -> Div {
     div()
         .absolute()
@@ -2295,8 +2330,9 @@ mod tests {
     // Explicit imports: the crate-root `use gpui_kit::*` re-exports a `test`
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
-    use super::{dialog_command, key_action, KeyAction};
+    use super::{dialog_command, key_action, signal_enabled, KeyAction};
     use gpui_kit::Modifiers;
+    use tm_core::{PlatformInfo, Signal};
     use tm_viewmodel::Command;
 
     fn plain() -> Modifiers {
@@ -2454,6 +2490,60 @@ mod tests {
         ] {
             for key in ["f", "k", "up", "f2"] {
                 assert_eq!(key_action(key, modifiers, false), None, "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn windows_signal_buttons_disable_only_stop_and_continue() {
+        // R2X-P2: the gate is per signal, not per section. Terminate/Kill keep
+        // working on Windows while SIGSTOP/SIGCONT are disabled.
+        let platform = PlatformInfo::native("Windows 11 Pro");
+        assert!(signal_enabled(&platform, false, Signal::Terminate));
+        assert!(signal_enabled(&platform, false, Signal::Kill));
+        assert!(!signal_enabled(&platform, false, Signal::Stop));
+        assert!(!signal_enabled(&platform, false, Signal::Continue));
+    }
+
+    #[test]
+    fn linux_signal_buttons_all_enabled_when_unprotected() {
+        let platform = PlatformInfo::native("Linux");
+        for signal in [
+            Signal::Terminate,
+            Signal::Kill,
+            Signal::Stop,
+            Signal::Continue,
+        ] {
+            assert!(signal_enabled(&platform, false, signal), "{signal:?}");
+        }
+    }
+
+    #[test]
+    fn protected_process_disables_every_signal() {
+        let platform = PlatformInfo::native("Linux");
+        for signal in [
+            Signal::Terminate,
+            Signal::Kill,
+            Signal::Stop,
+            Signal::Continue,
+        ] {
+            assert!(!signal_enabled(&platform, true, signal), "{signal:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_backend_disables_every_signal() {
+        for platform in [
+            PlatformInfo::native_read_only("Linux (エージェント経由)"),
+            PlatformInfo::demo(),
+        ] {
+            for signal in [
+                Signal::Terminate,
+                Signal::Kill,
+                Signal::Stop,
+                Signal::Continue,
+            ] {
+                assert!(!signal_enabled(&platform, false, signal), "{signal:?}");
             }
         }
     }
