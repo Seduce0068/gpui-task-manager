@@ -29,8 +29,8 @@ status: current
 - [x] 設定ファイルの互換性と通知（R2-D01/D02/R5-D02/R3-U01/U02）— version 保持、
       未知フィールド round-trip、SettingsNotice を status / DOM alert へ接続。
 - [x] Web 版へ aria / AccessKit の代替表現を追加（R3-A01）— 表・ボタン・ステータスに role / aria-label / live を付与。
-- [ ] キーボードショートカットの cross-shell parity と入力中のナビ抑制
-      （R3-A02, R3-A03, R1-D11, R1-I13）。
+- [x] キーボード parity と入力中ナビ抑制（R3-A02/A03/R1-D11/I13）— Ctrl/Cmd 統一、
+      純粋 key_action と単一ディスパッチを追加。
 - [x] DEB の依存検査と purge 方針（910eef2）。
 - [x] agent の構造化ログ / トレース / /metrics / 終了コード分類（R5-O01〜O04）
 - [x] markdownlint を check.sh / CI へ配線（R5-C01 の配線部分）。
@@ -42,14 +42,13 @@ status: current
 - [ ] SBOM 生成を冪等化し、cargo-vet / advisory ignore の運用を見直す
       （R1S-OPS-04, R1S-OPS-09, R1S-OPS-10）。
 - [x] 数値表示と履歴の整合（733b7b0 / b310422）。
-- [ ] Unicode の不可視書式文字（Cf / 補助面 VS）を網羅し、フィルタ比較を
-      NFC 正規化する（R1S-DATA-01, R1S-DATA-02, R1S-DATA-05,
-      R1S-DATA-06, R1S-DATA-11）。
+- [x] Unicode 不可視文字と NFC 比較（R1S-DATA-01/02/05/06/11）— Cf 全21レンジ拒否、
+      UCD 16.0 の NFC を自前実装（新規依存なし・理由をコードに記録）。
 - [x] トークンの argv 漏えい対策とファイル権限検証（170e94a）。
 - [ ] Web の `details_visible` 設定を実効化し、Windows の Stop/Continue を
       per-signal capability で隠す（R2X-P1, R2X-P2, R2X-P4, R5-I04）。
-- [ ] `unmark()` の EditOutcome 契約と UTF-16 範囲丸め後の selection を修正する
-      （R2X-S1, R2X-S8）。純粋ロジックとして確定。
+- [x] `unmark()` の EditOutcome 契約と UTF-16 範囲丸め（R2X-S1/S8）— 確定文字列不変
+      を維持し、サロゲート途中の selection を修正。
 - [x] ワイヤ境界のサニタイズと redact 対象拡張（7880663 / 3fa8ea1 / b7c256b）。
 
 ### 優先度: 中

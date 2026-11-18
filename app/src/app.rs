@@ -446,52 +446,67 @@ impl TaskManagerApp {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.to_lowercase();
-        let control = event.keystroke.modifiers.control;
+        let modifiers = event.keystroke.modifiers;
 
+        // Confirmation dialog first: its key contract is deliberately narrow and
+        // safety-critical (a bare Enter always cancels). Keep this path ahead of
+        // text editing so an Enter pressed with the dialog open never edits the
+        // filter instead.
         if self.dashboard.pending_kill().is_some() {
-            if let Some(command) = dialog_command(&key, control) {
+            if let Some(command) = dialog_command(&key, modifiers) {
                 self.handle_command(command, cx);
             }
             return;
         }
+
+        // Help overlay keeps its original priority over filter editing: a bare
+        // Esc/F1 always closes it. Modified keys are ignored here as well, so
+        // the overlay cannot be dismissed by an IME/shortcut gesture.
         if self.show_help {
-            if key == "escape" || key == "f1" {
+            let unmodified = !modifiers.control
+                && !modifiers.platform
+                && !modifiers.alt
+                && !modifiers.shift
+                && !modifiers.function;
+            if unmodified && (key == "escape" || key == "f1") {
                 self.show_help = false;
                 cx.notify();
             }
             return;
         }
-        if self.filter_editing {
-            match key.as_str() {
-                // Esc: 絞り込みを解除して編集モードを抜ける。
-                "escape" => {
-                    self.filter_editing = false;
-                    self.clear_filter(cx);
-                    cx.stop_propagation();
-                }
-                // Enter: IME の確定はプラットフォーム側が行う。編集モードを抜ける。
-                "enter" => {
-                    self.end_filter_editing(cx);
-                    cx.stop_propagation();
-                }
-                // Backspace はネイティブではプラットフォームが処理しないため、
-                // ここで入力欄の状態を更新する（Web はブラウザ既定動作が担当）。
-                "backspace" => {
-                    let outcome = self.filter_input.backspace();
-                    self.apply_input_outcome(outcome, cx);
-                    cx.stop_propagation();
-                }
-                // 文字入力・貼り付け・IME 変換は EntityInputHandler が受ける。
-                // ここで文字を足すと二重挿入になるので何もしない
-                // （stop_propagation するとプラットフォーム側の挿入も止まる）。
-                _ => {}
-            }
-            return;
-        }
 
-        match (control, key.as_str()) {
-            (true, "f") => self.begin_filter_editing(window, cx),
-            (true, "k") => {
+        // Single resolution point for every other keystroke. `key_action`
+        // suppresses navigation and shell shortcuts while the filter is being
+        // edited (IME candidate selection included), which is the native half
+        // of the cross-shell keyboard contract.
+        let Some(action) = key_action(&key, modifiers, self.filter_editing) else {
+            // 文字入力・貼り付け・IME 変換は EntityInputHandler が受ける。
+            // ここで文字を足すと二重挿入になるので何もしない
+            // （stop_propagation するとプラットフォーム側の挿入も止まる）。
+            return;
+        };
+
+        match action {
+            // Esc: 絞り込みを解除して編集モードを抜ける。
+            KeyAction::CancelFilter => {
+                self.filter_editing = false;
+                self.clear_filter(cx);
+                cx.stop_propagation();
+            }
+            // Enter: IME の確定はプラットフォーム側が行う。編集モードを抜ける。
+            KeyAction::CommitFilter => {
+                self.end_filter_editing(cx);
+                cx.stop_propagation();
+            }
+            // Backspace はネイティブではプラットフォームが処理しないため、
+            // ここで入力欄の状態を更新する（Web はブラウザ既定動作が担当）。
+            KeyAction::BackspaceFilter => {
+                let outcome = self.filter_input.backspace();
+                self.apply_input_outcome(outcome, cx);
+                cx.stop_propagation();
+            }
+            KeyAction::BeginFilter => self.begin_filter_editing(window, cx),
+            KeyAction::RequestTerminate => {
                 // Protection (PID 1 / self) is decided by the view model, so the
                 // shell must always forward the request: that way the user gets
                 // the same "protected" message as the button path instead of a
@@ -506,29 +521,23 @@ impl TaskManagerApp {
                     );
                 }
             }
-            (false, "up") => self.handle_command(Command::SelectRelative(-1), cx),
-            (false, "down") => self.handle_command(Command::SelectRelative(1), cx),
-            (false, "pageup") => self.handle_command(Command::SelectRelative(-10), cx),
-            (false, "pagedown") => self.handle_command(Command::SelectRelative(10), cx),
-            (false, "home") => self.handle_command(Command::SelectRelative(-1_000_000), cx),
-            (false, "end") => self.handle_command(Command::SelectRelative(1_000_000), cx),
-            (false, "space") => {
+            KeyAction::SelectRelative(delta) => {
+                self.handle_command(Command::SelectRelative(delta), cx);
+            }
+            KeyAction::TogglePaused => {
                 let paused = !self.dashboard.paused();
                 self.handle_command(Command::SetPaused(paused), cx);
             }
-            (false, "f2") => self.handle_command(Command::ToggleDetails, cx),
-            (false, "f5") => self.handle_command(Command::Tick, cx),
-            (false, "f1") => {
+            KeyAction::ToggleDetails => self.handle_command(Command::ToggleDetails, cx),
+            KeyAction::Refresh => self.handle_command(Command::Tick, cx),
+            KeyAction::ShowHelp => {
                 self.show_help = true;
                 cx.notify();
             }
-            (false, "escape") => {
+            KeyAction::ClearFilter => {
                 if self.dashboard.filter().is_active() {
                     self.handle_command(Command::ClearFilter, cx);
                 }
-            }
-            _ => {
-                let _ = window;
             }
         }
     }
@@ -1902,13 +1911,13 @@ impl TaskManagerApp {
             ("PgUp / PgDn", "10 行移動"),
             ("Home / End", "先頭 / 末尾"),
             ("Space", "更新の一時停止・再開"),
-            ("Ctrl+F", "絞り込み入力"),
-            ("Ctrl+K", "選択プロセスの終了"),
+            ("Ctrl+F / Cmd+F", "絞り込み入力"),
+            ("Ctrl+K / Cmd+K", "選択プロセスの終了"),
             ("F2", "詳細パネルの表示切替"),
             ("F5", "今すぐ更新"),
-            ("F1", "このヘルプ"),
+            ("F1 / Esc", "このヘルプを開く / 閉じる"),
             ("Enter", "確認ダイアログをキャンセル（安全側）"),
-            ("Ctrl+Enter", "確認ダイアログでシグナルを実行"),
+            ("Ctrl/Cmd+Enter", "確認ダイアログでシグナルを実行"),
             ("Esc", "絞り込み解除 / ダイアログを閉じる"),
         ];
         let rows: Vec<Div> = shortcuts
@@ -2195,15 +2204,87 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Resolved intent for one keystroke in the native shell.
+///
+/// A pure resolver keeps the native/Web keyboard contract testable without a
+/// GPUI window and guarantees that navigation cannot fire while text is being
+/// edited: the dispatcher below only executes what this function returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyAction {
+    /// Esc while editing the filter: clear it and leave edit mode.
+    CancelFilter,
+    /// Enter while editing the filter: leave edit mode (IME commits itself).
+    CommitFilter,
+    /// Backspace while editing the filter (native platform does not handle it).
+    BackspaceFilter,
+    /// Ctrl/Cmd+F: focus the filter entry.
+    BeginFilter,
+    /// Ctrl/Cmd+K: request termination of the selected process.
+    RequestTerminate,
+    /// Arrow / Page / Home / End: move the selection by this many rows.
+    SelectRelative(i32),
+    TogglePaused,
+    ToggleDetails,
+    Refresh,
+    ShowHelp,
+    ClearFilter,
+}
+
+/// Resolves a key press to a shell action without touching GPUI state.
+///
+/// `editing_text` mirrors `TaskManagerApp::filter_editing`, which is `true` for
+/// the whole IME session (including uncommitted composition). While it is set,
+/// only the three text-editing keys are resolved: arrows, Page keys, Home/End
+/// and shell shortcuts must reach the input method / browser instead, matching
+/// the Web shell's rule that navigation never steals text input.
+fn key_action(key: &str, modifiers: Modifiers, editing_text: bool) -> Option<KeyAction> {
+    if editing_text {
+        // Let the platform handle word deletion and other modified editing keys.
+        if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
+            return None;
+        }
+        return match key {
+            "escape" => Some(KeyAction::CancelFilter),
+            "enter" => Some(KeyAction::CommitFilter),
+            "backspace" => Some(KeyAction::BackspaceFilter),
+            _ => None,
+        };
+    }
+
+    // Shift/Alt/Fn combinations can be IME candidate or text-selection gestures;
+    // never treat them as shell shortcuts. Ctrl (Linux/Windows) and Cmd (macOS)
+    // are equivalent, so the same shortcut works cross-shell (R3-A03).
+    if modifiers.alt || modifiers.shift || modifiers.function {
+        return None;
+    }
+    let primary = modifiers.control || modifiers.platform;
+    match (primary, key) {
+        (true, "f") => Some(KeyAction::BeginFilter),
+        (true, "k") => Some(KeyAction::RequestTerminate),
+        (false, "up") => Some(KeyAction::SelectRelative(-1)),
+        (false, "down") => Some(KeyAction::SelectRelative(1)),
+        (false, "pageup") => Some(KeyAction::SelectRelative(-10)),
+        (false, "pagedown") => Some(KeyAction::SelectRelative(10)),
+        (false, "home") => Some(KeyAction::SelectRelative(-1_000_000)),
+        (false, "end") => Some(KeyAction::SelectRelative(1_000_000)),
+        (false, "space") => Some(KeyAction::TogglePaused),
+        (false, "f2") => Some(KeyAction::ToggleDetails),
+        (false, "f5") => Some(KeyAction::Refresh),
+        (false, "f1") => Some(KeyAction::ShowHelp),
+        (false, "escape") => Some(KeyAction::ClearFilter),
+        _ => None,
+    }
+}
+
 /// Maps a key press while the confirmation dialog is open to a safe action.
 ///
-/// A single Enter always cancels; confirming a signal requires Ctrl+Enter or an
-/// explicit click on the confirm button. This is the safety-critical part of the
-/// dialog: an accidental Enter must never terminate a process.
-fn dialog_command(key: &str, control: bool) -> Option<Command> {
+/// A single Enter always cancels; confirming a signal requires Ctrl/Cmd+Enter or
+/// an explicit click on the confirm button. This is the safety-critical part of
+/// the dialog: an accidental Enter must never terminate a process.
+fn dialog_command(key: &str, modifiers: Modifiers) -> Option<Command> {
     match key {
         "escape" => Some(Command::CancelKill),
-        "enter" if control => Some(Command::ConfirmKill),
+        "enter" if modifiers.control || modifiers.platform => Some(Command::ConfirmKill),
         "enter" => Some(Command::CancelKill),
         _ => None,
     }
@@ -2214,28 +2295,166 @@ mod tests {
     // Explicit imports: the crate-root `use gpui_kit::*` re-exports a `test`
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
-    use super::dialog_command;
+    use super::{dialog_command, key_action, KeyAction};
+    use gpui_kit::Modifiers;
     use tm_viewmodel::Command;
+
+    fn plain() -> Modifiers {
+        Modifiers::default()
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
+    }
+
+    fn cmd() -> Modifiers {
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        }
+    }
 
     #[test]
     fn enter_cancels_the_confirmation_dialog() {
-        assert_eq!(dialog_command("enter", false), Some(Command::CancelKill));
+        assert_eq!(dialog_command("enter", plain()), Some(Command::CancelKill));
     }
 
     #[test]
     fn ctrl_enter_confirms_the_confirmation_dialog() {
-        assert_eq!(dialog_command("enter", true), Some(Command::ConfirmKill));
+        assert_eq!(dialog_command("enter", ctrl()), Some(Command::ConfirmKill));
+    }
+
+    #[test]
+    fn cmd_enter_confirms_the_confirmation_dialog() {
+        assert_eq!(dialog_command("enter", cmd()), Some(Command::ConfirmKill));
     }
 
     #[test]
     fn escape_cancels_the_confirmation_dialog() {
-        assert_eq!(dialog_command("escape", false), Some(Command::CancelKill));
+        assert_eq!(dialog_command("escape", plain()), Some(Command::CancelKill));
     }
 
     #[test]
     fn other_keys_are_ignored_while_the_dialog_is_open() {
-        assert_eq!(dialog_command("down", false), None);
-        assert_eq!(dialog_command("space", false), None);
-        assert_eq!(dialog_command("enter", true), Some(Command::ConfirmKill));
+        assert_eq!(dialog_command("down", plain()), None);
+        assert_eq!(dialog_command("space", plain()), None);
+        assert_eq!(dialog_command("enter", ctrl()), Some(Command::ConfirmKill));
+        assert_eq!(dialog_command("enter", cmd()), Some(Command::ConfirmKill));
+    }
+
+    #[test]
+    fn ctrl_and_cmd_start_filter_editing() {
+        assert_eq!(key_action("f", ctrl(), false), Some(KeyAction::BeginFilter));
+        assert_eq!(key_action("f", cmd(), false), Some(KeyAction::BeginFilter));
+    }
+
+    #[test]
+    fn ctrl_and_cmd_request_termination() {
+        assert_eq!(
+            key_action("k", ctrl(), false),
+            Some(KeyAction::RequestTerminate)
+        );
+        assert_eq!(
+            key_action("k", cmd(), false),
+            Some(KeyAction::RequestTerminate)
+        );
+    }
+
+    #[test]
+    fn plain_keys_resolve_to_navigation_and_shell_commands() {
+        let expected = [
+            ("up", KeyAction::SelectRelative(-1)),
+            ("down", KeyAction::SelectRelative(1)),
+            ("pageup", KeyAction::SelectRelative(-10)),
+            ("pagedown", KeyAction::SelectRelative(10)),
+            ("home", KeyAction::SelectRelative(-1_000_000)),
+            ("end", KeyAction::SelectRelative(1_000_000)),
+            ("space", KeyAction::TogglePaused),
+            ("f2", KeyAction::ToggleDetails),
+            ("f5", KeyAction::Refresh),
+            ("f1", KeyAction::ShowHelp),
+            ("escape", KeyAction::ClearFilter),
+        ];
+        for (key, action) in expected {
+            assert_eq!(key_action(key, plain(), false), Some(action), "{key}");
+        }
+    }
+
+    #[test]
+    fn navigation_never_fires_while_filter_text_is_being_edited() {
+        // R3-A02: arrows, page keys and Home/End are IME candidate / caret keys.
+        for key in [
+            "up", "down", "pageup", "pagedown", "home", "end", "space", "f1", "f2", "f5",
+        ] {
+            assert_eq!(
+                key_action(key, plain(), true),
+                None,
+                "{key} must not navigate during text input"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_shortcuts_never_fire_while_filter_text_is_being_edited() {
+        for modifiers in [ctrl(), cmd()] {
+            for key in ["f", "k", "up", "f2", "f5"] {
+                assert_eq!(
+                    key_action(key, modifiers, true),
+                    None,
+                    "shortcut must not fire during text input: {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn editing_keys_still_work_while_filter_text_is_being_edited() {
+        assert_eq!(
+            key_action("escape", plain(), true),
+            Some(KeyAction::CancelFilter)
+        );
+        assert_eq!(
+            key_action("enter", plain(), true),
+            Some(KeyAction::CommitFilter)
+        );
+        assert_eq!(
+            key_action("backspace", plain(), true),
+            Some(KeyAction::BackspaceFilter)
+        );
+        // Text keystrokes stay with the platform IME / browser input mirror.
+        assert_eq!(key_action("a", plain(), true), None);
+        assert_eq!(key_action("あ", plain(), true), None);
+    }
+
+    #[test]
+    fn modified_editing_keys_are_left_to_the_platform() {
+        for modifiers in [ctrl(), cmd()] {
+            assert_eq!(key_action("backspace", modifiers, true), None);
+        }
+    }
+
+    #[test]
+    fn shift_alt_and_function_keys_are_not_shortcuts() {
+        for modifiers in [
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                function: true,
+                ..Modifiers::default()
+            },
+        ] {
+            for key in ["f", "k", "up", "f2"] {
+                assert_eq!(key_action(key, modifiers, false), None, "{key}");
+            }
+        }
     }
 }
