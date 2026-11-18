@@ -426,6 +426,26 @@ mod tests {
     }
 
     #[test]
+    fn process_status_labels_and_wire_ids_are_stable() {
+        // The label is shown in the UI and the id is written to the wire
+        // protocol; both are asserted by the CDP proof hook, so pin every
+        // variant here.
+        let cases = [
+            (ProcessStatus::Running, "実行中", "running"),
+            (ProcessStatus::Sleeping, "待機", "sleeping"),
+            (ProcessStatus::Idle, "アイドル", "idle"),
+            (ProcessStatus::Stopped, "停止", "stopped"),
+            (ProcessStatus::Zombie, "ゾンビ", "zombie"),
+            (ProcessStatus::Tracing, "トレース", "tracing"),
+            (ProcessStatus::Unknown, "不明", "unknown"),
+        ];
+        for (status, label, id) in cases {
+            assert_eq!(status.label(), label);
+            assert_eq!(status.id(), id);
+        }
+    }
+
+    #[test]
     fn process_key_is_ordered_by_pid_then_start_time() {
         assert!(ProcessKey::new(1, 10) < ProcessKey::new(2, 0));
         assert!(ProcessKey::new(1, 10) < ProcessKey::new(1, 11));

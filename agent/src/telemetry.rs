@@ -458,4 +458,16 @@ mod tests {
         assert_eq!(legacy.category(), ExitCategory::Internal);
         assert_eq!(legacy.message(), "unknown failure");
     }
+
+    #[test]
+    fn exit_categories_have_stable_names() {
+        // `as_str` feeds the `category` field of `agent.exit` structured logs;
+        // pinning all six values keeps that log contract stable.
+        assert_eq!(ExitCategory::Success.as_str(), "success");
+        assert_eq!(ExitCategory::Internal.as_str(), "internal");
+        assert_eq!(ExitCategory::Usage.as_str(), "usage");
+        assert_eq!(ExitCategory::Network.as_str(), "network");
+        assert_eq!(ExitCategory::Probe.as_str(), "probe");
+        assert_eq!(ExitCategory::Auth.as_str(), "auth");
+    }
 }
