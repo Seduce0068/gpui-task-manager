@@ -20,7 +20,8 @@ use std::ops::Range;
 pub enum EditOutcome {
     /// テキストも変換中範囲も変わらなかった（何もしない）。
     Unchanged,
-    /// テキストは変わったが IME 変換中。確定文字列は変わらないのでフィルタは更新しない。
+    /// 確定済み文字列は変わらないが表示が変わった。フィルタは更新しない。
+    /// IME 変換中と、変換中文字列を破棄する `unmark()` の両方で返す。
     Composing,
     /// 確定済み文字列が変わった。フィルタへ反映する。
     Committed,
@@ -129,12 +130,41 @@ impl FilterInput {
     }
 
     /// 変換中状態を解除する（`compositionend` 後の後始末）。確定文字列は変えない。
+    ///
+    /// `marked` を外すだけだと、変換中だった文字列が [`Self::committed_text`] に
+    /// 含まれてしまい「確定文字列は不変」という契約に違反する。preedit を表示から
+    /// 取り除き、選択範囲も削除後のテキストへ詰める。
     pub fn unmark(&mut self) -> EditOutcome {
-        if self.marked.take().is_some() {
-            EditOutcome::Composing
-        } else {
-            EditOutcome::Unchanged
-        }
+        let Some(marked) = self.marked.take() else {
+            return EditOutcome::Unchanged;
+        };
+
+        // marked は UTF-16 範囲。文字境界へ丸めてから削除する（サロゲート途中でも安全）。
+        let byte_start = floor_byte_index(&self.text, marked.start);
+        let byte_end = floor_byte_index(&self.text, marked.end).max(byte_start);
+        let removed_start = utf16_index(&self.text, byte_start);
+        let removed_end = utf16_index(&self.text, byte_end);
+        self.text.replace_range(byte_start..byte_end, "");
+
+        // 削除された UTF-16 範囲を基準に選択範囲を詰める。範囲内だったキャレットは
+        // 削除位置へ寄せ、範囲外だったキャレットは削除分だけ前方へずらす。
+        let removed = removed_end - removed_start;
+        let shift = |position: usize| {
+            if position <= removed_start {
+                position
+            } else if position >= removed_end {
+                position.saturating_sub(removed)
+            } else {
+                removed_start
+            }
+        };
+        let len = self.utf16_len();
+        let start = shift(self.selection.start).min(len);
+        let end = shift(self.selection.end).min(len).max(start);
+        self.selection = start..end;
+
+        // 確定文字列は不変なのでフィルタは更新しない（表示の再描画だけを要求）。
+        EditOutcome::Composing
     }
 
     /// 入力を空にする（Esc / クリアボタン）。
@@ -211,9 +241,12 @@ impl FilterInput {
 
         let byte_start = floor_byte_index(&self.text, target.start);
         let byte_end = floor_byte_index(&self.text, target.end).max(byte_start);
+        // 未丸めの target.start を使うと、サロゲートペアの途中を指す範囲で
+        // selection / marked がテキスト長を超えてしまう。実際に編集した位置の
+        // UTF-16 オフセットを丸め後のバイト境界から求め直す。
+        let inserted_start = utf16_index(&self.text, byte_start);
         self.text.replace_range(byte_start..byte_end, new_text);
 
-        let inserted_start = target.start;
         let inserted_end = inserted_start + new_text.encode_utf16().count();
         let inserted = inserted_start..inserted_end;
 
@@ -349,11 +382,62 @@ mod tests {
         let mut input = FilterInput::new();
         input.replace_text(None, "abc");
         input.replace_and_mark(None, "にほんご", None);
-        // 変換をキャンセルした場合: 表示は変換中文字列のまま、確定は "abc"。
+        // 変換中は preedit が表示に出るが、確定文字列は "abc" のまま。
+        assert_eq!(input.text(), "abcにほんご");
+        assert_eq!(input.committed_text(), "abc");
+        assert_eq!(input.selection(), 7..7);
+
+        // 変換をキャンセル: preedit を表示から取り除き、確定は "abc" のまま。
         assert_eq!(input.unmark(), EditOutcome::Composing);
         assert!(!input.is_composing());
-        // unmark 自体はテキストを消さない（ブラウザ側が空文字で確定しに来るのを待つ）。
-        assert_eq!(input.text(), "abcにほんご");
+        assert_eq!(input.marked_range(), None);
+        assert_eq!(input.text(), "abc");
+        assert_eq!(input.committed_text(), "abc");
+        assert_eq!(input.selection(), 3..3);
+
+        // 変換中でなければ何もしない。
+        assert_eq!(input.unmark(), EditOutcome::Unchanged);
+    }
+
+    #[test]
+    fn unmark_discards_preedit_with_surrogate_pairs() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "a");
+        input.replace_and_mark(None, "🦀", None); // UTF-16 で 2 コードユニット
+        assert_eq!(input.text(), "a🦀");
+        assert_eq!(input.marked_range(), Some(1..3));
+        assert_eq!(input.committed_text(), "a");
+
+        assert_eq!(input.unmark(), EditOutcome::Composing);
+        assert_eq!(input.text(), "a");
+        assert_eq!(input.committed_text(), "a");
+        assert_eq!(input.utf16_len(), 1);
+        assert_eq!(input.selection(), 1..1);
+    }
+
+    #[test]
+    fn unmark_clamps_selection_inside_discarded_preedit() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "abc");
+        // IME が preedit の途中 (3 + 2 = 5) を選択位置として指定してきた場合。
+        input.replace_and_mark(None, "にほんご", Some(2..2));
+        assert_eq!(input.marked_range(), Some(3..7));
+        assert_eq!(input.selection(), 5..5);
+
+        assert_eq!(input.unmark(), EditOutcome::Composing);
+        assert_eq!(input.selection(), 3..3);
+        assert_eq!(input.committed_text(), "abc");
+    }
+
+    #[test]
+    fn unmark_after_replace_text_is_a_noop() {
+        // compositionend では通常 replace_text が先に確定するので unmark は no-op。
+        let mut input = FilterInput::new();
+        input.replace_and_mark(None, "にほんご", None);
+        assert_eq!(input.replace_text(None, "日本語"), EditOutcome::Committed);
+        assert_eq!(input.unmark(), EditOutcome::Unchanged);
+        assert_eq!(input.text(), "日本語");
+        assert_eq!(input.committed_text(), "日本語");
     }
 
     #[test]
@@ -477,5 +561,35 @@ mod tests {
         assert_eq!(after, "");
         input.replace_text(None, "日本");
         assert_eq!(input.display_parts(), ("abc日本", "", ""));
+    }
+
+    #[test]
+    fn replace_text_rounds_utf16_start_before_computing_selection() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "a🦀b"); // UTF-16 長 4
+        assert_eq!(input.utf16_len(), 4);
+
+        // target.start = 2 は 🦀 のサロゲート途中なので文字境界 (UTF-16 1) へ丸められる。
+        assert_eq!(input.replace_text(Some(2..3), "X"), EditOutcome::Committed);
+        assert_eq!(input.text(), "aXb");
+        assert_eq!(input.utf16_len(), 3);
+        // 丸め後の挿入位置 1 + "X" 1 = 2。テキスト長を超えない。
+        assert_eq!(input.selection(), 2..2);
+        assert!(input.selection().end <= input.utf16_len());
+    }
+
+    #[test]
+    fn replace_and_mark_rounds_utf16_start_before_computing_marked() {
+        let mut input = FilterInput::new();
+        input.replace_text(None, "a🦀b");
+        assert_eq!(
+            input.replace_and_mark(Some(2..3), "か", None),
+            EditOutcome::Composing
+        );
+        assert_eq!(input.text(), "aかb");
+        assert_eq!(input.marked_range(), Some(1..2));
+        assert_eq!(input.selection(), 2..2);
+        assert_eq!(input.committed_text(), "ab");
+        assert!(input.marked_range().unwrap().end <= input.utf16_len());
     }
 }

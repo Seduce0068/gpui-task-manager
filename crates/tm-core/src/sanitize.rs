@@ -57,7 +57,11 @@ pub fn sanitize_display(input: &str, max_chars: usize) -> String {
     let mut truncated = false;
 
     for ch in stripped.chars() {
-        let ch = if ch.is_control() || is_bidi_control(ch) || is_invisible_format(ch) {
+        let ch = if ch.is_control()
+            || is_bidi_control(ch)
+            || is_invisible_format(ch)
+            || is_format_char(ch)
+        {
             ' '
         } else {
             ch
@@ -128,6 +132,41 @@ fn is_invisible_format(ch: char) -> bool {
             | '\u{e0100}'..='\u{e01ef}' // VARIATION SELECTOR-17..256
             | '\u{feff}' // ZERO WIDTH NO-BREAK SPACE (BOM)
             | '\u{ffa0}' // HALFWIDTH HANGUL FILLER
+    )
+}
+
+/// Returns `true` for every Unicode `General_Category=Cf` (Format) character.
+///
+/// The ranges below are the complete Cf set of Unicode 16.0. Unlike
+/// [`is_bidi_control`] and [`is_invisible_format`] this is a classification
+/// table rather than a blacklist of known spoofing characters: an unseen Cf
+/// code point is invisible or reorders text, so it must never reach the
+/// renderer. Naming the Unicode version here also removes the implicit
+/// version dependence (R1S-DATA-01 / R1S-DATA-11).
+fn is_format_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00ad}' // SOFT HYPHEN
+            | '\u{0600}'..='\u{0605}' // ARABIC NUMBER SIGN .. ARABIC SIGN SAMVAT
+            | '\u{061c}' // ARABIC LETTER MARK
+            | '\u{06dd}' // ARABIC END OF AYAH
+            | '\u{070f}' // SYRIAC ABBREVIATION MARK
+            | '\u{0890}'..='\u{0891}' // ARABIC POUND / PIASTRE MARK ABOVE
+            | '\u{08e2}' // ARABIC DISPUTED END OF AYAH
+            | '\u{180e}' // MONGOLIAN VOWEL SEPARATOR
+            | '\u{200b}'..='\u{200f}' // ZWSP, ZWNJ, ZWJ, LRM, RLM
+            | '\u{202a}'..='\u{202e}' // bidi embedding controls
+            | '\u{2060}'..='\u{2064}' // WORD JOINER .. INVISIBLE PLUS
+            | '\u{2066}'..='\u{206f}' // bidi isolates .. NOMINAL DIGIT SHAPES
+            | '\u{feff}' // ZERO WIDTH NO-BREAK SPACE (BOM)
+            | '\u{fff9}'..='\u{fffb}' // INTERLINEAR ANNOTATION ANCHOR/SEPARATOR/TERMINATOR
+            | '\u{110bd}' // KAITHI NUMBER SIGN
+            | '\u{110cd}' // KAITHI NUMBER SIGN ABOVE
+            | '\u{13430}'..='\u{1343f}' // EGYPTIAN HIEROGLYPH format controls
+            | '\u{1bca0}'..='\u{1bca3}' // SHORTHAND FORMAT controls
+            | '\u{1d173}'..='\u{1d17a}' // MUSICAL control characters
+            | '\u{e0001}' // LANGUAGE TAG
+            | '\u{e0020}'..='\u{e007f}' // TAG SPACE .. CANCEL TAG
     )
 }
 
@@ -355,11 +394,77 @@ mod tests {
             assert!(output.chars().count() <= 33, "bounded length");
             assert!(
                 !output.chars().any(|ch| {
-                    ch.is_control() || is_bidi_control(ch) || is_invisible_format(ch)
+                    ch.is_control()
+                        || is_bidi_control(ch)
+                        || is_invisible_format(ch)
+                        || is_format_char(ch)
                 }),
-                "no control/bidi/invisible characters may reach the renderer"
+                "no control/bidi/format characters may reach the renderer"
             );
         }
+    }
+
+    #[test]
+    fn every_unicode_format_character_is_neutralised() {
+        // R1S-DATA-01/11: cover all 21 Cf ranges of Unicode 16.0, including the
+        // ones the old blacklist missed (Arabic number signs, interlinear
+        // annotations, Kaithi, Egyptian hieroglyphs, shorthand, musical and tag
+        // characters).
+        let controls = [
+            '\u{00ad}',
+            '\u{0600}',
+            '\u{0605}',
+            '\u{061c}',
+            '\u{06dd}',
+            '\u{070f}',
+            '\u{0890}',
+            '\u{0891}',
+            '\u{08e2}',
+            '\u{180e}',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{202a}',
+            '\u{202e}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{206f}',
+            '\u{feff}',
+            '\u{fff9}',
+            '\u{fffa}',
+            '\u{fffb}',
+            '\u{110bd}',
+            '\u{110cd}',
+            '\u{13430}',
+            '\u{1343f}',
+            '\u{1bca0}',
+            '\u{1bca3}',
+            '\u{1d173}',
+            '\u{1d17a}',
+            '\u{e0001}',
+            '\u{e0020}',
+            '\u{e007f}',
+        ];
+        for ch in controls {
+            assert!(is_format_char(ch), "U+{:04X} must be Cf", ch as u32);
+            assert_eq!(
+                sanitize_display(&format!("a{ch}b"), 64),
+                "a b",
+                "U+{:04X} reached the renderer",
+                ch as u32
+            );
+        }
+        // Supplementary-plane VS17..256 stay covered (R1S-DATA-02).
+        assert_eq!(sanitize_display("a\u{e0100}b", 64), "a b");
+        assert_eq!(sanitize_display("a\u{e01ef}b", 64), "a b");
+        // Ordinary text and combining marks are still accepted.
+        assert!(!is_format_char('あ'));
+        assert!(!is_format_char('e'));
+        assert!(!is_format_char('\u{0301}'));
     }
 
     #[test]
