@@ -346,8 +346,15 @@ impl TaskManagerApp {
                 // An auth rejection carries fixed re-entry guidance (the token
                 // itself is never echoed). Track it so the DOM proof can expose
                 // a boolean without mirroring any error text.
-                self.reconnect_required = crate::agent::requires_reconnect(&error);
-                self.live_error = Some(error.clone());
+                // Keep the re-entry guidance sticky: a transient follow-up
+                // failure (e.g. the restarted agent not responding yet) must
+                // not erase the one actionable path for the user (R49 audit).
+                // Cleared only on success or an actual config change.
+                let newly_required = crate::agent::requires_reconnect(&error);
+                self.reconnect_required = next_reconnect_required(self.reconnect_required, &error);
+                if !newly_required || self.live_error.is_none() {
+                    self.live_error = Some(error.clone());
+                }
                 self.dashboard
                     .set_status(format!("エージェントから取得できません: {error}"), true);
             }
@@ -2450,6 +2457,12 @@ fn proof_with_reconnect(proof: &str, required: bool) -> String {
     format!("{proof}reconnect={};", u8::from(required))
 }
 
+/// The re-entry flag is sticky until success or an explicit config change: a
+/// transient follow-up failure must not hide the auth guidance (R49 audit).
+fn next_reconnect_required(current: bool, error: &str) -> bool {
+    current || crate::agent::requires_reconnect(error)
+}
+
 /// Identifiers handed to the pure exporters.
 ///
 /// The browser cannot read the agent host's `HOME` / `USER` / hostname, and the
@@ -2910,6 +2923,18 @@ mod tests {
             !announced.contains("super-secret-agent-token"),
             "{announced}"
         );
+    }
+
+    #[test]
+    #[test]
+    fn reconnect_guidance_is_sticky_across_transient_failures() {
+        use crate::agent::RECONNECT_GUIDANCE;
+        assert!(next_reconnect_required(false, RECONNECT_GUIDANCE));
+        // A generic follow-up failure must not clear the auth guidance.
+        assert!(next_reconnect_required(true, "接続に失敗しました"));
+        assert!(next_reconnect_required(true, "エージェントが HTTP 500 を返しました"));
+        // Without a prior auth error, a generic error stays non-reconnect.
+        assert!(!next_reconnect_required(false, "接続に失敗しました"));
     }
 
     #[test]
