@@ -180,9 +180,9 @@ fn help_text() -> String {
             "  -h, --help        このヘルプを表示\n\n",
             "主なキー: ↑↓ 選択 / Space 一時停止 / Ctrl+F 絞り込み /\n",
             "Ctrl+K 選択プロセスの終了 / F2 詳細パネル / F5 更新 / F1 ヘルプ\n\n",
-            "終了コード (agent と共通の分類。gpui-task-manager は 0 / 1 / 2 / 4 を返します):\n",
-            "  0 正常 (--help / --version を含む) / 1 内部エラー / 2 引数・設定エラー / 3 ネットワークエラー\n",
-            "  4 プローブエラー / 5 認証・トークンエラー\n\n",
+            "終了コード (gpui-task-manager が返す値のみ):\n",
+            "  0 正常 (--help / --version を含む) / 1 内部エラー / 2 引数・設定エラー\n",
+            "  4 プローブエラー（3 ネットワーク / 5 認証は tm-agent 固有でこのバイナリは返しません）\n\n",
             "ライセンス: AGPL-3.0-or-later\n",
         ),
         version = env!("CARGO_PKG_VERSION")
@@ -531,7 +531,7 @@ mod tests {
             "終了コード",
             "0 正常",
             "2 引数・設定エラー",
-            "0 / 1 / 2 / 4",
+            "このバイナリは返しません",
             "暗黙切替は行いません",
         ] {
             assert!(help.contains(fragment), "missing {fragment:?}: {help}");
