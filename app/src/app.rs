@@ -1332,7 +1332,7 @@ impl TaskManagerApp {
             // is explicit and the wording stays aligned with `main.rs`.
             self.dashboard
                 .status()
-                .map(|status| overlay_text(status.text.clone(), palette().red))
+                .map(|status| overlay_text(self.display(&status.text), palette().red))
         } else if self.dashboard.snapshot().is_none() {
             Some(overlay_text(
                 "システム情報を取得しています…",
@@ -1488,7 +1488,9 @@ impl TaskManagerApp {
                     div()
                         .w(px(COL_CPU))
                         .text_sm()
-                        .text_color(rgb(usage_color(cpu.min(100.0))))
+                        // `f32::min(NaN, 100.0)` returns 100.0 (red) while the
+                        // label shows 0.0%; usage_color already handles NaN.
+                        .text_color(rgb(usage_color(cpu)))
                         .child(format::format_cpu_percent(cpu)),
                 )
                 .child(
@@ -1831,7 +1833,9 @@ impl TaskManagerApp {
                     palette().green
                 }))
                 .truncate()
-                .child(status.text)
+                // Status text may carry probe/control errors with local paths
+                // or identifiers; redact it like every other display string.
+                .child(self.display(&status.text))
                 .into_any_element(),
             None if self.filter_editing => div()
                 .text_xs()

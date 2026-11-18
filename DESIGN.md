@@ -269,8 +269,9 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - トークンは起動時に `/dev/urandom` から生成して stderr に 1 回表示する。
   `--token-file PATH` または `TM_AGENT_TOKEN` で外部から渡せる（ファイル推奨）。
   `--token` はテスト専用で、argv が `/proc/<pid>/cmdline` から読まれ得るため警告を出す。
-- エンドポイントは `GET /healthz`・`GET /api/v1/snapshot` と、認証不要の
-  `GET /metrics`（カウンタ/ゲージのみ、マシンデータなし、ループバック限定）の 3 つ。
+- エンドポイントは、認証不要の `GET /healthz` と `GET /metrics`（カウンタ/ゲージのみ、
+  マシンデータなし、ループバック限定）、Bearer 必須の `GET /api/v1/snapshot` と
+  長時間ストリーム（SSE、読み取り専用）がある。個別のパス・接続枠は実装を参照。
 - プロセス操作 API を持たない（読み取り専用）。
 - `Host` ヘッダが loopback（`127.0.0.1` / `localhost` / `[::1]`）以外なら 403。
   DNS リバインディングの多層防御。
@@ -523,8 +524,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 | 文書 / 箇所 | 確認項目 | 現行実装との対応 | 根拠 | 判定 |
 |---|---|---|---|---|
-| README.md「検証状況」 | workspace テスト件数 | **334 passed / 0 failed**（core 129 / viewmodel 62 / platform 11 / agent 78 / app 54） | `scripts/check.sh:22-23` | 一致 |
-| README.md「検証状況」 | web ユニットテスト件数 | **57 passed / 0 failed** | `scripts/check.sh:36-37` | 一致 |
+| README.md「検証状況」 | workspace テスト件数 | 具体値を書かず README.md「検証状況」を参照 | README.md | 一致 |
+| README.md「検証状況」 | web ユニットテスト件数 | 具体値を書かず README.md「検証状況」を参照 | README.md | 一致 |
 | README.md「検証状況」 | clippy コマンド | `-D warnings -D clippy::undocumented_unsafe_blocks`（root / web） | `scripts/check.sh:19-20,29-31` | 一致（R5-C03 解消） |
 | README.md「検証状況」 | rustdoc | `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps`（root / web） | `scripts/check.sh:70-75` | 一致（R5-C04 解消） |
 | README.md「できること」 | 設定の永続化 | 更新間隔・ソート・詳細パネル・ツリー表示・テーマを保存 / 復元 | ADR-012、`tm-viewmodel::Settings` | 一致 |
@@ -532,8 +533,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §2.2 / §8.1 | テスト件数 | 具体値を書かず README.md「検証状況」へ参照 | 本表 | 一致（R1-D03 解消） |
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
 | DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
-| notes/current-state.md | 検証状況 | 334 / 57、日付 2026-11-18 | 本文 | 一致 |
-| notes/verification.md §2 | 検証状況 | 334 / 57、日付 2026-11-18。以降の時系列記録は履歴 | 本文 | 一致 |
+| notes/current-state.md | 検証状況 | 具体値を書かず README.md「検証状況」を参照 | 本文 | 一致 |
+| notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
 | notes/index.md | current-state の日付 | 2026-11-18 | 本文 | 一致 |
 | RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みだが本文未反映 | `notes/ime.md`、README.md | 要更新（R1-D02、本次 writeScope 外） |
 
