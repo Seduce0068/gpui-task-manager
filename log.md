@@ -1362,3 +1362,8 @@
 
 - write_export に symlink_metadata 検証と /dev,/proc,/sys 拒否を追加。
   app 63 / workspace 369 passed。
+
+## 2026-11-18（エージェント並列調査 第38弾 → 設定 I/O ガードと CLI 記載）
+
+- settings.rs に FIFO/symlink/XDG 絶対パスガード、agent --log-level 注記、
+  README --export 記載を追加。workspace 371 passed。

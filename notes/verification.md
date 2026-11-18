@@ -2354,3 +2354,27 @@ exit 1 を固定しており契約変更になるため）、`sync_all()` によ
 0600／umask 非依存／原子的書き込みは健全で現状維持。
 
 - app 63 passed / workspace 369 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第38弾 → 設定 I/O ガードと CLI 記載）
+
+3 観点（設定 I/O / 配布 / CLI 情報）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **設定ライターへの I/O ガード移植**（probe-settingsio、第37弾の export 版）:
+   `app/src/settings.rs` に ①`read_document` 入口の `symlink_metadata` 検査
+   （FIFO／デバイス／symlink は corrupt 退避、起動ハングを防止）、②一時ファイル
+   `create_new(true)`（symlink 追従による任意ファイル破壊を拒否）、③XDG_CONFIG_HOME
+   と HOME の絶対パス検査＋dev/proc/sys 拒否、を追加。回帰テスト 2 件。
+   0600／umask 非依存／BACKUP 退避順序は健全で現状維持。
+2. **tm-agent の `--log-level` ヘルプに注記**（probe-cliinfo A-1）:
+   debug/trace が info と同じ出力であることを明記（app 側には既に同趣の
+   注記があり、2 バイナリで契約説明を揃えた）。テスト期待値も更新。
+3. **README に `--export csv|json PATH` を記載**（A-3）。
+
+**見送り**: 第三者ライセンス同梱（probe-packaging 5b/5c、DEP-5 複数節と
+OFL ライセンス同行は法的判断を含む）、Depends のバージョン下限（設計判断）、
+TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
+エラー混同、gpui-task-manager の --help 早期ショートカット、bond0、diverge。
+
+- app 65 passed / workspace 371 passed / clippy / fmt / README lint 増分ゼロ。
+  `split_task_refresh_preserves_thread_counts` が並列実行で flaky 失敗したが
+  再実行で成功（変更と無関係）。
