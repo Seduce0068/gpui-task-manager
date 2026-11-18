@@ -189,6 +189,33 @@ http://127.0.0.1:8092/?agent=http://127.0.0.1:18788#token=<token>
 終了時は各プロセスの起動元ターミナルで `Ctrl-C` を使ってください。前述の
 クイックスタート手順（既定ポート）は 1 インスタンス前提のままです。
 
+### 破損設定の退避と手動復元
+
+設定が破損していた場合、アプリは元の内容を退避してから既定値で起動します。
+退避物は古い順に自動削除され、**最新 5 件だけ**が残ります（削除に失敗しても
+起動は継続します）。消える前に必要な設定を戻す手順は次のとおりです。
+
+- ネイティブ版: `~/.config/gpui-task-manager/settings.json.corrupt-<timestamp>`
+  を `~/.config/gpui-task-manager/settings.json` へコピーして起動します。
+  `<timestamp>` は実際の退避ファイル名の末尾（16 桁の hex）に置き換えてください。
+
+```bash
+# Kubuntu / Linux: 最新の退避物を settings.json へ戻して起動
+backup=$(ls -1t ~/.config/gpui-task-manager/settings.json.corrupt-* | head -n 1)
+cp -- "$backup" ~/.config/gpui-task-manager/settings.json
+./target/debug/gpui-task-manager
+```
+
+- ブラウザ版: DevTools（Edge なら F12 →「アプリ」→「ローカルストレージ」）で
+  `gpui-task-manager.settings.corrupt.<timestamp>` の値をコピーし、
+  `gpui-task-manager.settings` の値へ貼り付けて上書きし、ページを再読込します。
+
+```text
+gpui-task-manager.settings.corrupt.<timestamp>  →  gpui-task-manager.settings
+```
+
+詳しくは [SECURITY.md](SECURITY.md) の「破損設定の退避と手動復元」も参照してください。
+
 ## アーキテクチャ
 
 ```text

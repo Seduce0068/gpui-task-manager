@@ -113,6 +113,33 @@ TM_REDACT=1 ./target/debug/gpui-task-manager
   メッセージでの上書きまで残る。永続メッセージは設定・起動状態の注意として扱い、
   一時メッセージを恒久的な状態と誤認しないこと。
 
+### 破損設定の退避と手動復元
+
+破損した設定は上書きせず退避してから既定値で起動する。退避物は**最新 5 件**だけ
+保持し、それより古いものは起動時に削除する（削除に失敗しても起動を継続する）。
+退避物には表示設定以外は保存されないが、必要な設定を戻す場合は手動で復元する。
+
+- ネイティブ: `~/.config/gpui-task-manager/settings.json.corrupt-<timestamp>` を
+  `~/.config/gpui-task-manager/settings.json` へコピーして起動する。
+
+```bash
+# Kubuntu / Linux: 最新の退避物を settings.json へ戻して起動
+backup=$(ls -1t ~/.config/gpui-task-manager/settings.json.corrupt-* | head -n 1)
+cp -- "$backup" ~/.config/gpui-task-manager/settings.json
+./target/debug/gpui-task-manager
+```
+
+- ブラウザ: DevTools（Edge なら F12 →「アプリ」→「ローカルストレージ」）で
+  `gpui-task-manager.settings.corrupt.<timestamp>` の値を
+  `gpui-task-manager.settings` へコピーし、ページを再読込する。
+
+```text
+gpui-task-manager.settings.corrupt.<timestamp>  →  gpui-task-manager.settings
+```
+
+復元後は退避物を削除してよい。保持上限を超えた退避物は自動削除されるため、
+長期保存が必要な場合は別途バックアップする。
+
 ## 6. 依存関係ポリシー
 
 - GPUI 系（`gpui-kit` / `gpui-pre*`）、`sysinfo`、`rustix` は**完全一致ピン**。

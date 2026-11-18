@@ -274,9 +274,9 @@ status: current
       ビルド時必須化。根拠 e4-dp。
 - [x] 403 の FORBIDDEN_GUIDANCE が利用者に変更手段の無い Origin 確認を求める。
       「別オリジンは非対応」という実態へ文言修正。根拠 e5-vu。
-- [ ] 設定破損退避物の一覧・復元手順・保持上限を追加（現状は退避のみ）。根拠 e5-vu。
+- [x] 設定破損退避物の一覧・復元手順・保持上限を追加（現状は退避のみ）。根拠 e5-vu。
 - [x] ネイティブ probe 失敗に再試行操作を追加（現状は再起動のみ）。根拠 e5-vu。
-- [ ] wasm の inline JS ダウンロードを web-sys API へ置換するか、判断理由を ADR 化。
+- [x] wasm の inline JS ダウンロードを web-sys API へ置換するか、判断理由を ADR 化。
       根拠 e1-st。
 
 ### 要判断（設計・外部依存）
@@ -288,7 +288,7 @@ status: current
 - [ ] 全成果物ジョブの needs に wasm / native-windows / native-macos / msrv-1-92 を追加
       （現状は [gates, deny] のみで、他プラットフォーム失敗時に成果物が残る）。
       branch protection 側で代替する選択もあり。根拠 e4-dp。
-- [ ] ツール版（cargo-vet / machete / markdownlint / gitleaks / trunk 等）の
+- [x] ツール版（cargo-vet / machete / markdownlint / gitleaks / trunk 等）の
       Dependabot 対象化。mise.toml 等の一元管理が必要。根拠 e4-dp。
 
 ### 優先度: 低 — テストギャップ 2026-11-19（D3-TQ01）
