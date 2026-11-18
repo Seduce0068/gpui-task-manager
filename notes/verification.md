@@ -1377,9 +1377,9 @@ FAIL: 保存スキーマが想定どおり（実際: ['details_visible','interva
   予測可能なトークンを出さずエラーで起動を失敗させる（`parse()` は既に Result のため
   自然に伝播）。回帰テスト 2 件は `.expect("urandom")` に更新。
 - 実機確認: `--token test --once --demo` でスナップショット取得成功、トークン省略時は
-  `/dev/urandom` から生成され stderr に 1 回表示（従来どおり）。
-- 見送り: R1S-SEC-03（stderr 平文出力）は README:88 で「stderr に 1 回だけ表示」と
-  明記された意図的な設計であり、廃止にはトークン自動保存等の仕様判断が必要。
+  `/dev/urandom` から生成され「値はログに出力しません」のみ表示（現在の実装に合わせて修正）。
+- 対応: R1S-SEC-03（トークン値の平文出力）は、生成値をログに出さない方式へ変更済み。
+  接続には `--token-file` または `TM_AGENT_TOKEN` で渡す（agent/src/main.rs:237-242）。
 - workspace 203 passed / clippy 0 warning / fmt OK。
 
 ## 2026-11-17（トークンファイル権限と argv 警告：R2X-A2/A10）
