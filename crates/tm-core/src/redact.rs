@@ -33,9 +33,14 @@ fn redact_tailnet_domains(value: &str) -> String {
     let mut rest = value;
     while let Some(position) = rest.find(SUFFIX) {
         let before = &rest[..position];
+        // `rfind` returns a byte index; advancing by 1 byte can land inside a
+        // multibyte character (e.g. a Japanese label before ".ts.net") and
+        // panic on the slice below. Advance by the character's UTF-8 length.
         let start = before
-            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-'))
-            .map(|index| index + 1)
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '.' || *ch == '-'))
+            .map(|(index, ch)| index + ch.len_utf8())
             .unwrap_or(0);
         out.push_str(&before[..start]);
         out.push_str("host");
@@ -206,5 +211,30 @@ mod tests {
             redact_text("https://host.tail1234.t… --id=tail1234abcd", &ids),
             "https://host… --id=tailnet"
         );
+    }
+
+    #[test]
+    fn non_ascii_label_before_ts_net_does_not_panic() {
+        // `rfind` returns a byte index; "あ.ts.net" used to slice inside the
+        // multibyte character and panic (R29 core audit).
+        // The character immediately before ".ts.net" is kept (it is not a
+        // delimiter); the important part is that slicing never panics.
+        for (input, expected) in [
+            ("echo \"あ.ts.net\"", "echo \"あhost\""),
+            ("https://ホスト.ts.net/path", "https://ホストhost/path"),
+        ] {
+            assert_eq!(
+                redact_text(
+                    input,
+                    &RedactionIdentifiers {
+                        home: "",
+                        user: "",
+                        hostname: "",
+                    }
+                ),
+                expected,
+                "{input}"
+            );
+        }
     }
 }
