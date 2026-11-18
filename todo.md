@@ -39,8 +39,8 @@ status: current
       notes/* を現行実装へ。RESEARCH.md の2箇所は R1-D02B として分離。
 - [x] 成果物ジョブの `needs: gates` と fork PR 除外（4696c41）。
 - [x] ライセンス帰属と GPUI pin の訂正（4696c41 / fdf6f62）。
-- [ ] SBOM 生成を冪等化し、cargo-vet / advisory ignore の運用を見直す
-      （R1S-OPS-04, R1S-OPS-09, R1S-OPS-10）。
+- [x] SBOM 冪等化と監査運用（R1S-OPS-04/09/10）— advisory ignore に expiry、
+      vet を drift 検出ゲート化。CI で2回生成の同一性を検証。
 - [x] 数値表示と履歴の整合（733b7b0 / b310422）。
 - [x] Unicode 不可視文字と NFC 比較（R1S-DATA-01/02/05/06/11）— Cf 全21レンジ拒否、
       UCD 16.0 の NFC を自前実装（新規依存なし・理由をコードに記録）。
@@ -74,8 +74,8 @@ status: current
 - [x] EiB 表記と limit エコーのサニタイズ（a29d76c）。
 - [ ] 固定ポートの複数インスタンス方針と dev-setup shim の残置対策を
       文書化・実装する（R3-L03, R3-L04）。
-- [ ] `check.sh` のスキップ時挙動を明示し、誤った成功表示を防ぐ
-      （R1S-OPS-08）。
+- [x] `check.sh` のスキップ時挙動を明示（R1S-OPS-08）— SKIP 表示と想定外スキップは
+      exit 3、--fast は意図的スキップとして exit 0。
 - [ ] プローブの全スレッド走査を限定し、mutex 占有を抑える（R4-A01）。
 - [ ] wasm レスポンス読み取りの早期 abort と並行 fetch の制限を検討する
       （R4-A02、upstream 確保ではなく累積の問題）。
@@ -90,7 +90,10 @@ status: current
 
 - [x] R3-S02B `app::new()` の暗黙デモ分岐を除去し明示エラーへ統一
 
-- [ ] R1-D02B RESEARCH.md §8 の未確認4（IME）・8（エージェント並列化）を解消済みとして本文へ反映
+- [x] R1-D02B RESEARCH.md §8 の未確認4・8を解消済みとして本文へ反映
+
+- [ ] R1S-OPS-13 web/supply-chain ストアを baseline-unreviewed 方針へ揃え、
+      notes/cargo-vet-adoption.md / README / SECURITY の記述を更新する
 
 ### 優先度: 低
 
