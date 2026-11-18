@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::theme::*;
+use tm_viewmodel::{TrendDelta, TrendDirection};
 
 /// A horizontal flex container (mirrors the native shell's `h_flex`).
 pub fn h_flex() -> Div {
@@ -353,9 +354,62 @@ pub fn temperature_gauge(
         )
 }
 
+// ------------------------------------------------------------- trend badge
+//
+// A history trend is meaningful only when the direction is spelled out: a
+// coloured arrow alone is invisible to assistive technology. The amount and
+// the Japanese state label come from the viewmodel, so both shells show the
+// same wording. The widget reuses `accessible_pill`, keeping every existing
+// DOM hook / ElementId / role / aria contract untouched.
+
+/// Foreground colour for a trend badge (R5-I05).
+///
+/// A rise means more load (red), a fall means less load (green); flat and
+/// unknown states stay neutral so a missing sample never looks like good news.
+pub fn trend_badge_color(direction: TrendDirection) -> u32 {
+    let palette = palette();
+    match direction {
+        TrendDirection::Up => palette.red,
+        TrendDirection::Down => palette.green,
+        TrendDirection::Flat | TrendDirection::Unknown => palette.muted,
+    }
+}
+
+/// Visible text for a trend badge: cue, signed amount and textual state.
+pub fn trend_badge_text(delta: &TrendDelta) -> String {
+    delta.badge_text()
+}
+
+/// Accessible name (`aria-label` equivalent) for a trend badge.
+pub fn trend_a11y_label(metric: &str, delta: &TrendDelta) -> String {
+    delta.a11y_label(metric)
+}
+
+/// A coloured, textual trend badge with a stable ElementId and AccessKit name.
+///
+/// `id` must be unique within a frame; pass a metric-specific string such as
+/// `trend-cpu`. The existing [`accessible_pill`] applies the id, `Role::Label`
+/// and aria-label, so no DOM hook contract is changed here.
+pub fn trend_badge(
+    id: impl Into<ElementId>,
+    metric: impl Into<SharedString>,
+    delta: &TrendDelta,
+) -> Stateful<Div> {
+    let metric: SharedString = metric.into();
+    let label = trend_a11y_label(&metric, delta);
+    accessible_pill(
+        id,
+        trend_badge_text(delta),
+        trend_badge_color(delta.direction),
+        palette().surface,
+        label,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tm_viewmodel::{TrendUnit, trend_delta};
 
     #[test]
     fn usage_severity_has_the_same_thresholds_as_usage_color() {
@@ -463,5 +517,38 @@ mod tests {
         assert!(label.contains("危険"), "{label}");
         assert!(label.contains("max 68°C"), "{label}");
         assert!(label.contains("crit 100°C"), "{label}");
+    }
+
+    #[test]
+    fn trend_badge_text_carries_direction_without_colour() {
+        let up = trend_delta(Some(40.0), Some(42.5), 0.0, TrendUnit::PercentPoints);
+        let text = trend_badge_text(&up);
+        assert!(text.contains('↑'), "{text}");
+        assert!(text.contains("上昇"), "{text}");
+        assert!(text.contains("+2.5pt"), "{text}");
+
+        let unknown = trend_delta(None, None, 0.0, TrendUnit::PercentPoints);
+        assert_eq!(trend_badge_text(&unknown), "— 不明");
+    }
+
+    #[test]
+    fn trend_badge_colour_distinguishes_rise_from_fall() {
+        let up = trend_badge_color(TrendDirection::Up);
+        let down = trend_badge_color(TrendDirection::Down);
+        let flat = trend_badge_color(TrendDirection::Flat);
+        let unknown = trend_badge_color(TrendDirection::Unknown);
+        assert_ne!(up, down, "a rise and a fall must never share a colour");
+        assert_ne!(up, flat);
+        assert_ne!(down, flat);
+        assert_eq!(flat, unknown, "no data must not look like a real fall");
+    }
+
+    #[test]
+    fn trend_badge_a11y_label_keeps_metric_direction_and_amount() {
+        let down = trend_delta(Some(1_556_023.0), Some(0.0), 0.0, TrendUnit::BytesPerSecond);
+        let label = trend_a11y_label("ネットワーク", &down);
+        assert!(label.starts_with("ネットワーク の推移"), "{label}");
+        assert!(label.contains("下降"), "{label}");
+        assert!(label.contains("-1.5 MiB/s"), "{label}");
     }
 }

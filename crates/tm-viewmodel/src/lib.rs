@@ -15,8 +15,8 @@ use std::time::Duration;
 use tm_core::format;
 use tm_core::{
     filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
-    ProcessKey, ProcessSnapshot, ProcessTreeRow, Signal, SortKey, SortSpec, SystemSnapshot,
-    Timestamp,
+    ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
+    SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
@@ -41,6 +41,141 @@ pub const HISTORY_CAPACITY: usize = 120;
 pub const STATUS_PREFIX_INFO: &str = "[情報]";
 /// Text marker prepended to error status messages (R3-U04).
 pub const STATUS_PREFIX_ERROR: &str = "[エラー]";
+
+/// Dead-band for percentage trends: changes of at most 0.05 points are noise
+/// from sampling jitter rather than a real change in utilisation (R5-I05).
+const PERCENT_TREND_EPSILON: f64 = 0.05;
+
+/// Direction of a metric trend between the oldest and newest history samples
+/// (R5-I05).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrendDirection {
+    /// Fewer than two samples, or a non-finite value: no judgement possible.
+    Unknown,
+    /// The change is within the noise threshold.
+    Flat,
+    /// The newest value is higher than the oldest.
+    Up,
+    /// The newest value is lower than the oldest.
+    Down,
+}
+
+impl TrendDirection {
+    /// Monochrome-safe cue shown in the visible badge text.
+    pub fn cue(self) -> &'static str {
+        match self {
+            Self::Unknown => "—",
+            Self::Flat => "→",
+            Self::Up => "↑",
+            Self::Down => "↓",
+        }
+    }
+
+    /// Japanese state label shared by the visible badge and its accessible name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Flat => "横ばい",
+            Self::Up => "上昇",
+            Self::Down => "下降",
+        }
+    }
+}
+
+/// Unit used when rendering a trend delta's amount (R5-I05).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrendUnit {
+    /// Percentage points (CPU, memory).
+    PercentPoints,
+    /// Bytes per second (network rates).
+    BytesPerSecond,
+}
+
+/// A trend delta between the oldest and newest samples of one metric series.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrendDelta {
+    /// Direction of the change.
+    pub direction: TrendDirection,
+    /// Signed amount with its unit, e.g. `+1.2pt` or `-320 B/s`.
+    pub amount: String,
+}
+
+impl TrendDelta {
+    /// Visible badge text: cue, signed amount and Japanese state label.
+    ///
+    /// The label is part of the visible text so the state never depends on
+    /// colour perception; the cue keeps it scannable in a narrow badge.
+    pub fn badge_text(&self) -> String {
+        match self.direction {
+            TrendDirection::Unknown => "— 不明".to_string(),
+            direction => format!("{} {} {}", direction.cue(), self.amount, direction.label()),
+        }
+    }
+
+    /// Accessible name (`aria-label` equivalent) for the trend badge.
+    pub fn a11y_label(&self, metric: &str) -> String {
+        match self.direction {
+            TrendDirection::Unknown => format!("{metric} の推移 不明"),
+            direction => format!("{metric} の推移 {} {}", direction.label(), self.amount),
+        }
+    }
+}
+
+/// Computes a trend delta from two samples of one history series (R5-I05).
+///
+/// `oldest` and `latest` are the values returned by the corresponding ring
+/// buffer's `earliest()` / `latest()`. Missing or non-finite values produce
+/// [`TrendDirection::Unknown`]; `epsilon` is the dead-band that turns tiny
+/// floating-point drift into [`TrendDirection::Flat`] (pass `0.0` for integer
+/// byte rates). `unit` only affects the rendered [`TrendDelta::amount`], never
+/// the direction decision.
+pub fn trend_delta(
+    oldest: Option<f64>,
+    latest: Option<f64>,
+    epsilon: f64,
+    unit: TrendUnit,
+) -> TrendDelta {
+    let (Some(oldest), Some(latest)) = (oldest, latest) else {
+        return unknown_trend();
+    };
+    if !oldest.is_finite() || !latest.is_finite() {
+        return unknown_trend();
+    }
+    let epsilon = if epsilon.is_finite() && epsilon >= 0.0 {
+        epsilon
+    } else {
+        0.0
+    };
+    let delta = latest - oldest;
+    let direction = if delta.abs() <= epsilon {
+        TrendDirection::Flat
+    } else if delta > 0.0 {
+        TrendDirection::Up
+    } else {
+        TrendDirection::Down
+    };
+    // A flat trend must not display a phantom "+0.0" from floating point
+    // jitter: dead-band noise is rendered as a neutral zero for every unit.
+    let amount = if direction == TrendDirection::Flat {
+        match unit {
+            TrendUnit::PercentPoints => "±0.0pt".to_string(),
+            TrendUnit::BytesPerSecond => format!("±{}", format::format_rate(0)),
+        }
+    } else {
+        match unit {
+            TrendUnit::PercentPoints => format!("{delta:+.1}pt"),
+            TrendUnit::BytesPerSecond => {
+                let magnitude = format::format_rate(delta.abs() as u64);
+                if delta > 0.0 {
+                    format!("+{magnitude}")
+                } else {
+                    format!("-{magnitude}")
+                }
+            }
+        }
+    };
+    TrendDelta { direction, amount }
+}
 
 /// A user intention produced by the shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -323,6 +458,41 @@ impl Dashboard {
     /// Latest network rates in bytes per second.
     pub fn network_rates(&self) -> (u64, u64) {
         self.network_rates
+    }
+
+    /// CPU trend from the oldest retained sample to the newest (R5-I05).
+    pub fn cpu_trend(&self) -> TrendDelta {
+        percent_trend(&self.history.cpu_percent)
+    }
+
+    /// Memory trend from the oldest retained sample to the newest (R5-I05).
+    pub fn memory_trend(&self) -> TrendDelta {
+        percent_trend(&self.history.memory_percent)
+    }
+
+    /// Combined network trend (RX + TX) over the retained history (R5-I05).
+    ///
+    /// RX and TX are summed at each end of the window so the badge describes
+    /// total traffic, matching the single network overview card.
+    pub fn network_trend(&self) -> TrendDelta {
+        if self.history.len() < 2 {
+            return unknown_trend();
+        }
+        let total = |rx: Option<&u64>, tx: Option<&u64>| -> Option<f64> {
+            Some(rx?.saturating_add(*tx?) as f64)
+        };
+        trend_delta(
+            total(
+                self.history.network_rx_rate.earliest(),
+                self.history.network_tx_rate.earliest(),
+            ),
+            total(
+                self.history.network_rx_rate.latest(),
+                self.history.network_tx_rate.latest(),
+            ),
+            0.0,
+            TrendUnit::BytesPerSecond,
+        )
     }
 
     /// Position of the selected row inside the visible table.
@@ -715,6 +885,27 @@ pub const fn signal_confirmation_note(signal: Signal) -> &'static str {
         Signal::Stop => "一時停止 (SIGSTOP) はプロセスを停止します。再開 (SIGCONT) で元に戻せます。",
         Signal::Continue => "再開 (SIGCONT) は停止中のプロセスを再開します。",
     }
+}
+
+/// A trend that cannot be judged yet (no second sample to compare against).
+fn unknown_trend() -> TrendDelta {
+    TrendDelta {
+        direction: TrendDirection::Unknown,
+        amount: "—".to_string(),
+    }
+}
+
+/// Shared helper for the percentage series (CPU / memory).
+fn percent_trend(history: &RingBuffer<f32>) -> TrendDelta {
+    if history.len() < 2 {
+        return unknown_trend();
+    }
+    trend_delta(
+        history.earliest().copied().map(f64::from),
+        history.latest().copied().map(f64::from),
+        PERCENT_TREND_EPSILON,
+        TrendUnit::PercentPoints,
+    )
 }
 
 fn clamp_interval(interval: Duration) -> Duration {
@@ -1452,5 +1643,135 @@ mod tests {
         dashboard.apply(Command::ToggleTreeNode(parent));
         assert!(!dashboard.is_collapsed(parent));
         assert_eq!(dashboard.visible_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn trend_delta_reports_direction_amount_and_textual_cue() {
+        let up = trend_delta(
+            Some(40.0),
+            Some(42.5),
+            PERCENT_TREND_EPSILON,
+            TrendUnit::PercentPoints,
+        );
+        assert_eq!(up.direction, TrendDirection::Up);
+        assert_eq!(up.amount, "+2.5pt");
+        assert_eq!(up.badge_text(), "↑ +2.5pt 上昇");
+        assert_eq!(up.a11y_label("CPU"), "CPU の推移 上昇 +2.5pt");
+
+        let down = trend_delta(
+            Some(42.5),
+            Some(40.0),
+            PERCENT_TREND_EPSILON,
+            TrendUnit::PercentPoints,
+        );
+        assert_eq!(down.direction, TrendDirection::Down);
+        assert_eq!(down.amount, "-2.5pt");
+        assert_eq!(down.badge_text(), "↓ -2.5pt 下降");
+        assert_eq!(down.a11y_label("メモリ"), "メモリ の推移 下降 -2.5pt");
+    }
+
+    #[test]
+    fn trend_delta_dead_band_and_rate_units_are_stable() {
+        let flat = trend_delta(
+            Some(40.0),
+            Some(40.01),
+            PERCENT_TREND_EPSILON,
+            TrendUnit::PercentPoints,
+        );
+        assert_eq!(flat.direction, TrendDirection::Flat);
+        assert_eq!(flat.badge_text(), "→ ±0.0pt 横ばい");
+
+        let rate = trend_delta(Some(0.0), Some(1_556_023.0), 0.0, TrendUnit::BytesPerSecond);
+        assert_eq!(rate.direction, TrendDirection::Up);
+        assert!(rate.amount.starts_with('+'), "{}", rate.amount);
+        assert!(rate.amount.ends_with("/s"), "{}", rate.amount);
+        assert!(rate.badge_text().contains("上昇"), "{}", rate.badge_text());
+
+        let unchanged = trend_delta(Some(10.0), Some(10.0), 0.0, TrendUnit::BytesPerSecond);
+        assert_eq!(unchanged.direction, TrendDirection::Flat);
+        assert_eq!(unchanged.amount, "±0 B/s");
+    }
+
+    #[test]
+    fn trend_delta_requires_two_finite_samples() {
+        let samples = [
+            (None, Some(1.0)),
+            (Some(1.0), None),
+            (None, None),
+            (Some(f64::NAN), Some(1.0)),
+            (Some(1.0), Some(f64::INFINITY)),
+        ];
+        for (oldest, latest) in samples {
+            let delta = trend_delta(oldest, latest, 0.0, TrendUnit::PercentPoints);
+            assert_eq!(delta.direction, TrendDirection::Unknown);
+            assert_eq!(delta.badge_text(), "— 不明");
+            assert_eq!(delta.a11y_label("メモリ"), "メモリ の推移 不明");
+        }
+
+        // An invalid dead-band must not suppress a real movement.
+        for epsilon in [-1.0, f64::NAN] {
+            let moved = trend_delta(Some(0.0), Some(1.0), epsilon, TrendUnit::PercentPoints);
+            assert_eq!(moved.direction, TrendDirection::Up);
+        }
+    }
+
+    #[test]
+    fn dashboard_trends_read_the_oldest_and_newest_history_samples() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.cpu_trend().direction, TrendDirection::Unknown);
+        assert_eq!(dashboard.memory_trend().direction, TrendDirection::Unknown);
+        assert_eq!(dashboard.network_trend().direction, TrendDirection::Unknown);
+
+        dashboard.ingest(demo_snapshot(1));
+        let history = dashboard.history();
+        let expected_cpu = trend_delta(
+            history.cpu_percent.earliest().copied().map(f64::from),
+            history.cpu_percent.latest().copied().map(f64::from),
+            PERCENT_TREND_EPSILON,
+            TrendUnit::PercentPoints,
+        );
+        assert_eq!(dashboard.cpu_trend(), expected_cpu);
+        // (0 B/s, 0 B/s) → (+1_234_567 B/s, +321_456 B/s) on the demo interface.
+        assert_eq!(dashboard.network_trend().direction, TrendDirection::Up);
+        assert!(
+            dashboard.network_trend().amount.ends_with("MiB/s"),
+            "{}",
+            dashboard.network_trend().amount
+        );
+    }
+
+    #[test]
+    fn trend_window_follows_the_ring_buffer_window() {
+        let mut dashboard = dashboard();
+        let final_tick = HISTORY_CAPACITY as u64 + 2;
+        for tick in 0..=final_tick {
+            dashboard.ingest(demo_snapshot(tick));
+        }
+        assert_eq!(dashboard.history().len(), HISTORY_CAPACITY);
+
+        let history = dashboard.history();
+        let expected = trend_delta(
+            history.cpu_percent.earliest().copied().map(f64::from),
+            history.cpu_percent.latest().copied().map(f64::from),
+            PERCENT_TREND_EPSILON,
+            TrendUnit::PercentPoints,
+        );
+        assert_eq!(dashboard.cpu_trend(), expected);
+        let expected_network = trend_delta(
+            history
+                .network_rx_rate
+                .earliest()
+                .zip(history.network_tx_rate.earliest())
+                .map(|(rx, tx)| rx.saturating_add(*tx) as f64),
+            history
+                .network_rx_rate
+                .latest()
+                .zip(history.network_tx_rate.latest())
+                .map(|(rx, tx)| rx.saturating_add(*tx) as f64),
+            0.0,
+            TrendUnit::BytesPerSecond,
+        );
+        assert_eq!(dashboard.network_trend(), expected_network);
     }
 }

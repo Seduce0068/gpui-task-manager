@@ -4,6 +4,11 @@
 //!
 //! Run with `cargo run -p gpui-task-manager` for live system data, or
 //! `cargo run -p gpui-task-manager -- --demo` for deterministic demo data.
+//!
+//! `--export csv|json <path>` samples one snapshot, renders it with the pure
+//! `tm_core::export` functions (redaction is always applied) and writes the
+//! file with mode `0600`, then exits without opening a window. Failures are
+//! reported through a classified exit status and a short stderr message.
 
 #![forbid(unsafe_code)]
 
@@ -27,9 +32,18 @@ fn main() {
         Ok(flags) => flags,
         Err(message) => {
             eprintln!("gpui-task-manager: {message}");
-            std::process::exit(2);
+            std::process::exit(EXIT_USAGE);
         }
     };
+    // `--export` is a headless mode: no GPUI window, no event loop. The pure
+    // exporter always redacts, so `--redact` / `TM_REDACT` need not be passed.
+    if let Some(request) = flags.export.as_ref() {
+        let status = run_export(request, flags.demo);
+        if status != EXIT_OK {
+            std::process::exit(status);
+        }
+        return;
+    }
     let demo = flags.demo;
     let redact = flags.redact || std::env::var("TM_REDACT").is_ok_and(|value| value == "1");
 
@@ -72,15 +86,46 @@ fn main() {
 }
 
 /// Parsed GUI flags (no GPUI dependency, so it is unit-testable).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct GuiFlags {
     demo: bool,
     redact: bool,
+    /// Headless export request; `None` keeps the normal GUI startup path.
+    export: Option<ExportRequest>,
     /// Accepted and validated for parity with `tm-agent`. This GUI has no
     /// structured logging to configure, so the value is recorded only.
     #[allow(dead_code)]
     log_level: LogLevel,
 }
+
+/// File format requested by `--export`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportFormat {
+    Csv,
+    Json,
+}
+
+impl ExportFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Json => "json",
+        }
+    }
+}
+
+/// A validated `--export <format> <path>` request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExportRequest {
+    format: ExportFormat,
+    path: std::path::PathBuf,
+}
+
+/// Exit status categories shared by `tm-agent` and this binary (help text).
+const EXIT_OK: i32 = 0;
+const EXIT_INTERNAL: i32 = 1;
+const EXIT_USAGE: i32 = 2;
+const EXIT_PROBE: i32 = 4;
 
 /// Severity accepted by `--log-level` (same accept set as `tm-agent`).
 /// Matching is ASCII case-insensitive; the canonical spelling is lowercase.
@@ -105,11 +150,14 @@ fn help_text() -> String {
         concat!(
             "gpui-task-manager {version} — ネイティブ GPUI シェル\n\n",
             "使い方:\n",
-            "  gpui-task-manager [--demo] [--redact] [--log-level LEVEL] [-V, --version] [-h, --help]\n\n",
+            "  gpui-task-manager [--demo] [--redact] [--log-level LEVEL]\n",
+            "                    [--export csv|json PATH] [-V, --version] [-h, --help]\n\n",
             "オプション:\n",
             "  --demo            合成データで起動します（スクリーンショット・ブラウザ比較用）\n",
             "  --redact          ホスト名・ユーザー名・ホームパスを表示時に伏せます（公開用スクリーンショット）\n",
             "  --log-level LEVEL ログレベル (error/warn/info/debug/trace、既定 info、受け付け・検証のみ)\n",
+            "  --export csv|json PATH  スナップショットを 1 回取得し、伏せ字化した CSV/JSON を\n",
+            "                         PATH へ 0600 で書き出して終了（ウィンドウは開きません）\n",
             "  -V, --version     バージョンを 1 行で表示して終了 (tm-agent と同一形式)\n",
             "  -h, --help        このヘルプを表示\n\n",
             "主なキー: ↑↓ 選択 / Space 一時停止 / Ctrl+F 絞り込み /\n",
@@ -204,6 +252,31 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
                 };
                 flags.log_level = parse_log_level(&value)?;
             }
+            "--export" => {
+                let format_value = match inline_value {
+                    Some(value) => std::borrow::Cow::Borrowed(value),
+                    None => args
+                        .next()
+                        .map(|argument| argument.to_string_lossy())
+                        .ok_or_else(|| "--export には csv または json が必要です".to_string())?,
+                };
+                // A flag-looking value means the format was omitted. Reject it
+                // instead of consuming e.g. `--demo` as a file name.
+                if format_value.starts_with('-') {
+                    return Err("--export には csv または json が必要です".to_string());
+                }
+                let format = parse_export_format(&format_value)?;
+                let path_value = args
+                    .next()
+                    .ok_or_else(|| "--export には出力先パスが必要です".to_string())?;
+                if path_value.to_string_lossy().starts_with('-') {
+                    return Err("--export には出力先パスが必要です".to_string());
+                }
+                flags.export = Some(ExportRequest {
+                    format,
+                    path: std::path::PathBuf::from(path_value.as_os_str()),
+                });
+            }
             _ => {
                 if flag.starts_with('-') {
                     // A typo such as `--redcat` must not silently disable
@@ -245,6 +318,132 @@ fn parse_log_level(value: &str) -> Result<LogLevel, String> {
         }
     };
     Ok(level)
+}
+
+/// Parses the `--export` format with a fixed accept set. As with
+/// `--log-level`, the raw value is never echoed so a mistyped secret cannot
+/// reach stderr.
+fn parse_export_format(value: &str) -> Result<ExportFormat, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "csv" => Ok(ExportFormat::Csv),
+        "json" => Ok(ExportFormat::Json),
+        _ => Err("--export には csv または json を指定してください".to_string()),
+    }
+}
+
+/// Renders one snapshot with the pure `tm_core::export` functions.
+///
+/// The identifiers used for masking are captured **before** any redaction:
+/// the host name comes from the snapshot and home/user come from the
+/// environment. `tm_core::export` re-applies redaction to a private clone, so
+/// an unredacted snapshot cannot leak local identifiers even when the caller
+/// did not pass `--redact`.
+fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> String {
+    let hostname = snapshot.hostname.clone().unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let ids = tm_core::redact::RedactionIdentifiers {
+        home: &home,
+        user: &user,
+        hostname: &hostname,
+    };
+    match format {
+        ExportFormat::Csv => tm_core::export::snapshot_to_csv(snapshot, &ids),
+        ExportFormat::Json => tm_core::export::snapshot_to_json(snapshot, &ids),
+    }
+}
+
+/// Writes an export atomically to `path` with mode `0600` on Unix.
+///
+/// A PID/nonce/timestamp temporary file in the target directory is created
+/// with `0600` from the start and renamed into place, so an existing file
+/// cannot keep a permissive mode and a failed write leaves no partial output.
+/// A failure to open, write or rename is returned with the path but never the
+/// file contents.
+fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("エクスポート先のファイル名が不正です: {}", path.display()))?;
+    static EXPORT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = EXPORT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let temporary = parent.join(format!(
+        ".{name}.export.tmp.{}.{:x}.{:x}",
+        std::process::id(),
+        nanos,
+        nonce,
+        name = name.to_string_lossy()
+    ));
+    let written = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // `create_new` + `mode(0600)` avoids a umask-dependent 0644 window
+            // and refuses to reuse a stale/poisoned temporary file.
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(contents.as_bytes())?;
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written.map_err(|error| {
+        format!(
+            "エクスポート先に書き込めません ({}): {error}",
+            path.display()
+        )
+    })
+}
+
+/// Samples one snapshot and writes the requested format.
+///
+/// Returns a classified exit status: `4` when the probe cannot be created or
+/// sampled, `1` when the file cannot be written, `0` on success. Unlike the GUI
+/// startup path, a failed native probe is an error here: silently exporting
+/// demo data would produce misleading evidence.
+fn run_export(request: &ExportRequest, demo: bool) -> i32 {
+    let mut probe: Box<dyn tm_core::SystemProbe> = if demo {
+        Box::new(tm_core::demo::DemoProbe::new())
+    } else {
+        match tm_platform::NativeProbe::new() {
+            Ok(probe) => Box::new(probe),
+            Err(error) => {
+                eprintln!("gpui-task-manager: スナップショット収集を初期化できません: {error}");
+                return EXIT_PROBE;
+            }
+        }
+    };
+    let snapshot = match probe.sample() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("gpui-task-manager: スナップショット取得に失敗: {error}");
+            return EXIT_PROBE;
+        }
+    };
+    let contents = render_export(&snapshot, request.format);
+    if let Err(error) = write_export(&request.path, &contents) {
+        eprintln!("gpui-task-manager: {error}");
+        return EXIT_INTERNAL;
+    }
+    eprintln!(
+        "gpui-task-manager: {} を {} 形式でエクスポートしました",
+        request.path.display(),
+        request.format.label()
+    );
+    EXIT_OK
 }
 
 #[cfg(test)]
@@ -295,6 +494,8 @@ mod tests {
             "--demo",
             "--redact",
             "--log-level LEVEL",
+            "--export csv|json PATH",
+            "0600",
             "error/warn/info/debug/trace",
             "--version",
             "--help",
@@ -384,5 +585,183 @@ mod tests {
         assert!(parse_gui_flags(&args(&["--log-level"])).is_err());
         // Non-flag positional arguments remain ignored as before.
         assert!(parse_gui_flags(&args(&["some/path"])).is_ok());
+    }
+
+    #[::core::prelude::v1::test]
+    fn export_flags_are_parsed_in_separate_and_inline_forms() {
+        let csv = parse_gui_flags(&args(&["--export", "csv", "/tmp/out.csv"])).expect("csv");
+        assert_eq!(
+            csv.export,
+            Some(ExportRequest {
+                format: ExportFormat::Csv,
+                path: std::path::PathBuf::from("/tmp/out.csv"),
+            })
+        );
+        // Format matching is case-insensitive, like `--log-level`.
+        let inline =
+            parse_gui_flags(&args(&["--export=JSON", "/tmp/out.json"])).expect("inline json");
+        assert_eq!(
+            inline.export,
+            Some(ExportRequest {
+                format: ExportFormat::Json,
+                path: std::path::PathBuf::from("/tmp/out.json"),
+            })
+        );
+        // Combining with the existing flags must not change the GUI contract.
+        let combined = parse_gui_flags(&args(&[
+            "--demo",
+            "--redact",
+            "--log-level",
+            "trace",
+            "--export",
+            "csv",
+            "/tmp/out.csv",
+        ]))
+        .expect("combined");
+        assert!(combined.demo);
+        assert!(combined.redact);
+        assert_eq!(combined.log_level, LogLevel::Trace);
+        assert_eq!(combined.export, csv.export);
+    }
+
+    #[::core::prelude::v1::test]
+    fn export_rejects_missing_or_unknown_values_without_echoing_them() {
+        for argv in [
+            vec!["--export"],
+            vec!["--export", "csv"],
+            vec!["--export", "--demo", "/tmp/out.csv"],
+            vec!["--export", "csv", "--demo"],
+        ] {
+            let error = parse_gui_flags(&args(&argv)).expect_err(&format!("{argv:?}"));
+            assert!(error.contains("--export"), "{error}");
+        }
+        let error = parse_gui_flags(&args(&["--export", "SECRET-FORMAT", "/tmp/out"]))
+            .expect_err("unknown format");
+        assert!(error.contains("csv または json"), "{error}");
+        assert!(
+            !error.contains("SECRET-FORMAT"),
+            "value must not be echoed: {error}"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn render_export_redacts_local_identifiers_by_default() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_default();
+        let hostname = "secret-test-host";
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.hostname = Some(hostname.to_string());
+        snapshot.processes[0].user = Some(user.clone());
+        snapshot.processes[0].command =
+            format!("{home}/private/app --issuer=https://{hostname}.tail1234ab.ts.net:8443");
+        snapshot.disks[0].mount_point = format!("{home}/work/project");
+
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let output = render_export(&snapshot, format);
+            assert!(
+                !output.contains(hostname),
+                "{format:?} leaked hostname: {output}"
+            );
+            assert!(
+                !output.contains("tail1234ab"),
+                "{format:?} leaked tailnet id: {output}"
+            );
+            if !home.is_empty() {
+                assert!(!output.contains(&home), "{format:?} leaked home: {output}");
+            }
+            if !user.is_empty() {
+                assert!(!output.contains(&user), "{format:?} leaked user: {output}");
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn export_write_is_atomic_0600_and_replaces_a_permissive_file() {
+        let dir = std::env::temp_dir().join(format!("gtm-export-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.json");
+        std::fs::write(&path, "old contents").expect("seed file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod 0644");
+        }
+        write_export(&path, "new contents").expect("write export");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read export"),
+            "new contents"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "export must not be world readable");
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains("export.tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no half-written temp file may remain");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn export_write_reports_failure_without_leaving_output() {
+        let dir = std::env::temp_dir().join(format!("gtm-export-fail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("missing-parent").join("out.csv");
+        let error = write_export(&path, "payload").expect_err("missing parent must fail");
+        assert!(error.contains("エクスポート先に書き込めません"), "{error}");
+        assert!(error.contains("out.csv"), "{error}");
+        assert!(!path.exists(), "a failed export must not create output");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn run_export_demo_writes_a_redacted_file_and_returns_success() {
+        let dir = std::env::temp_dir().join(format!("gtm-export-demo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("snapshot.json");
+        let request = ExportRequest {
+            format: ExportFormat::Json,
+            path: path.clone(),
+        };
+        assert_eq!(run_export(&request, true), EXIT_OK);
+        let text = std::fs::read_to_string(&path).expect("export file");
+        assert!(text.contains("\"schema_version\": 1"), "{text}");
+        assert!(text.contains("\"total_process_count\""), "{text}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "export must not be world readable");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[::core::prelude::v1::test]
+    fn run_export_reports_write_failure_as_internal_error_status() {
+        let dir = std::env::temp_dir().join(format!("gtm-export-status-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // A directory cannot be replaced by a renamed file: exercise the
+        // failure status promised by the CLI contract.
+        let request = ExportRequest {
+            format: ExportFormat::Csv,
+            path: dir.clone(),
+        };
+        assert_eq!(run_export(&request, true), EXIT_INTERNAL);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
