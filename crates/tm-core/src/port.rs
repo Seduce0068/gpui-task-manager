@@ -104,6 +104,17 @@ impl PlatformInfo {
             Section::ProcessControl => self.supports_process_control,
         }
     }
+
+    /// Whether this backend can deliver `signal` right now.
+    ///
+    /// This is the single answer shells should use for individual signal
+    /// buttons. A read-only backend refuses every signal; a native Windows
+    /// backend refuses only `Stop` / `Continue`, because it can still terminate
+    /// processes. Section-level capability is included so a shell cannot show a
+    /// signal button when process control as a whole is unavailable.
+    pub fn supports_signal(&self, signal: Signal) -> bool {
+        self.supports_process_control && signal.supported_on_native_os(&self.os)
+    }
 }
 
 /// Process control signal exposed by the UI.
@@ -148,6 +159,38 @@ impl Signal {
     pub const fn is_destructive(self) -> bool {
         matches!(self, Self::Kill)
     }
+
+    /// Whether a native backend on `os` can deliver this signal.
+    ///
+    /// Windows has no POSIX stop/continue: `tm-platform` maps `Terminate` and
+    /// `Kill` to `taskkill /F` and returns `ControlError::Unsupported` for
+    /// `Stop` / `Continue`. Shells must ask this before rendering a button that
+    /// can never work instead of letting every click fail (R2X-P2).
+    pub fn supported_on_native_os(self, os: &str) -> bool {
+        match self {
+            Self::Terminate | Self::Kill => true,
+            Self::Stop | Self::Continue => !is_windows(os),
+        }
+    }
+
+    /// Whether `Terminate` is a graceful request on `os`.
+    ///
+    /// On Windows both `Terminate` and `Kill` become `taskkill /F`, so the
+    /// "終了 (SIGTERM)" label alone would imply a graceful shutdown that the
+    /// backend cannot perform (R2X-P4). The label stays stable for DOM hooks;
+    /// shells may use this to show an extra warning.
+    pub fn terminate_is_graceful_on(os: &str) -> bool {
+        !is_windows(os)
+    }
+}
+
+/// Whether a platform label refers to Windows.
+///
+/// `tm-platform` passes `System::long_os_version()` (for example
+/// "Windows 11 Pro") to [`PlatformInfo::native`]. A case-insensitive substring
+/// check keeps the mapping in the core, so every shell sees the same answer.
+fn is_windows(os: &str) -> bool {
+    os.to_ascii_lowercase().contains("windows")
 }
 
 impl fmt::Display for Signal {
@@ -320,5 +363,75 @@ mod tests {
     fn destructive_signal_is_only_kill() {
         assert!(Signal::Kill.is_destructive());
         assert!(!Signal::Terminate.is_destructive());
+    }
+
+    #[test]
+    fn windows_native_platform_info_gates_stop_and_continue() {
+        // R2X-P2: Windows can terminate via `taskkill /F` but has no POSIX
+        // SIGSTOP / SIGCONT, so only those two signals must be hidden/disabled.
+        let info = PlatformInfo::native("Windows 11 Pro");
+        assert!(info.supports(Section::ProcessControl));
+        assert!(info.supports_signal(Signal::Terminate));
+        assert!(info.supports_signal(Signal::Kill));
+        assert!(!info.supports_signal(Signal::Stop));
+        assert!(!info.supports_signal(Signal::Continue));
+
+        // Mixed case and short labels must reach the same answer.
+        for label in ["WINDOWS 10", "windows", "Windows Server 2022"] {
+            let info = PlatformInfo::native(label);
+            assert!(!info.supports_signal(Signal::Stop), "{label}");
+            assert!(!info.supports_signal(Signal::Continue), "{label}");
+        }
+    }
+
+    #[test]
+    fn non_windows_native_platform_info_supports_every_signal() {
+        let info = PlatformInfo::native("Linux");
+        for signal in [
+            Signal::Terminate,
+            Signal::Kill,
+            Signal::Stop,
+            Signal::Continue,
+        ] {
+            assert!(info.supports_signal(signal), "{signal:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_and_demo_backends_refuse_every_signal() {
+        // R5-I04: section capability and per-signal capability must agree when
+        // the whole backend is read-only.
+        for info in [
+            PlatformInfo::native_read_only("Linux (エージェント経由)"),
+            PlatformInfo::demo(),
+        ] {
+            for signal in [
+                Signal::Terminate,
+                Signal::Kill,
+                Signal::Stop,
+                Signal::Continue,
+            ] {
+                assert!(!info.supports_signal(signal), "{signal:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn per_signal_capability_does_not_change_other_sections() {
+        // Gating Stop/Continue on Windows must not hide network/disk sections.
+        let info = PlatformInfo::native("Windows 11 Pro");
+        assert!(info.supports(Section::Network));
+        assert!(info.supports(Section::Disks));
+        assert!(info.supports(Section::ProcessControl));
+        assert!(!info.supports_signal(Signal::Stop));
+    }
+
+    #[test]
+    fn windows_terminate_is_reported_as_forceful() {
+        // R2X-P4: the stable label says SIGTERM, but Windows really runs
+        // `taskkill /F`; shells show an extra warning based on this flag.
+        assert!(Signal::terminate_is_graceful_on("Linux"));
+        assert!(!Signal::terminate_is_graceful_on("Windows 11 Pro"));
+        assert!(!Signal::terminate_is_graceful_on("WINDOWS 10"));
     }
 }

@@ -788,6 +788,14 @@ impl Dashboard {
             ));
             return;
         }
+        // UI buttons already hide unsupported signals; reject them here too so
+        // a direct Command cannot bypass the per-signal capability gate.
+        if !self.platform.supports_signal(signal) {
+            self.status = Some(StatusMessage::error(
+                "この環境ではこのシグナルは使用できません",
+            ));
+            return;
+        }
         let Some(process) = self
             .snapshot
             .as_ref()

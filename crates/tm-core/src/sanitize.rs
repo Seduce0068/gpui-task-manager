@@ -43,7 +43,8 @@ pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
     }
 }
 
-/// Removes ANSI escape sequences, control characters, Unicode bidi control
+/// Removes ANSI/terminal escape sequences (including the whole payload of OSC
+/// and other control strings), control characters, Unicode bidi control
 /// characters and zero-width / invisible format characters, collapses whitespace
 /// and truncates to `max_chars` characters (not bytes).
 ///
@@ -112,6 +113,13 @@ fn is_bidi_control(ch: char) -> bool {
 /// meaning of a legitimate name in a way that matters for the UI. Combining
 /// marks (e.g. U+0300..U+036F) are intentionally kept so accented names render
 /// correctly.
+///
+/// This explicitly covers ZWJ (U+200D) and ZWNJ (U+200C) as well (R1S-DATA-04).
+/// They can form legitimate emoji/Indic ligatures, but *deleting* them would
+/// silently concatenate adjacent tokens (`cmd\u{200d}exe` -> `cmdexe`), which is
+/// a spoofing risk for an identification label. Replacing them with a visible
+/// space keeps the gap, stays consistent with every other Cf character, and
+/// preserves the Cf-rejection contract. Ligature fidelity loses to predictability.
 fn is_invisible_format(ch: char) -> bool {
     matches!(
         ch,
@@ -170,14 +178,18 @@ fn is_format_char(ch: char) -> bool {
     )
 }
 
-/// Consumes the ESC prefix of CSI/two-character escape sequences.
+/// Removes CSI, string-carrying control sequences and two-character escapes.
 ///
-/// The parser is deliberately small: it only needs to be correct enough that an
-/// escape sequence cannot reach the renderer, not to interpret terminal output.
-/// In particular an OSC introducer (`ESC ]`) is consumed as a two-character
-/// escape and its printable payload is left in place; the terminating BEL is a
-/// control character and is replaced by [`sanitize_display`]. The existing test
-/// pins this (`ESC ] 0;title BEL` becomes `"0;title "`).
+/// The parser is deliberately small: it only needs to be correct enough that no
+/// escape sequence or control-string payload can reach the renderer, not to
+/// interpret terminal output.
+///
+/// OSC (`ESC ]`), DCS (`ESC P`), SOS (`ESC X`), PM (`ESC ^`) and APC (`ESC _`)
+/// open a control string whose body is freely printable. Leaving that body in
+/// place would let a process name inject a window title, a hyperlink or arbitrary
+/// text into a terminal-like widget (R1S-DATA-03). The entire string is therefore
+/// consumed up to its terminator — ST (`ESC \`) or BEL (the common OSC
+/// terminator) — and a string with no terminator is drained to the end of input.
 fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -186,7 +198,7 @@ fn strip_ansi(input: &str) -> String {
             out.push(ch);
             continue;
         }
-        match chars.peek() {
+        match chars.peek().copied() {
             // CSI: ESC [ ... final byte in 0x40..=0x7e
             Some('[') => {
                 chars.next();
@@ -196,6 +208,11 @@ fn strip_ansi(input: &str) -> String {
                     }
                 }
             }
+            // ST-terminated control strings: drop the whole payload.
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                chars.next(); // the introducer byte
+                consume_control_string(&mut chars);
+            }
             // Two-character escape sequences such as ESC c.
             Some(_) => {
                 chars.next();
@@ -204,6 +221,22 @@ fn strip_ansi(input: &str) -> String {
         }
     }
     out
+}
+
+/// Drains the payload of an ST-terminated control string.
+///
+/// Stops at ST (`ESC \`) or BEL. An unterminated string is consumed to the end
+/// of the input so that no printable payload survives into the renderer.
+fn consume_control_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(ch) = chars.next() {
+        if ch == '\u{7}' {
+            return;
+        }
+        if ch == '\u{1b}' && chars.peek() == Some(&'\\') {
+            chars.next(); // consume the '\\' completing ST
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -221,10 +254,62 @@ mod tests {
     #[test]
     fn ansi_sequences_are_removed() {
         assert_eq!(sanitize_display("\u{1b}[31mred\u{1b}[0m", 64), "red");
+        // R1S-DATA-03: the OSC title payload is dropped; only trailing text stays.
+        assert_eq!(sanitize_display("\u{1b}]0;title\u{7}after", 64), "after");
+    }
+
+    #[test]
+    fn osc_and_dcs_payloads_are_removed() {
+        // R1S-DATA-03: OSC with BEL and with ST terminators, and DCS with ST.
         assert_eq!(
-            sanitize_display("\u{1b}]0;title\u{7}after", 64),
-            "0;title after"
+            sanitize_display("pre\u{1b}]0;evil-title\u{7}post", 64),
+            "prepost"
         );
+        assert_eq!(
+            sanitize_display("pre\u{1b}]8;;https://evil.example\u{1b}\\post", 64),
+            "prepost"
+        );
+        assert_eq!(
+            sanitize_display("pre\u{1b}P+qd0payload\u{1b}\\post", 64),
+            "prepost"
+        );
+        // SOS / PM / APC share the same ST-terminated payload shape.
+        assert_eq!(sanitize_display("pre\u{1b}Xsos\u{1b}\\post", 64), "prepost");
+        assert_eq!(sanitize_display("pre\u{1b}^pm\u{1b}\\post", 64), "prepost");
+        assert_eq!(sanitize_display("pre\u{1b}_apc\u{1b}\\post", 64), "prepost");
+        // Unterminated control strings are drained, never echoed.
+        assert_eq!(sanitize_display("pre\u{1b}]0;no-terminator", 64), "pre");
+        assert_eq!(sanitize_display("pre\u{1b}Punterminated", 64), "pre");
+        // An OSC payload containing a CSI must not leak the CSI either.
+        assert_eq!(
+            sanitize_display("pre\u{1b}]0;\u{1b}[31mred\u{7}post", 64),
+            "prepost"
+        );
+    }
+
+    #[test]
+    fn zwj_and_zwnj_are_neutralised_with_a_visible_gap() {
+        // R1S-DATA-04 decision: keep "replace Cf with a space" for ZWJ/ZWNJ.
+        // Deleting them would glue tokens together (`cmd<ZWJ>exe` -> `cmdexe`),
+        // a spoofing risk; ligature fidelity loses to a predictable gap.
+        assert_eq!(sanitize_display("cmd\u{200d}exe", 64), "cmd exe");
+        assert_eq!(sanitize_display("cmd\u{200c}exe", 64), "cmd exe");
+        // Visible glyphs survive; only the invisible joiner becomes a space.
+        assert_eq!(
+            sanitize_display("\u{1f468}\u{200d}\u{1f469}", 64),
+            "\u{1f468} \u{1f469}"
+        );
+        assert_eq!(sanitize_display("क\u{200c}ष", 64), "क ष");
+    }
+
+    #[test]
+    fn cf_rejection_survives_control_string_stripping() {
+        // R1S-DATA-03/04: removing a control string must not disable the Cf
+        // rejection applied to the surrounding text.
+        let input = "\u{1b}]0;title\u{7}a\u{200d}\u{200c}\u{202e}b \u{1b}Pdcs\u{1b}\\c";
+        let output = sanitize_display(input, 64);
+        assert_eq!(output, "a b c");
+        assert!(output.chars().all(|ch| !is_format_char(ch)));
     }
 
     #[test]
