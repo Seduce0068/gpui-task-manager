@@ -172,13 +172,17 @@ impl NativeProbe {
     /// Currently never fails; the `Result` mirrors [`SystemProbe::sample`] so
     /// callers can stay generic over the port.
     pub fn sample_native(&mut self) -> Result<SystemSnapshot, ProbeError> {
+        self.refresh();
+        // Take the timestamp after refresh: the CPU counters are read during
+        // `build_snapshot`, so a pre-refresh `Instant` makes the denominator
+        // shorter than the counter interval whenever refresh time varies
+        // (R49 audit). This also keeps `sampled_elapsed` consistent.
         let now = Instant::now();
         let elapsed_ms = self
             .last_sample_at
             .map(|last| now.duration_since(last).as_millis())
             .map(|millis| u64::try_from(millis).unwrap_or(u64::MAX))
             .unwrap_or(0);
-        self.refresh();
         let (snapshot, next_cpu_ms) = self.build_snapshot(elapsed_ms);
         self.previous_cpu_ms = next_cpu_ms;
         self.last_sample_at = Some(now);

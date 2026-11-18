@@ -1383,3 +1383,8 @@
 
 - 認証拒否後の再入力ガイダンスを汎用エラーで消さないよう sticky 化。
   web 76 / workspace 372 passed。
+
+## 2026-11-18（エージェント並列調査 第42弾 → デモ可視性と elapsed timing）
+
+- デモ値に日本語ラベルとウィンドウタイトル識別を追加、elapsed を refresh 後に
+  移動。workspace 372 passed。
