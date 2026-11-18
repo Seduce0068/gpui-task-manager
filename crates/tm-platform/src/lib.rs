@@ -417,7 +417,7 @@ impl NativeProbe {
                     .filter(|disk| disk.total_space() > 0)
                     .map(|disk| {
                         let total = disk.total_space();
-                        let available = disk.available_space().min(total);
+                        let (available, used) = disk_usage_values(total, disk.available_space());
                         DiskUsageSnapshot {
                             mount_point: sanitize_display(
                                 &disk.mount_point().to_string_lossy(),
@@ -425,7 +425,7 @@ impl NativeProbe {
                             ),
                             total_bytes: total,
                             available_bytes: available,
-                            used_bytes: total.saturating_sub(available),
+                            used_bytes: used,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -433,6 +433,26 @@ impl NativeProbe {
             .unwrap_or_default();
         sort_disks_for_display(&mut disks);
         disks
+    }
+}
+
+/// Derives the `(available, used)` byte pair for one filesystem (R2X-D5).
+///
+/// Neither sysinfo 0.40.3 nor 0.40.4 exposes `Disk::used_space()`, and the
+/// pinned version only publishes `total_space()` and `available_space()`.
+/// Reading `statvfs.f_bfree` (which excludes filesystem-reserved blocks from
+/// `used`) would need a new dependency and `unsafe` FFI, so this is the
+/// closest equivalent derivable within the current dependency set. The
+/// existing contract is preserved: `available` is never reported above
+/// `total`, and `used` is the remainder.
+///
+/// `checked_sub` makes an anomalous `available > total` reading explicit:
+/// the filesystem is then reported as entirely free (`total`, `0`) rather
+/// than silently saturating inside the subtraction.
+fn disk_usage_values(total_space: u64, available_space: u64) -> (u64, u64) {
+    match total_space.checked_sub(available_space) {
+        Some(used) => (available_space, used),
+        None => (total_space, 0),
     }
 }
 
@@ -1217,6 +1237,83 @@ mod tests {
         sort_disks_for_display(&mut disks);
         let order: Vec<&str> = disks.iter().map(|d| d.mount_point.as_str()).collect();
         assert_eq!(order, vec!["/a", "/m", "/z"]);
+    }
+
+    /// R2X-D5 regression: with no `Disk::used_space()` in the pinned sysinfo,
+    /// the equivalent value must be derived from `total` and `available`
+    /// without wrapping, even at the u64 boundaries.
+    #[test]
+    fn disk_usage_values_match_the_used_space_equivalent() {
+        let total = 1_099_511_627_776u64; // 1 TiB
+        let available = 429_496_729_600u64; // 400 GiB
+        assert_eq!(
+            disk_usage_values(total, available),
+            (available, total - available)
+        );
+
+        assert_eq!(disk_usage_values(1_024, 0), (0, 1_024));
+        assert_eq!(disk_usage_values(1_024, 1_024), (1_024, 0));
+        assert_eq!(disk_usage_values(0, 0), (0, 0));
+        assert_eq!(disk_usage_values(u64::MAX, 0), (0, u64::MAX));
+        assert_eq!(disk_usage_values(u64::MAX, u64::MAX), (u64::MAX, 0));
+    }
+
+    /// R2X-D5 regression: an inconsistent collector reading must be clamped
+    /// instead of wrapping. This preserves the pre-existing `min` +
+    /// `saturating_sub` outcome while making the check explicit.
+    #[test]
+    fn disk_usage_values_clamp_available_above_total() {
+        assert_eq!(disk_usage_values(1_024, 1_025), (1_024, 0));
+        assert_eq!(disk_usage_values(100, u64::MAX), (100, 0));
+        assert_eq!(disk_usage_values(0, u64::MAX), (0, 0));
+    }
+
+    /// R2X-D5 regression: the three snapshot fields must stay consistent for
+    /// every input, so `used_percent()` can rely on `used <= total`.
+    #[test]
+    fn disk_usage_values_keep_the_total_contract() {
+        for (total, reported) in [
+            (0, 0),
+            (1, 0),
+            (1, 1),
+            (1_000, 999),
+            (1_000, 1_001),
+            (u64::MAX, u64::MAX - 1),
+            (u64::MAX, u64::MAX),
+        ] {
+            let (available, used) = disk_usage_values(total, reported);
+            assert!(
+                available <= total,
+                "available above total for {total}/{reported}"
+            );
+            assert!(used <= total, "used above total for {total}/{reported}");
+            assert_eq!(
+                available.checked_add(used),
+                Some(total),
+                "available + used must equal total for {total}/{reported}"
+            );
+        }
+    }
+
+    /// R2X-D5 regression: the derived values must survive the real sampling
+    /// path, not just the pure helper.
+    #[test]
+    fn sampled_disks_keep_the_total_available_used_invariant() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        for disk in &snapshot.disks {
+            assert!(
+                disk.available_bytes <= disk.total_bytes,
+                "{} reported available above total",
+                disk.mount_point
+            );
+            assert_eq!(
+                disk.used_bytes,
+                disk.total_bytes - disk.available_bytes,
+                "{} has an inconsistent used value",
+                disk.mount_point
+            );
+        }
     }
 
     /// R2X-P6 regression: PID 1 is init only on Unix, never on Windows.

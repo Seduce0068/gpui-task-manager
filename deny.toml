@@ -69,6 +69,13 @@ exceptions = [
 ]
 
 [bans]
+# Duplicate-version / feature-differential audit policy (see notes/dependency-audit.md):
+# - `multiple-versions = "warn"` keeps duplicates visible without changing the gate
+#   result. Investigate any new duplicate with `cargo tree -d` and record a reason;
+#   do not flip to "deny" or add skip/skip-tree exceptions as part of an audit.
+# - Default-feature allowances are existing policy. Feature-level differences are
+#   not reported by cargo-deny bans; audit them with `cargo tree -e features` and
+#   `cargo metadata` using the procedure in notes/dependency-audit.md.
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
