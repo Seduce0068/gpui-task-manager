@@ -19,9 +19,9 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（**public**）
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
   `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit → cargo vet）。
-  追加で wasm / cargo-deny / native-windows / native-macos / release-linux /
-  web-dist / sbom を実行（Linux 系ジョブは再現性のため `ubuntu-24.04` に固定、
-  成果物は `actions/upload-artifact@v7`）。SBOM は
+  追加で wasm / msrv-1-92 / cdp-verify / cargo-deny / native-windows /
+  native-macos / release-linux / web-dist / sbom を実行（Linux 系ジョブは
+  再現性のため `ubuntu-24.04` に固定、成果物は `actions/upload-artifact@v7`）。SBOM は
   [`scripts/generate-sbom.sh`](scripts/generate-sbom.sh)（CycloneDX JSON、
   root/web ワークスペース）で生成。
 - 運用: Dependabot（Cargo / web / GitHub Actions、週次）、セキュリティアラート、
@@ -150,7 +150,7 @@ cd poc-wasm && trunk build --release
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
 （`gpui-pre-web`、WebGPU → WebGL2 自動フォールバック）で描画します。
 `tm-agent` に接続しない場合は決定的なデモデータで動作します。プロセス操作は
-**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）**で、
+**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-17 最終計測）**で、
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
 `EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
@@ -235,12 +235,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - Gitleaks でシークレットスキャン: `.git/hooks/pre-commit` がコミット前にステージ済み
   差分を検査し、CI も最終ゲートとして全履歴を走査する（ローカルフックは回避可能なため）
 
-## 検証状況（2026-11-18、Runtime Proof）
+## 検証状況（2026-11-19、Runtime Proof）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **381 passed / 0 failed**（core 140 / viewmodel 66 / platform 26 / agent 81 / app 68） |
-| web ユニットテスト | **81 passed / 0 failed**（fetch 制限 / 再接続導線 / capability / redaction 等を含む） |
+| `cargo test --workspace` | **400 passed / 0 failed**（app 77 / tm-agent 86 / tm-core 141 / tm-platform 27 / tm-viewmodel 69、2026-11-19 再計測） |
+| web ユニットテスト | **88 passed / 0 failed**（fetch 制限 / 再接続導線 / capability / redaction 等を含む、2026-11-19 再計測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
@@ -252,12 +252,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions は現状バージョンタグ参照 + Dependabot 追従 |
-| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、最終再計測 7,642,794 B（gzip 3,044,134 B） |
+| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、最終再計測 7,642,794 B（gzip 3,044,134 B、2026-11-17） |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 8 ジョブ（gates / wasm / cargo-deny / native-windows / native-macos / release-linux / web-dist / sbom） |
+| CI | 10 ジョブ（gates / wasm / msrv-1-92 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認） |
 | 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
 | 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
 | ライトテーマ（ブラウザ） | 状態フック `theme=dark` が既定、`theme=light` が復元され、切替ボタンで Dark ↔ Light と保存値が連動することを CDP で確認（[画像](notes/assets/web-shell-light-theme.png)、詳細は [notes/verification.md](notes/verification.md)） |
@@ -281,7 +281,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）
 - 優先度変更、GPU 監視、テーマの自動更新（`prefers-color-scheme` 連動）は未実装
 - DEB は未署名・リポジトリ未公開（ローカル生成のみ）
-- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 計測）
+- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 最終計測、以降再ビルド未実施）
 - エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。接続は最大 8 本まで並列処理し、超過は即座に 503（アイドル接続が他のリクエストをブロックしない）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある
