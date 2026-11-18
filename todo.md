@@ -180,6 +180,65 @@ status: current
 - [ ] ユーザー向け文言の内部用語を置換: `redact` / `stale` / `赤退` /
       `tm-core DemoProbe` 等。根拠 R5-UX01。
 
+### 優先度: 高 — コンボレビュー 2026-11-19
+
+- [ ] 自動生成トークンを stderr に表示する旨の古い記載を更新:
+      `README.md:125` / `DESIGN.md:269` / `SECURITY.md:61` は「stderr に 1 回表示」
+      とあるが実装は値をログに出さない（`agent/src/main.rs:237`）。接続には
+      `--token-file` / `TM_AGENT_TOKEN` で渡す必要がある旨を明記。根拠 c5-dc01。
+- [ ] ネイティブの probe 失敗 stderr を分類済み固定文言へ: `app/src/main.rs:58,510,522`
+      は `probe_failure_message` / `Display` の生 detail を出力し、内部パス・
+      ホスト名が CI ログへ残る。agent の `probe_error_label` 相当を共有化。
+      根拠 c4-ob01 / c1-ap01。
+- [ ] redact を大小文字非依存にする: `crates/tm-core/src/redact.rs:106-121` の
+      `String::replace` は完全一致のため `MY-HOST` / `TAIL1234` / 大文字ホームが
+      残る。小文字化して位置を求め元文字列を書き換える方式へ。根拠 c3-iv01。
+- [ ] Web redaction の順序を修正: `web/src/redaction.rs:107` は生識別子を取得し
+      対象はサニタイズ後のため、Cf/打ち切り境界で一致せず漏れる。redact →
+      sanitize の順序に固定。根拠 c3-iv01。
+
+### 優先度: 中 — コンボレビュー 2026-11-19
+
+- [ ] `--once --token` の stdout から自プロセス command のトークンを除去:
+      `agent/src/main.rs:364` は `--redact` 時のみ redact するため未指定時に平文が残る。
+      `--once` では常にマスク。根拠 c3-au01。
+- [ ] `--token` 警告文を訂正: `agent/src/main.rs:203` は「同一ユーザー」とあるが
+      `/proc/<pid>/cmdline` は world-readable。`TM_AGENT_TOKEN` も environ 経由で
+      読める旨を記載し推奨順を `--token-file` 優先へ。根拠 c3-au01。
+- [ ] 設定保存の CAS / 再読込: `app/src/settings.rs:111` の LAST_LOADED 固定により
+      並行タブ／インスタンスが将来 version を書き下げる。保存直前に再読込。
+      根拠 c2-di01 / c4-dr01。
+- [ ] `ControlError::Failed` が taskkill 生出力を保持: `crates/tm-platform/src/lib.rs:719`
+      の detail にフルパス/アカウント名が入り得る。固定文言＋exit code のみへ。
+      根拠 c2-er01。
+- [ ] `control()` が 1 PID の refresh で `remove_not_listed_processes=true` を渡し
+      全プロセスをキャッシュから削除: `crates/tm-platform/src/lib.rs:553`。false へ。
+      根拠 c2-er01。
+- [ ] README の既定ポート 18787 → 8787 (`README.md:158`)、web/README の
+      概要 186px → 260px (`web/README.md:168`)、検証件数 364 → 372 / web 76。
+      根拠 d2-fg01 / c5-dc01。
+- [ ] CI: gitleaks の checksum 検証と `fetch-depth: 0`、成果物ジョブの `needs` に
+      deny を追加、check-public-docs の走査対象を動的集合へ＋一致行を redact。
+      根拠 c1-cf01 / c4-dr01。
+- [ ] 第三者ライセンス全文を DEB へ同梱 (`packaging/linux/build-deb.sh:91`)。
+      web-dist は IBM Plex OFL をコピー済みで不均一。根拠 c3-de01。
+- [ ] HTTP エラーへ機械可読 `code` を追加し、400 の raw 値エコーを廃止:
+      `agent/src/main.rs:136`。根拠 c1-ap01。
+- [ ] FetchError を enum 化し 403 を認証失敗と分ける (`web/src/agent.rs:98`)。
+      根拠 c1-ap01。
+- [ ] 設定保存失敗を UI に通知 (`app/src/app.rs:393`, `web/src/shell.rs:391`)。
+      根拠 d4-vu01。
+
+### 優先度: 低 — コンボレビュー 2026-11-19
+
+- [ ] ネイティブの確認ダイアログ/ヘルプへフォーカス移動と Tab トラップ:
+      `app/src/app.rs:1895,2032`。根拠 d4-vu01。
+- [ ] 温度/負荷表示の `max` / `crit` / `Load` を日本語へ (`app/src/app.rs:1035`)。
+      根拠 c5-ux01。
+- [ ] browser document.title から DOM 証跡フィールドを除去 (`web/src/shell.rs:2068`)。
+      根拠 c5-ux01。
+- [ ] Esc の二重掲載を整理 (`app/src/app.rs:2045`)。根拠 d4-vu01 / c5-ux01。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
