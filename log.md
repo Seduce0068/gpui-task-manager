@@ -1343,3 +1343,7 @@
 
 - 未知 ProcessStatus を Unknown へ縮退、demo の disk/process 順を real に
   整合。workspace 366 passed / web vet --locked 成功。
+
+## 2026-11-18（エージェント並列調査 第34弾 → collapse 選択と前方互換の契約）
+
+- collapse 時の選択行暴走を修正、settings の二層契約を明記。workspace 366 passed。
