@@ -10,15 +10,18 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use gpui_kit::accesskit::{Live, Node};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use tm_core::demo::DemoProbe;
 use tm_core::format;
-use tm_core::{PlatformInfo, ProcessKey, ProcessStatus, Signal, SortKey, SystemProbe, Timestamp};
+use tm_core::{
+    PlatformInfo, ProcessKey, ProcessStatus, Signal, SortDirection, SortKey, SystemProbe, Timestamp,
+};
 use tm_viewmodel::{
-    Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
+    Command, Dashboard, EditOutcome, Effect, FilterInput, StatusMessage, DEFAULT_REFRESH_INTERVAL,
 };
 
 use crate::settings::Settings;
@@ -1339,7 +1342,7 @@ impl TaskManagerApp {
             )
     }
 
-    fn table_header(&mut self, cx: &mut Context<Self>) -> Div {
+    fn table_header(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let sort = self.dashboard.sort_spec();
         let columns: [(&'static str, SortKey, Option<f32>); 7] = [
             ("名前", SortKey::Name, None),
@@ -1359,8 +1362,13 @@ impl TaskManagerApp {
                 (*label).to_string()
             };
             let key = *key;
+            // AccessKit role/name for the column header. The browser shell
+            // exposes the same `ColumnHeader` role; a bare ▲/▼ arrow carries no
+            // text, so the direction is spelled out in Japanese in aria_label.
             let mut cell = div()
                 .id(("header", index))
+                .role(Role::ColumnHeader)
+                .aria_label(sort_header_label(label, active, sort.direction))
                 .flex()
                 .items_center()
                 .cursor_pointer()
@@ -1383,6 +1391,9 @@ impl TaskManagerApp {
             headers.push(cell);
         }
         h_flex()
+            .id("table-header")
+            .role(Role::RowGroup)
+            .aria_label("プロセス一覧の列見出し")
             .w_full()
             .h(px(30.0))
             .px_3()
@@ -1516,6 +1527,17 @@ impl TaskManagerApp {
         Some(
             div()
                 .id(("row", index))
+                // Mirror the browser shell's row semantics: role/name plus the
+                // selected state and 1-based row index, so a screen reader can
+                // describe the row without relying on the colour-only status
+                // dot. `name` is the already-displayed (possibly redacted) value.
+                .role(Role::Row)
+                .aria_label(a11y_row_label(&name, status, cpu, memory, pid, selected))
+                .aria_selected(selected)
+                .aria_row_index(index + 1)
+                .when(tree_view && has_children, |this| {
+                    this.aria_expanded(!collapsed)
+                })
                 .flex()
                 .items_center()
                 .w_full()
@@ -1887,7 +1909,15 @@ impl TaskManagerApp {
             .w_full()
             .items_start()
             .child(
+                // The table node must wrap both the header and the rows so the
+                // `RowGroup` / `Row` children are exposed in the right order.
+                // Native has 7 columns (no separate コマンド column like Web).
                 v_flex()
+                    .id("process-table")
+                    .role(Role::Table)
+                    .aria_label("プロセス一覧")
+                    .aria_row_count(self.dashboard.visible_count())
+                    .aria_column_count(7)
                     .flex_1()
                     .h_full()
                     .min_w_0()
@@ -1898,10 +1928,12 @@ impl TaskManagerApp {
             .children(details)
     }
 
-    fn status_bar(&self) -> Div {
+    fn status_bar(&self) -> Stateful<Div> {
         let summary = self.summary();
         let platform = self.dashboard.platform_info().label();
         let status = self.dashboard.status().cloned();
+        let live_text = a11y_live_text(status.as_ref());
+        let announcement = live_text.clone();
         let left = h_flex()
             .items_center()
             .gap_2()
@@ -1944,6 +1976,21 @@ impl TaskManagerApp {
                 .into_any_element(),
         };
         h_flex()
+            .id("status-bar")
+            .role(Role::Status)
+            .aria_label("ステータス")
+            .aria_value(live_text)
+            // The native window already exposes a real AccessKit tree (unlike
+            // the browser canvas), so no DOM mirror is needed. The synthetic
+            // child is only a polite live region for status changes. Native has
+            // no live-agent snapshot cache, hence no `stale` state to announce;
+            // a failed probe is a persistent StatusMessage instead.
+            .a11y_synthetic_children(move |builder| {
+                let mut node = Node::new(Role::Status);
+                node.set_live(Live::Polite);
+                node.set_label(announcement);
+                builder.push_child(builder.synthetic_node_id("status-live"), node);
+            })
             .items_center()
             .justify_between()
             .gap_3()
@@ -2418,6 +2465,105 @@ fn status_color(status: ProcessStatus) -> u32 {
     }
 }
 
+// ------------------------------------------------------------ accessibility
+//
+// gpui-pre 0.3 exposes AccessKit `role` / `aria_*` through
+// `StatefulInteractiveElement` on both native and wasm, so the native shell
+// can carry the same semantics as the browser shell. What it cannot do on its
+// own is mirror the text into a DOM `aria-live` node: the native window has no
+// DOM (and no DOM proof), only the real AccessKit tree. The synthetic polite
+// child in `status_bar()` is the native equivalent of that announcement.
+
+/// Japanese direction name for a sortable header (▲/▼ is a glyph, not text).
+fn a11y_sort_direction(direction: SortDirection) -> &'static str {
+    match direction {
+        SortDirection::Ascending => "昇順",
+        SortDirection::Descending => "降順",
+    }
+}
+
+/// Accessible name of a sortable column header, matching the browser shell.
+fn sort_header_label(label: &str, active: bool, direction: SortDirection) -> String {
+    if active {
+        format!(
+            "{label} 列で並び替え、現在 {}",
+            a11y_sort_direction(direction)
+        )
+    } else {
+        format!("{label} 列で並び替え")
+    }
+}
+
+/// Textual severity for a colour-coded value (no colour dependency).
+///
+/// Mirrors the browser shell and the 60/85 thresholds of `theme::usage_color`,
+/// so an AccessKit name never contradicts the colour it describes.
+fn usage_severity(percent: f32) -> &'static str {
+    if percent >= 85.0 {
+        "高"
+    } else if percent >= 60.0 {
+        "中"
+    } else {
+        "低"
+    }
+}
+
+/// Accessible name of one process row, matching the browser shell.
+///
+/// `name` is the already-displayed (possibly 伏せ字化済み) value, so a screen
+/// reader never hears an identifier that the screenshot hides.
+fn a11y_row_label(
+    name: &str,
+    status: ProcessStatus,
+    cpu: f32,
+    memory_bytes: u64,
+    pid: u32,
+    selected: bool,
+) -> String {
+    let suffix = if selected { "、選択中" } else { "" };
+    format!(
+        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、PID {pid}{suffix}",
+        status_label = status.label(),
+        cpu_label = format::format_cpu_percent(cpu),
+        severity = usage_severity(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+    )
+}
+
+/// Collapses whitespace and truncates for a one-line live announcement.
+fn truncate_label(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut out: String = normalized
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
+}
+
+/// Text announced by the native status bar's AccessKit live node.
+///
+/// The browser shell also has a `stale` flag (a cached snapshot after a failed
+/// poll) and mirrors the announcement into a DOM region. Native has no live
+/// agent polling and no cached snapshot, so there is no freshness state to
+/// announce: a failed native probe is a persistent `StatusMessage` instead.
+/// If a freshness flag is added later, its user-facing wording must be the
+/// Japanese `古いデータ` — never the internal `stale` / `赤退` terms.
+fn a11y_live_text(status: Option<&StatusMessage>) -> String {
+    let Some(status) = status else {
+        return "ステータス: 変更なし".to_string();
+    };
+    let prefix = if status.is_error && !status.text.contains("エラー") {
+        "エラー: "
+    } else {
+        ""
+    };
+    format!("{prefix}{}", truncate_label(&status.text, 160))
+}
+
 /// Replaces local identifiers with generic values for public screenshots.
 ///
 /// The rules are shared with the agent's `--redact` snapshot endpoint so the
@@ -2589,12 +2735,13 @@ mod tests {
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
     use super::{
-        dialog_command, help_shortcuts, key_action, report_save_result, signal_enabled,
+        a11y_live_text, a11y_row_label, a11y_sort_direction, dialog_command, help_shortcuts,
+        key_action, report_save_result, signal_enabled, sort_header_label, usage_severity,
         BackendInit, DialogButton, KeyAction,
     };
     use gpui_kit::Modifiers;
-    use tm_core::{PlatformInfo, Signal};
-    use tm_viewmodel::{Command, Dashboard, DEFAULT_REFRESH_INTERVAL};
+    use tm_core::{PlatformInfo, ProcessStatus, Signal, SortDirection};
+    use tm_viewmodel::{Command, Dashboard, StatusMessage, DEFAULT_REFRESH_INTERVAL};
 
     fn plain() -> Modifiers {
         Modifiers::default()
@@ -2899,6 +3046,62 @@ mod tests {
             assert_eq!(init.startup_status(), Some(expected.as_str()));
             assert!(!init.is_demo());
         }
+    }
+
+    #[test]
+    fn sort_header_accessible_name_spells_out_the_direction_in_japanese() {
+        assert_eq!(a11y_sort_direction(SortDirection::Ascending), "昇順");
+        assert_eq!(a11y_sort_direction(SortDirection::Descending), "降順");
+        assert_eq!(
+            sort_header_label("CPU", true, SortDirection::Descending),
+            "CPU 列で並び替え、現在 降順"
+        );
+        assert_eq!(
+            sort_header_label("名前", false, SortDirection::Ascending),
+            "名前 列で並び替え"
+        );
+    }
+
+    #[test]
+    fn row_accessible_name_uses_japanese_wording_and_marks_selection() {
+        let label = a11y_row_label("emacs", ProcessStatus::Running, 90.0, 1_024, 42, true);
+        assert!(label.starts_with("プロセス emacs、状態 "), "{label}");
+        assert!(label.contains("CPU 90.0%（高）"), "{label}");
+        assert!(label.contains("PID 42"), "{label}");
+        assert!(label.ends_with("、選択中"), "{label}");
+        assert!(
+            !label.contains("redact") && !label.contains("stale"),
+            "{label}"
+        );
+
+        let plain = a11y_row_label("emacs", ProcessStatus::Sleeping, 10.0, 0, 1, false);
+        assert!(!plain.contains("選択中"), "{plain}");
+        assert!(plain.contains("CPU 10.0%（低）"), "{plain}");
+    }
+
+    #[test]
+    fn usage_severity_matches_the_colour_thresholds() {
+        assert_eq!(usage_severity(59.9), "低");
+        assert_eq!(usage_severity(60.0), "中");
+        assert_eq!(usage_severity(84.9), "中");
+        assert_eq!(usage_severity(85.0), "高");
+    }
+
+    #[test]
+    fn status_live_text_avoids_internal_terms_and_marks_errors() {
+        assert_eq!(a11y_live_text(None), "ステータス: 変更なし");
+        let error = StatusMessage {
+            text: "収集不可".to_string(),
+            is_error: true,
+            persistent: true,
+        };
+        assert_eq!(a11y_live_text(Some(&error)), "エラー: 収集不可");
+        let info = StatusMessage {
+            text: "  更新  しました ".to_string(),
+            is_error: false,
+            persistent: false,
+        };
+        assert_eq!(a11y_live_text(Some(&info)), "更新 しました");
     }
 
     #[test]

@@ -12,9 +12,12 @@
 //!
 //! Storage compatibility (R2-D01 / R5-D02 / R3-U02): a load keeps the raw JSON
 //! object so a later save re-emits fields written by a newer shell and never
-//! downgrades a newer `version`. Corrupt input yields a fixed, redacted
-//! [`SettingsNotice`] and, on wasm, a separate DOM notice node. Neither the
-//! `body[data-gpui-proof]` hook nor the existing `aria-live` mirror is touched.
+//! downgrades a newer `version`. Corrupt input is quarantined under a sibling
+//! `*.corrupt.<timestamp>` key before defaults are installed, then yields a
+//! fixed, redacted [`SettingsNotice`] plus, on wasm, a separate DOM notice
+//! node. A later clean load clears both the queued notice and the DOM node.
+//! Neither the `body[data-gpui-proof]` hook nor the existing `aria-live`
+//! mirror is touched.
 //!
 //! Schema-version compatibility policy (R2X-D3), identical in the native shell:
 //!
@@ -46,9 +49,19 @@ pub const STORAGE_KEY: &str = "gpui-task-manager.settings";
 /// `status-live` mirror so the CDP proof hook and redaction path stay intact.
 pub const SETTINGS_NOTICE_DOM_ID: &str = "gpui-settings-notice";
 
+/// Prefix of the `localStorage` key that quarantines a corrupt settings value.
+///
+/// The native shell renames a corrupt file to `*.corrupt-<nanos>`; the browser
+/// equivalent is a sibling key with this prefix and a hex timestamp, so the
+/// offending bytes survive for diagnosis without blocking a clean reload.
+pub const CORRUPT_BACKUP_KEY_PREFIX: &str = "gpui-task-manager.settings.corrupt.";
+
 /// Fixed, redacted text shown when a stored settings value is corrupt.
-pub const NOTICE_CORRUPT: &str =
-    "保存された設定を読み込めませんでした。既定値で起動します（破損した設定は保存されません）。";
+///
+/// The offending bytes are preserved under a key ending in
+/// `.corrupt.<timestamp>` before defaults are installed. Only that fixed
+/// suffix is named here: no key namespace, path, host name or token is echoed.
+pub const NOTICE_CORRUPT: &str = "保存された設定を読み込めませんでした。破損した設定は末尾が .corrupt.<timestamp> の別キーへ退避し、既定値で起動します。";
 
 /// Fixed, redacted text shown when persisting settings fails.
 ///
@@ -130,6 +143,68 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
+
+/// Builds the quarantine key for a value backed up at `nanos`.
+///
+/// Pure and timestamp-injected so the key format is testable without a browser.
+#[cfg(any(target_family = "wasm", test))]
+fn corrupt_backup_key(nanos: u128) -> String {
+    format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}")
+}
+
+/// Wall-clock nanoseconds since the Unix epoch, used to keep quarantine keys
+/// distinct. `0` is a safe fallback when the clock is unavailable.
+#[cfg(target_family = "wasm")]
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0)
+}
+
+/// Describes the two writes that quarantine a corrupt value: the backup key to
+/// preserve the offending bytes under, and the default JSON to install at the
+/// primary key so a reload no longer sees the corrupt document.
+#[cfg(any(target_family = "wasm", test))]
+fn quarantine_writes(nanos: u128) -> (String, String) {
+    let default = serde_json::to_string(&Settings::default())
+        .expect("Settings always serializes to a JSON object");
+    (corrupt_backup_key(nanos), default)
+}
+
+/// Quarantines `raw` through an injected writer and returns the backup key.
+///
+/// `write` returns `true` on success. A failed backup never blocks installing
+/// the defaults at [`STORAGE_KEY`] (the native shell still starts in that case).
+#[cfg(any(target_family = "wasm", test))]
+fn quarantine_corrupt_with(
+    raw: &str,
+    nanos: u128,
+    mut write: impl FnMut(&str, &str) -> bool,
+) -> String {
+    let (backup_key, default_json) = quarantine_writes(nanos);
+    let _ = write(&backup_key, raw);
+    let _ = write(STORAGE_KEY, &default_json);
+    backup_key
+}
+
+/// Browser-backed [`quarantine_corrupt_with`]: mirrors the native shell's
+/// "move the corrupt file aside before the next save" step in `localStorage`.
+#[cfg(target_family = "wasm")]
+fn quarantine_corrupt(raw: &str) {
+    let Some(storage) = storage() else {
+        return;
+    };
+    let key = quarantine_corrupt_with(raw, now_nanos(), |key, value| {
+        storage.set_item(key, value).is_ok()
+    });
+    // The key is a fixed namespace plus a timestamp; `raw` is never logged.
+    log::warn!("破損設定を退避しました: {key}");
+}
+
+/// Native builds have no `localStorage`; the quarantine is a no-op there.
+#[cfg(not(target_family = "wasm"))]
+fn quarantine_corrupt(_raw: &str) {}
 
 /// Clamps into the supported range without rewriting the schema `version`.
 ///
@@ -220,15 +295,24 @@ fn merged_map(
 /// (no browser needed).
 fn load_from_raw(raw: Option<&str>) -> Settings {
     let Some(raw) = raw else {
+        // No stored value is the healthy "missing" state: clear any stale
+        // notice from an earlier corrupt load, as the native shell does.
+        *lock(&LAST_LOADED) = None;
+        *lock(&PENDING_NOTICE) = None;
+        clear_notice_dom();
         return Settings::default();
     };
     match parse_document(raw) {
         Some(document) => {
             *lock(&LAST_LOADED) = Some(document.raw);
             *lock(&PENDING_NOTICE) = None;
+            // Same path as the notice clear: a healthy load must not leave the
+            // corrupt notice node on screen (AC-WEBSETTINGS).
+            clear_notice_dom();
             document.settings
         }
         None => {
+            quarantine_corrupt(raw);
             let notice = SettingsNotice::corrupt();
             *lock(&LAST_LOADED) = None;
             *lock(&PENDING_NOTICE) = Some(notice.clone());
@@ -299,13 +383,35 @@ fn publish_notice_dom(notice: &SettingsNotice) {
     };
     // The text is a fixed constant, so no path, token or host name is echoed.
     if element.text_content().as_deref() != Some(notice.text.as_str()) {
-        let _ = element.set_text_content(Some(&notice.text));
+        element.set_text_content(Some(&notice.text));
     }
 }
 
 /// Native builds have no DOM; notice publication is a no-op there.
 #[cfg(not(target_family = "wasm"))]
 fn publish_notice_dom(_notice: &SettingsNotice) {}
+
+/// Removes the additive notice DOM node on a healthy load.
+///
+/// A corrupt load publishes a fixed notice into this node; leaving it behind
+/// after settings later load cleanly would show a stale error indefinitely.
+/// This runs on exactly the path that clears `PENDING_NOTICE` (AC-WEBSETTINGS).
+#[cfg(target_family = "wasm")]
+fn clear_notice_dom() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    if let Some(element) = document.get_element_by_id(SETTINGS_NOTICE_DOM_ID) {
+        element.remove();
+    }
+}
+
+/// Native builds have no DOM; clearing the notice node is a no-op there.
+#[cfg(not(target_family = "wasm"))]
+fn clear_notice_dom() {}
 
 /// Parses a persisted settings string, falling back to defaults on bad JSON.
 ///
@@ -378,6 +484,9 @@ pub fn save(settings: &Settings) -> Result<(), String> {
 mod tests {
     use super::*;
     use tm_core::{SortDirection, SortKey, SortSpec};
+
+    // Tests that touch the process-wide PENDING_NOTICE must not interleave.
+    static NOTICE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn storage_key_is_namespaced() {
@@ -562,8 +671,9 @@ mod tests {
 
     #[test]
     fn corrupt_notice_is_redacted_and_drained_once() {
-        // All assertions about the process-wide notice live in one test: the
-        // test runner is parallel and these globals must not race.
+        // All assertions about the process-wide notice share one lock: the test
+        // runner is parallel and these globals must not race.
+        let _guard = lock(&NOTICE_TEST_LOCK);
         let (_settings, notice) = load_from_raw_with_notice(Some("{ not json"));
         let notice = notice.expect("pending notice");
         assert_eq!(notice.text, NOTICE_CORRUPT);
@@ -590,6 +700,66 @@ mod tests {
         assert!(!notice.text.contains('/'), "{}", notice.text);
         assert!(!notice.text.contains(STORAGE_KEY), "{}", notice.text);
         assert_eq!(take_pending_notice(), None, "notice must be drained once");
+    }
+
+    #[test]
+    fn healthy_load_clears_a_stale_corrupt_notice_and_dom_node() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+
+        // A corrupt load leaves a persistent notice (and, on wasm, a DOM node).
+        let (_settings, notice) = load_from_raw_with_notice(Some("{ not json"));
+        assert!(notice.is_some(), "corrupt load must queue a notice");
+
+        // A later healthy load clears both the queued notice and the DOM node.
+        // `clear_notice_dom` runs on this very path; on native it is a no-op but
+        // must remain safe to call (AC-WEBSETTINGS).
+        let (_settings, notice) = load_from_raw_with_notice(Some(r#"{"interval_ms":1500}"#));
+        assert_eq!(notice, None, "stale notice must be cleared on a clean load");
+        assert_eq!(take_pending_notice(), None);
+
+        // A missing stored value is also a healthy load and clears the notice.
+        let (_settings, notice) = load_from_raw_with_notice(None);
+        assert_eq!(notice, None);
+        clear_notice_dom();
+    }
+
+    #[test]
+    fn corrupt_value_is_quarantined_then_defaults_installed() {
+        let raw = "{ not json";
+        let nanos = 0x0000_0000_0000_1234u128;
+
+        let mut writes: Vec<(String, String)> = Vec::new();
+        let key = quarantine_corrupt_with(raw, nanos, |key, value| {
+            writes.push((key.to_string(), value.to_string()));
+            true
+        });
+        assert_eq!(key, format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}"));
+        assert!(key.starts_with(CORRUPT_BACKUP_KEY_PREFIX));
+        assert_eq!(writes.len(), 2, "backup first, then default at primary key");
+        assert_eq!(writes[0], (key.clone(), raw.to_string()));
+        assert_eq!(writes[1].0, STORAGE_KEY);
+        assert_eq!(
+            parse_saved(&writes[1].1).interval_ms,
+            1_000,
+            "installed value must be a healthy default document"
+        );
+
+        // Each quarantine gets a distinct key so earlier backups survive.
+        let next = quarantine_corrupt_with(raw, nanos + 1, |_, _| true);
+        assert_ne!(key, next);
+
+        // A failed backup write must not prevent installing the defaults.
+        let mut installed: Vec<(String, String)> = Vec::new();
+        quarantine_corrupt_with(raw, nanos, |key, value| {
+            if key.starts_with(CORRUPT_BACKUP_KEY_PREFIX) {
+                false
+            } else {
+                installed.push((key.to_string(), value.to_string()));
+                true
+            }
+        });
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].0, STORAGE_KEY);
     }
 
     #[test]

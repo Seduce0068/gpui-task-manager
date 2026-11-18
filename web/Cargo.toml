@@ -3,6 +3,8 @@
 name = "tm-web"
 version = "0.1.0"
 edition = "2024"
+# MSRV はルート workspace と同じ 1.92（ci.yml の msrv-1-92 ジョブで検証）。
+rust-version = "1.92"
 publish = false
 # cargo-deny: workspace 外の独立 crate でもライセンスを明示する。
 license = "AGPL-3.0-or-later"

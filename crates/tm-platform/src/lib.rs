@@ -467,8 +467,8 @@ fn disk_usage_values(total_space: u64, available_space: u64) -> (u64, u64) {
 ///
 /// The summary cards only show the first few entries, so sorting by mount point
 /// alone would hide a large data volume behind a small system partition such as
-/// `/boot/efi` (Runtime Proof: on the development host `/boot/efi` sorted before
-/// `/mnt/timeshift` and the 439 GiB volume was never displayed).
+/// `/small-efi` (Runtime Proof: the tiny EFI partition sorted before
+/// `/large-data` and the 440 GiB volume was never displayed).
 fn sort_disks_for_display(disks: &mut [DiskUsageSnapshot]) {
     disks.sort_by(|left, right| {
         right
@@ -1287,16 +1287,16 @@ mod tests {
             available_bytes: total_bytes / 2,
             used_bytes: total_bytes - total_bytes / 2,
         };
-        // Mirrors the development host: /boot/efi is tiny and would otherwise
-        // sort first (before /mnt/timeshift) and hide the large data volume.
+        // A tiny EFI partition would otherwise sort first (before the large
+        // data volume) and hide it from the summary cards.
         let mut disks = vec![
-            disk("/boot/efi", 96 * 1_024 * 1_024),
-            disk("/", 587 * 1_024 * 1_024 * 1_024),
-            disk("/mnt/timeshift", 440 * 1_024 * 1_024 * 1_024),
+            disk("/small-efi", 96 * 1_024 * 1_024),
+            disk("/", 600 * 1_024 * 1_024 * 1_024),
+            disk("/large-data", 440 * 1_024 * 1_024 * 1_024),
         ];
         sort_disks_for_display(&mut disks);
         let order: Vec<&str> = disks.iter().map(|d| d.mount_point.as_str()).collect();
-        assert_eq!(order, vec!["/", "/mnt/timeshift", "/boot/efi"]);
+        assert_eq!(order, vec!["/", "/large-data", "/small-efi"]);
     }
 
     #[test]

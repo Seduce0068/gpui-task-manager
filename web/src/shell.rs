@@ -2152,7 +2152,7 @@ impl TaskManagerApp {
         );
         // Avoid re-announcing an unchanged message on every sample.
         if element.text_content().as_deref() != Some(text.as_str()) {
-            let _ = element.set_text_content(Some(&text));
+            element.set_text_content(Some(&text));
         }
     }
 
