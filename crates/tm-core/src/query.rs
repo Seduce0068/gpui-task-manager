@@ -18,6 +18,8 @@ pub enum SortKey {
     Cpu,
     /// Resident memory.
     Memory,
+    /// Virtual memory (address space).
+    VirtualMemory,
     /// Numeric PID.
     Pid,
     /// Process name (case-insensitive).
@@ -38,6 +40,7 @@ impl SortKey {
         match self {
             Self::Cpu => "CPU",
             Self::Memory => "メモリ",
+            Self::VirtualMemory => "仮想メモリ",
             Self::Pid => "PID",
             Self::Name => "名前",
             Self::User => "ユーザー",
@@ -50,7 +53,7 @@ impl SortKey {
     /// Direction that makes sense as the first click for this column.
     pub const fn default_direction(self) -> SortDirection {
         match self {
-            Self::Cpu | Self::Memory => SortDirection::Descending,
+            Self::Cpu | Self::Memory | Self::VirtualMemory => SortDirection::Descending,
             _ => SortDirection::Ascending,
         }
     }
@@ -140,6 +143,8 @@ pub struct Filter {
     pub min_cpu_percent: Option<f32>,
     /// Minimum resident memory in bytes.
     pub min_memory_bytes: Option<u64>,
+    /// Minimum virtual memory in bytes.
+    pub min_virtual_memory_bytes: Option<u64>,
 }
 
 impl Filter {
@@ -150,6 +155,7 @@ impl Filter {
             || self.status.is_some()
             || self.min_cpu_percent.is_some()
             || self.min_memory_bytes.is_some()
+            || self.min_virtual_memory_bytes.is_some()
     }
 
     /// Returns `true` when the process passes every active filter.
@@ -163,6 +169,11 @@ impl Filter {
         }
         if let Some(min_memory) = self.min_memory_bytes {
             if process.memory_bytes < min_memory {
+                return false;
+            }
+        }
+        if let Some(min_virtual_memory) = self.min_virtual_memory_bytes {
+            if process.virtual_memory_bytes < min_virtual_memory {
                 return false;
             }
         }
@@ -249,6 +260,7 @@ fn compare(left: &ProcessSnapshot, right: &ProcessSnapshot, key: SortKey) -> Ord
     match key {
         SortKey::Cpu => cmp_percent(left.cpu_percent, right.cpu_percent),
         SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
+        SortKey::VirtualMemory => left.virtual_memory_bytes.cmp(&right.virtual_memory_bytes),
         SortKey::Pid => left.key.pid.cmp(&right.key.pid),
         SortKey::Name => cmp_ignore_case(&left.name, &right.name),
         SortKey::User => cmp_ignore_case(
@@ -454,6 +466,12 @@ mod tests {
         ]
     }
 
+    fn process_with_vm(pid: u32, name: &str, virtual_memory: u64) -> ProcessSnapshot {
+        let mut item = process(pid, name, 0.0, 1);
+        item.virtual_memory_bytes = virtual_memory;
+        item
+    }
+
     #[test]
     fn sort_key_labels_directions_and_arrows_are_stable() {
         // These values are shown in the header and asserted by the CDP proof
@@ -461,6 +479,11 @@ mod tests {
         let cases = [
             (SortKey::Cpu, "CPU", SortDirection::Descending),
             (SortKey::Memory, "メモリ", SortDirection::Descending),
+            (
+                SortKey::VirtualMemory,
+                "仮想メモリ",
+                SortDirection::Descending,
+            ),
             (SortKey::Pid, "PID", SortDirection::Ascending),
             (SortKey::Name, "名前", SortDirection::Ascending),
             (SortKey::User, "ユーザー", SortDirection::Ascending),
@@ -539,6 +562,62 @@ mod tests {
     fn ties_are_broken_by_pid() {
         let processes = vec![process(9, "b", 5.0, 1), process(2, "a", 5.0, 1)];
         let sorted = filter_and_sort(&processes, &Filter::default(), SortSpec::default());
+        assert_eq!(sorted, vec![1, 0]);
+    }
+
+    #[test]
+    fn virtual_memory_sort_uses_address_space_and_defaults_descending() {
+        // R5-I01: the address space must be its own sort column, not a copy of
+        // RSS. First click on the column shows the largest VM at the top.
+        let processes = vec![
+            process_with_vm(1, "small", 100),
+            process_with_vm(2, "large", 900),
+            process_with_vm(3, "medium", 500),
+        ];
+        let spec = SortSpec::new(SortKey::VirtualMemory);
+        assert_eq!(spec.direction, SortDirection::Descending);
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 2, 0]);
+
+        let ascending = SortSpec {
+            key: SortKey::VirtualMemory,
+            direction: SortDirection::Ascending,
+        };
+        let sorted = filter_and_sort(&processes, &Filter::default(), ascending);
+        assert_eq!(sorted, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn virtual_memory_sort_is_independent_from_resident_memory() {
+        // A process with a small RSS but a huge address space must lead the VM
+        // order even though RSS sorting puts it last.
+        let mut small_rss = process(1, "small-rss", 0.0, 100);
+        small_rss.virtual_memory_bytes = 9_000;
+        let mut large_rss = process(2, "large-rss", 0.0, 8_000);
+        large_rss.virtual_memory_bytes = 1_000;
+        let processes = vec![small_rss, large_rss];
+        let sorted = filter_and_sort(
+            &processes,
+            &Filter::default(),
+            SortSpec::new(SortKey::VirtualMemory),
+        );
+        assert_eq!(sorted, vec![0, 1]);
+        let sorted = filter_and_sort(
+            &processes,
+            &Filter::default(),
+            SortSpec::new(SortKey::Memory),
+        );
+        assert_eq!(sorted, vec![1, 0]);
+    }
+
+    #[test]
+    fn virtual_memory_ties_are_broken_by_pid() {
+        let processes = vec![process_with_vm(9, "b", 500), process_with_vm(2, "a", 500)];
+        let sorted = filter_and_sort(
+            &processes,
+            &Filter::default(),
+            SortSpec::new(SortKey::VirtualMemory),
+        );
         assert_eq!(sorted, vec![1, 0]);
     }
 
@@ -678,6 +757,77 @@ mod tests {
     }
 
     #[test]
+    fn virtual_memory_threshold_filter_is_inclusive() {
+        let processes = vec![
+            process_with_vm(1, "a", 100),
+            process_with_vm(2, "b", 500),
+            process_with_vm(3, "c", 1_000),
+        ];
+        let filter = Filter {
+            min_virtual_memory_bytes: Some(500),
+            ..Filter::default()
+        };
+        assert!(filter.is_active());
+        let mut sorted = filter_and_sort(&processes, &filter, SortSpec::default());
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![1, 2], "the 500-byte boundary must be included");
+    }
+
+    #[test]
+    fn virtual_and_resident_memory_thresholds_apply_independently() {
+        let mut small_rss = process(1, "a", 0.0, 100);
+        small_rss.virtual_memory_bytes = 5_000;
+        let mut large_rss = process(2, "b", 0.0, 5_000);
+        large_rss.virtual_memory_bytes = 100;
+        let processes = vec![small_rss, large_rss];
+
+        let virtual_only = Filter {
+            min_virtual_memory_bytes: Some(1_000),
+            ..Filter::default()
+        };
+        assert_eq!(
+            filter_and_sort(&processes, &virtual_only, SortSpec::default()),
+            vec![0]
+        );
+        let resident_only = Filter {
+            min_memory_bytes: Some(1_000),
+            ..Filter::default()
+        };
+        assert_eq!(
+            filter_and_sort(&processes, &resident_only, SortSpec::default()),
+            vec![1]
+        );
+        let both = Filter {
+            min_memory_bytes: Some(1_000),
+            min_virtual_memory_bytes: Some(1_000),
+            ..Filter::default()
+        };
+        assert!(filter_and_sort(&processes, &both, SortSpec::default()).is_empty());
+    }
+
+    #[test]
+    fn virtual_memory_threshold_combines_with_existing_filters() {
+        // Adding the new field must not change how text/CPU/status filters AND
+        // together (the same contract the shells and the redaction path rely on).
+        let processes = vec![
+            process_with_vm(1, "keep", 900),
+            process_with_vm(2, "drop", 900),
+            process_with_vm(3, "keep", 100),
+        ];
+        let filter = Filter {
+            text: "keep".to_string(),
+            status: Some(ProcessStatus::Sleeping),
+            min_cpu_percent: Some(0.0),
+            min_virtual_memory_bytes: Some(500),
+            ..Filter::default()
+        };
+        assert_eq!(
+            filter_and_sort(&processes, &filter, SortSpec::default()),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn active_detection_ignores_blank_text() {
         assert!(!Filter::default().is_active());
         assert!(!Filter {
@@ -711,6 +861,10 @@ mod tests {
             },
             Filter {
                 min_memory_bytes: Some(0),
+                ..Filter::default()
+            },
+            Filter {
+                min_virtual_memory_bytes: Some(0),
                 ..Filter::default()
             },
         ];
