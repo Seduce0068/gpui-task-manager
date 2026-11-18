@@ -2481,7 +2481,7 @@ worktree で実装・検証。
   `{"category":"usage","exit_code":2}`、panic せず生バイト非出力。
   通常の `--version` は exit 0 で従来どおり。
 
-**見送り**: `args::parse` の AsRef<OsStr> 総称化（将来的に --token-file の
+**見送り**: `args::parse` の `AsRef<OsStr>` 総称化（将来的に --token-file の
 非 UTF-8 パスを lossless に扱いたい場合の拡張）、--version の exit code
 を app に揃える（設計判断）、DEB Depends 下限、bond0、diverge。
 
