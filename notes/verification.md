@@ -2032,3 +2032,19 @@ exercise しない虚偽確信（新規型はまだ SystemSnapshot に未接続�
   adaptive interval の即時反映、sysfs online 欠落時の誤判定。
 
 - tm-core 133 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第24弾 → redact 契約テストの実質化）
+
+probe-todofinal が「全 TODO 完了」を検証し、紅真テスト（常に真で何も検証
+していない）を指摘。worktree（cb1d95a → ac685f2）で修正:
+
+1. `redact.rs:180-183` の `assert!(!out.contains("java") || out.contains("java"))`
+   を `assert!(out.contains("java"))` に変更。5 文字ユーザ名 `alice` が
+   無関係語 `java` を壊さないことを実際に検証。
+2. 最小長ガードの境界テスト `minimum_length_guards_are_exact` を追加。
+   home/hostname は 3 文字未満維持・3 文字以上置換、user は 1 文字維持・
+   2 文字置換、tail トークンは 5 hex 維持・6 hex 置換を固定。
+   子のテスト案で `/ab`（スラッシュ含む 3 文字）の期待値が誤っていたため
+   実装（>= 3）に合わせて訂正。
+
+- tm-core 134 passed / clippy / fmt 成功。

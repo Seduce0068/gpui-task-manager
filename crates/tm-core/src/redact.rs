@@ -177,10 +177,9 @@ mod tests {
         let out = redact_text(value, &ids);
         assert!(!out.contains("alice"), "{out}");
         assert!(!out.contains("user-laptop"), "{out}");
-        assert!(
-            !out.contains("java") || out.contains("java"),
-            "short words untouched: {out}"
-        );
+        // An unrelated word containing a substring of the user name stays
+        // intact (a tautological assertion here would verify nothing, R33).
+        assert!(out.contains("java"), "short words untouched: {out}");
     }
 
     #[test]
@@ -198,6 +197,28 @@ mod tests {
             hostname: "",
         };
         assert_eq!(redact_text("hello world", &empty), "hello world");
+    }
+
+    #[test]
+    fn minimum_length_guards_are_exact() {
+        let ids =
+            |home: &'static str, user: &'static str, hostname: &'static str| RedactionIdentifiers {
+                home,
+                user,
+                hostname,
+            };
+        // home / hostname: values shorter than 3 chars stay, 3+ are replaced.
+        // "/ab" is 3 chars including the leading slash, so it is replaced.
+        assert_eq!(redact_text("/a", &ids("/a", "", "")), "/a");
+        assert_eq!(redact_text("/ab", &ids("/ab", "", "")), "/home/user");
+        assert_eq!(redact_text("ab", &ids("", "", "ab")), "ab");
+        assert_eq!(redact_text("abc", &ids("", "", "abc")), "host");
+        // user: 1 char stays, 2 chars are replaced.
+        assert_eq!(redact_text("java", &ids("", "a", "")), "java");
+        assert_eq!(redact_text("ab-ab", &ids("", "ab", "")), "user-user");
+        // tail token: 5 hex digits stay, 6 are replaced.
+        assert_eq!(redact_text("tail12345", &ids("", "", "")), "tail12345");
+        assert_eq!(redact_text("tail123456", &ids("", "", "")), "tailnet");
     }
 
     #[test]

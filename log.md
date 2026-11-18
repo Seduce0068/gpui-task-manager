@@ -1295,3 +1295,7 @@
 - export.rs が温度に normalise_percent を流用していた問題を修正。
   normalise_temperature を追加し 120.5/-20/NaN を正しく出力。tm-core 133 passed。
   SSE クライアント未配線を確認（別セッション範囲として記録）。
+
+## 2026-11-18（エージェント並列調査 第24弾 → redact 契約テストの実質化）
+
+- 恒真アサーションを実検証へ、最小長ガードの境界テストを追加。tm-core 134 passed。
