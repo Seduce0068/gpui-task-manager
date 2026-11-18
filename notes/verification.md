@@ -2443,3 +2443,26 @@ TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
 bond0、diverge 解消。
 
 - web 76 passed / workspace 372 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第42弾 → デモ可視性と elapsed  timing）
+
+2 観点（デモ可視性 / 残タスク）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **デモデータの可視性を向上**（probe-demovisible、ユーザーが `--demo` の
+   16GiB を実機 64GB と誤認）:
+   - トップバーの `pill("DEMO", ...)` を `pill("デモデータ", ...)` に変更。
+   - メモリカードの値の直前に `※ デモ用の固定値` を `demo_mode` 時のみ表示。
+   - ウィンドウタイトルを `--demo` 時は `GPUI Task Manager [デモデータ]` に。
+   Web 版は既に persistent notice／ヘッダバッジ／ステータスで明示済みのため変更なし。
+2. **CPU% の elapsed 取得タイミングを修正**（probe-finalbacklog 推奨）:
+   `sample_native()` が `refresh()` 前に `Instant::now()` を取っていたため、
+   カウンタ読取（refresh 中）との間に refresh 時間の揺れが入り CPU% と
+   `sampled_elapsed`（ネットワークレート）が数% ずれていた。
+   `Instant::now()` と elapsed 計算を refresh 直後に移動。
+
+**見送り**: `--once` serialize 失敗の exit 分類（到達不能）、DEB Depends
+バージョン下限（設計判断）、web localStorage 読取エラー（設計どおり）、
+TM_DEBUG_SETTINGS フルパス（opt-in）、non-UTF8 argv の panic（型変更が必要）、
+bond0、diverge 解消。
+
+- workspace 372 passed / clippy / fmt 成功。

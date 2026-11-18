@@ -727,7 +727,7 @@ impl TaskManagerApp {
                             .child(format!("{} · {}", summary.hostname, summary.kernel)),
                     )
                     .when(self.demo_mode, |this| {
-                        this.child(pill("DEMO", palette().base, palette().yellow))
+                        this.child(pill("デモデータ", palette().base, palette().yellow))
                     }),
             )
             .child(
@@ -871,9 +871,27 @@ impl TaskManagerApp {
                                 .text_color(rgb(usage_color(summary.mem_percent)))
                                 .child(format::format_percent(summary.mem_percent)),
                         )
-                        .child(div().text_xs().text_color(rgb(palette().muted)).child(
-                            format::format_used_of_total(summary.mem_used, summary.mem_total),
-                        )),
+                        .child(
+                            v_flex()
+                                .items_end()
+                                .child(div().text_xs().text_color(rgb(palette().muted)).child(
+                                    format::format_used_of_total(
+                                        summary.mem_used,
+                                        summary.mem_total,
+                                    ),
+                                ))
+                                // Synthetic values are fixed at 16 GiB; make
+                                // that explicit next to the number so it is
+                                // never mistaken for a 64 GB machine's RAM.
+                                .when(self.demo_mode, |this| {
+                                    this.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(palette().yellow))
+                                            .child("※ デモ用の固定値"),
+                                    )
+                                }),
+                        ),
                 )
                 .child(metric_bar(
                     summary.mem_percent,
