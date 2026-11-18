@@ -1372,3 +1372,9 @@
 
 - DEB 同梱一覧を 5 ファイルに訂正、web 成果物へ IBM Plex の OFL を同行。
   workspace 371 passed。
+
+## 2026-11-18（エージェント並列調査 第40弾 → flaky と wall clock レート）
+
+- thread refresh の remove_dead と thread_count を硬化（flaky 27%→0%）、
+  SystemSnapshot に sampled_elapsed を追加し NTP 逆行スパイクを防止。
+  workspace 372 passed。
