@@ -17,6 +17,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
@@ -27,7 +28,6 @@ use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv, snapshot_to_json};
 use tm_core::format;
 use tm_core::port::Section;
-use tm_core::redact::RedactionIdentifiers;
 use tm_core::{
     PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
     SystemSnapshot,
@@ -86,8 +86,9 @@ const READONLY_DETAIL_TEXT: &str =
 ///
 /// `Dashboard::set_persistent_status` へ渡すため、トークン・ホスト名・
 /// エージェント応答を一切含まない。`;` / 改行が無いので、将来この文言が
-/// DOM フックへ鏡像されても `key=value;` の区切りを壊さない。
-const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには URL に ?agent=http://127.0.0.1:18787#token=<トークン> を指定してください";
+/// DOM フックへ鏡像されても `key=value;` の区切りを壊さない。実データ接続では
+/// `tm-agent --redact` を使うよう案内するが、Web 側でも応答の redact は必須である。
+const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには tm-agent を --redact 付きで起動し、URL に ?agent=http://127.0.0.1:18787#token=<トークン> を指定してください";
 
 /// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
 const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
@@ -405,11 +406,12 @@ impl TaskManagerApp {
     /// 現在のスナップショットを redact 済みの CSV / JSON としてダウンロードする。
     ///
     /// 変換そのものは [`tm_core::export`] の純粋関数へ委譲する。ブラウザは
-    /// エージェント側の環境変数（HOME / USER / hostname）を読めないため識別子は
-    /// 空で渡すが、Dashboard のスナップショットはエージェント／デモプローブが
-    /// 既に redact したものだけである。エクスポート関数はさらにプライベートな
-    /// clone へ識別子非依存の redact（tailnet ドメインなど）を適用する。
-    /// エージェントのトークンは `AgentClient` 内に留まり、ここへは渡らない。
+    /// エージェント側の環境変数（HOME / USER / hostname）を読めないため、
+    /// 識別子はスナップショット自身から導出する（[`crate::redaction`]）。
+    /// ライブのスナップショットは HTTP 応答時に既に redact 済みで、エクスポート
+    /// 関数はさらにプライベートな clone へ識別子非依存の redact（tailnet
+    /// ドメインなど）を適用する。エージェントのトークンは `AgentClient` 内に
+    /// 留まり、ここへは渡らない。
     fn export_snapshot(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
         let (content, rows) = match self.dashboard.snapshot() {
             Some(snapshot) => (export_document(snapshot, format), snapshot.processes.len()),
@@ -2465,23 +2467,19 @@ fn next_reconnect_required(current: bool, error: &str) -> bool {
 
 /// Identifiers handed to the pure exporters.
 ///
-/// The browser cannot read the agent host's `HOME` / `USER` / hostname, and the
-/// dashboard only ever holds snapshots that were redacted before reaching it
-/// (synthetic demo data, or the agent's `--redact`-style wire response). Passing
-/// empty identifiers is therefore correct here; `tm_core::export` still applies
-/// its identifier-independent redaction (tailnet domains, `host.<id>` suffixes
-/// and bare `tail…` tokens) to a private clone of the snapshot.
-fn export_identifiers() -> RedactionIdentifiers<'static> {
-    RedactionIdentifiers {
-        home: "",
-        user: "",
-        hostname: "",
-    }
+/// The browser cannot read the agent host's environment, so identifiers are
+/// recovered from the snapshot itself. Live snapshots were already redacted on
+/// the HTTP boundary (see [`crate::redaction`]); deriving the values again here
+/// means the exporters never run with empty identifiers, and a snapshot from any
+/// other source still gets its host / user / home strings masked on export.
+fn export_identifiers(snapshot: &SystemSnapshot) -> OwnedIdentifiers {
+    identifiers_from_snapshot(snapshot)
 }
 
 /// Runs the pure `tm_core` exporter for the requested format.
 fn export_document(snapshot: &SystemSnapshot, format: ExportFormat) -> String {
-    let ids = export_identifiers();
+    let ids = export_identifiers(snapshot);
+    let ids = ids.as_redaction_ids();
     match format {
         ExportFormat::Csv => snapshot_to_csv(snapshot, &ids),
         ExportFormat::Json => snapshot_to_json(snapshot, &ids),
@@ -2774,7 +2772,8 @@ mod tests {
     fn export_document_delegates_to_pure_tm_core_exporters_without_mutation() {
         let snapshot = export_sample_snapshot();
         let before = format!("{snapshot:?}");
-        let ids = export_identifiers();
+        let owned = export_identifiers(&snapshot);
+        let ids = owned.as_redaction_ids();
         for (format, expected) in [
             (
                 ExportFormat::Csv,
@@ -2875,6 +2874,8 @@ mod tests {
         // URL 未指定の初回起動では、何も起きずにデモへ落ちるのではなく
         // 「どの URL を指定すれば実データになるか」を必ず通知する（R3-S05）。
         assert!(DEMO_MODE_NOTICE.contains("デモ"));
+        assert!(DEMO_MODE_NOTICE.contains("tm-agent"));
+        assert!(DEMO_MODE_NOTICE.contains("--redact"));
         assert!(DEMO_MODE_NOTICE.contains("?agent="));
         assert!(DEMO_MODE_NOTICE.contains("#token="));
         // 固定文言なので `;` / 改行 / トークンは入らず、DOM hook と redact

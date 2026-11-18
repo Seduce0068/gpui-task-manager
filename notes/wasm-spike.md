@@ -3,7 +3,7 @@ type: Spike Report
 title: GPUI Web バックエンド（gpui-pre 0.3.12）実現性スパイク
 description: ブラウザ上で GPUI のシステムモニタ UI（表・スクロール・検索入力・クリック・定期更新・HTTP fetch・CJK）が動くかを Runtime Proof 付きで検証した記録
 tags: [gpui, wasm, webgpu, webgl2, trunk, wasm-bindgen, spike]
-resource: work/gpui-task-manager/poc-wasm
+resource: ./poc-wasm
 generated: 2026-11-14T20:57:11+09:00
 status: verified
 ---
@@ -38,22 +38,22 @@ status: verified
 
 | パス | 内容 |
 |---|---|
-| `work/gpui-task-manager/poc-wasm/` | 動く PoC crate（`src/lib.rs`、`Cargo.toml`、`index.html`、`Trunk.toml`） |
-| `work/gpui-task-manager/poc-wasm/scripts/cdp_verify.py` | ヘッドレス Chrome を CDP 操作して証拠を取るスクリプト |
-| `work/gpui-task-manager/poc-wasm/README.md` | ビルド・配信・検証の手順 |
-| `work/gpui-task-manager/notes/assets/wasm-spike-*.png` | スクリーンショット（描画・スクロール・クリック・検索） |
-| `work/gpui-task-manager/notes/assets/wasm-spike-evidence-*.json` | コンソールログ・DOM・状態フックの証拠 JSON |
-| `work/gpui-task-manager/notes/assets/wasm-spike-backend-variants.json` | `?backend=webgl` / `?backend=webgpu` の切り替え証拠 |
-| `work/gpui-task-manager/notes/assets/wasm-spike-webgpu-forced-01-initial.png` | 強制 WebGPU 時の描画停止（空白 canvas）の証拠 |
-| `work/gpui-task-manager/notes/assets/wasm-spike-webgpu-noadapter-01.png` | WebGPU アダプタなし時のエラー表示の証拠 |
-| `work/gpui-task-manager/notes/assets/wasm-spike-*-console.log` | ヘッドレス Chrome の生ログ |
+| `./poc-wasm/` | 動く PoC crate（`src/lib.rs`、`Cargo.toml`、`index.html`、`Trunk.toml`） |
+| `./poc-wasm/scripts/cdp_verify.py` | ヘッドレス Chrome を CDP 操作して証拠を取るスクリプト |
+| `./poc-wasm/README.md` | ビルド・配信・検証の手順 |
+| `./notes/assets/wasm-spike-*.png` | スクリーンショット（描画・スクロール・クリック・検索） |
+| `./notes/assets/wasm-spike-evidence-*.json` | コンソールログ・DOM・状態フックの証拠 JSON |
+| `./notes/assets/wasm-spike-backend-variants.json` | `?backend=webgl` / `?backend=webgpu` の切り替え証拠 |
+| `./notes/assets/wasm-spike-webgpu-forced-01-initial.png` | 強制 WebGPU 時の描画停止（空白 canvas）の証拠 |
+| `./notes/assets/wasm-spike-webgpu-noadapter-01.png` | WebGPU アダプタなし時のエラー表示の証拠 |
+| `./notes/assets/wasm-spike-*-console.log` | ヘッドレス Chrome の生ログ |
 
 ## 再現手順
 
 ### 1. ビルド
 
 ```bash
-cd work/gpui-task-manager/poc-wasm
+cd ./poc-wasm
 cargo check --target wasm32-unknown-unknown
 trunk build --release
 ```
@@ -89,7 +89,7 @@ gzip/brotli 配信でさらに削減できる見込み。
 ### 2. 配信とヘッドレス確認
 
 ```bash
-cd work/gpui-task-manager/poc-wasm/dist
+cd ./poc-wasm/dist
 python3 -m http.server 8090 --bind 127.0.0.1
 ```
 
@@ -113,7 +113,7 @@ google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \
   --window-size=1200,800 --remote-debugging-port=9222 \
   --user-data-dir=/tmp/gpui-spike-chrome about:blank
 
-cd work/gpui-task-manager/poc-wasm/scripts
+cd ./poc-wasm/scripts
 python3 cdp_verify.py --url http://127.0.0.1:8090/ \
   --out ../../notes/assets --prefix wasm-spike --label headless-default-release
 ```
@@ -385,9 +385,9 @@ for trusted content.
 
 ## 参考
 
-- `work/gpui-file-explorer/notes/wasm-browser-notes.md`（gpui-pre の wasm コンパイル、
+- 外部プロジェクトの調査ノート（gpui-pre の wasm コンパイル、
   gpui-kit が stable wasm 不可である既存調査）
-- `work/gpui-file-explorer/notes/ecosystem-notes.md`（gpui-pre の来歴・ライセンス・
+- 外部プロジェクトの調査ノート（gpui-pre の来歴・ライセンス・
   feature flags・Linux ビルド要件）
 - gpui-pre 0.3.12 README（`~/.cargo/registry/src/index.crates.io-*/gpui-pre-0.3.12/README.md`）
 - gpui-pre-web 0.3.12 ソース

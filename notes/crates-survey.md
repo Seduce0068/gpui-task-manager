@@ -21,7 +21,7 @@ status: draft
 
 ```toml
 [dependencies]
-# UI: 既存調査（work/gpui-file-explorer/notes/ecosystem-notes.md）の第一候補
+# UI: 既存調査（外部プロジェクトの調査ノート）の第一候補
 gpui-kit = "=0.9.1"  # チャート・仮想テーブル・タブ等。Apache-2.0
 
 # 収集: 本調査で実測済みの中核
@@ -221,11 +221,11 @@ serde-wasm-bindgen = "0.6.5"  # 任意（JsValue 直接変換で足りるなら�
 
 ```bash
 # 1) sysinfo のサンプリングコストと取得項目（release）
-cd work/gpui-task-manager/poc-crates/sysinfo-probe
+cd ./poc-crates/sysinfo-probe
 cargo run --release
 
 # 2) wasm32-unknown-unknown へのコンパイル可否
-cd work/gpui-task-manager/poc-crates/sysinfo-wasm-check
+cd ./poc-crates/sysinfo-wasm-check
 cargo check --target wasm32-unknown-unknown
 ```
 
@@ -253,15 +253,15 @@ cargo check --target wasm32-unknown-unknown
 - serde / serde_json: <https://crates.io/api/v1/crates/serde> / <https://crates.io/api/v1/crates/serde_json>
 - wasm 系: <https://crates.io/api/v1/crates/wasm-bindgen> / <https://crates.io/api/v1/crates/web-sys> / <https://crates.io/api/v1/crates/gloo-net> / <https://crates.io/api/v1/crates/gloo-timers>
 - agent 系: <https://crates.io/api/v1/crates/axum> / <https://crates.io/api/v1/crates/tokio> / <https://crates.io/api/v1/crates/tokio-tungstenite>
-- 既存調査: `work/gpui-file-explorer/notes/ecosystem-notes.md`（gpui-kit 0.9.1 / gpui-pre 0.3.12 の来歴）、`work/gpui-file-explorer/notes/wasm-browser-notes.md`
-- Runtime Proof ソース: `work/gpui-task-manager/poc-crates/sysinfo-probe/src/main.rs`, `work/gpui-task-manager/poc-crates/sysinfo-wasm-check/src/main.rs`
+- 既存調査: 外部プロジェクトの調査ノート（gpui-kit 0.9.1 / gpui-pre 0.3.12 の来歴）
+- Runtime Proof ソース: `./poc-crates/sysinfo-probe/src/main.rs`, `./poc-crates/sysinfo-wasm-check/src/main.rs`
 
 ## 付録 A: `cargo run --release` の全出力
 
 環境: Kubuntu 2026.04 / Ryzen 5 3600（6C/12T）/ RAM 64GB / rustc 1.99.1 / sysinfo 0.40.3。実行: `cargo run --release`（`poc-crates/sysinfo-probe`）。
 
 ```text
-   Compiling sysinfo-probe v0.1.0 (/home/user/document/deepseek-harness/default-workspace/work/gpui-task-manager/poc-crates/sysinfo-probe)
+   Compiling sysinfo-probe v0.1.0 (~/poc-crates/sysinfo-probe)
     Finished `release` profile [optimized] target(s) in 0.62s
      Running `target/release/sysinfo-probe`
 == sysinfo probe: crate version 0.40.3 ==
@@ -338,6 +338,6 @@ DONE
 ```text
     Checking memchr v2.8.3
     Checking sysinfo v0.40.3
-    Checking sysinfo-wasm-check v0.1.0 (/home/user/document/deepseek-harness/default-workspace/work/gpui-task-manager/poc-crates/sysinfo-wasm-check)
+    Checking sysinfo-wasm-check v0.1.0 (~/poc-crates/sysinfo-wasm-check)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.53s
 ```

@@ -79,7 +79,7 @@ verified: 2026-11-18T11:36:00+09:00
 `Cargo.lock` 更新後や導入検討時に再実行し、数値を更新する。
 
 ```bash
-cd work/gpui-task-manager   # リポジトリのチェックアウト先
+cd .   # リポジトリのチェックアウト先
 cargo metadata --format-version 1 > /tmp/gpui-tm-metadata.json
 python3 - <<'PY'
 import json
@@ -162,7 +162,7 @@ GitHub API（一次情報）による確認結果。採用判断はこの調査�
 `cargo vet` の `suggest` / `inspect` / `diff` / `certify` / `import` / `trust` は crates.io・GitHub からの取得（ネットワーク）が必要。制限環境（本作業環境）では失敗するため、ネットワークが使える環境で次の順に試行する（2026-11-15 時点で未実施）。各サブコマンドの正確な引数は `cargo vet <command> --help` で確認すること。
 
 ```bash
-cd <repo>/work/gpui-task-manager
+cd <repo>
 
 # 1. レビュー候補の一覧（registry 経由の公開 audits 参照も行う）
 cargo vet suggest

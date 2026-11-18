@@ -1,10 +1,12 @@
 //! Pure helpers for redacting local identifiers from display strings.
 //!
 //! Both the native shell (`--redact`) and the agent's snapshot endpoint promise
-//! to hide the host name, user names, home paths and tailnet domains. Keeping
-//! the rules here (rather than duplicating them in each shell) prevents the two
-//! paths from drifting. Reading the environment is deliberately left to the
-//! callers: `tm-core` stays free of I/O and works on `wasm32`.
+//! to hide every identifier-bearing display string: host name, OS name, kernel
+//! version, user names, home paths, process names and commands, mount points,
+//! interface names and sensor labels (plus tailnet domains). Keeping the rules
+//! here (rather than duplicating them in each shell) prevents the snapshot and
+//! export paths from drifting. Reading the environment is deliberately left to
+//! the callers: `tm-core` stays free of I/O and works on `wasm32`.
 
 use crate::model::SystemSnapshot;
 
@@ -123,18 +125,27 @@ pub fn redact_text(value: &str, ids: &RedactionIdentifiers<'_>) -> String {
     redact_tailnet_tokens(&out)
 }
 
-/// Redacts identifier-bearing strings in a snapshot: host name, process user,
-/// name and command, and disk mount points.
+/// Redacts every identifier-bearing display string in a snapshot.
 ///
-/// Network interface names, sensor labels, OS name and kernel version are
-/// deliberately left untouched (interface classification is name-based). Use
-/// [`crate::export::redact_for_export`] before writing a file or API payload.
-/// Intended for the agent's "before sending" path, where the snapshot is owned.
+/// This covers the host name, OS name, kernel version, process user/name/command,
+/// network interface names, mount points and sensor labels. Display strings are
+/// rewritten with [`redact_text`] and the supplied `ids`; the host name and user
+/// are replaced with fixed placeholders. Interface names are masked here too:
+/// this is the "before sending" boundary (`--once`, the snapshot API and SSE),
+/// where leaving a local identifier in a published payload is worse than losing
+/// a name-based classification hint. The function is idempotent, so
+/// [`crate::export::redact_for_export`] can safely re-apply it to a clone.
 /// Shells with an immutable view of the dashboard should use [`redact_text`]
 /// on individual strings instead.
 pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers<'_>) {
     if snapshot.hostname.is_some() {
         snapshot.hostname = Some("host".to_string());
+    }
+    if let Some(os_name) = snapshot.os_name.take() {
+        snapshot.os_name = Some(redact_text(&os_name, ids));
+    }
+    if let Some(kernel_version) = snapshot.kernel_version.take() {
+        snapshot.kernel_version = Some(redact_text(&kernel_version, ids));
     }
     for process in &mut snapshot.processes {
         if process.user.is_some() {
@@ -143,11 +154,15 @@ pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers
         process.command = redact_text(&process.command, ids);
         process.name = redact_text(&process.name, ids);
     }
-    // Mount points can live under the user's home. Network interface names and
-    // sensor labels are deliberately NOT touched: `is_virtual_interface()` uses
-    // the name to classify traffic and would mis-count it after redaction.
+    for interface in &mut snapshot.network.interfaces {
+        interface.name = redact_text(&interface.name, ids);
+    }
+    // Mount points can live under the user's home.
     for disk in &mut snapshot.disks {
         disk.mount_point = redact_text(&disk.mount_point, ids);
+    }
+    for component in &mut snapshot.components {
+        component.label = redact_text(&component.label, ids);
     }
 }
 
@@ -262,5 +277,71 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    /// Identifiers that must never appear in a redacted snapshot (R4-OB01).
+    const SECRETS: [&str; 5] = ["alice", "my-host", "/home/alice", "tail1234", "ts.net"];
+
+    fn secret_ids() -> RedactionIdentifiers<'static> {
+        RedactionIdentifiers {
+            home: "/home/alice",
+            user: "alice",
+            hostname: "my-host",
+        }
+    }
+
+    /// Fills every display string with the identifiers from [`SECRETS`].
+    fn secret_snapshot() -> SystemSnapshot {
+        SystemSnapshot {
+            hostname: Some("my-host".into()),
+            os_name: Some("Linux on my-host".into()),
+            kernel_version: Some("6.11-my-host".into()),
+            processes: vec![crate::model::ProcessSnapshot {
+                name: "alice-worker".into(),
+                command: "alice --home /home/alice https://my-host.tail1234.ts.net:8443".into(),
+                user: Some("alice".into()),
+                ..crate::model::ProcessSnapshot::default()
+            }],
+            network: crate::model::NetworkSnapshot {
+                interfaces: vec![crate::model::NetworkInterfaceSnapshot {
+                    name: "my-host-eth0".into(),
+                    ..crate::model::NetworkInterfaceSnapshot::default()
+                }],
+            },
+            disks: vec![crate::model::DiskUsageSnapshot {
+                mount_point: "/home/alice/work".into(),
+                ..crate::model::DiskUsageSnapshot::default()
+            }],
+            components: vec![crate::model::ComponentSnapshot {
+                label: "my-host CPU Package".into(),
+                temperature_c: Some(42.0),
+                ..crate::model::ComponentSnapshot::default()
+            }],
+            ..SystemSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn redact_snapshot_covers_every_display_string() {
+        // Debug prints every field, so a new string field in SystemSnapshot that
+        // is not redacted makes this test fail (same guard as the export tests).
+        let mut snapshot = secret_snapshot();
+        let ids = secret_ids();
+        redact_snapshot(&mut snapshot, &ids);
+        let dump = format!("{snapshot:?}");
+        for secret in SECRETS {
+            assert!(
+                !dump.contains(secret),
+                "redact_snapshot leaked {secret:?}: {dump}"
+            );
+        }
+        // The agent and the exporters may both redact the same snapshot, so a
+        // second pass must be a no-op.
+        redact_snapshot(&mut snapshot, &ids);
+        assert_eq!(
+            format!("{snapshot:?}"),
+            dump,
+            "redact_snapshot must be idempotent"
+        );
     }
 }

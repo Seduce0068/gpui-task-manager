@@ -3,7 +3,7 @@ type: Reference
 title: Windows / macOS 対応と CI マトリクス（tm-platform クロスプラットフォーム化）
 description: tm-platform を Windows / macOS でコンパイル可能にした変更点（rustix の Unix 限定化、シグナル送信の OS 分岐、スレッド数取得の Linux gate）と、CI への native-windows / native-macos / cargo-deny ジョブ追加、ローカル cross-check の Runtime Proof、未検証事項
 tags: [cross-platform, windows, macos, sysinfo, rustix, taskkill, ci, cargo-deny, runtime-proof]
-resource: work/gpui-task-manager
+resource: .
 generated: 2026-11-15T00:25:12+09:00
 status: draft
 ---

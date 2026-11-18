@@ -385,13 +385,24 @@ fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> St
     }
 }
 
+/// Returns only the leaf name of an export destination for operator messages.
+///
+/// The full path can contain the user's home directory or internal mount
+/// points, so error and success logs must never echo it. The file name keeps
+/// the message actionable without revealing the directory layout.
+fn export_target_name(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
+    path.file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("(名前なし)"))
+}
+
 /// Writes an export atomically to `path` with mode `0600` on Unix.
 ///
 /// A PID/nonce/timestamp temporary file in the target directory is created
 /// with `0600` from the start and renamed into place, so an existing file
 /// cannot keep a permissive mode and a failed write leaves no partial output.
-/// A failure to open, write or rename is returned with the path but never the
-/// file contents.
+/// A failure to open, write or rename is returned with the file name only,
+/// never the full path or the file contents.
 fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
     use std::io::Write as _;
 
@@ -402,7 +413,7 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
         Ok(meta) if !meta.file_type().is_file() => {
             return Err(format!(
                 "エクスポート先は通常ファイルではありません: {}",
-                path.display()
+                export_target_name(path)
             ));
         }
         Ok(_) => {}
@@ -410,7 +421,7 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
         Err(error) => {
             return Err(format!(
                 "エクスポート先を確認できません ({}): {error}",
-                path.display()
+                export_target_name(path)
             ));
         }
     }
@@ -428,13 +439,13 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
     {
         return Err(format!(
             "エクスポート先が仮想ファイルシステム配下です: {}",
-            path.display()
+            export_target_name(path)
         ));
     }
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let name = path
         .file_name()
-        .ok_or_else(|| format!("エクスポート先のファイル名が不正です: {}", path.display()))?;
+        .ok_or_else(|| "エクスポート先のファイル名が不正です".to_string())?;
     static EXPORT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = EXPORT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
@@ -477,7 +488,7 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
     written.map_err(|error| {
         format!(
             "エクスポート先に書き込めません ({}): {error}",
-            path.display()
+            export_target_name(path)
         )
     })
 }
@@ -528,7 +539,7 @@ fn run_export(request: &ExportRequest, demo: bool) -> i32 {
     }
     eprintln!(
         "gpui-task-manager: {} を {} 形式でエクスポートしました",
-        request.path.display(),
+        export_target_name(&request.path),
         request.format.label()
     );
     EXIT_OK
@@ -800,6 +811,14 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn export_messages_use_only_the_file_name() {
+        let path = std::path::Path::new("/home/alice/private/project/out.json");
+        assert_eq!(export_target_name(path), "out.json");
+        assert!(!export_target_name(path).contains("alice"));
+        assert_eq!(export_target_name(std::path::Path::new("/")), "(名前なし)");
+    }
+
+    #[::core::prelude::v1::test]
     fn export_write_is_atomic_0600_and_replaces_a_permissive_file() {
         let dir = std::env::temp_dir().join(format!("gtm-export-mode-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
@@ -843,6 +862,10 @@ mod tests {
         let error = write_export(&path, "payload").expect_err("missing parent must fail");
         assert!(error.contains("エクスポート先に書き込めません"), "{error}");
         assert!(error.contains("out.csv"), "{error}");
+        assert!(
+            !error.contains(dir.to_string_lossy().as_ref()),
+            "the absolute path must not leak: {error}"
+        );
         assert!(!path.exists(), "a failed export must not create output");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -34,7 +34,7 @@ status: draft
 - 一次情報: GitHub REST API（`gh api`、認証済み）、GitLab REST API（gitlab.gnome.org / invent.kde.org / gitlab.com）、crates.io API（`curl -A 'research-agent/1.0'`）、rustsec.org、各リポジトリの README / Cargo.toml / 公式ドキュメント、crate tarball。
 - 表記: **【検証済】** = 一次情報を取得して確認。**【推測】** = 取得情報からの推定。**【未確認】** = 未検証。
 - 数値の意味: ★ = 取得時点の stars。contributors は GitHub API の `per_page=1` + Link ヘッダの最終ページ数（GitLab は contributors API が 100 件上限のため「100以上」）。
-- 既存調査（`work/gpui-file-explorer/notes/ecosystem-notes.md`, `wasm-browser-notes.md`）は手掛かりとして参照。**AGPL/GPL コードのコピーは行っていない**。
+- 既存調査（外部プロジェクトの調査ノート）は手掛かりとして参照。**AGPL/GPL コードのコピーは行っていない**。
 
 ## 2. 比較表（11 候補）
 
@@ -316,7 +316,7 @@ status: draft
 環境: Kubuntu 2026.04 / Ryzen 5 3600（6C/12T）/ RAM 64GB / rustc 1.99.1。負荷平均 8 前後、プロセス数 3,549 の**多忙なデスクトップ**での測定。実行コマンドと生ログ:
 
 ```bash
-cd work/gpui-task-manager/poc-crates/sysinfo-probe
+cd ./poc-crates/sysinfo-probe
 cargo run --release
 ```
 
@@ -331,7 +331,7 @@ after kill: still_in_sysinfo=true child.try_wait()=Ok(Some(ExitStatus(unix_wait_
 snapshot json bytes=2241066 (processes=3549)
 ```
 
-全出力は `work/gpui-task-manager/notes/crates-survey.md` の付録 A、生ログは `work/gpui-task-manager/poc-crates/sysinfo-probe/run.log` を参照。
+全出力は `./notes/crates-survey.md` の付録 A、生ログは `./poc-crates/sysinfo-probe/run.log` を参照。
 
 | 項目 | 実測値 |
 |---|---|
@@ -397,5 +397,5 @@ snapshot json bytes=2241066 (processes=3549)
 - nix: <https://github.com/nix-rust/nix> / <https://rustsec.org/advisories/RUSTSEC-2021-0119.html>
 - heim: <https://github.com/heim-rs/heim> / <https://crates.io/api/v1/crates/heim>
 - wasm クレート: <https://crates.io/api/v1/crates/wasm-bindgen> / <https://crates.io/api/v1/crates/web-sys> / <https://crates.io/api/v1/crates/gloo-net>
-- 既存調査: `work/gpui-file-explorer/notes/ecosystem-notes.md`, `work/gpui-file-explorer/notes/wasm-browser-notes.md`
-- Runtime Proof: `work/gpui-task-manager/poc-crates/sysinfo-probe/`, `work/gpui-task-manager/poc-crates/sysinfo-wasm-check/`
+- 既存調査: 外部プロジェクトの調査ノート
+- Runtime Proof: `./poc-crates/sysinfo-probe/`, `./poc-crates/sysinfo-wasm-check/`

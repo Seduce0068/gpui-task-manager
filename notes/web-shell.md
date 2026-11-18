@@ -3,14 +3,14 @@ type: Implementation Report
 title: ブラウザ版 GPUI タスクマネージャーシェル（web/）の実装と Runtime Proof
 description: gpui-pre 0.3.12 の wasm Web バックエンドで、ネイティブ版と共通の tm-core / tm-viewmodel を使う読み取り専用タスクマネージャーシェルを実装し、ヘッドレス Chrome（CDP）で描画・更新・操作・ライブ接続・エラー時を検証した記録
 tags: [gpui, wasm, webgpu, webgl2, trunk, task-manager, read-only, runtime-proof]
-resource: work/gpui-task-manager/web
+resource: ./web
 generated: 2026-11-14T22:01:18+09:00
 status: verified
 ---
 
 ## 結論（要約）
 
-- `work/gpui-task-manager/web/` にブラウザ版シェルを実装した。
+- `./web/` にブラウザ版シェルを実装した。
   `cargo check --target wasm32-unknown-unknown` と `trunk build --release` が成功し、
   ヘッドレス Chrome 上で画面が描画された。
 - デモモードで **描画・1 秒更新・ホイールスクロール・行クリック（詳細パネル）・
@@ -28,12 +28,12 @@ status: verified
 
 | パス | 内容 |
 |---|---|
-| `work/gpui-task-manager/web/` | 独立 crate（`src/`、`Cargo.toml`、`Trunk.toml`、`index.html`、`assets/fonts/`） |
-| `work/gpui-task-manager/web/README.md` | ビルド・起動・agent 連携・既知の制約 |
-| `work/gpui-task-manager/web/scripts/cdp_verify_web.py` | ヘッドレス Chrome を CDP 操作する検証スクリプト（デモ / ライブ / エラー時） |
-| `work/gpui-task-manager/web/verification/web-shell-evidence-*.json` | 検証の証拠 JSON（状態フック、ネットワーク、コンソール、チェック結果） |
-| `work/gpui-task-manager/notes/assets/web-shell-*.png` | スクリーンショット 18 枚（デモ 8 / ライブ 8 / エラー時 2） |
-| `work/gpui-task-manager/notes/web-shell.md` | 本ドキュメント |
+| `./web/` | 独立 crate（`src/`、`Cargo.toml`、`Trunk.toml`、`index.html`、`assets/fonts/`） |
+| `./web/README.md` | ビルド・起動・agent 連携・既知の制約 |
+| `./web/scripts/cdp_verify_web.py` | ヘッドレス Chrome を CDP 操作する検証スクリプト（デモ / ライブ / エラー時） |
+| `./web/verification/web-shell-evidence-*.json` | 検証の証拠 JSON（状態フック、ネットワーク、コンソール、チェック結果） |
+| `./notes/assets/web-shell-*.png` | スクリーンショット 18 枚（デモ 8 / ライブ 8 / エラー時 2） |
+| `./notes/web-shell.md` | 本ドキュメント |
 
 ## 構成と設計判断
 
@@ -187,7 +187,7 @@ URL クエリが無い場合、`tm_core::demo::DemoProbe` を `DataSource::Demo`
 
 ```text
 $ cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
-    Checking tm-web v0.1.0 (.../work/gpui-task-manager/web)
+    Checking tm-web v0.1.0 (.../web)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 01s
 （2 回目以降は 0.3 秒前後。警告 0）
 
@@ -273,7 +273,7 @@ $ cd web && trunk build --release
 
 ### 6. スクリーンショット
 
-`work/gpui-task-manager/notes/assets/` に保存（1440x857、ライブは `--redact`）:
+`./notes/assets/` に保存（1440x857、ライブは `--redact`）:
 
 | モード | ファイル |
 |---|---|
@@ -303,7 +303,7 @@ $ cd web && trunk build --release
 ## 再現手順
 
 ```bash
-cd work/gpui-task-manager
+cd .
 
 cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 cd web && trunk build --release && cd ..
@@ -338,11 +338,11 @@ python3 cdp_verify_web.py \
 
 ## 参考
 
-- `work/gpui-task-manager/notes/wasm-spike.md` — GPUI Web の capability・制約・
+- `./notes/wasm-spike.md` — GPUI Web の capability・制約・
   推奨構成（本実装の前提）
-- `work/gpui-task-manager/poc-wasm/` — スパイク実装（初期化・CJK・fetch の実例）
-- `work/gpui-task-manager/web/README.md` — ビルド・起動・agent 連携・制約
-- `work/gpui-task-manager/crates/tm-core/` — ドメイン・整形・DemoProbe
-- `work/gpui-task-manager/crates/tm-viewmodel/` — Dashboard reducer
-- `work/gpui-task-manager/agent/` — 読み取り専用エージェント
+- `./poc-wasm/` — スパイク実装（初期化・CJK・fetch の実例）
+- `./web/README.md` — ビルド・起動・agent 連携・制約
+- `./crates/tm-core/` — ドメイン・整形・DemoProbe
+- `./crates/tm-viewmodel/` — Dashboard reducer
+- `./agent/` — 読み取り専用エージェント
 - gpui-pre 0.3.12（Apache-2.0）、IBM Plex（SIL OFL 1.1）

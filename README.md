@@ -32,7 +32,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
   `exempt` として記録し、`safe-to-deploy` を主張しない。外部 imports は未使用、
   監査記録の捏造はしない）。SBOM（CycloneDX）は
   `scripts/generate-sbom.sh` と CI で生成する。
-- 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
+- 公開用の `main` はクリーンな履歴。開発履歴はローカル開発ブランチに保持している。
 
 ## できること（MVP）
 
@@ -287,5 +287,5 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 `AGPL-3.0-or-later`。依存クレートのライセンスと帰属は [NOTICE.md](NOTICE.md) を参照。
 以前の Apache-2.0 本文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に保持しています。
 Apache-2.0 は GPLv3 互換のため AGPLv3 への変更が可能ですが、NOTICE の保持義務は継続します。
-既存の AGPL プロジェクト（`work/gpui-file-explorer`）からは**コードをコピーして
+別の AGPL プロジェクトからは**コードをコピーして
 いません**（調査ノートのみ参照）。
