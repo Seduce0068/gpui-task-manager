@@ -35,8 +35,8 @@ status: current
 - [x] agent の構造化ログ / トレース / /metrics / 終了コード分類（R5-O01〜O04）
 - [x] markdownlint を check.sh / CI へ配線（R5-C01 の配線部分）。
       ドキュメント数値の陳腐化と AC-12 マトリクスは R5-C02 として分離。
-- [ ] R5-C02 設計・調査・テスト件数の陳腐化と AC-12 マトリクスを解消する
-      （R1-D01, R1-D02, R1-D03, R1-D16, R5-C03, R5-C04）。
+- [x] R5-C02 ドキュメント数値と AC-12 マトリクスを更新 — README / DESIGN /
+      notes/* を現行実装へ。RESEARCH.md の2箇所は R1-D02B として分離。
 - [x] 成果物ジョブの `needs: gates` と fork PR 除外（4696c41）。
 - [x] ライセンス帰属と GPUI pin の訂正（4696c41 / fdf6f62）。
 - [ ] SBOM 生成を冪等化し、cargo-vet / advisory ignore の運用を見直す
@@ -67,8 +67,8 @@ status: current
 - [x] Web 版へ更新間隔変更 UI を追加（R1-C01/R2-X02）— プリセット切替とサンプラー反映、DOM hook は追加字段のみ。
 - [x] probe 失敗時は暗黙デモへ落とさず EXIT_PROBE、--demo 不正値は exit 2
       （R3-S02/S03）。app::new の到達不能な暗黙分岐は R3-S02B として残す。
-- [ ] エージェント再起動時の接続設定再読込／利用者再入力の導線を設ける
-      （R3-S04, R3-S05）。
+- [x] エージェント再起動時の接続再読込と再入力導線（R3-S04/S05）— SharedConfig、
+      固定ガイダンス、DOM proof reconnect=0|1 を追加。
 - [x] OSC/DCS（+SOS/PM/APC）ペイロード全体を除去し、ZWJ/ZWNJ は可視ギャップ
       を残す方針を明文化（R1S-DATA-03/04）。
 - [x] EiB 表記と limit エコーのサニタイズ（a29d76c）。
@@ -88,7 +88,9 @@ status: current
       「空＝非対応」の区別を修正する（R2X-P5, R2X-P6, R2X-P7, R2X-P8）。
 - [x] 重複ヘッダ拒否・Host 不一致・stale 表示（dcd9e9c / dde9bcd）。
 
-- [ ] R3-S02B `app::new()` の到達不能な暗黙デモ分岐を明示エラーへ置き換える
+- [x] R3-S02B `app::new()` の暗黙デモ分岐を除去し明示エラーへ統一
+
+- [ ] R1-D02B RESEARCH.md §8 の未確認4（IME）・8（エージェント並列化）を解消済みとして本文へ反映
 
 ### 優先度: 低
 

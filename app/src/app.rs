@@ -35,6 +35,52 @@ const DETAILS_WIDTH: f32 = 320.0;
 
 type SharedProbe = Arc<Mutex<Option<Box<dyn SystemProbe>>>>;
 
+/// Startup decision for the native shell (R3-S02B).
+///
+/// This is the window-side counterpart of the `main.rs` preflight. Both use
+/// `tm_core::demo::choose_backend` and `tm_core::demo::probe_failure_message`,
+/// so the policy and the wording stay identical across every entry point:
+/// `--demo` is the *only* route to synthetic data, and a failed native probe is
+/// an explicit error rather than an implicit switch to demo data (R3-S02).
+///
+/// A failed startup deliberately carries no probe: [`TaskManagerApp`] keeps an
+/// empty `SharedProbe`, shows the shared failure message as a persistent status
+/// and never displays the DEMO badge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BackendInit<P> {
+    /// Synthetic data, requested explicitly with a validated `--demo`.
+    Demo,
+    /// Live data from a successfully created native probe.
+    Native(P),
+    /// The native probe failed; the message is shown as a persistent status.
+    Failed(String),
+}
+
+impl<P> BackendInit<P> {
+    /// Resolves the backend once, without ever creating a native probe for
+    /// `--demo` (the same guarantee the GUI preflight gives in `main.rs`).
+    fn resolve(demo: bool, native: impl FnOnce() -> Result<P, tm_core::ProbeError>) -> Self {
+        match tm_core::demo::choose_backend(demo, native) {
+            Ok(tm_core::demo::BackendChoice::Demo) => Self::Demo,
+            Ok(tm_core::demo::BackendChoice::Native(probe)) => Self::Native(probe),
+            Err(error) => Self::Failed(tm_core::demo::probe_failure_message(&error)),
+        }
+    }
+
+    /// Persistent startup status to surface in the status bar.
+    fn startup_status(&self) -> Option<&str> {
+        match self {
+            Self::Demo | Self::Native(_) => None,
+            Self::Failed(message) => Some(message.as_str()),
+        }
+    }
+
+    /// Whether the DEMO badge and synthetic data are justified.
+    fn is_demo(&self) -> bool {
+        matches!(self, Self::Demo)
+    }
+}
+
 /// Small snapshot of the values the overview and status bar render.
 ///
 /// Cloning these values instead of the whole process list keeps `render` cheap:
@@ -88,38 +134,43 @@ pub struct TaskManagerApp {
     focus_handle: FocusHandle,
     demo_mode: bool,
     redact: bool,
+    /// The native probe could not be created: no synthetic data is substituted,
+    /// the persistent startup error stays visible and sampling is suppressed so
+    /// a transient "probe is not available" message cannot replace it (R3-S02B).
+    probe_unavailable: bool,
 }
 
 impl TaskManagerApp {
     /// Creates the application with the requested backend.
     pub fn new(cx: &mut Context<Self>, demo: bool, redact: bool) -> Self {
-        // The factory is the only place that knows which backend is in use, so
-        // adding a replay or remote probe later does not touch the UI code.
-        let (probe, init_error): (Box<dyn SystemProbe>, Option<String>) = if demo {
-            (Box::new(DemoProbe::new()), None)
-        } else {
-            match tm_platform::NativeProbe::new() {
-                Ok(probe) => (Box::new(probe), None),
-                Err(error) => (
-                    Box::new(DemoProbe::new()),
-                    Some(format!(
-                        "ネイティブ収集を初期化できなかったためデモデータで起動しました: {error}"
-                    )),
-                ),
-            }
+        // Same policy as the `main.rs` preflight and `--export`: demo data is
+        // only ever an explicit `--demo` opt-in. A failed native probe is an
+        // error state with no probe and a persistent shared failure message;
+        // it must never silently become a demo session (R3-S02 / R3-S02B).
+        let backend = BackendInit::resolve(demo, tm_platform::NativeProbe::new);
+        let demo_mode = backend.is_demo();
+        let startup_status = backend.startup_status().map(str::to_owned);
+        let platform = match &backend {
+            BackendInit::Demo => PlatformInfo::demo(),
+            BackendInit::Native(probe) => probe.platform_info(),
+            // Read-only and non-demo: no data, no process control, no DEMO badge.
+            BackendInit::Failed(_) => PlatformInfo::native_read_only("収集不可"),
         };
-        let platform = probe.platform_info();
-        let demo_mode = platform.is_demo;
+        let probe: Option<Box<dyn SystemProbe>> = match backend {
+            BackendInit::Demo => Some(Box::new(DemoProbe::new())),
+            BackendInit::Native(probe) => Some(Box::new(probe)),
+            BackendInit::Failed(_) => None,
+        };
         let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
-        let had_init_error = init_error.is_some();
-        if let Some(error) = init_error {
+        let had_startup_error = startup_status.is_some();
+        if let Some(message) = startup_status {
             // Startup failures must stay visible until the user acts.
-            dashboard.set_persistent_status(error);
+            dashboard.set_persistent_status(message);
         }
         let (settings, notice) = crate::settings::load_with_notice();
         // A startup failure takes precedence; otherwise surface a settings
         // load/backup notice as a persistent status message.
-        if !had_init_error {
+        if !had_startup_error {
             if let Some(notice) = notice {
                 dashboard.set_persistent_status(notice.text);
             }
@@ -144,7 +195,7 @@ impl TaskManagerApp {
         crate::theme::set_theme(settings.theme);
         Self {
             dashboard,
-            probe: Arc::new(Mutex::new(Some(probe))),
+            probe: Arc::new(Mutex::new(probe)),
             sampling_in_flight: false,
             filter_editing: false,
             filter_input: FilterInput::new(),
@@ -153,6 +204,7 @@ impl TaskManagerApp {
             focus_handle: cx.focus_handle(),
             demo_mode,
             redact,
+            probe_unavailable: had_startup_error,
         }
     }
 
@@ -215,7 +267,10 @@ impl TaskManagerApp {
     }
 
     fn request_sample(&mut self, cx: &mut Context<Self>) {
-        if self.sampling_in_flight || self.dashboard.paused() {
+        // With no probe there is nothing to sample. Keep the persistent startup
+        // error visible instead of replacing it with a transient
+        // "probe is not available" status on every tick (R3-S02B).
+        if self.probe_unavailable || self.sampling_in_flight || self.dashboard.paused() {
             return;
         }
         self.sampling_in_flight = true;
@@ -1272,7 +1327,13 @@ impl TaskManagerApp {
         .h_full()
         .track_scroll(&self.scroll_handle);
 
-        let overlay = if self.dashboard.snapshot().is_none() {
+        let overlay = if self.probe_unavailable {
+            // Reuse the shared failure message from the status bar so the error
+            // is explicit and the wording stays aligned with `main.rs`.
+            self.dashboard
+                .status()
+                .map(|status| overlay_text(status.text.clone(), palette().red))
+        } else if self.dashboard.snapshot().is_none() {
             Some(overlay_text(
                 "システム情報を取得しています…",
                 palette().muted,
@@ -2191,7 +2252,7 @@ fn signal_enabled(platform: &PlatformInfo, protected: bool, signal: Signal) -> b
     !protected && platform.supports_signal(signal)
 }
 
-fn overlay_text(message: &'static str, color: u32) -> Div {
+fn overlay_text(message: impl Into<String>, color: u32) -> Div {
     div()
         .absolute()
         .top_0()
@@ -2200,7 +2261,7 @@ fn overlay_text(message: &'static str, color: u32) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(div().text_sm().text_color(rgb(color)).child(message))
+        .child(div().text_sm().text_color(rgb(color)).child(message.into()))
 }
 
 fn status_color(status: ProcessStatus) -> u32 {
@@ -2330,7 +2391,7 @@ mod tests {
     // Explicit imports: the crate-root `use gpui_kit::*` re-exports a `test`
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
-    use super::{dialog_command, key_action, signal_enabled, KeyAction};
+    use super::{dialog_command, key_action, signal_enabled, BackendInit, KeyAction};
     use gpui_kit::Modifiers;
     use tm_core::{PlatformInfo, Signal};
     use tm_viewmodel::Command;
@@ -2545,6 +2606,62 @@ mod tests {
             ] {
                 assert!(!signal_enabled(&platform, false, signal), "{signal:?}");
             }
+        }
+    }
+
+    #[test]
+    fn explicit_demo_stays_demo_without_creating_a_native_probe() {
+        // R3-S02B: `--demo` remains the explicit opt-in and must not depend on
+        // native probe availability, matching the `main.rs` preflight.
+        let called = std::cell::Cell::new(false);
+        let init = BackendInit::resolve(true, || {
+            called.set(true);
+            Ok::<_, tm_core::ProbeError>(())
+        });
+        assert_eq!(init, BackendInit::Demo);
+        assert!(init.is_demo());
+        assert_eq!(init.startup_status(), None);
+        assert!(!called.get(), "demo mode must not create a native probe");
+    }
+
+    #[test]
+    fn native_probe_success_starts_live_without_error_status() {
+        let init = BackendInit::resolve(false, || Ok::<_, tm_core::ProbeError>(()));
+        assert_eq!(init, BackendInit::Native(()));
+        assert!(!init.is_demo());
+        assert_eq!(init.startup_status(), None);
+    }
+
+    #[test]
+    fn probe_failure_is_an_explicit_error_not_an_implicit_demo() {
+        // R3-S02B: app::new() must not substitute demo data when the native
+        // probe fails. The failure becomes a persistent status using the same
+        // shared message as the GUI preflight and `--export`.
+        let error = tm_core::ProbeError::Io("初期化失敗".to_string());
+        let expected = tm_core::demo::probe_failure_message(&error);
+        let init = BackendInit::resolve(false, || Err::<(), _>(error));
+        assert_eq!(init, BackendInit::Failed(expected.clone()));
+        assert!(
+            !init.is_demo(),
+            "a failed probe must show neither demo data nor a DEMO badge"
+        );
+        assert_eq!(init.startup_status(), Some(expected.as_str()));
+        assert!(expected.contains("初期化失敗"), "{expected}");
+    }
+
+    #[test]
+    fn probe_failure_status_uses_the_shared_preflight_wording() {
+        // The status text must be byte-for-byte the message `main.rs` prints
+        // on the preflight path, for every classified probe error.
+        for error in [
+            tm_core::ProbeError::Io("I/O 失敗".to_string()),
+            tm_core::ProbeError::Permission("権限不足".to_string()),
+            tm_core::ProbeError::Unsupported("未対応".to_string()),
+        ] {
+            let expected = tm_core::demo::probe_failure_message(&error);
+            let init = BackendInit::resolve(false, || Err::<(), _>(error));
+            assert_eq!(init.startup_status(), Some(expected.as_str()));
+            assert!(!init.is_demo());
         }
     }
 }

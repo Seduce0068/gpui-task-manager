@@ -18,7 +18,7 @@
 //!   native test host (no `tokio::time` dependency in the browser).
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use futures::AsyncReadExt as _;
@@ -47,6 +47,29 @@ pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
 /// future is dropped (which cancels the underlying request) and the sampler
 /// is free to retry on its next tick — still one request at a time.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// HTTP status codes that mean the loopback agent rejected our credentials.
+///
+/// The agent answers `401` for a missing/wrong bearer token and `403` for a
+/// rejected `Origin`. Both need the same user-facing action: paste the fresh
+/// URL (with the new `#token=` fragment) into the address bar (R3-S04/S05).
+pub(crate) fn is_auth_failure_status(status: u16) -> bool {
+    matches!(status, 401 | 403)
+}
+
+/// Fixed, redact-safe guidance for an authentication failure.
+///
+/// It is a static string with no token, endpoint, hostname or agent-supplied
+/// text, so it can flow into the status bar, the `aria-live` mirror and the DOM
+/// proof unchanged. The token itself is never echoed — the user re-enters it by
+/// pasting the URL the restarted agent printed.
+pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。エージェント再起動後に表示された新しい URL の #token= をアドレスバーへ貼り付けて更新してください";
+
+/// Whether a fetch error must be surfaced as the re-entry flow rather than a
+/// generic connectivity error. Kept as a pure predicate for the shell tests.
+pub(crate) fn requires_reconnect(error: &str) -> bool {
+    error == RECONNECT_GUIDANCE
+}
 
 /// Endpoint and token parsed from the page URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,9 +156,44 @@ pub struct SnapshotResponse {
     pub total_process_count: usize,
 }
 
+/// Connection settings shared with the sampler task.
+///
+/// The sampler holds an `Arc<AgentClient>`, while `?agent=` / `#token=` may
+/// change without a page reload (a restarted agent prints a fresh token). The
+/// lock lets the shell re-read the URL on every sampler cycle and hand the new
+/// settings to the *same* client, so the single in-flight fetch contract stays
+/// intact (R3-S04).
+#[derive(Debug)]
+struct SharedConfig(RwLock<AgentConfig>);
+
+impl SharedConfig {
+    fn new(config: AgentConfig) -> Self {
+        Self(RwLock::new(config))
+    }
+
+    /// Snapshot for one request. Cloned out of the lock so no guard is held
+    /// across an `await`.
+    fn snapshot(&self) -> AgentConfig {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces the settings, returning `true` only when they really changed.
+    fn replace(&self, fresh: AgentConfig) -> bool {
+        let mut current = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if *current == fresh {
+            return false;
+        }
+        *current = fresh;
+        true
+    }
+}
+
 /// HTTP client for the loopback agent.
 pub struct AgentClient {
-    config: AgentConfig,
+    config: SharedConfig,
     http: Arc<dyn HttpClient>,
     /// Supplies [`FETCH_TIMEOUT`] deadlines on both wasm and native hosts.
     executor: BackgroundExecutor,
@@ -149,15 +207,25 @@ impl AgentClient {
         executor: BackgroundExecutor,
     ) -> Self {
         Self {
-            config,
+            config: SharedConfig::new(config),
             http,
             executor,
         }
     }
 
+    /// Re-reads connection settings from the current page URL.
+    ///
+    /// Returns `true` when the endpoint or token changed, so the caller can
+    /// notify the UI and start a fresh connection attempt. No network request is
+    /// issued here: the already-running sampler picks the new config up on its
+    /// next tick.
+    pub fn set_config(&self, config: AgentConfig) -> bool {
+        self.config.replace(config)
+    }
+
     /// Endpoint label for the status bar.
-    pub fn endpoint_label(&self) -> &str {
-        self.config.endpoint_label()
+    pub fn endpoint_label(&self) -> String {
+        self.config.snapshot().endpoint
     }
 
     /// Requests and parses one snapshot, with a hard [`FETCH_TIMEOUT`] deadline.
@@ -175,20 +243,23 @@ impl AgentClient {
     /// The actual request/parse pipeline, kept separate so the deadline can
     /// cover the body read as well as the response headers.
     async fn fetch_snapshot_inner(&self) -> Result<SnapshotResponse, String> {
+        // Snapshot once per request, after the shell may have re-read the URL.
+        // The guard is dropped here, never held across the awaits below.
+        let config = self.config.snapshot();
         // Never attach the bearer token before checking the destination.
-        if !is_loopback_http_endpoint(&self.config.endpoint) {
+        if !is_loopback_http_endpoint(&config.endpoint) {
             return Err("エージェントの接続先は loopback の http URL のみ許可されます".to_string());
         }
-        let url = snapshot_url(&self.config.endpoint);
+        let url = snapshot_url(&config.endpoint);
         let mut builder = Request::builder().method("GET").uri(&url);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &config.token {
             // クエリではなくヘッダで渡す（URL・Referer・アクセスログに残さない）。
             builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
         let request = builder.body(AsyncBody::empty()).map_err(|error| {
             format!(
                 "リクエストの組み立てに失敗しました: {}",
-                redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                redact_token(&format!("{error:#}"), config.token.as_deref())
             )
         })?;
         let response = self.http.send(request).await.map_err(|error| {
@@ -196,7 +267,7 @@ impl AgentClient {
             // トークンを伏せたうえで console に残す。
             log::warn!(
                 "エージェントへの fetch に失敗: {}",
-                redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                redact_token(&format!("{error:#}"), config.token.as_deref())
             );
             "接続に失敗しました（エージェントが起動しているか、URL とトークンを確認してください）"
                 .to_string()
@@ -214,7 +285,7 @@ impl AgentClient {
             .map_err(|error| {
                 log::warn!(
                     "エージェント応答の読み取りに失敗: {}",
-                    redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                    redact_token(&format!("{error:#}"), config.token.as_deref())
                 );
                 "応答の読み取りに失敗しました".to_string()
             })?;
@@ -223,16 +294,20 @@ impl AgentClient {
         }
 
         if !status.is_success() {
-            return Err(format!(
-                "エージェントが HTTP {} を返しました",
-                status.as_u16()
-            ));
+            let code = status.as_u16();
+            if is_auth_failure_status(code) {
+                // A restarted agent invalidates its token. Never echo the
+                // response body or the token: the fixed guidance is the whole
+                // re-entry flow, safe for the DOM and the aria-live mirror.
+                return Err(RECONNECT_GUIDANCE.to_string());
+            }
+            return Err(format!("エージェントが HTTP {code} を返しました"));
         }
 
         let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
             format!(
                 "スナップショット JSON の解析に失敗しました: {}",
-                redact_token(&format!("{error:#}"), self.config.token.as_deref())
+                redact_token(&format!("{error:#}"), config.token.as_deref())
             )
         })?;
         check_schema_version(envelope.schema_version)?;
@@ -388,6 +463,64 @@ mod tests {
         );
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("***"));
+    }
+
+    #[test]
+    fn auth_statuses_are_classified_for_the_reentry_flow() {
+        for auth in [401, 403] {
+            assert!(is_auth_failure_status(auth), "{auth} must need re-entry");
+        }
+        for not_auth in [200, 204, 400, 404, 429, 500, 503] {
+            assert!(
+                !is_auth_failure_status(not_auth),
+                "{not_auth} must stay a generic error"
+            );
+        }
+    }
+
+    #[test]
+    fn reconnect_guidance_is_actionable_and_redaction_safe() {
+        // The guidance tells the user *what* to re-enter and *where*.
+        assert!(RECONNECT_GUIDANCE.contains("#token="));
+        assert!(RECONNECT_GUIDANCE.contains("アドレスバー"));
+        // Fixed text: no `;` / newline that could corrupt the DOM proof, and
+        // redacting it with any token leaves it byte-for-byte identical.
+        assert!(!RECONNECT_GUIDANCE.contains(';'));
+        assert!(!RECONNECT_GUIDANCE.contains('\n'));
+        assert_eq!(
+            redact_token(RECONNECT_GUIDANCE, Some("super-secret-agent-token")),
+            RECONNECT_GUIDANCE
+        );
+        assert!(requires_reconnect(RECONNECT_GUIDANCE));
+        assert!(!requires_reconnect("接続に失敗しました"));
+        assert!(!requires_reconnect("エージェントが HTTP 500 を返しました"));
+    }
+
+    #[test]
+    fn config_reload_replaces_changed_settings_and_ignores_identical_ones() {
+        let shared = SharedConfig::new(AgentConfig::new(
+            "http://127.0.0.1:18787",
+            Some("old-token".into()),
+        ));
+        // An unchanged URL (the normal poll) must not churn the UI state.
+        assert!(!shared.replace(AgentConfig::new(
+            "http://127.0.0.1:18787",
+            Some("old-token".into()),
+        )));
+        // A restarted agent prints a fresh token in the same URL fragment.
+        assert!(shared.replace(AgentConfig::new(
+            "http://127.0.0.1:18787",
+            Some("new-token".into()),
+        )));
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.endpoint, "http://127.0.0.1:18787");
+        assert_eq!(snapshot.token.as_deref(), Some("new-token"));
+        // A changed endpoint (new port) is reloaded too.
+        assert!(shared.replace(AgentConfig::new(
+            "http://127.0.0.1:18788",
+            Some("new-token".into()),
+        )));
+        assert_eq!(shared.snapshot().endpoint, "http://127.0.0.1:18788");
     }
 
     #[test]

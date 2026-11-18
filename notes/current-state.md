@@ -1,11 +1,11 @@
 ---
 type: Reference
 title: GPUI Task Manager 現状サマリ
-description: 2026-11-17 時点の実装状況・検証結果・未解決事項の俯瞰。時系列の詳細は log.md、個別の根拠は verification.md を参照
+description: 2026-11-18 時点の実装状況・検証結果・未解決事項の俯瞰。時系列の詳細は log.md、個別の根拠は verification.md を参照
 tags: [status, verification, runtime-proof, gpui, task-manager]
 resource: work/gpui-task-manager
 generated: 2026-11-17T03:46:00+09:00
-verified: 2026-11-17T03:46:00+09:00
+verified: 2026-11-18T10:58:00+09:00
 status: verified
 ---
 
@@ -24,13 +24,14 @@ status: verified
   シェル（`app/` / `web/`）は描画とコマンド発行のみを行う 3 層構成。
 - ライセンス AGPL-3.0-or-later、全 crate で `#![forbid(unsafe_code)]`。
 
-## 検証状況（2026-11-17）
+## 検証状況（2026-11-18）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | 237 passed / 0 failed（core 95 / viewmodel 44 / platform 11 / agent 69 / app 16） |
-| web ユニットテスト | 16 passed / 0 failed（agent 7 / settings 5 / theme 4） |
+| `cargo test --workspace` | **334 passed / 0 failed**（core 129 / viewmodel 62 / platform 11 / agent 78 / app 54） |
+| web ユニットテスト | **57 passed / 0 failed**（capability / 通知 / トレンド / エクスポート 等を含む） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
 | `trunk build --release` | 成功（wasm 7,642,794 B / gzip 3,044,134 B、2026-11-17 計測） |

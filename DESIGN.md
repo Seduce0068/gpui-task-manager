@@ -29,7 +29,8 @@ Ubuntu 系デスクトップ（Kubuntu / KDE Plasma / Wayland を第一ターゲ
 - リモートホストの監視（SSH / Prometheus 連携）。ただし拡張点は設計に残す。
 - Windows / macOS の**物理実機**での検証（OS 別 cfg と GitHub Actions の
   windows-latest / macos-latest を実機相当の検証として使う）。
-- 設定の永続化（ネイティブ: ファイル、ブラウザ: localStorage）、自動更新、多言語化（日本語 UI のみ）。
+- 自動更新、多言語化（日本語 UI のみ）。設定の永続化は ADR-012 のとおり実装済みのため、
+  非目標から除外した（R1-D01 解消）。
 - ブラウザからのプロセス操作（安全側に倒して読み取り専用）。
 
 ### 1.3 品質特性と設計手段
@@ -168,7 +169,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - 保持状態: 最新スナップショット、フィルタ後ソート済みインデックス、履歴、
   選択キー、確認待ちシグナル、ステータスメッセージ、更新間隔、一時停止、
   ツリー表示の折りたたみ集合（セッションローカル。永続化するのは
-  `tree_view` のオン/オフ設定のみ）。
+  `tree_view` / `theme` を含む表示設定のみ、ADR-012 参照）。
 - 表示順は常に「フィルタ → ソート → PID 昇順のタイブレーク」で決定的。
 - 選択はキーで保持するため、再ソートやサンプル更新で行が動いても追従する。
   消えた場合は直前の位置に近い行へフォールバックする。
@@ -507,12 +508,39 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | AC-9 | コア・ビューモデルが wasm32 にコンパイルできる | `cargo check --target` |
 | AC-10 | ブラウザで GPUI 画面が表示される（スパイク） | ヘッドレス Chrome |
 | AC-11 | エージェントが読み取り専用で、トークンなしの要求を拒否する | curl |
-| AC-12 | 設計書・調査レポート・README が実装と一致する | レビュー |
+| AC-12 | 設計書・調査レポート・README が実装と一致する | §12.1 の検証マトリクス |
 | AC-13 | ブラウザ版 / ネイティブ版で日本語 IME の変換中は絞り込まず、確定後に反映される | CDP composition 検証 + `TM_DEBUG_IME=1` |
 | AC-14 | Windows / macOS ターゲットでワークスペースが型検査できる | `cargo check --target` + CI |
 | AC-15 | cargo-deny がルート / web とも成功する | `cargo deny check` |
 | AC-16 | 表示設定が保存され、再起動後に復元される（ネイティブ / ブラウザ） | 実機 + CDP（`cdp_verify_settings.py`）
 | AC-17 | root 権限なしで DEB を生成でき、展開バイナリが起動する | `build-deb.sh` + `dpkg-deb -x` |
+
+### 12.1 AC-12 検証マトリクス
+
+「設計書・調査レポート・README が実装と一致する」ことを文書ごとに確認する。
+根拠は現行コードと実行結果（Runtime Proof）を優先し、過去の計測値は履歴として保持する。
+判定は「一致」「要更新」「要再測定」の 3 状態で記録する。
+
+| 文書 / 箇所 | 確認項目 | 現行実装との対応 | 根拠 | 判定 |
+|---|---|---|---|---|
+| README.md「検証状況」 | workspace テスト件数 | **334 passed / 0 failed**（core 129 / viewmodel 62 / platform 11 / agent 78 / app 54） | `scripts/check.sh:22-23` | 一致 |
+| README.md「検証状況」 | web ユニットテスト件数 | **57 passed / 0 failed** | `scripts/check.sh:36-37` | 一致 |
+| README.md「検証状況」 | clippy コマンド | `-D warnings -D clippy::undocumented_unsafe_blocks`（root / web） | `scripts/check.sh:19-20,29-31` | 一致（R5-C03 解消） |
+| README.md「検証状況」 | rustdoc | `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps`（root / web） | `scripts/check.sh:70-75` | 一致（R5-C04 解消） |
+| README.md「できること」 | 設定の永続化 | 更新間隔・ソート・詳細パネル・ツリー表示・テーマを保存 / 復元 | ADR-012、`tm-viewmodel::Settings` | 一致 |
+| DESIGN.md §1.2 | 非目標 | 設定の永続化は実装済みのため除外 | ADR-012、README.md | 一致（R1-D01 解消） |
+| DESIGN.md §2.2 / §8.1 | テスト件数 | 具体値を書かず README.md「検証状況」へ参照 | 本表 | 一致（R1-D03 解消） |
+| DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
+| DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
+| notes/current-state.md | 検証状況 | 334 / 57、日付 2026-11-18 | 本文 | 一致 |
+| notes/verification.md §2 | 検証状況 | 334 / 57、日付 2026-11-18。以降の時系列記録は履歴 | 本文 | 一致 |
+| notes/index.md | current-state の日付 | 2026-11-18 | 本文 | 一致 |
+| RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みだが本文未反映 | `notes/ime.md`、README.md | 要更新（R1-D02、本次 writeScope 外） |
+
+- 時系列ログ（`log.md`、`notes/verification.md` の個別記録、
+  `notes/residual-tasks-research.md`）は履歴として保持し、現状値のみ更新する。
+- 本次の書き込み範囲は README.md / DESIGN.md / notes/*.md / docs/*.md のみ。
+  RESEARCH.md の R1-D02 は lead へ引き渡す。
 
 ---
 
@@ -604,7 +632,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 
 ### ADR-012: 設定は表示設定のみを XDG に永続化（改訂）
 
-- 決定: **更新間隔・ソート列/方向・詳細パネル表示**を保存し、起動時に復元する。
+- 決定: **更新間隔・ソート列/方向・詳細パネル表示・ツリー表示・テーマ**を保存し、
+  起動時に復元する（現行の `SETTINGS_VERSION = 2`）。
   スキーマは `tm-viewmodel::Settings` に置き、ネイティブとブラウザで共有する
   （保存媒体だけが違う: ネイティブは
   `$XDG_CONFIG_HOME/gpui-task-manager/settings.json`、Windows は `%APPDATA%`、
@@ -663,7 +692,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   自動ダウンロードする。2026-11-15 の再計測では 7,635,554 B（gzip 3,042,856 B、
   依存更新やコード追加により微増）。2026-11-16 の再計測では 7,641,445 B
   （gzip 3,044,050 B、ブラウザ版テーマ追加による微増）。2026-11-17 の再計測では
-  7,641,970 B（gzip 3,045,139 B、ツリーサイクル修正による微増）。
+  7,641,970 B（gzip 3,045,139 B、ツリーサイクル修正による微増）。2026-11-18 の最終再計測では
+  7,642,794 B（gzip 3,044,134 B）。
 
 ### ADR-018: Windows / macOS は cfg + CI ランナーで検証
 

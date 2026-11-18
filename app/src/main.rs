@@ -411,6 +411,14 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
             options.mode(0o600);
         }
         let mut file = options.open(&temporary)?;
+        // `mode(0o600)` is still masked by the process umask (e.g. umask 0777
+        // yields 0000). fchmod via set_permissions ignores umask, matching the
+        // settings writer: the export must remain readable after rename.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(contents.as_bytes())?;
         std::fs::rename(&temporary, path)?;
         Ok(())

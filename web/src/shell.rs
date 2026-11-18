@@ -82,6 +82,16 @@ const READONLY_PILL_ARIA: &str = "ブラウザ版ではプロセスを操作で�
 const READONLY_DETAIL_TEXT: &str =
     "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。";
 
+/// `?agent=` 未指定の初回起動でデモモードを明示するための固定通知（R3-S05）。
+///
+/// `Dashboard::set_persistent_status` へ渡すため、トークン・ホスト名・
+/// エージェント応答を一切含まない。`;` / 改行が無いので、将来この文言が
+/// DOM フックへ鏡像されても `key=value;` の区切りを壊さない。
+const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには URL に ?agent=http://127.0.0.1:18787#token=<トークン> を指定してください";
+
+/// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
+const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
+
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
 /// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
 /// 書き出せるようにするため）。
@@ -144,6 +154,9 @@ pub struct TaskManagerApp {
     live_total: Option<usize>,
     /// Last live-mode error, shown in the status bar and the table overlay.
     live_error: Option<String>,
+    /// Whether the last live error was an auth rejection that needs the user to
+    /// re-enter the URL / token. Mirrored into the DOM proof as `reconnect=`.
+    reconnect_required: bool,
     /// Whether the currently displayed snapshot came from a fetch that failed
     /// afterwards. It is kept on screen (never replaced by demo data) but
     /// flagged as stale so the freshness boundary stays visible (R3-S01).
@@ -180,10 +193,12 @@ impl TaskManagerApp {
             None => {
                 let probe = DemoProbe::new();
                 let platform = probe.platform_info();
-                (
-                    Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL),
-                    DataSource::Demo(probe),
-                )
+                let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
+                // A missing `?agent=` used to drop straight into demo mode with
+                // no explanation. Keep the notice persistent so the first demo
+                // sample cannot clear it (R3-S05).
+                dashboard.set_persistent_status(DEMO_MODE_NOTICE);
+                (dashboard, DataSource::Demo(probe))
             }
         };
 
@@ -195,6 +210,7 @@ impl TaskManagerApp {
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
             live_error: None,
+            reconnect_required: false,
             stale: false,
             ticks: 0,
             last_export: None,
@@ -219,6 +235,18 @@ impl TaskManagerApp {
         };
         cx.spawn(async move |this, cx| {
             loop {
+                // `?agent=` / `#token=` can change without a page reload when
+                // the loopback agent is restarted with a fresh token. Re-read
+                // them every cycle so the *same* client (and its single
+                // in-flight fetch) picks up the new settings (R3-S04).
+                let alive = this.update(cx, |app, cx| {
+                    if app.refresh_agent_config() {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
                 match &live {
                     Some(client) => {
                         let result = client.fetch_snapshot().await;
@@ -254,6 +282,33 @@ impl TaskManagerApp {
         .detach();
     }
 
+    /// Re-reads the connection settings from the page URL and applies them to
+    /// the live client when they changed (R3-S04).
+    ///
+    /// The agent generates a new token per process, so a restart invalidates the
+    /// one captured in `TaskManagerApp::new`. Because only the URL fragment
+    /// changes, the browser never reloads the page; polling `agent_config_from_url`
+    /// here is what closes that gap. Returns `true` only on a real change so the
+    /// sampler avoids notifying the UI on every poll.
+    fn refresh_agent_config(&mut self) -> bool {
+        let Some(config) = agent_config_from_url() else {
+            return false;
+        };
+        let DataSource::Live(client) = &self.source else {
+            return false;
+        };
+        if !client.set_config(config) {
+            return false;
+        }
+        self.live_error = None;
+        self.reconnect_required = false;
+        // Transient: the next successful sample clears it, and the auth
+        // guidance (if any) is replaced by the fresh connection attempt.
+        self.dashboard.set_status(RELOAD_NOTICE, false);
+        self.sync_proof_dom();
+        true
+    }
+
     /// Takes one sample from the deterministic demo probe.
     fn ingest_demo(&mut self) {
         if let DataSource::Demo(probe) = &mut self.source {
@@ -284,9 +339,14 @@ impl TaskManagerApp {
                 self.ticks = self.ticks.saturating_add(1);
                 self.live_total = Some(response.total_process_count);
                 self.live_error = None;
+                self.reconnect_required = false;
                 self.dashboard.ingest(response.snapshot);
             }
             Err(error) => {
+                // An auth rejection carries fixed re-entry guidance (the token
+                // itself is never echoed). Track it so the DOM proof can expose
+                // a boolean without mirroring any error text.
+                self.reconnect_required = crate::agent::requires_reconnect(&error);
                 self.live_error = Some(error.clone());
                 self.dashboard
                     .set_status(format!("エージェントから取得できません: {error}"), true);
@@ -1995,6 +2055,7 @@ impl TaskManagerApp {
         );
         let proof = proof_with_interval(&proof, interval_ms);
         let proof = proof_with_export(&proof, self.last_export);
+        let proof = proof_with_reconnect(&proof, self.reconnect_required);
         document.set_title(&format!(
             "GPUI タスクマネージャー (Web) | mode={mode} tick={} rows={rows} selected={selected} filter={filter}",
             self.ticks
@@ -2377,6 +2438,16 @@ fn proof_with_interval(proof: &str, interval_ms: u64) -> String {
 fn proof_with_export(proof: &str, last_export: Option<ExportFormat>) -> String {
     let value = last_export.map(ExportFormat::proof_value).unwrap_or("none");
     format!("{proof}export={value};")
+}
+
+/// Appends the auth-failure re-entry marker to the DOM proof string.
+///
+/// Additive only: a plain `0` / `1` with no error text, token or endpoint, so
+/// every pre-existing `key=value;` pair stays byte-for-byte identical and the
+/// headless-Chrome parser keeps working.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_reconnect(proof: &str, required: bool) -> String {
+    format!("{proof}reconnect={};", u8::from(required))
 }
 
 /// Identifiers handed to the pure exporters.
@@ -2784,6 +2855,89 @@ mod tests {
                 "{field} missing from {proof}"
             );
         }
+    }
+
+    #[test]
+    fn demo_mode_notice_is_fixed_actionable_and_dom_safe() {
+        // URL 未指定の初回起動では、何も起きずにデモへ落ちるのではなく
+        // 「どの URL を指定すれば実データになるか」を必ず通知する（R3-S05）。
+        assert!(DEMO_MODE_NOTICE.contains("デモ"));
+        assert!(DEMO_MODE_NOTICE.contains("?agent="));
+        assert!(DEMO_MODE_NOTICE.contains("#token="));
+        // 固定文言なので `;` / 改行 / トークンは入らず、DOM hook と redact
+        // 契約を壊さない。
+        assert!(!DEMO_MODE_NOTICE.contains(';'));
+        assert!(!DEMO_MODE_NOTICE.contains('\n'));
+        assert!(!DEMO_MODE_NOTICE.contains("super-secret-agent-token"));
+        // 永続通知は [エラー] 付きの a11y テキストでも全文が読み上げられる。
+        let announced = a11y_live_text(
+            Some(&StatusMessage {
+                text: format!("[エラー] {DEMO_MODE_NOTICE}"),
+                is_error: true,
+                persistent: true,
+            }),
+            false,
+        );
+        assert!(announced.contains("?agent="), "{announced}");
+        assert!(announced.contains("#token="), "{announced}");
+
+        assert!(!RELOAD_NOTICE.contains(';'));
+        assert!(!RELOAD_NOTICE.contains('\n'));
+        assert!(RELOAD_NOTICE.contains("再読込"));
+    }
+
+    #[test]
+    fn auth_failure_guidance_is_announced_and_token_free() {
+        let guidance = crate::agent::RECONNECT_GUIDANCE;
+        assert!(crate::agent::requires_reconnect(guidance));
+        let status_text = format!("エージェントから取得できません: {guidance}");
+        // ステータスバーの 160 字切り詰めでも再入力の導線が残ること。
+        let displayed = truncate_label(&status_text, 160);
+        assert!(displayed.contains("#token="), "{displayed}");
+        assert!(displayed.contains("貼り付けて"), "{displayed}");
+
+        let announced = a11y_live_text(
+            Some(&StatusMessage {
+                text: status_text,
+                is_error: true,
+                persistent: false,
+            }),
+            false,
+        );
+        assert!(announced.contains("エラー:"), "{announced}");
+        assert!(announced.contains("#token="), "{announced}");
+        assert!(
+            !announced.contains("super-secret-agent-token"),
+            "{announced}"
+        );
+    }
+
+    #[test]
+    fn dom_proof_reconnect_field_is_additive_and_token_free() {
+        let token = "super-secret-agent-token";
+        let legacy = "mode=live;tick=5;rows=3;theme=dark;interval=2000;export=none;";
+        for required in [false, true] {
+            let proof = proof_with_reconnect(legacy, required);
+            assert!(proof.starts_with(legacy), "{proof}");
+            assert_eq!(proof, format!("{legacy}reconnect={};", u8::from(required)));
+            assert!(!proof.contains(token), "{proof}");
+            assert!(!proof.contains("エラー"), "{proof}");
+            for field in ["mode=live", "tick=5", "interval=2000", "export=none"] {
+                assert!(
+                    proof.split(';').any(|part| part == field),
+                    "{field} missing from {proof}"
+                );
+            }
+        }
+        // 既存フックは末尾追加だけなので不変（interval/export との連結も確認）。
+        let proof = proof_with_reconnect(
+            &proof_with_export(&proof_with_interval("mode=demo;tick=7;", 2_000), None),
+            false,
+        );
+        assert_eq!(
+            proof,
+            "mode=demo;tick=7;interval=2000;export=none;reconnect=0;"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ description: ネイティブ試作・エージェント・wasmスパイクの Ru
 tags: [verification, runtime-proof, gpui, linux, wayland, wasm]
 status: verified
 generated: 2026-11-14T21:10:00+09:00
-verified: 2026-11-17T01:59:00+09:00
+verified: 2026-11-18T10:58:00+09:00
 ---
 
 ## 1. 検証環境
@@ -24,9 +24,10 @@ verified: 2026-11-17T01:59:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **237 passed / 0 failed**（tm-core 95 / tm-viewmodel 44 / tm-platform 11 / tm-agent 69 / app 16、2026-11-18） |
-| web ユニットテスト | **16 passed / 0 failed**（agent 7 + settings 5 + theme 4、2026-11-18） |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 成功（警告 0） |
+| `cargo test --workspace` | **334 passed / 0 failed**（tm-core 129 / tm-viewmodel 62 / tm-platform 11 / tm-agent 78 / app 54、2026-11-18） |
+| web ユニットテスト | **57 passed / 0 failed**（capability / 通知 / トレンド / エクスポート 等を含む、2026-11-18） |
+| `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
 
