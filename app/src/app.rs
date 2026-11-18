@@ -1850,7 +1850,10 @@ impl TaskManagerApp {
                                 .text_xs()
                                 .text_color(rgb(palette().muted))
                                 .child(
-                                    "この操作は取り消せません。Enter でキャンセル、Ctrl+Enter または「実行」ボタンで確定します。",
+                                    format!(
+                                        "{} Enter でキャンセル、Ctrl+Enter または「実行」ボタンで確定します。",
+                                        pending.confirmation_note
+                                    ),
                                 ),
                         )
                         .child(

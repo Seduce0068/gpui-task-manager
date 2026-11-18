@@ -36,7 +36,7 @@ use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, h_flex, kv, section_title, sparkline,
-    usage_severity, v_flex,
+    temperature_gauge, temperature_severity, usage_severity, v_flex,
 };
 
 const FONT_SANS: &str = "IBM Plex Sans";
@@ -45,8 +45,9 @@ const FONT_SANS: &str = "IBM Plex Sans";
 /// coordinates from these same numbers, so keep them in sync.
 const HEADER_HEIGHT: f32 = 52.0;
 /// 概要カードの高さ。システムカードは最大でホスト/稼働時間/プロセス + ディスク 2 件
-/// （ラベル+バー）+ 温度 3 件を縦に並べるため、186 px では内容がはみ出して
-/// ツールバーと重なる（Runtime Proof: 2026-11-16 のスクリーンショットで確認）。
+/// （ラベル+バー）+ 温度 3 件（しきい値ゲージ: テキスト行+バー）を縦に並べるため、
+/// 186 px では内容がはみ出してツールバーと重なる（Runtime Proof: 2026-11-16 の
+/// スクリーンショットで確認）。CDP 検証スクリプトの座標定数と同期するため変更しない。
 const OVERVIEW_HEIGHT: f32 = 260.0;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 26.0;
@@ -816,26 +817,21 @@ impl TaskManagerApp {
         if components.is_empty() {
             system_body = system_body.child(kv("温度", "センサーなし".to_string()));
         } else {
-            for component in components.iter().take(3) {
+            // 温度行をしきい値ゲージに置き換える。値・max/crit・状態をテキストで
+            // 表示し、バーと AccessKit 名にも同じ状態を載せる（色だけに依存しない）。
+            for (index, component) in components.iter().take(3).enumerate() {
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
                 } else {
                     component.label.clone()
                 };
-                let value = match (
+                system_body = system_body.child(temperature_gauge(
+                    ("temperature-gauge", index),
+                    label,
                     component.temperature_c,
                     component.max_c,
                     component.critical_c,
-                ) {
-                    (Some(t), Some(max), Some(crit)) => {
-                        format!("{t:.0}°C (max {max:.0}°C / crit {crit:.0}°C)")
-                    }
-                    (Some(t), Some(max), None) => format!("{t:.0}°C (max {max:.0}°C)"),
-                    (Some(t), None, Some(crit)) => format!("{t:.0}°C (crit {crit:.0}°C)"),
-                    (Some(t), None, None) => format!("{t:.0}°C"),
-                    _ => "—".to_string(),
-                };
-                system_body = system_body.child(kv(label, value));
+                ));
             }
         }
         let system_card = card("システム", palette().green, system_body)
@@ -1530,6 +1526,13 @@ impl TaskManagerApp {
                 if let Some(critical) = component.critical_c {
                     value.push_str(&format!(" / crit {critical:.0}°C"));
                 }
+                // 詳細パネルにも色に依存しない状態テキストを添える（概要のゲージと同じ判定）。
+                let severity = temperature_severity(
+                    component.temperature_c,
+                    component.max_c,
+                    component.critical_c,
+                );
+                value.push_str(&format!(" ({})", severity.label()));
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
                 } else {
@@ -2108,7 +2111,13 @@ fn a11y_live_text(status: Option<&StatusMessage>, stale: bool) -> String {
         parts.push("表示中のデータは古いです".to_string());
     }
     if let Some(status) = status {
-        let prefix = if status.is_error { "エラー: " } else { "" };
+        // StatusMessage already carries a non-colour "[エラー]" marker; only
+        // add the legacy prefix for messages that predate that marker.
+        let prefix = if status.is_error && !status.text.contains("エラー") {
+            "エラー: "
+        } else {
+            ""
+        };
         parts.push(format!("{prefix}{}", truncate_label(&status.text, 160)));
     }
     if parts.is_empty() {
@@ -2343,6 +2352,23 @@ mod tests {
         for (&millis, wait) in INTERVAL_PRESETS_MS.iter().zip(waits) {
             assert_eq!(wait, Duration::from_millis(millis));
         }
+    }
+
+    #[test]
+    fn temperature_gauge_state_is_textual_and_dom_proof_stays_additive() {
+        use crate::widgets::{temperature_a11y_label, temperature_value_text};
+
+        // ゲージが色で示す「危険」は、アクセシブル名にもテキストで現れる。
+        let value = temperature_value_text(Some(101.0), Some(68.0), Some(100.0));
+        let label = temperature_a11y_label("CPU Packages", &value);
+        assert!(label.contains("危険"), "{label}");
+        assert!(label.contains("max 68°C"), "{label}");
+        assert!(label.contains("crit 100°C"), "{label}");
+
+        // ゲージを追加しても既存 DOM hook の key=value; は壊さない（末尾追加のみ）。
+        let legacy = "mode=demo;tick=7;rows=3;theme=dark;";
+        let proof = proof_with_interval(legacy, 2_000);
+        assert!(proof.starts_with(legacy), "{proof}");
     }
 
     #[test]

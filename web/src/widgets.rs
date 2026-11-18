@@ -177,6 +177,182 @@ pub fn usage_severity(percent: f32) -> &'static str {
     }
 }
 
+// ------------------------------------------------------------ temperature gauge
+//
+// `critical_c` is the halt threshold and `max_c` the upper operating limit
+// reported by the probe. A gauge compares the live reading against both and
+// always spells out the resulting state in text: a colour (or a bar length)
+// alone is not an accessible state.
+
+/// State of a temperature reading relative to its thresholds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TemperatureSeverity {
+    /// Reading or thresholds are missing, so no judgement is possible.
+    Unknown,
+    /// Below both thresholds.
+    Normal,
+    /// At or above `max_c`, below `critical_c`.
+    Warning,
+    /// At or above `critical_c`.
+    Critical,
+}
+
+impl TemperatureSeverity {
+    /// Japanese state label shared by the visible gauge and its AccessKit name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Normal => "正常",
+            Self::Warning => "注意",
+            Self::Critical => "危険",
+        }
+    }
+}
+
+/// Only finite readings are compared: a NaN from a driver must never be
+/// reported as "正常".
+fn finite(value: Option<f32>) -> Option<f32> {
+    value.filter(|value| value.is_finite())
+}
+
+/// Thresholds must also be strictly positive: a negative `critical_c` is
+/// invalid probe data and must not turn every reading into a false alarm.
+fn positive(value: Option<f32>) -> Option<f32> {
+    finite(value).filter(|value| *value > 0.0)
+}
+
+/// Compares `temperature_c` against `critical_c` first, then `max_c`.
+///
+/// When neither threshold is available the result is [`TemperatureSeverity::Unknown`]
+/// rather than an optimistic "正常" — a bare temperature cannot be classified.
+pub fn temperature_severity(
+    temperature_c: Option<f32>,
+    max_c: Option<f32>,
+    critical_c: Option<f32>,
+) -> TemperatureSeverity {
+    let Some(temperature) = finite(temperature_c) else {
+        return TemperatureSeverity::Unknown;
+    };
+    let max = positive(max_c);
+    let critical = positive(critical_c);
+    if max.is_none() && critical.is_none() {
+        return TemperatureSeverity::Unknown;
+    }
+    if critical.is_some_and(|critical| temperature >= critical) {
+        return TemperatureSeverity::Critical;
+    }
+    if max.is_some_and(|max| temperature >= max) {
+        return TemperatureSeverity::Warning;
+    }
+    TemperatureSeverity::Normal
+}
+
+/// Full-scale value for the gauge: `critical_c`, then `max_c`, then 100 °C.
+pub fn temperature_reference(max_c: Option<f32>, critical_c: Option<f32>) -> f32 {
+    positive(critical_c)
+        .or_else(|| positive(max_c))
+        .unwrap_or(100.0)
+}
+
+/// Visible text for one gauge: value, both thresholds and the textual state.
+///
+/// Keeping the state in text is what makes the gauge readable without colour
+/// perception and in the accessibility tree.
+pub fn temperature_value_text(
+    temperature_c: Option<f32>,
+    max_c: Option<f32>,
+    critical_c: Option<f32>,
+) -> String {
+    let temperature = finite(temperature_c)
+        .map(|temperature| format!("{temperature:.0}°C"))
+        .unwrap_or_else(|| "—".to_string());
+    let max = positive(max_c)
+        .map(|max| format!(" / max {max:.0}°C"))
+        .unwrap_or_default();
+    let critical = positive(critical_c)
+        .map(|critical| format!(" / crit {critical:.0}°C"))
+        .unwrap_or_default();
+    let state = temperature_severity(temperature_c, max_c, critical_c).label();
+    format!("{temperature}{max}{critical} {state}")
+}
+
+/// Accessible name (`aria-label` equivalent) for a temperature gauge.
+pub fn temperature_a11y_label(sensor: &str, value_text: &str) -> String {
+    format!("{sensor} 温度 {value_text}")
+}
+
+/// A temperature gauge drawn as a thin bar plus a text row.
+///
+/// The bar is scaled to [`temperature_reference`] and coloured by
+/// [`temperature_severity`]; the text repeats the value, thresholds and state so
+/// nothing depends on colour alone. `id` must be unique within a frame — pass a
+/// `(name, index)` tuple for repeated sensors. The group and the bar get stable
+/// AccessKit identities and labels; no DOM hook is touched here.
+pub fn temperature_gauge(
+    id: impl Into<ElementId>,
+    sensor: impl Into<SharedString>,
+    temperature_c: Option<f32>,
+    max_c: Option<f32>,
+    critical_c: Option<f32>,
+) -> Stateful<Div> {
+    let id: ElementId = id.into();
+    let sensor: SharedString = sensor.into();
+    let severity = temperature_severity(temperature_c, max_c, critical_c);
+    let color = match severity {
+        TemperatureSeverity::Critical => palette().red,
+        TemperatureSeverity::Warning => palette().yellow,
+        TemperatureSeverity::Normal => palette().green,
+        TemperatureSeverity::Unknown => palette().muted,
+    };
+    let value_text = temperature_value_text(temperature_c, max_c, critical_c);
+    let a11y_label = temperature_a11y_label(&sensor, &value_text);
+    let reference = temperature_reference(max_c, critical_c);
+    let percent = finite(temperature_c)
+        .map(|temperature| (temperature.max(0.0) / reference).clamp(0.0, 1.0) * 100.0)
+        .unwrap_or(0.0);
+
+    v_flex()
+        .gap_1()
+        .id(id.clone())
+        .role(Role::Group)
+        .aria_label(a11y_label.clone())
+        .child(
+            h_flex()
+                .justify_between()
+                .gap_2()
+                .text_xs()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_color(rgb(palette().muted))
+                        .truncate()
+                        .child(sensor),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(rgb(color))
+                        .child(value_text),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(5.0))
+                .rounded_full()
+                .overflow_hidden()
+                .flex()
+                .bg(rgb(palette().surface))
+                .id((id, "bar"))
+                .role(Role::ProgressIndicator)
+                .aria_label(a11y_label)
+                .aria_numeric_value(percent as f64)
+                .aria_value(format!("{percent:.0}%"))
+                .child(div().h_full().bg(rgb(color)).flex_grow(percent.max(1.0)))
+                .child(div().h_full().flex_grow((100.0 - percent).max(1.0))),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +373,95 @@ mod tests {
     fn usage_severity_clamps_against_nan_like_inputs() {
         // Negative values cannot come from a probe, but must not be "高".
         assert_eq!(usage_severity(-1.0), "低");
+    }
+
+    #[test]
+    fn temperature_severity_uses_critical_then_max_threshold() {
+        let (max, critical) = (Some(68.0), Some(100.0));
+        assert_eq!(
+            temperature_severity(Some(40.0), max, critical),
+            TemperatureSeverity::Normal
+        );
+        assert_eq!(
+            temperature_severity(Some(67.9), max, critical),
+            TemperatureSeverity::Normal
+        );
+        assert_eq!(
+            temperature_severity(Some(68.0), max, critical),
+            TemperatureSeverity::Warning
+        );
+        assert_eq!(
+            temperature_severity(Some(99.9), max, critical),
+            TemperatureSeverity::Warning
+        );
+        assert_eq!(
+            temperature_severity(Some(100.0), max, critical),
+            TemperatureSeverity::Critical
+        );
+        assert_eq!(
+            temperature_severity(Some(120.0), max, critical),
+            TemperatureSeverity::Critical
+        );
+    }
+
+    #[test]
+    fn temperature_severity_without_a_threshold_is_unknown_not_normal() {
+        assert_eq!(
+            temperature_severity(Some(42.0), None, None),
+            TemperatureSeverity::Unknown
+        );
+        assert_eq!(
+            temperature_severity(None, Some(68.0), Some(100.0)),
+            TemperatureSeverity::Unknown
+        );
+        // A driver may report NaN; that must not be classified as safe.
+        assert_eq!(
+            temperature_severity(Some(f32::NAN), Some(68.0), Some(100.0)),
+            TemperatureSeverity::Unknown
+        );
+        // A NaN threshold is ignored, not treated as an always-triggered alarm.
+        assert_eq!(
+            temperature_severity(Some(42.0), None, Some(f32::NAN)),
+            TemperatureSeverity::Unknown
+        );
+        // The same holds for a non-positive threshold.
+        assert_eq!(
+            temperature_severity(Some(42.0), None, Some(-5.0)),
+            TemperatureSeverity::Unknown
+        );
+    }
+
+    #[test]
+    fn temperature_reference_prefers_critical_and_falls_back_safely() {
+        assert_eq!(temperature_reference(Some(68.0), Some(100.0)), 100.0);
+        assert_eq!(temperature_reference(Some(68.0), None), 68.0);
+        assert_eq!(temperature_reference(None, None), 100.0);
+        assert_eq!(temperature_reference(Some(0.0), Some(-5.0)), 100.0);
+    }
+
+    #[test]
+    fn temperature_value_text_spells_out_state_and_thresholds() {
+        let warning = temperature_value_text(Some(70.0), Some(68.0), Some(100.0));
+        assert!(warning.contains("70°C"), "{warning}");
+        assert!(warning.contains("max 68°C"), "{warning}");
+        assert!(warning.contains("crit 100°C"), "{warning}");
+        assert!(warning.contains("注意"), "{warning}");
+        let critical = temperature_value_text(Some(101.0), Some(68.0), Some(100.0));
+        assert!(critical.contains("危険"), "{critical}");
+        let normal = temperature_value_text(Some(30.0), Some(68.0), Some(100.0));
+        assert!(normal.contains("正常"), "{normal}");
+        let missing = temperature_value_text(None, None, None);
+        assert!(missing.contains("—"), "{missing}");
+        assert!(missing.contains("不明"), "{missing}");
+    }
+
+    #[test]
+    fn temperature_gauge_a11y_label_carries_the_textual_state() {
+        let value = temperature_value_text(Some(101.0), Some(68.0), Some(100.0));
+        let label = temperature_a11y_label("CPU Packages", &value);
+        assert!(label.starts_with("CPU Packages 温度"), "{label}");
+        assert!(label.contains("危険"), "{label}");
+        assert!(label.contains("max 68°C"), "{label}");
+        assert!(label.contains("crit 100°C"), "{label}");
     }
 }

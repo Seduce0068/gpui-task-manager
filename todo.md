@@ -56,14 +56,13 @@ status: current
 ### 優先度: 中
 
 - [x] 仮想メモリのソート・絞り込みに対応（R5-I01）— SortKey::VirtualMemory としきい値フィルタを追加。
-- [ ] 温度の `critical_c` / `max_c` を使ったしきい値ゲージを追加する
-      （R5-I03, R1-I03）。
+- [x] 温度しきい値ゲージ（R5-I03/R1-I03）— 色に加え状態語と aria 数値を表示。
 - [ ] `supports_*` Capability で取得不可セクションを出し分ける（R5-I04）。
 - [x] 設定一時ファイルの nonce と query_param 検証（a232a8e）。
 - [x] `ConfirmKill` の paused ガードと pending 保護（38d954f）。
 - [x] 接続スレッドの JoinHandle を追跡し期限付き join を実装（R2-X03）— JoinTracker を追加。
-- [ ] i18n 機構、シグナル別の確認文言、色以外の status 識別、transient
-      メッセージの自動クリアを実装する（R3-A04, R3-U03, R3-U04, R3-U05）。
+- [x] シグナル別確認文言と色非依存 status（R3-U03〜U05）— [情報]/[エラー]
+      マーカー、confirmation_note、transient 自動クリアを維持。
 - [x] agent と app の CLI を揃える（R5-O05）— --version / --log-level / ヘルプ / 終了コードを統一。
 - [ ] `dashboard.apply` が返す Effect を実行するか、空である前提を明示する
       （R2-C01, R2-C02）。
@@ -94,7 +93,10 @@ status: current
 ### 優先度: 低
 
 - [ ] 履歴のトレンド差分バッジを追加する（R5-I05）。※R5-I02 は却下済み。
-- [ ] スナップショットの CSV/JSON エクスポート（R1-I02）。
+- [x] CSV/JSON 変換の純粋関数を tm-core に追加（R1-I02 のコア部分）。
+      UI / CLI 配線は R1-I02-UI として分離。
+- [ ] R1-I02-UI CSV/JSON エクスポートを CLI / Web の UI へ接続する
+      （0600 権限、--redact 既定を維持）。
 - [ ] 名前付きフィルタプリセット、選択プロセスの時系列スパークライン
       （R1-I06, R1-I08）。
 - [ ] バッテリー／電源状態、適応的サンプリング、cgroup グルーピング
