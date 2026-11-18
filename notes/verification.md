@@ -2114,3 +2114,34 @@ worktree（round31-safe）で実装・検証。
 破壊的操作で委任外、別セッションの未 push 2 コミットは触れない）。
 
 - viewmodel 65 passed / workspace 364 passed / clippy / fmt 成功。
+
+## 2026-11-18（エージェント並列調査 第28弾 → web lock と weak assertion）
+
+3 観点（テスト品質 / panic 経路 / 設定依存）の調査エージェントを並列起動。
+worktree で実装・検証。
+
+1. **web/Cargo.lock の陳腐化（実 CI 破壊、親の Runtime Proof で確認）**: 第26弾で
+   `serde_json` を dev-dependency から通常依存へ昇格した際、`web/Cargo.lock` の
+   `tm-viewmodel` 依存リストが更新されず、`(cd web && cargo vet --locked)` が
+   exit 255、`cargo metadata --locked` が exit 101 で失敗していた。
+   1 行追加で解消（vet 560 exempted 成功を確認）。子の「CI が壊れる」という
+   報告は実 CI 8/8 success と矛盾したが、ローカルの --locked は確実に失敗
+   しており修正した（AGENTS §7 に従い親の Runtime Proof を優先）。
+2. **weak assertion の修正（probe-testquality）**:
+   - `sorting_by_virtual_memory_defaults_to_descending` の
+     `spec.direction.arrow() == SortDirection::Descending.arrow()`（同語反復）を
+     `"▼"` との比較に変更。
+   - `user_inside_hostname_does_not_break_redaction` の部分 `contains("java")`
+     を完全出力 `"https://host host java"` との assert_eq に変更（期待値を
+     実装に合わせて訂正）。
+   - `auth.rs` の認証トークン再比較（dedicated テストと重複）を削除。
+3. **panic 経路監査**: ユーザー入力/wire から到達可能なクラッシュは 0 件。
+   UTF-16 境界変換は `floor_byte_index` で防御済み（将来リスクとして
+   `utf16_index` の内部丸めを記録）。
+
+- workspace 364 passed / clippy / fmt / cargo vet --locked（web）/ markdownlint
+  増分ゼロ成功。`tm-platform` の実プロセステストが 1 回 flaky に失敗したが
+  再実行で成功（変更と無関係）。
+
+**見送り**: bond0 の仮想 IF 追加（実機確認が必要）、diverge 解消（rebase は
+破壊的操作で委任外）。
