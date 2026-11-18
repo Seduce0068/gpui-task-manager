@@ -24,19 +24,26 @@ use gpui::{
     UniformListScrollHandle, Window, canvas, div, prelude::*, px, rgb, uniform_list,
 };
 use tm_core::demo::DemoProbe;
+use tm_core::export::{snapshot_to_csv, snapshot_to_json};
 use tm_core::format;
-use tm_core::{PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe};
+use tm_core::redact::RedactionIdentifiers;
+use tm_core::{
+    PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
+    SystemSnapshot,
+};
 use tm_viewmodel::{
     Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput,
     MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
 };
+#[cfg(target_family = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::agent::{AgentClient, AgentConfig};
 use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, h_flex, kv, section_title, sparkline,
-    temperature_gauge, temperature_severity, usage_severity, v_flex,
+    temperature_gauge, temperature_severity, trend_badge, usage_severity, v_flex,
 };
 
 const FONT_SANS: &str = "IBM Plex Sans";
@@ -68,6 +75,45 @@ const DETAILS_WIDTH: f32 = 320.0;
 /// counterpart of the AccessKit status node in `status_bar()`.
 const A11Y_LIVE_DOM_ID: &str = "tm-web-a11y-live";
 
+/// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
+/// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
+/// 書き出せるようにするため）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportFormat {
+    Csv,
+    Json,
+}
+
+impl ExportFormat {
+    fn filename(self) -> &'static str {
+        match self {
+            Self::Csv => "gpui-task-manager-snapshot.csv",
+            Self::Json => "gpui-task-manager-snapshot.json",
+        }
+    }
+
+    fn mime(self) -> &'static str {
+        match self {
+            Self::Csv => "text/csv;charset=utf-8",
+            Self::Json => "application/json;charset=utf-8",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV",
+            Self::Json => "JSON",
+        }
+    }
+
+    fn proof_value(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Json => "json",
+        }
+    }
+}
+
 /// How the shell gets its data.
 enum DataSource {
     /// Deterministic synthetic data generated in the browser (`tm-core`).
@@ -97,6 +143,9 @@ pub struct TaskManagerApp {
     stale: bool,
     /// Number of snapshots ingested (used by the DOM proof hook).
     ticks: u64,
+    /// 直近のエクスポート形式。DOM フックの `export=` フィールドにのみ使い、
+    /// スナップショット本文やトークンは保持しない。
+    last_export: Option<ExportFormat>,
 }
 
 impl TaskManagerApp {
@@ -141,6 +190,7 @@ impl TaskManagerApp {
             live_error: None,
             stale: false,
             ticks: 0,
+            last_export: None,
         };
         app.restore_settings();
         app.spawn_sampler(cx);
@@ -273,6 +323,69 @@ impl TaskManagerApp {
         if let Err(message) = crate::settings::save(&settings) {
             log::warn!("設定を保存できません: {message}");
         }
+    }
+
+    /// 現在のスナップショットを redact 済みの CSV / JSON としてダウンロードする。
+    ///
+    /// 変換そのものは [`tm_core::export`] の純粋関数へ委譲する。ブラウザは
+    /// エージェント側の環境変数（HOME / USER / hostname）を読めないため識別子は
+    /// 空で渡すが、Dashboard のスナップショットはエージェント／デモプローブが
+    /// 既に redact したものだけである。エクスポート関数はさらにプライベートな
+    /// clone へ識別子非依存の redact（tailnet ドメインなど）を適用する。
+    /// エージェントのトークンは `AgentClient` 内に留まり、ここへは渡らない。
+    fn export_snapshot(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+        let (content, rows) = match self.dashboard.snapshot() {
+            Some(snapshot) => (export_document(snapshot, format), snapshot.processes.len()),
+            None => {
+                self.dashboard
+                    .set_status("エクスポートできるスナップショットがありません", true);
+                self.sync_proof_dom();
+                cx.notify();
+                return;
+            }
+        };
+        download_text(format.filename(), format.mime(), &content);
+        self.last_export = Some(format);
+        // 既存の aria-live 経路で完了を読み上げる（色だけに依存しない）。
+        self.dashboard
+            .set_status(export_status_message(format, rows, content.len()), false);
+        self.sync_proof_dom();
+        cx.notify();
+    }
+
+    /// エクスポートボタン（CSV / JSON）。既存ボタンと同じ DOM id / role / aria 規約。
+    fn export_button(
+        &self,
+        format: ExportFormat,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(format!(
+                "現在のスナップショットを {} ファイルとしてダウンロードする（redact 済み）",
+                format.label()
+            ))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(palette().surface))
+            .bg(rgb(palette().mantle))
+            .text_color(rgb(palette().blue))
+            .hover(|style| {
+                style
+                    .bg(rgb(palette().surface))
+                    .text_color(rgb(palette().text))
+            })
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.export_snapshot(format, cx);
+            }))
+            .child(format.label())
     }
 
     /// Applies a user intention and executes the effects the shell supports.
@@ -597,6 +710,11 @@ impl TaskManagerApp {
             palette().blue,
             v_flex()
                 .gap_1()
+                .child(trend_badge(
+                    "trend-cpu-web",
+                    "CPU",
+                    &self.dashboard.cpu_trend(),
+                ))
                 .child(
                     h_flex()
                         .justify_between()
@@ -657,6 +775,11 @@ impl TaskManagerApp {
             palette().mauve,
             v_flex()
                 .gap_1()
+                .child(trend_badge(
+                    "trend-memory-web",
+                    "メモリ",
+                    &self.dashboard.memory_trend(),
+                ))
                 .child(
                     h_flex()
                         .justify_between()
@@ -723,6 +846,11 @@ impl TaskManagerApp {
             palette().teal,
             v_flex()
                 .gap_1()
+                .child(trend_badge(
+                    "trend-network-web",
+                    "ネットワーク",
+                    &self.dashboard.network_trend(),
+                ))
                 .child(
                     h_flex()
                         .justify_between()
@@ -1116,7 +1244,9 @@ impl TaskManagerApp {
                             .text_xs()
                             .text_color(rgb(palette().muted))
                             .child(format!("表示 {} 件", self.dashboard.visible_count())),
-                    ),
+                    )
+                    .child(self.export_button(ExportFormat::Csv, "export-csv-web", cx))
+                    .child(self.export_button(ExportFormat::Json, "export-json-web", cx)),
             )
     }
 
@@ -1832,6 +1962,7 @@ impl TaskManagerApp {
             if self.live_error.is_some() { 1 } else { 0 },
         );
         let proof = proof_with_interval(&proof, interval_ms);
+        let proof = proof_with_export(&proof, self.last_export);
         document.set_title(&format!(
             "GPUI タスクマネージャー (Web) | mode={mode} tick={} rows={rows} selected={selected} filter={filter}",
             self.ticks
@@ -2178,6 +2309,86 @@ fn proof_with_interval(proof: &str, interval_ms: u64) -> String {
     format!("{proof}interval={interval_ms};")
 }
 
+/// Appends the last export format to the DOM proof string.
+///
+/// Additive only: the fixed `csv` / `json` / `none` value can never carry user
+/// text, a hostname or the agent token, and every pre-existing `key=value;`
+/// pair stays byte-for-byte identical.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_export(proof: &str, last_export: Option<ExportFormat>) -> String {
+    let value = last_export.map(ExportFormat::proof_value).unwrap_or("none");
+    format!("{proof}export={value};")
+}
+
+/// Identifiers handed to the pure exporters.
+///
+/// The browser cannot read the agent host's `HOME` / `USER` / hostname, and the
+/// dashboard only ever holds snapshots that were redacted before reaching it
+/// (synthetic demo data, or the agent's `--redact`-style wire response). Passing
+/// empty identifiers is therefore correct here; `tm_core::export` still applies
+/// its identifier-independent redaction (tailnet domains, `host.<id>` suffixes
+/// and bare `tail…` tokens) to a private clone of the snapshot.
+fn export_identifiers() -> RedactionIdentifiers<'static> {
+    RedactionIdentifiers {
+        home: "",
+        user: "",
+        hostname: "",
+    }
+}
+
+/// Runs the pure `tm_core` exporter for the requested format.
+fn export_document(snapshot: &SystemSnapshot, format: ExportFormat) -> String {
+    let ids = export_identifiers();
+    match format {
+        ExportFormat::Csv => snapshot_to_csv(snapshot, &ids),
+        ExportFormat::Json => snapshot_to_json(snapshot, &ids),
+    }
+}
+
+/// Status text announced through the existing polite `aria-live` path.
+fn export_status_message(format: ExportFormat, rows: usize, bytes: usize) -> String {
+    format!(
+        "{} をエクスポートしました（{} 件 / {} バイト、redact 済み）",
+        format.label(),
+        rows,
+        bytes
+    )
+}
+
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen(inline_js = r#"
+export function tmDownloadText(filename, mime, text) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = "tmDownloadText")]
+    fn tm_download_text(filename: &str, mime: &str, text: &str);
+}
+
+/// Hands the exported text to the browser as a Blob download.
+///
+/// The wasm implementation is a tiny inline-JS helper because `web/Cargo.toml`
+/// (out of scope for this task) does not enable the `Url` / `HtmlAnchorElement`
+/// web-sys features. Native builds have no DOM; the same conversion path is
+/// still exercised by the pure-function tests below.
+#[cfg(target_family = "wasm")]
+fn download_text(filename: &str, mime: &str, content: &str) {
+    tm_download_text(filename, mime, content);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn download_text(_filename: &str, _mime: &str, _content: &str) {}
+
 /// Whether the snapshot left on screen after a poll must be shown as stale.
 ///
 /// Only a failed refresh of an already-populated dashboard makes displayed data
@@ -2388,6 +2599,127 @@ mod tests {
             "theme=dark",
             "interval=2000",
         ] {
+            assert!(
+                proof.split(';').any(|part| part == field),
+                "{field} missing from {proof}"
+            );
+        }
+    }
+
+    fn export_sample_snapshot() -> SystemSnapshot {
+        SystemSnapshot {
+            hostname: Some("host".into()),
+            os_name: Some("Linux".into()),
+            kernel_version: Some("6.11-generic".into()),
+            processes: vec![ProcessSnapshot {
+                key: tm_core::ProcessKey::new(4242, 1_700_000_000),
+                name: "worker".into(),
+                command: "worker --endpoint https://host.tail1234.ts.net:8443".into(),
+                user: Some("user".into()),
+                status: ProcessStatus::Running,
+                cpu_percent: 1.5,
+                memory_bytes: 1_024,
+                virtual_memory_bytes: 2_048,
+                threads: Some(4),
+                parent_pid: None,
+            }],
+            ..SystemSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn export_document_delegates_to_pure_tm_core_exporters_without_mutation() {
+        let snapshot = export_sample_snapshot();
+        let before = format!("{snapshot:?}");
+        let ids = export_identifiers();
+        for (format, expected) in [
+            (
+                ExportFormat::Csv,
+                tm_core::export::snapshot_to_csv(&snapshot, &ids),
+            ),
+            (
+                ExportFormat::Json,
+                tm_core::export::snapshot_to_json(&snapshot, &ids),
+            ),
+        ] {
+            assert_eq!(export_document(&snapshot, format), expected);
+        }
+        assert_eq!(
+            format!("{snapshot:?}"),
+            before,
+            "export must not mutate the dashboard snapshot"
+        );
+    }
+
+    #[test]
+    fn export_output_applies_redaction_and_never_carries_the_agent_token() {
+        let snapshot = export_sample_snapshot();
+        let token = "super-secret-agent-token";
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let text = export_document(&snapshot, format);
+            // 識別子非依存の redact がエクスポート時にも適用されること。
+            for secret in ["tail1234", "ts.net"] {
+                assert!(!text.contains(secret), "{format:?} leaked {secret}: {text}");
+            }
+            assert!(text.contains("host"), "{format:?}: {text}");
+            // トークンは AgentClient に留まり、エクスポート関数へ渡さない。
+            assert!(!text.contains(token), "{format:?} leaked the token");
+        }
+    }
+
+    #[test]
+    fn export_filenames_are_fixed_and_status_uses_the_existing_live_contract() {
+        assert_eq!(
+            ExportFormat::Csv.filename(),
+            "gpui-task-manager-snapshot.csv"
+        );
+        assert_eq!(
+            ExportFormat::Json.filename(),
+            "gpui-task-manager-snapshot.json"
+        );
+        assert!(ExportFormat::Csv.mime().starts_with("text/csv"));
+        assert!(ExportFormat::Json.mime().starts_with("application/json"));
+
+        let status = export_status_message(ExportFormat::Csv, 28, 1_234);
+        assert!(status.contains("CSV"), "{status}");
+        assert!(status.contains("28 件"), "{status}");
+        assert!(status.contains("1234 バイト"), "{status}");
+        assert!(status.contains("redact 済み"), "{status}");
+        // 既存の aria-live 契約: 成功ステータスは「エラー:」を付けず読み上げる。
+        let announced = a11y_live_text(
+            Some(&StatusMessage {
+                text: status,
+                is_error: false,
+                persistent: false,
+            }),
+            false,
+        );
+        assert!(announced.contains("エクスポートしました"), "{announced}");
+        assert!(!announced.starts_with("エラー:"), "{announced}");
+    }
+
+    #[test]
+    fn dom_proof_export_field_is_additive_and_token_free() {
+        let token = "super-secret-agent-token";
+        let legacy = "mode=demo;tick=7;rows=3;theme=dark;interval=2000;";
+        for (format, expected) in [
+            (None, "none"),
+            (Some(ExportFormat::Csv), "csv"),
+            (Some(ExportFormat::Json), "json"),
+        ] {
+            let proof = proof_with_export(legacy, format);
+            assert!(proof.starts_with(legacy), "{proof}");
+            assert_eq!(proof, format!("{legacy}export={expected};"));
+            assert!(!proof.contains(token), "{proof}");
+        }
+        for field in [
+            "mode=demo",
+            "tick=7",
+            "rows=3",
+            "theme=dark",
+            "interval=2000",
+        ] {
+            let proof = proof_with_export(legacy, Some(ExportFormat::Csv));
             assert!(
                 proof.split(';').any(|part| part == field),
                 "{field} missing from {proof}"
