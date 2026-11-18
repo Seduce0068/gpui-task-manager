@@ -1696,6 +1696,78 @@ mod tests {
     }
 
     #[test]
+    fn user_sort_is_case_insensitive() {
+        // SortKey::User compares the resolved user case-insensitively. Pin the
+        // default ascending order so the User branch in compare() is covered.
+        let mut processes = vec![
+            process(1, "a", 0.0, 1),
+            process(2, "b", 0.0, 1),
+            process(3, "c", 0.0, 1),
+        ];
+        processes[0].user = Some("Zoe".to_string());
+        processes[1].user = Some("alice".to_string());
+        processes[2].user = Some("Bob".to_string());
+        let spec = SortSpec::new(SortKey::User);
+        assert_eq!(spec.direction, SortDirection::Ascending);
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn status_sort_uses_status_id() {
+        // SortKey::Status orders by the wire identifier, so "idle" < "running"
+        // < "sleeping" regardless of enum declaration order.
+        let mut processes = vec![
+            process(1, "a", 0.0, 1),
+            process(2, "b", 0.0, 1),
+            process(3, "c", 0.0, 1),
+        ];
+        processes[0].status = ProcessStatus::Running;
+        processes[1].status = ProcessStatus::Idle;
+        processes[2].status = ProcessStatus::Sleeping;
+        let spec = SortSpec::new(SortKey::Status);
+        assert_eq!(spec.direction, SortDirection::Ascending);
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn threads_sort_uses_thread_count_with_none_as_zero() {
+        // SortKey::Threads sorts by count, treating an unreported count (None)
+        // as zero.
+        let mut processes = vec![
+            process(1, "a", 0.0, 1),
+            process(2, "b", 0.0, 1),
+            process(3, "c", 0.0, 1),
+        ];
+        processes[0].threads = Some(8);
+        processes[1].threads = Some(2);
+        processes[2].threads = None;
+        let spec = SortSpec::new(SortKey::Threads);
+        assert_eq!(spec.direction, SortDirection::Ascending);
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn start_time_sort_uses_process_start_time() {
+        // SortKey::StartTime compares start_time_secs, not the PID. The values
+        // intentionally run against PID order so a PID-based sort would fail.
+        let mut processes = vec![
+            process(1, "a", 0.0, 1),
+            process(2, "b", 0.0, 1),
+            process(3, "c", 0.0, 1),
+        ];
+        processes[0].key.start_time_secs = 3_000;
+        processes[1].key.start_time_secs = 1_000;
+        processes[2].key.start_time_secs = 2_000;
+        let spec = SortSpec::new(SortKey::StartTime);
+        assert_eq!(spec.direction, SortDirection::Ascending);
+        let sorted = filter_and_sort(&processes, &Filter::default(), spec);
+        assert_eq!(sorted, vec![1, 2, 0]);
+    }
+
+    #[test]
     fn text_filter_matches_name_command_user_and_pid() {
         let processes = sample();
         for query in ["fire", "/usr/bin/code", "user", "100"] {

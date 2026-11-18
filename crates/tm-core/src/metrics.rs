@@ -285,6 +285,19 @@ mod tests {
     }
 
     #[test]
+    fn cpu_percent_zero_when_busy_goes_backwards_but_total_advances() {
+        // The existing backwards test also lowers `total`, so percent_since
+        // returns at the zero-total-delta guard before reaching saturating_sub.
+        // Here total advances while busy drops, which exercises the busy_delta
+        // saturating_sub branch directly; it must floor the delta at zero.
+        let previous = CpuCounters::new(500, 1_000);
+        let current = CpuCounters::new(100, 1_200);
+        assert_eq!(current.total.saturating_sub(previous.total), 200);
+        assert_eq!(current.busy.saturating_sub(previous.busy), 0);
+        assert_eq!(current.percent_since(previous), 0.0);
+    }
+
+    #[test]
     fn cpu_percent_is_clamped() {
         let previous = CpuCounters::new(0, 0);
         let current = CpuCounters::new(200, 100);

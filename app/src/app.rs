@@ -84,6 +84,61 @@ impl<P> BackendInit<P> {
     }
 }
 
+/// Pure outcome of re-resolving the backend after a failed native probe (R3-S02B).
+///
+/// This maps [`BackendInit::resolve`] onto the state update a retry performs:
+/// [`ProbeRetry::Recovered`] installs a freshly built native probe, clears the
+/// persistent startup failure and lets `request_sample` resume on the next tick;
+/// [`ProbeRetry::StillFailed`] leaves the failure status visible and sampling
+/// suppressed. No synthetic/demo fallback is ever produced here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProbeRetry<P> {
+    /// A new native probe is available; install it and resume sampling.
+    Recovered(P),
+    /// The probe is still unavailable; keep the persistent failure status.
+    StillFailed(String),
+}
+
+/// Re-runs the startup backend resolution for a retry.
+///
+/// It deliberately calls [`BackendInit::resolve`] with the same arguments as
+/// startup, so the policy and the failure wording stay identical to `main.rs`.
+fn resolve_probe_retry<P>(
+    demo: bool,
+    native: impl FnOnce() -> Result<P, tm_core::ProbeError>,
+) -> ProbeRetry<P> {
+    match BackendInit::resolve(demo, native) {
+        BackendInit::Native(probe) => ProbeRetry::Recovered(probe),
+        BackendInit::Failed(message) => ProbeRetry::StillFailed(message),
+        // Retry is only reachable after a failed native probe, so `demo` is
+        // false here. If that invariant is ever broken, stay conservative:
+        // report "still unavailable" instead of installing synthetic data.
+        BackendInit::Demo => ProbeRetry::StillFailed(tm_core::demo::probe_failure_message(
+            &tm_core::ProbeError::Unsupported("demo requires no probe retry".to_string()),
+        )),
+    }
+}
+
+/// Applies the status half of a probe retry, with the persistent-notice guard.
+///
+/// A recovery only clears a status that is still the matching startup failure;
+/// any unrelated notice (for example a settings warning) is preserved. A still
+/// failing probe re-publishes the shared message as a persistent error. Kept
+/// free of GPUI state so the guard is directly testable (R3-S02B).
+fn apply_retry_status<P>(dashboard: &mut Dashboard, outcome: &ProbeRetry<P>, failure: &str) {
+    match outcome {
+        ProbeRetry::Recovered(_) => {
+            if dashboard
+                .status()
+                .is_some_and(|status| status.persistent && status.text == failure)
+            {
+                dashboard.clear_status();
+            }
+        }
+        ProbeRetry::StillFailed(message) => dashboard.set_persistent_status(message.clone()),
+    }
+}
+
 /// Small snapshot of the values the overview and status bar render.
 ///
 /// Cloning these values instead of the whole process list keeps `render` cheap:
@@ -374,6 +429,36 @@ impl TaskManagerApp {
             }
         })
         .detach();
+    }
+
+    /// Re-attempts the native probe after a startup failure (R3-S02B).
+    ///
+    /// The retry reuses the startup resolution path through
+    /// [`resolve_probe_retry`]. On success the recovered probe replaces the
+    /// empty `SharedProbe`, the matching persistent failure status is cleared
+    /// and sampling resumes on the next tick. A still-failing probe keeps the
+    /// failure visible and sampling suppressed, so no synthetic data and no
+    /// transient "probe is not available" message can leak into the UI.
+    fn retry_probe(&mut self, cx: &mut Context<Self>) {
+        if !self.probe_unavailable {
+            return;
+        }
+        let Some(failure) = self.dashboard.status().map(|status| status.text.clone()) else {
+            // No startup failure to recover from; nothing to retry.
+            return;
+        };
+        let outcome = resolve_probe_retry(self.demo_mode, tm_platform::NativeProbe::new);
+        apply_retry_status(&mut self.dashboard, &outcome, &failure);
+        if let ProbeRetry::Recovered(probe) = outcome {
+            *self
+                .probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(probe));
+            self.probe_unavailable = false;
+            // `request_sample` still honours `paused`; the guard is unchanged.
+            self.request_sample(cx);
+        }
+        cx.notify();
     }
 
     fn send_signal(&mut self, key: ProcessKey, signal: Signal, cx: &mut Context<Self>) {
@@ -1434,10 +1519,38 @@ impl TaskManagerApp {
 
         let overlay = if self.probe_unavailable {
             // Reuse the shared failure message from the status bar so the error
-            // is explicit and the wording stays aligned with `main.rs`.
-            self.dashboard
+            // is explicit and the wording stays aligned with `main.rs`, and
+            // offer an in-place retry that re-runs the startup probe path.
+            let message = self
+                .dashboard
                 .status()
-                .map(|status| overlay_text(self.display(&status.text), palette().red))
+                .map(|status| self.display(&status.text));
+            Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .children(
+                        message
+                            .map(|text| div().text_sm().text_color(rgb(palette().red)).child(text)),
+                    )
+                    .child(action_button(
+                        "retry-probe",
+                        "再試行",
+                        palette().surface_hi,
+                        true,
+                        cx.listener(|this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            this.retry_probe(cx);
+                        }),
+                    )),
+            )
         } else if self.dashboard.snapshot().is_none() {
             Some(overlay_text(
                 "システム情報を取得しています…",
@@ -2765,8 +2878,9 @@ mod tests {
     // were imported here.
     use super::{
         a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
-        dialog_command, help_shortcuts, key_action, report_save_result, signal_enabled,
-        sort_header_label, usage_severity, BackendInit, DialogButton, KeyAction,
+        apply_retry_status, dialog_command, help_shortcuts, key_action, report_save_result,
+        resolve_probe_retry, signal_enabled, sort_header_label, truncate_label, usage_severity,
+        BackendInit, DialogButton, KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use tm_core::{PlatformInfo, ProcessStatus, Signal, SortDirection};
@@ -3224,5 +3338,138 @@ mod tests {
             .status()
             .expect("success must not clear an existing status");
         assert!(status.text.ends_with("起動時の警告"), "{}", status.text);
+    }
+
+    #[test]
+    fn truncate_label_boundaries_keep_a_visible_ellipsis() {
+        // A zero limit still yields the ellipsis marker (a visibly truncated
+        // announcement); no byte slicing is involved.
+        assert_eq!(truncate_label("abc", 0), "…");
+        assert_eq!(truncate_label("", 0), "");
+        // A one-char limit keeps a single char verbatim but collapses a longer
+        // input to the ellipsis (1 - 1 = 0 kept chars + ellipsis).
+        assert_eq!(truncate_label("a", 1), "a");
+        assert_eq!(truncate_label("abc", 1), "…");
+    }
+
+    #[test]
+    fn truncate_label_counts_chars_not_bytes_and_preserves_utf8() {
+        // Whitespace is collapsed first, then the char limit is applied.
+        assert_eq!(truncate_label("  収集  不可  ", 10), "収集 不可");
+        // Over the limit: exactly `max_chars` chars, the last one being '…'.
+        let over = truncate_label("abcdefghij", 5);
+        assert_eq!(over, "abcd…");
+        assert_eq!(over.chars().count(), 5);
+
+        // Multibyte text: every cut lands on a char boundary, so the result is
+        // always valid UTF-8 and a prefix of the original string.
+        let text = "日本語の長いステータスメッセージです";
+        for limit in [0, 1, 2, 3, 5, 8] {
+            let out = truncate_label(text, limit);
+            assert_eq!(String::from_utf8(out.as_bytes().to_vec()).unwrap(), out);
+            let kept = out.strip_suffix('…').unwrap_or(out.as_str());
+            assert!(text.starts_with(kept), "limit={limit}: {out}");
+            assert!(out.chars().count() <= limit.max(1), "limit={limit}: {out}");
+        }
+        // A limit at or above the length returns the whole normalized string.
+        assert_eq!(truncate_label(text, 100), text);
+    }
+
+    #[test]
+    fn probe_retry_rebuilds_the_native_probe_through_startup_resolution() {
+        // Success is only a freshly built native probe, never a synthetic one.
+        let calls = std::cell::Cell::new(0);
+        let outcome = resolve_probe_retry(false, || {
+            calls.set(calls.get() + 1);
+            Ok::<_, tm_core::ProbeError>(())
+        });
+        assert_eq!(outcome, ProbeRetry::Recovered(()));
+        assert_eq!(
+            calls.get(),
+            1,
+            "retry must actually re-run the native factory"
+        );
+    }
+
+    #[test]
+    fn probe_retry_keeps_the_shared_failure_wording_when_still_unavailable() {
+        let error = tm_core::ProbeError::Permission("再試行も失敗".to_string());
+        let expected = tm_core::demo::probe_failure_message(&error);
+        let outcome = resolve_probe_retry(false, || Err::<(), _>(error));
+        assert_eq!(outcome, ProbeRetry::StillFailed(expected.clone()));
+        // Byte-for-byte identical to the startup path's persistent status.
+        let startup = BackendInit::resolve(false, || {
+            Err::<(), _>(tm_core::ProbeError::Permission("再試行も失敗".to_string()))
+        });
+        assert_eq!(startup.startup_status(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn probe_retry_never_installs_demo_data() {
+        // Defensive: even if a caller passed demo = true, retry cannot install
+        // synthetic data or touch the native factory.
+        let called = std::cell::Cell::new(false);
+        let outcome = resolve_probe_retry(true, || {
+            called.set(true);
+            Ok::<_, tm_core::ProbeError>(())
+        });
+        assert!(matches!(outcome, ProbeRetry::StillFailed(_)));
+        assert!(
+            !called.get(),
+            "demo resolution must not create a native probe"
+        );
+    }
+
+    #[test]
+    fn retry_status_clears_only_the_matching_persistent_failure() {
+        let recovered: ProbeRetry<()> = ProbeRetry::Recovered(());
+        let original = "元の起動エラー";
+
+        let mut dashboard = Dashboard::new(
+            PlatformInfo::native_read_only("収集不可"),
+            DEFAULT_REFRESH_INTERVAL,
+        );
+        dashboard.set_persistent_status(original);
+        // The stored text carries the shared error prefix, which is exactly
+        // what the retry path passes back from `dashboard.status()`.
+        let stored = dashboard.status().unwrap().text.clone();
+        apply_retry_status(&mut dashboard, &recovered, &stored);
+        assert_eq!(dashboard.status(), None, "matching failure must be cleared");
+
+        // An unrelated persistent notice is preserved by a recovery.
+        let mut dashboard = Dashboard::new(
+            PlatformInfo::native_read_only("収集不可"),
+            DEFAULT_REFRESH_INTERVAL,
+        );
+        dashboard.set_persistent_status("設定の警告");
+        apply_retry_status(&mut dashboard, &recovered, &stored);
+        assert!(
+            dashboard
+                .status()
+                .is_some_and(|status| status.text.ends_with("設定の警告")),
+            "a retry must not erase an unrelated notice"
+        );
+
+        // A still-failing probe re-publishes the failure as a persistent error.
+        let failed: ProbeRetry<()> = ProbeRetry::StillFailed("再試行失敗".to_string());
+        apply_retry_status(&mut dashboard, &failed, original);
+        let status = dashboard.status().expect("failure must stay visible");
+        assert!(status.persistent && status.is_error);
+        assert!(status.text.ends_with("再試行失敗"), "{}", status.text);
+    }
+
+    #[test]
+    fn probe_unavailable_overlay_wires_a_retry_control() {
+        // The failure overlay must expose a retry button bound to the recovery
+        // path; split literals keep this test from matching its own source.
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains(concat!("\"retry-", "probe\"")),
+            "failure overlay must expose a retry button"
+        );
+        assert!(
+            source.contains(concat!("this.", "retry_probe(cx);")),
+            "retry button must rebuild the probe through the startup path"
+        );
     }
 }

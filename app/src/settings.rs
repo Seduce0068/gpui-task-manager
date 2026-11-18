@@ -348,9 +348,6 @@ fn load_from_path(path: Option<&Path>) -> Settings {
 /// notice is drained, so a later call returns `None` until the next corrupt
 /// load. The same notice is also available through [`take_pending_notice`] for
 /// shells that call [`load_with_notice`] directly.
-// The shell wiring lives in `app/src/app.rs` (separate owner); keep the API
-// available without failing `-D warnings` in the meantime.
-#[allow(dead_code)]
 pub fn load_with_notice() -> (Settings, Option<SettingsNotice>) {
     load_from_path_with_notice(config_path().as_deref())
 }
@@ -362,7 +359,6 @@ fn load_from_path_with_notice(path: Option<&Path>) -> (Settings, Option<Settings
 }
 
 /// Takes the redacted notice recorded by the last [`load_with_notice`], if any.
-#[allow(dead_code)]
 pub fn take_pending_notice() -> Option<SettingsNotice> {
     lock(&PENDING_NOTICE).take()
 }

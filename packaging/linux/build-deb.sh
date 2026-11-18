@@ -6,6 +6,8 @@
 # Usage:
 #   bash packaging/linux/build-deb.sh              # build release binary + .deb
 #   bash packaging/linux/build-deb.sh --skip-build # reuse target/release binary
+#   DEB_MAINTAINER='Name <real-email>' bash packaging/linux/build-deb.sh
+#     # override the neutral default Maintainer for distribution builds
 #
 # Output:
 #   packaging/linux/build/gpui-task-manager_<version>-1_<arch>.deb
@@ -22,14 +24,17 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 package="gpui-task-manager"
 release="1"
-deb_maintainer="${DEB_MAINTAINER:-gpui-task-manager contributors <noreply@example.com>}"
+# SECURITY.md routes reports through GitHub Security Advisory only, so the
+# default carries no (fabricated) mail address. Distribution builds may set
+# DEB_MAINTAINER to a real maintainer and contact address.
+deb_maintainer="${DEB_MAINTAINER:-gpui-task-manager contributors (security reports via GitHub Security Advisory)}"
 
 skip_build=false
 for argument in "$@"; do
   case "${argument}" in
   --skip-build) skip_build=true ;;
   -h | --help)
-    sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
