@@ -1263,3 +1263,8 @@
 
 - backup_candidate を pure 化してバックアップ上書きを防止、補助面 VS17..256
   をサニタイズ。別セッションの export.rs 失敗は担当外として据え置き。
+
+## 2026-11-18（エージェント並列調査 第18弾 → 設定保全・demo・SECURITY）
+
+- 非UTF-8 パスのバックアップ保全、umask 非依存の 0600、demo の 0 RSS、
+  SECURITY §5 の status 運用を修正。app 35 / tm-core 110 passed。

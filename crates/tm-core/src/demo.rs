@@ -348,12 +348,21 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
             } else {
                 (demo.base_cpu + noise * 6.0).min(399.0)
             };
-            // `noise` is in 0.0..1.0, so casting it to u64 first would always
-            // yield 0 and freeze the memory column. Scale before casting.
-            let jitter_bytes = (noise * 4_096.0) as u64;
-            let memory_bytes = demo
-                .base_memory
-                .saturating_add(jitter_bytes.saturating_mul((index as u64 % 5) + 1));
+            // A zero base means kernel threads / zombies: keep RSS and virtual
+            // memory at 0 for every tick, just like `base_cpu == 0.0` above.
+            // `noise` is in 0.0..1.0, so cast it to u64 after scaling.
+            let (memory_bytes, virtual_memory_bytes) = if demo.base_memory == 0 {
+                (0, 0)
+            } else {
+                let jitter_bytes = (noise * 4_096.0) as u64;
+                let resident = demo
+                    .base_memory
+                    .saturating_add(jitter_bytes.saturating_mul((index as u64 % 5) + 1));
+                (
+                    resident,
+                    resident.saturating_mul(3).saturating_add(1_048_576),
+                )
+            };
             let start_time_secs = demo_process_start_time(demo.pid);
             ProcessSnapshot {
                 key: ProcessKey::new(demo.pid, start_time_secs),
@@ -363,7 +372,7 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 status: demo.status,
                 cpu_percent,
                 memory_bytes,
-                virtual_memory_bytes: memory_bytes.saturating_mul(3).saturating_add(1_048_576),
+                virtual_memory_bytes,
                 threads: Some(demo.threads),
                 parent_pid: if demo.pid <= 2 {
                     None
@@ -537,6 +546,28 @@ mod tests {
     }
 
     #[test]
+    fn zero_rss_demo_processes_stay_at_zero() {
+        for tick in [0, 1, 42, u64::MAX] {
+            let snapshot = demo_snapshot(tick);
+            for process in &snapshot.processes {
+                if process.name == "kthreadd" || process.name == "zombie-proc" {
+                    assert_eq!(
+                        process.memory_bytes, 0,
+                        "{} must have zero RSS",
+                        process.name
+                    );
+                    assert_eq!(
+                        process.virtual_memory_bytes, 0,
+                        "{} must have zero virtual memory",
+                        process.name
+                    );
+                    assert_eq!(process.cpu_percent, 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn demo_snapshot_is_deterministic() {
         assert_eq!(demo_snapshot(7), demo_snapshot(7));
         assert_ne!(demo_snapshot(7), demo_snapshot(8));
@@ -549,14 +580,18 @@ mod tests {
         assert!(snapshot.process(ProcessKey::new(4242, 0)).is_none());
         assert!(snapshot.processes.iter().any(|p| p.key.pid == 4242));
         assert_eq!(snapshot.self_pid, Some(4242));
-        assert!(snapshot
-            .processes
-            .iter()
-            .any(|p| p.status == ProcessStatus::Zombie));
-        assert!(snapshot
-            .processes
-            .iter()
-            .any(|p| p.status == ProcessStatus::Stopped));
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .any(|p| p.status == ProcessStatus::Zombie)
+        );
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .any(|p| p.status == ProcessStatus::Stopped)
+        );
     }
 
     #[test]
@@ -572,11 +607,13 @@ mod tests {
         let snapshot = demo_snapshot(42);
         assert_eq!(snapshot.cpu.core_count(), DEMO_CPU_CORES);
         assert!((0.0..=100.0).contains(&snapshot.cpu.total_percent));
-        assert!(snapshot
-            .cpu
-            .per_core_percent
-            .iter()
-            .all(|percent| (0.0..=100.0).contains(percent)));
+        assert!(
+            snapshot
+                .cpu
+                .per_core_percent
+                .iter()
+                .all(|percent| (0.0..=100.0).contains(percent))
+        );
         assert!(snapshot.memory.used_percent() <= 100.0);
     }
 
