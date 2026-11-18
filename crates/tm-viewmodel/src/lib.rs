@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use tm_core::format;
 use tm_core::{
-    filter_and_sort, flatten_process_tree, normalise_percent, Filter, MetricHistory,
-    NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
-    RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
+    filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
+    ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
+    SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
