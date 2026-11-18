@@ -27,8 +27,10 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - 運用: Dependabot（Cargo / web / GitHub Actions、週次）、セキュリティアラート、
   プロジェクト用ラベル（`area:*` / `ci` / `security` / `packaging` / `supply-chain` 等）
   を有効化。ブランチ保護は public リポジトリの機能で有効化し、必須 CI / レビュー運用で補う。
-  `cargo-vet` は root / web とも初期化済み（`supply-chain/`、現状は全依存を `exempt`＝未監査の明示として記録、外部
-  imports は未使用、監査記録の捏造はしない）。SBOM（CycloneDX）は
+  `cargo-vet` は root / web とも初期化済み（`supply-chain/`、2026-11-18 に両ストアを
+  `baseline-unreviewed`（未監査ベースラインによる drift 検出）方針へ統一。全依存を
+  `exempt` として記録し、`safe-to-deploy` を主張しない。外部 imports は未使用、
+  監査記録の捏造はしない）。SBOM（CycloneDX）は
   `scripts/generate-sbom.sh` と CI で生成する。
 - 公開用の `main` はクリーンな履歴。開発履歴はローカルの `master` / `archive/master` に保持している。
 
@@ -167,7 +169,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 |---|---|
-| `cargo test --workspace` | **341 passed / 0 failed**（core 131 / viewmodel 63 / platform 11 / agent 78 / app 58） |
+| `cargo test --workspace` | **345 passed / 0 failed**（core 131 / viewmodel 63 / platform 15 / agent 78 / app 58） |
 | web ユニットテスト | **63 passed / 0 failed**（再接続導線 / capability / 通知 / トレンド 等を含む） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |

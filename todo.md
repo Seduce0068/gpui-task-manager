@@ -76,7 +76,7 @@ status: current
       文書化・実装する（R3-L03, R3-L04）。
 - [x] `check.sh` のスキップ時挙動を明示（R1S-OPS-08）— SKIP 表示と想定外スキップは
       exit 3、--fast は意図的スキップとして exit 0。
-- [ ] プローブの全スレッド走査を限定し、mutex 占有を抑える（R4-A01）。
+- [x] 全スレッド走査を二段階 refresh へ限定（R4-A01）— 約2353エントリの挿入を回避。
 - [ ] wasm レスポンス読み取りの早期 abort と並行 fetch の制限を検討する
       （R4-A02、upstream 確保ではなく累積の問題）。
 - [ ] 重複バージョンと feature 差分依存の監査方法を決定する
@@ -92,8 +92,7 @@ status: current
 
 - [x] R1-D02B RESEARCH.md §8 の未確認4・8を解消済みとして本文へ反映
 
-- [ ] R1S-OPS-13 web/supply-chain ストアを baseline-unreviewed 方針へ揃え、
-      notes/cargo-vet-adoption.md / README / SECURITY の記述を更新する
+- [x] R1S-OPS-13 web supply-chain とドキュメントを baseline-unreviewed 方針へ統一
 
 ### 優先度: 低
 
@@ -108,9 +107,9 @@ status: current
       （R1-I10, R1-I11, R1-I12）。
 - [ ] エージェントのストリーミング配信、ブラウザ初回オンボーディング、
       行コンテキストメニュー（R1-I14, R1-I16, R1-I19）。
-- [ ] CDP 検証のクリック座標を定数同期からセレクタ取得へ変更する
-      （R1S-ARCH-03, R1-OPS-11）。
-- [ ] PoC の `cdp_verify.py` に「証拠収集のみ」と明記する（R1S-OPS-12）。
+- [x] CDP クリック座標を DOM/セレクタ取得へ変更（R1S-ARCH-03/R1-OPS-11）— canvas
+      rect 基準の相対座標とフォールバックを追加。
+- [x] PoC の `cdp_verify.py` に「証拠収集のみ」と明記（R1S-OPS-12）。
 - [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。
 - [ ] スクリーンショットと証跡数値の鮮度、性能記述を再測定する
       （R1-G12, R1-G13）。

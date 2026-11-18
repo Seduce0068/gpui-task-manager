@@ -30,9 +30,10 @@
         --url 'http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test' \
         --out ../../notes/assets --evidence-out ../verification --prefix web-shell --label live
 
-クリック座標は src/shell.rs のレイアウト定数から計算する（ウィンドウ幅 vw は
-状態フックから取得）。表の行の y 座標は固定高さ（header 52 / overview 260 /
-toolbar 36 / gap 12 / root padding 12 / table header 30 / row 30）から決まる。
+クリック座標の基準は DOM から取得する（レイアウト定数との手工同期を廃止）。
+canvas の getBoundingClientRect() を原点とし、絞り込み欄は textarea セレクタの
+rect 中心を直接クリックする。viewport 幅は window.innerWidth を使い、状態フック
+（body[data-gpui-proof]）は従来どおり証拠として記録・検証する。
 """
 
 from __future__ import annotations
@@ -252,6 +253,57 @@ PROOF_EXPR = """
   };
 })()
 """
+
+
+# --- DOM/セレクタ取得（src/shell.rs のレイアウト定数との同期を廃止） -------
+CANVAS_SELECTOR = "canvas"
+FILTER_SELECTOR = "textarea"  # IME ミラー = 絞り込み欄の DOM 表現
+VIEWPORT_EXPR = "({ width: window.innerWidth, height: window.innerHeight })"
+
+
+def rect_expr(selector: str) -> str:
+    """セレクタの getBoundingClientRect() を返す JS 式を組み立てる。"""
+    return """(() => {
+  const el = document.querySelector(%s);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return {
+    x: r.x, y: r.y, width: r.width, height: r.height,
+    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+  };
+})()""" % json.dumps(selector)
+
+
+def center_from_rect(rect: dict | None) -> tuple[float, float] | None:
+    """DOM から取得した rect の中心座標を返す（ブラウザ不要の純粋関数）。"""
+    if not rect:
+        return None
+    return (
+        float(rect["left"]) + float(rect["width"]) / 2.0,
+        float(rect["top"]) + float(rect["height"]) / 2.0,
+    )
+
+
+async def element_rect(cdp: CDP, selector: str) -> dict:
+    rect = await cdp.evaluate(rect_expr(selector))
+    if not isinstance(rect, dict):
+        raise RuntimeError(f"DOM 要素が見つかりません: {selector}")
+    return rect
+
+
+async def element_center(cdp: CDP, selector: str) -> tuple[float, float]:
+    center = center_from_rect(await element_rect(cdp, selector))
+    if center is None:
+        raise RuntimeError(f"DOM 要素の座標が取得できません: {selector}")
+    return center
+
+
+async def viewport_size(cdp: CDP) -> tuple[float, float]:
+    """状態フックに依存せず window から viewport サイズを取得する。"""
+    viewport = await cdp.evaluate(VIEWPORT_EXPR)
+    if not isinstance(viewport, dict):
+        raise RuntimeError("viewport サイズが取得できません")
+    return float(viewport["width"]), float(viewport["height"])
 
 
 def parse_proof(proof: str | None) -> dict:
@@ -475,6 +527,18 @@ def self_check() -> int:
     check(TOOLBAR_CENTER_Y < HEADER_Y < ROW0_CENTER_Y, "ヘッダー/行/ツールバーの順序が正しい")
     check("data-gpui-proof" in PROOF_EXPR and "canvas" in PROOF_EXPR, "状態フック式が維持されている")
 
+    # DOM/セレクタ取得: rect 中心の算出とセレクタ埋め込みをオフラインで検証する。
+    rect = {
+        "left": 10.0, "top": 20.0, "width": 100.0, "height": 40.0,
+        "right": 110.0, "bottom": 60.0,
+    }
+    check(center_from_rect(rect) == (60.0, 40.0), "rect から中心座標が計算できる")
+    check(center_from_rect(None) is None, "要素が無い場合は None になる")
+    check(CANVAS_SELECTOR == "canvas" and FILTER_SELECTOR == "textarea", "DOM セレクタが維持されている")
+    dom_expr = rect_expr(FILTER_SELECTOR)
+    check("querySelector" in dom_expr and '"textarea"' in dom_expr, "rect 取得式にセレクタが埋め込まれる")
+    check("getBoundingClientRect" in dom_expr, "getBoundingClientRect で DOM 座標を取得する")
+
     passed = not failures
     print(
         json.dumps(
@@ -562,8 +626,17 @@ async def main() -> int:
     check(bool(proof), "状態フック body[data-gpui-proof] が取得できる")
     if not args.expect_agent_error:
         check(int(proof.get("rows", "0")) > 0, "プロセス行が 1 件以上表示される")
-    vw = float(proof.get("vw", "0") or 0)
-    check(vw > 0, "viewport 幅を取得できる")
+    # 座標基準を DOM から取得する（src/shell.rs 定数との手工同期を廃止）。
+    vw, vh = await viewport_size(cdp)
+    check(vw > 0 and vh > 0, "viewport サイズを DOM から取得できる")
+    canvas_rect = await element_rect(cdp, CANVAS_SELECTOR)
+    ox, oy = float(canvas_rect["left"]), float(canvas_rect["top"])
+    cw, ch = float(canvas_rect["width"]), float(canvas_rect["height"])
+    evidence["layout"]["dom_geometry"] = {
+        "viewport": {"width": vw, "height": vh},
+        "canvas_rect": canvas_rect,
+        "hook_vw": proof.get("vw"),
+    }
     centers = column_centers(vw)
     evidence["layout"]["column_centers"] = centers
     await screenshot(cdp, out_dir / f"{args.prefix}-01-initial-{args.label}.png")
@@ -640,9 +713,10 @@ async def main() -> int:
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-02-after-ticks-{args.label}.png")
 
-    # スクロール（表の中央でホイール）
-    table_center_x = ROOT_PAD + (vw - 2 * ROOT_PAD - DETAILS_W - GAP) / 2.0
-    await wheel(cdp, table_center_x, 640, 400)
+    # スクロール（DOM の canvas rect を基準に表の中央へホイール）
+    table_center_x = ox + cw / 2.0
+    wheel_y = oy + ch * 0.64
+    await wheel(cdp, table_center_x, wheel_y, 400)
     await cdp.drain()
     scroll_env = await cdp.evaluate(PROOF_EXPR)
     evidence["steps"].append(
@@ -654,12 +728,12 @@ async def main() -> int:
         }
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-03-scrolled-{args.label}.png")
-    await wheel(cdp, table_center_x, 640, -800)
+    await wheel(cdp, table_center_x, wheel_y, -800)
     await cdp.drain()
 
     # 行クリック → 詳細パネル（選択 PID の変化）
-    row_y = ROW0_CENTER_Y + 2 * ROW_H
-    await click(cdp, ROOT_PAD + 300, row_y)
+    row_y = oy + ROW0_CENTER_Y + 2 * ROW_H
+    await click(cdp, ox + ROOT_PAD + 300, row_y)
     await asyncio.sleep(0.6)
     await cdp.drain()
     env = await cdp.evaluate(PROOF_EXPR)
@@ -672,7 +746,18 @@ async def main() -> int:
     await screenshot(cdp, out_dir / f"{args.prefix}-04-row-click-{args.label}.png")
 
     # キーボード絞り込み（ASCII。日本語 IME は未対応）
-    await click(cdp, ROOT_PAD + 170, TOOLBAR_CENTER_Y)
+    # 絞り込み欄は DOM の textarea（IME ミラー）として存在するのでセレクタで取得する。
+    try:
+        filter_x, filter_y = await element_center(cdp, FILTER_SELECTOR)
+        filter_anchor = FILTER_SELECTOR
+    except RuntimeError:
+        # IME ミラーが無いビルド向けの保険。主経路は上記の DOM セレクタ取得。
+        filter_x, filter_y = ox + ROOT_PAD + 170, oy + TOOLBAR_CENTER_Y
+        filter_anchor = "canvas-relative-fallback"
+    evidence["steps"].append(
+        {"step": "filter_anchor", "selector": filter_anchor, "x": filter_x, "y": filter_y}
+    )
+    await click(cdp, filter_x, filter_y)
     await asyncio.sleep(0.3)
     await type_text(cdp, "fire")
     await asyncio.sleep(0.5)
@@ -697,7 +782,7 @@ async def main() -> int:
     check(proof_clear.get("filter") == "", "Esc で絞り込みが解除される")
 
     # 列クリックでソート（CPU → 方向反転 → 名前列）
-    await click(cdp, centers["cpu"], HEADER_Y)
+    await click(cdp, ox + centers["cpu"], oy + HEADER_Y)
     await asyncio.sleep(0.4)
     env = await cdp.evaluate(PROOF_EXPR)
     proof_sort_cpu = parse_proof(env.get("proof") if isinstance(env, dict) else None)
@@ -705,7 +790,7 @@ async def main() -> int:
     check(proof_sort_cpu.get("sort") == "CPU", "CPU 列クリックで CPU ソートになる")
     await screenshot(cdp, out_dir / f"{args.prefix}-06-sort-cpu-{args.label}.png")
 
-    await click(cdp, centers["cpu"], HEADER_Y)
+    await click(cdp, ox + centers["cpu"], oy + HEADER_Y)
     await asyncio.sleep(0.4)
     env = await cdp.evaluate(PROOF_EXPR)
     proof_sort_flip = parse_proof(env.get("proof") if isinstance(env, dict) else None)
@@ -715,7 +800,7 @@ async def main() -> int:
         "同じ列の再クリックでソート方向が反転する",
     )
 
-    await click(cdp, centers["name"], HEADER_Y)
+    await click(cdp, ox + centers["name"], oy + HEADER_Y)
     await asyncio.sleep(0.4)
     env = await cdp.evaluate(PROOF_EXPR)
     proof_sort_name = parse_proof(env.get("proof") if isinstance(env, dict) else None)

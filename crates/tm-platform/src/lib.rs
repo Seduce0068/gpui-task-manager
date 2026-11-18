@@ -29,10 +29,14 @@
 //!
 //! # Process list
 //!
-//! `sysinfo` inserts the threads of every process into its process map when
-//! thread information is requested. The probe filters userland thread entries
-//! out so the snapshot contains one row per process, and reports the thread
-//! count in [`tm_core::model::ProcessSnapshot::threads`] instead.
+//! Requesting thread information during a full (`ProcessesToUpdate::All`)
+//! refresh makes `sysinfo` insert every Linux thread as an additional process
+//! entry. The probe avoids that: the full refresh runs with tasks disabled and
+//! a separate, batched `ProcessesToUpdate::Some` refresh collects each
+//! process's task ID set. Threads are therefore never inserted into the process
+//! map, the snapshot stays one row per process, and the thread count is still
+//! reported in [`tm_core::model::ProcessSnapshot::threads`]. A userland-thread
+//! filter remains as a defensive backstop.
 //!
 //! # Process identity
 //!
@@ -198,6 +202,12 @@ impl NativeProbe {
             true,
             process_refresh_kind(),
         );
+        // Collect task IDs in a second pass so sysinfo never inserts thread
+        // entries into its process map (R4-A01). `Some(&pids)` mode keeps the
+        // task set on each process but clears the thread list it would have
+        // added to the map.
+        #[cfg(target_os = "linux")]
+        refresh_thread_counts(&mut self.system);
         if let Some(networks) = self.networks.as_mut() {
             networks.refresh(true);
         }
@@ -298,13 +308,14 @@ impl NativeProbe {
             .system
             .processes()
             .iter()
-            // On Linux, `sysinfo` inserts every thread of a process into its
-            // process map when `with_tasks()` is enabled. A task manager table
-            // must show one row per process, so userland thread entries are
-            // filtered out; kernel threads stay because they are real
+            // The full refresh now runs with tasks disabled and thread counts
+            // are collected separately (see `refresh_thread_counts`), so
+            // userland thread entries should never appear here. Keep the
+            // filter as a backstop: a task manager table must show one row per
+            // process, and kernel threads stay because they are real
             // processes. `threads` below reports the thread count instead.
-            // Other platforms never insert thread entries (`thread_kind()`
-            // returns `None`), so the filter is a no-op there.
+            // On other platforms `thread_kind()` returns `None`, so this is a
+            // no-op.
             .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
             .map(|(pid, process)| {
                 let raw_name = process.name().to_string_lossy();
@@ -465,7 +476,9 @@ impl SystemProbe for NativeProbe {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[sysinfo_pid]),
             true,
-            ProcessRefreshKind::nothing(),
+            // `nothing()` enables tasks by default; the start-time check needs
+            // no thread information, so avoid that extra work here too.
+            ProcessRefreshKind::nothing().without_tasks(),
         );
         let Some(process) = self.system.process(sysinfo_pid) else {
             return Err(ControlError::NotFound);
@@ -483,18 +496,45 @@ impl SystemProbe for NativeProbe {
 /// The refresh policy used for the full process list.
 ///
 /// `cmd` and `user` only need to be fetched once per process, while CPU and
-/// memory change continuously. Tasks (threads) are needed for the thread count
-/// column but `sysinfo` only collects them on Linux, so the flag is only set
-/// there.
+/// memory change continuously. Tasks must be disabled explicitly: in sysinfo
+/// 0.40 [`ProcessRefreshKind::nothing`] enables `tasks` by default, and
+/// combining it with `ProcessesToUpdate::All` inserts every Linux thread into
+/// the process map as a full process entry. Thread counts are collected
+/// separately by `refresh_thread_counts`.
 fn process_refresh_kind() -> ProcessRefreshKind {
-    let kind = ProcessRefreshKind::nothing()
+    ProcessRefreshKind::nothing()
+        .without_tasks()
         .with_cpu()
         .with_memory()
         .with_cmd(UpdateKind::OnlyIfNotSet)
-        .with_user(UpdateKind::OnlyIfNotSet);
-    #[cfg(target_os = "linux")]
-    let kind = kind.with_tasks();
-    kind
+        .with_user(UpdateKind::OnlyIfNotSet)
+}
+
+/// Refreshes each process's task ID set without inserting thread entries.
+///
+/// In `ProcessesToUpdate::Some` mode sysinfo still reads `/proc/<pid>/task`
+/// and stores the task IDs on the process (available via
+/// [`sysinfo::Process::tasks`]), but deliberately clears the list of thread
+/// entries it would otherwise add to the process map. Passing all live PIDs in
+/// one batched call therefore preserves the thread counts while keeping the
+/// process map at one row per process and shortening the refresh that holds
+/// the probe's mutex (R4-A01).
+#[cfg(target_os = "linux")]
+fn refresh_thread_counts(system: &mut System) {
+    let pids = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
+        .map(|(pid, _)| *pid)
+        .collect::<Vec<_>>();
+    if pids.is_empty() {
+        return;
+    }
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        false,
+        ProcessRefreshKind::nothing().with_tasks(),
+    );
 }
 
 /// Number of threads in `process`, or `None` when the platform cannot report
@@ -810,6 +850,120 @@ mod tests {
                 .all(|process| process.threads.is_none_or(|threads| threads >= 1)),
             "a listed process always has at least its own thread"
         );
+    }
+
+    /// R4-A01 regression: the full refresh must never insert Linux threads as
+    /// process-map entries, and the one-row-per-process contract must survive
+    /// repeated samples.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn full_refresh_never_inserts_userland_threads() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        for _ in 0..2 {
+            let snapshot = probe.sample().expect("sample");
+            let inserted = probe
+                .system
+                .processes()
+                .iter()
+                .filter(|(_, process)| process.thread_kind() == Some(ThreadKind::Userland))
+                .map(|(pid, _)| pid.as_u32())
+                .collect::<Vec<_>>();
+            assert!(
+                inserted.is_empty(),
+                "sysinfo inserted thread entries into the process map: {inserted:?}"
+            );
+            let pids = snapshot
+                .processes
+                .iter()
+                .map(|process| process.key.pid)
+                .collect::<Vec<_>>();
+            assert!(
+                pids.windows(2).all(|pair| pair[0] <= pair[1]),
+                "process list must stay sorted by PID"
+            );
+            let unique = pids.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                unique.len(),
+                pids.len(),
+                "process list must not contain duplicate PIDs"
+            );
+        }
+    }
+
+    /// R4-A01 regression: collecting tasks in a separate `Some` refresh must
+    /// keep the `threads` column correct for every listed process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn split_task_refresh_preserves_thread_counts() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        assert!(
+            !snapshot.processes.is_empty(),
+            "process list must not be empty"
+        );
+
+        for process in &snapshot.processes {
+            let threads = process.threads.expect("Linux must report thread counts");
+            let expected = probe
+                .system
+                .process(Pid::from_u32(process.key.pid))
+                .and_then(|sysinfo_process| sysinfo_process.tasks())
+                .map_or(1, |tasks| {
+                    tasks.len().saturating_add(1).min(u32::MAX as usize) as u32
+                });
+            assert_eq!(
+                threads, expected,
+                "thread count of pid {} must match its task set",
+                process.key.pid
+            );
+            assert!(threads >= 1, "a listed process always has its own thread");
+        }
+    }
+
+    /// R4-A01 regression: a single-threaded child still reports exactly one
+    /// thread after the split refresh.
+    #[cfg(unix)]
+    #[test]
+    fn single_threaded_child_reports_one_thread() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let child = ChildGuard::spawn();
+        let key = wait_for_process(&mut probe, child.pid());
+        let snapshot = probe.sample().expect("sample");
+        let process = snapshot
+            .processes
+            .iter()
+            .find(|process| process.key.pid == key.pid)
+            .expect("child must be listed");
+        #[cfg(target_os = "linux")]
+        assert_eq!(process.threads, Some(1), "sleep has exactly one thread");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(process.threads, None, "non-Linux cannot report threads");
+    }
+
+    /// The split refresh must keep sanitising OS-provided strings (the
+    /// `--redact` boundary contract): no control characters, no unbounded text.
+    #[test]
+    fn display_strings_stay_sanitised_after_task_split() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        for process in &snapshot.processes {
+            for text in [&process.name, &process.command] {
+                assert!(
+                    !text.chars().any(char::is_control),
+                    "control character leaked into a process display string: {text:?}"
+                );
+            }
+            assert!(process.name.chars().count() <= MAX_NAME_CHARS + 1);
+            assert!(process.command.chars().count() <= MAX_COMMAND_CHARS + 1);
+            if let Some(user) = &process.user {
+                assert!(!user.chars().any(char::is_control));
+                assert!(user.chars().count() <= MAX_NAME_CHARS + 1);
+            }
+        }
+        if let Some(hostname) = &snapshot.hostname {
+            assert!(!hostname.chars().any(char::is_control));
+            assert!(hostname.chars().count() <= MAX_NAME_CHARS + 1);
+        }
     }
 
     #[test]

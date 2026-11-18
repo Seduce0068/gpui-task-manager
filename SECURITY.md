@@ -116,10 +116,13 @@ chmod 600 ~/.config/tm-agent.token
 - **SBOM**: `scripts/generate-sbom.sh`（CycloneDX JSON, root/web）と CI の `sbom`
   ジョブで供給網可視性を確保する。
 - **cargo-vet**: root / web とも初期化済み（`cargo-vet 0.10.3`、`supply-chain/`）。
-  初期状態は全依存を `exempt`（未監査の明示、root 804 / web 560）とし、外部
-  imports は未使用（盲目的な信頼委譲を避ける）。未監査依存を「監査済み」として
-  記録しない（監査記録の捏造をしない）。検証は `cargo vet --locked`（root / web）。
-  依存更新時は ①実レビュー後に `certify`、②レビュー前なら理由付き
+  2026-11-18 に両ストアを `baseline-unreviewed`（未監査ベースラインによる drift
+  検出）方針へ統一。全依存を `exempt`（root 804 / web 560、`criteria = "baseline-unreviewed"`）
+  として記録し、`safe-to-deploy` を主張しない。外部 imports は未使用
+  （盲目的な信頼委譲を避ける）。未監査依存を「監査済み」として記録しない
+  （監査記録の捏造をしない）。実レビュー時は `audited`（`safe-to-deploy` を含む）
+  を付与し、`baseline-unreviewed` と混同しない。検証は `cargo vet --locked`
+  （root / web）。依存更新時は ①実レビュー後に `certify`、②レビュー前なら理由付き
   `add-exemption` の順で対応する。CI ゲート化は共通ワークフローの `extra_gates`
   で実装済み（`cargo vet --locked`、root / web）。
 - Dependabot（Cargo ルート / web、GitHub Actions、週次）とセキュリティアラート /

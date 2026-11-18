@@ -1,4 +1,20 @@
 
 # cargo-vet audits file
 
+[criteria.audited]
+description = """
+A project reviewer performed a real audit of this exact crate version via
+`cargo vet inspect` / `diff` / `certify`. Use this label when recording actual
+audits so the unreviewed baseline is not confused with audited code.
+"""
+implies = ["safe-to-deploy", "baseline-unreviewed"]
+
+[criteria.baseline-unreviewed]
+description = """
+No audit has been performed for this crate by this project. This label only
+records an unreviewed dependency baseline so that dependency-set changes are
+detected; it makes NO claim that the crate is safe-to-run or safe-to-deploy.
+Never attach this label to an audit record produced by `cargo vet certify`.
+"""
+
 [audits]

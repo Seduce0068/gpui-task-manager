@@ -4,2242 +4,2257 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.tm-core]
+criteria = "baseline-unreviewed"
+dev-criteria = "baseline-unreviewed"
+notes = "Unreviewed baseline; drift detection only, not an audit approval."
+
+[policy.tm-viewmodel]
+criteria = "baseline-unreviewed"
+dev-criteria = "baseline-unreviewed"
+notes = "Unreviewed baseline; drift detection only, not an audit approval."
+
+[policy.tm-web]
+criteria = "baseline-unreviewed"
+dev-criteria = "baseline-unreviewed"
+notes = "Unreviewed baseline; drift detection only, not an audit approval."
+
 [[exemptions.accesskit]]
 version = "0.24.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.accesskit_consumer]]
 version = "0.38.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.accesskit_macos]]
 version = "0.26.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.accesskit_windows]]
 version = "0.34.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.addr2line]]
 version = "0.27.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.adler2]]
 version = "2.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.aes]]
 version = "0.8.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.aho-corasick]]
 version = "1.1.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.aligned]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.aligned-vec]]
 version = "0.6.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.allocator-api2]]
 version = "0.2.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.android_system_properties]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.anyhow]]
 version = "1.0.104"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.arbitrary]]
 version = "1.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.arg_enum_proc_macro]]
 version = "0.3.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.arrayref]]
 version = "0.3.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.arrayvec]]
 version = "0.7.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.as-slice]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ash]]
 version = "0.38.0+1.3.281"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ashpd]]
 version = "0.13.13"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-broadcast]]
 version = "0.7.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-channel]]
 version = "2.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-executor]]
 version = "1.14.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-fs]]
 version = "2.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-io]]
 version = "2.6.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-lock]]
 version = "3.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-net]]
 version = "2.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-process]]
 version = "2.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-recursion]]
 version = "1.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-signal]]
 version = "0.2.14"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-task]]
 version = "4.7.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.async-trait]]
 version = "0.1.92"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.atomic-waker]]
 version = "1.1.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.autocfg]]
 version = "1.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.av-scenechange]]
 version = "0.14.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.av1-grain]]
 version = "0.2.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.avif-serialize]]
 version = "0.8.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.backtrace]]
 version = "0.3.77"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.base64]]
 version = "0.22.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bit-set]]
 version = "0.10.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bit-vec]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bit_field]]
 version = "0.10.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bitflags]]
 version = "1.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bitflags]]
 version = "2.13.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bitstream-io]]
 version = "4.10.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.block-buffer]]
 version = "0.10.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.block-padding]]
 version = "0.3.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.block2]]
 version = "0.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.block2]]
 version = "0.6.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.blocking]]
 version = "1.7.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.built]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bumpalo]]
 version = "3.20.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bytemuck]]
 version = "1.25.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bytemuck_derive]]
 version = "1.12.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.byteorder]]
 version = "1.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.byteorder-lite]]
 version = "0.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.bytes]]
 version = "1.12.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.calloop]]
 version = "0.14.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cbc]]
 version = "0.1.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cbindgen]]
 version = "0.28.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cc]]
 version = "1.11.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cfg-if]]
 version = "1.0.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cfg_aliases]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.chrono]]
 version = "0.4.45"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cipher]]
 version = "0.4.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.codespan-reporting]]
 version = "0.13.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.color_quant]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.concurrent-queue]]
 version = "2.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.console_error_panic_hook]]
 version = "0.1.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.convert_case]]
 version = "0.10.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core-foundation]]
 version = "0.10.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core-foundation-sys]]
 version = "0.8.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core-graphics]]
 version = "0.24.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core-graphics-types]]
 version = "0.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core-text]]
 version = "21.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.core_maths]]
 version = "0.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cosmic-text]]
 version = "0.19.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.cpufeatures]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crc32fast]]
 version = "1.5.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crossbeam-deque]]
 version = "0.8.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crossbeam-epoch]]
 version = "0.9.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crossbeam-utils]]
 version = "0.8.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crunchy]]
 version = "0.2.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.crypto-common]]
 version = "0.1.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ctor]]
 version = "1.0.14"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.data-url]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.deranged]]
 version = "0.5.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.derive_more]]
 version = "2.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.derive_more-impl]]
 version = "2.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.digest]]
 version = "0.10.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dirs]]
 version = "5.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dirs-sys]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dispatch2]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.displaydoc]]
 version = "0.2.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dlib]]
 version = "0.5.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.document-features]]
 version = "0.2.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dunce]]
 version = "1.0.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dwrote]]
 version = "0.11.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.dyn-clone]]
 version = "1.0.20"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.either]]
 version = "1.19.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.embed-resource]]
 version = "3.0.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.endi]]
 version = "1.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.enumflags2]]
 version = "0.7.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.enumflags2_derive]]
 version = "0.7.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.enumn]]
 version = "0.1.14"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.equator]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.equator-macro]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.equivalent]]
 version = "1.0.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.errno]]
 version = "0.3.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.etagere]]
 version = "0.2.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.euclid]]
 version = "0.22.14"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.event-listener]]
 version = "5.4.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.event-listener-strategy]]
 version = "0.5.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.exr]]
 version = "1.74.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.fastrand]]
 version = "2.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.fax]]
 version = "0.2.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.fdeflate]]
 version = "0.3.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.flate2]]
 version = "1.1.11"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.float-cmp]]
 version = "0.9.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.float-ord]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.float_next_after]]
 version = "1.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.flume]]
 version = "0.12.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.foldhash]]
 version = "0.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.font-types]]
 version = "0.11.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.font-types]]
 version = "0.12.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.fontconfig-parser]]
 version = "0.5.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.fontdb]]
 version = "0.23.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.foreign-types]]
 version = "0.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.foreign-types-macros]]
 version = "0.2.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.foreign-types-shared]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.form_urlencoded]]
 version = "1.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.freetype-sys]]
 version = "0.20.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-channel]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-core]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-executor]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-io]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-lite]]
 version = "2.6.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-macro]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-sink]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-task]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.futures-util]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.generic-array]]
 version = "0.14.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.getrandom]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.getrandom]]
 version = "0.3.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.getrandom]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gif]]
 version = "0.14.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gimli]]
 version = "0.34.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gl_generator]]
 version = "0.14.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.glow]]
 version = "0.17.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.glutin_wgl_sys]]
 version = "0.6.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpu-allocator]]
 version = "0.28.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-apple]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-collections]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-derive-refineable]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-http-client]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-ios]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-linux]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-macos]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-macros]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-platform]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-refineable]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-scheduler]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-shared-string]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-sum-tree]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-util]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-web]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-wgpu]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-windows]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-ztracing]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.gpui-pre-ztracing-macro]]
 version = "0.3.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.half]]
 version = "2.7.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.harfrust]]
 version = "0.5.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hash32]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hashbrown]]
 version = "0.16.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hashbrown]]
 version = "0.17.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.heapless]]
 version = "0.9.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.heck]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.heck]]
 version = "0.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hermit-abi]]
 version = "0.5.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hex]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hkdf]]
 version = "0.12.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.hmac]]
 version = "0.12.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.http]]
 version = "1.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.http-body]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.iana-time-zone]]
 version = "0.1.65"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.iana-time-zone-haiku]]
 version = "0.1.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_collections]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_locale_core]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_locale_fallback]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_locale_fallback_data]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_normalizer]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_normalizer_data]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_properties]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_properties_data]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_provider]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_segmenter]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.icu_segmenter_data]]
 version = "2.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.idna]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.idna_adapter]]
 version = "1.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.image]]
 version = "0.25.10"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.image-webp]]
 version = "0.2.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.imagesize]]
 version = "0.14.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.imgref]]
 version = "1.12.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.indexmap]]
 version = "2.14.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.inout]]
 version = "0.1.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.interpolate_name]]
 version = "0.2.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.inventory]]
 version = "0.3.25"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.itertools]]
 version = "0.14.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.itoa]]
 version = "1.0.19"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.jni-sys]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.jni-sys]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.jni-sys-macros]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.jobserver]]
 version = "0.1.35"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.js-sys]]
 version = "0.3.107"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.khronos-egl]]
 version = "6.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.khronos_api]]
 version = "3.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.kurbo]]
 version = "0.13.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lazy_static]]
 version = "1.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lebe]]
 version = "0.5.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.libc]]
 version = "0.2.191"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.libfuzzer-sys]]
 version = "0.4.13"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.libloading]]
 version = "0.8.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.libm]]
 version = "0.2.16"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.libredox]]
 version = "0.1.25"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.linebender_resource_handle]]
 version = "0.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.link-section]]
 version = "0.19.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.linktime-proc-macro]]
 version = "0.2.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.linux-raw-sys]]
 version = "0.12.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.litemap]]
 version = "0.8.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.litrs]]
 version = "1.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lock_api]]
 version = "0.4.14"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.log]]
 version = "0.4.35"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.loop9]]
 version = "0.1.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lyon]]
 version = "1.0.19"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lyon_algorithms]]
 version = "1.0.22"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lyon_geom]]
 version = "1.0.20"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lyon_path]]
 version = "1.0.19"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.lyon_tessellation]]
 version = "1.0.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.mac-notification-sys]]
 version = "0.6.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.mach2]]
 version = "0.6.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.maybe-rayon]]
 version = "0.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.md-5]]
 version = "0.10.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.memchr]]
 version = "2.8.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.memmap2]]
 version = "0.9.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.memoffset]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.miniz_oxide]]
 version = "0.8.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.miniz_oxide]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.moxcms]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.multiversion]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.multiversion-macros]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.naga]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.naga-types]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ndk-sys]]
 version = "0.6.0+11769913"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.new_debug_unreachable]]
 version = "1.0.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.no_std_io2]]
 version = "0.9.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.nom]]
 version = "8.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.noop_proc_macro]]
 version = "0.3.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.notify-rust]]
 version = "4.19.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-bigint]]
 version = "0.4.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-bigint-dig]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-complex]]
 version = "0.4.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-conv]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-derive]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-integer]]
 version = "0.1.47"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-iter]]
 version = "0.1.46"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-rational]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num-traits]]
 version = "0.2.19"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.num_cpus]]
 version = "1.17.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc-sys]]
 version = "0.3.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2]]
 version = "0.5.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2]]
 version = "0.6.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-app-kit]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-app-kit]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-data]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-foundation]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-graphics]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-image]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-text]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-core-video]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-encode]]
 version = "4.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-foundation]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-foundation]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-io-surface]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-metal]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-metal]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-quartz-core]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-quartz-core]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-security]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-ui-kit]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-uniform-type-identifiers]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.objc2-user-notifications]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.object]]
 version = "0.40.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.once_cell]]
 version = "1.21.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.oo7]]
 version = "0.6.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.option-ext]]
 version = "0.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ordered-float]]
 version = "5.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ordered-stream]]
 version = "0.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.parking]]
 version = "2.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.parking_lot]]
 version = "0.12.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.paste]]
 version = "1.0.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pastey]]
 version = "0.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pathfinder_geometry]]
 version = "0.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pathfinder_simd]]
 version = "0.5.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pbkdf2]]
 version = "0.12.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.percent-encoding]]
 version = "2.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pico-args]]
 version = "0.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pin-project]]
 version = "1.1.13"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pin-project-internal]]
 version = "1.1.13"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pin-project-lite]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.piper]]
 version = "0.2.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pkg-config]]
 version = "0.3.34"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.png]]
 version = "0.17.16"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.png]]
 version = "0.18.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.polling]]
 version = "3.11.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pollster]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.polycool]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.portable-atomic]]
 version = "1.15.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.portable-atomic-util]]
 version = "0.2.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.potential_utf]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.powerfmt]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ppv-lite86]]
 version = "0.2.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.presser]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.proc-macro-crate]]
 version = "3.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.proc-macro2]]
 version = "1.0.107"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.profiling]]
 version = "1.0.18"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.profiling-procmacros]]
 version = "1.0.18"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.pxfm]]
 version = "0.1.30"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.qoi]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.quick-error]]
 version = "2.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.quote]]
 version = "1.0.47"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.r-efi]]
 version = "5.3.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.r-efi]]
 version = "6.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rand]]
 version = "0.9.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rand_chacha]]
 version = "0.9.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rand_core]]
 version = "0.9.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.range-alloc]]
 version = "0.1.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rangemap]]
 version = "1.8.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rav1e]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ravif]]
 version = "0.13.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.raw-window-handle]]
 version = "0.6.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.raw-window-metal]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rayon]]
 version = "1.12.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rayon-core]]
 version = "1.13.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.read-fonts]]
 version = "0.37.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.read-fonts]]
 version = "0.41.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.redox_syscall]]
 version = "0.5.18"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.redox_users]]
 version = "0.4.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ref-cast]]
 version = "1.0.27"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ref-cast-impl]]
 version = "1.0.27"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.regex]]
 version = "1.13.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.regex-automata]]
 version = "0.4.18"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.regex-syntax]]
 version = "0.8.11"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.renderdoc-sys]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.resvg]]
 version = "0.46.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rgb]]
 version = "0.8.53"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.roxmltree]]
 version = "0.20.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.roxmltree]]
 version = "0.21.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustc-demangle]]
 version = "0.1.28"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustc-hash]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustc-hash]]
 version = "2.1.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustc_version]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustix]]
 version = "1.1.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustversion]]
 version = "1.0.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.rustybuzz]]
 version = "0.20.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ryu]]
 version = "1.0.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.same-file]]
 version = "1.0.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.schemars]]
 version = "1.2.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.schemars_derive]]
 version = "1.2.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.scopeguard]]
 version = "1.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.seahash]]
 version = "4.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.self_cell]]
 version = "1.3.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.semver]]
 version = "1.0.28"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde]]
 version = "1.0.229"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_bytes]]
 version = "0.11.19"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_core]]
 version = "1.0.229"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_derive]]
 version = "1.0.229"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_derive_internals]]
 version = "0.30.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_json]]
 version = "1.0.154"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_repr]]
 version = "0.1.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_spanned]]
 version = "0.6.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_spanned]]
 version = "1.1.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.serde_urlencoded]]
 version = "0.7.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.sha1_smol]]
 version = "1.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.sha2]]
 version = "0.10.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.shlex]]
 version = "2.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.simd_helpers]]
 version = "0.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.simplecss]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.siphasher]]
 version = "1.0.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.skrifa]]
 version = "0.40.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.skrifa]]
 version = "0.44.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.slab]]
 version = "0.4.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.slotmap]]
 version = "1.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.smallvec]]
 version = "1.16.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.smol]]
 version = "2.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.smol_str]]
 version = "0.3.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.socket2]]
 version = "0.6.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.spin]]
 version = "0.9.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.spin]]
 version = "0.10.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.spirv]]
 version = "0.4.0+sdk-1.4.341.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.stable_deref_trait]]
 version = "1.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.static_assertions]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.strict-num]]
 version = "0.1.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.strum]]
 version = "0.28.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.strum_macros]]
 version = "0.28.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.subtle]]
 version = "2.6.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.svg_fmt]]
 version = "0.4.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.svgtypes]]
 version = "0.16.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.swash]]
 version = "0.2.10"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.syn]]
 version = "2.0.119"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.syn]]
 version = "3.0.10"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.synstructure]]
 version = "0.14.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.sys-locale]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.taffy]]
 version = "0.15.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.target-features]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tauri-winrt-notification]]
 version = "0.8.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tempfile]]
 version = "3.27.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.termcolor]]
 version = "1.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.thiserror]]
 version = "1.0.69"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.thiserror]]
 version = "2.0.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.thiserror-impl]]
 version = "1.0.69"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.thiserror-impl]]
 version = "2.0.21"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tiff]]
 version = "0.11.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.time]]
 version = "0.3.55"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.time-core]]
 version = "0.1.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tiny-skia]]
 version = "0.11.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tiny-skia-path]]
 version = "0.11.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tinystr]]
 version = "0.8.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tinyvec]]
 version = "1.13.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tokio]]
 version = "1.54.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml]]
 version = "0.8.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml]]
 version = "1.2.1+spec-1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_datetime]]
 version = "0.6.11"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_datetime]]
 version = "1.1.3+spec-1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_edit]]
 version = "0.22.27"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_edit]]
 version = "0.25.19+spec-1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_parser]]
 version = "1.1.5+spec-1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_write]]
 version = "0.1.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.toml_writer]]
 version = "1.2.0+spec-1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tracing]]
 version = "0.1.44"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tracing-attributes]]
 version = "0.1.31"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.tracing-core]]
 version = "0.1.36"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.ttf-parser]]
 version = "0.25.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.typenum]]
 version = "1.20.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.uds_windows]]
 version = "1.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-bidi]]
 version = "0.3.18"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-bidi-mirroring]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-ccc]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-ident]]
 version = "1.0.27"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-linebreak]]
 version = "0.1.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-properties]]
 version = "0.1.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-script]]
 version = "0.5.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-segmentation]]
 version = "1.13.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-vo]]
 version = "0.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.unicode-width]]
 version = "0.2.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.url]]
 version = "2.5.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.usvg]]
 version = "0.46.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.utf8_iter]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.utf_types]]
 version = "1.0.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.uuid]]
 version = "1.29.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.v_frame]]
 version = "0.3.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.version_check]]
 version = "0.9.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.vswhom]]
 version = "0.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.vswhom-sys]]
 version = "0.1.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.waker-fn]]
 version = "1.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.walkdir]]
 version = "2.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasi]]
 version = "0.11.1+wasi-snapshot-preview1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasip2]]
 version = "1.0.4+wasi-0.2.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasm-bindgen]]
 version = "0.2.130"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasm-bindgen-futures]]
 version = "0.4.80"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasm-bindgen-macro]]
 version = "0.2.130"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasm-bindgen-macro-support]]
 version = "0.2.130"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.130"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wayland-sys]]
 version = "0.31.11"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.web-sys]]
 version = "0.3.107"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.web-time]]
 version = "1.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.weezl]]
 version = "0.1.12"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-core]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-core-deps-apple]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-core-deps-emscripten]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-core-deps-wasm]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-core-deps-windows-linux-android]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-hal]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-naga-bridge]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wgpu-types]]
 version = "30.0.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.which]]
 version = "8.0.6"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winapi]]
 version = "0.3.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winapi-i686-pc-windows-gnu]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winapi-util]]
 version = "0.1.11"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winapi-x86_64-pc-windows-gnu]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows]]
 version = "0.62.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-collections]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-core]]
 version = "0.62.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-future]]
 version = "0.3.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-implement]]
 version = "0.60.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-interface]]
 version = "0.59.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-link]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-numerics]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-registry]]
 version = "0.6.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-result]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-strings]]
 version = "0.5.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-sys]]
 version = "0.48.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-sys]]
 version = "0.61.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-targets]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-threading]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows-version]]
 version = "0.1.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_aarch64_gnullvm]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_aarch64_msvc]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_i686_gnu]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_i686_msvc]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_x86_64_gnu]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_x86_64_gnullvm]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.windows_x86_64_msvc]]
 version = "0.48.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winnow]]
 version = "0.7.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winnow]]
 version = "1.0.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.winreg]]
 version = "0.56.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wio]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.wit-bindgen]]
 version = "0.57.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.writeable]]
 version = "0.6.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.xml-rs]]
 version = "0.8.29"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.xmlwriter]]
 version = "0.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.y4m]]
 version = "0.8.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.yazi]]
 version = "0.2.2"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.yeslogic-fontconfig-sys]]
 version = "6.0.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.yoke]]
 version = "0.8.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.yoke-derive]]
 version = "0.8.4"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus]]
 version = "5.19.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus]]
 version = "6.3.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus_macros]]
 version = "5.19.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus_macros]]
 version = "6.3.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus_names]]
 version = "4.3.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zbus_utils]]
 version = "6.1.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zcheapstr]]
 version = "1.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zed-font-kit]]
 version = "0.14.1-zed"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zeno]]
 version = "0.3.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerocopy]]
 version = "0.8.63"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerocopy-derive]]
 version = "0.8.63"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerofrom]]
 version = "0.1.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerofrom-derive]]
 version = "0.1.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zeroize]]
 version = "1.9.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zeroize_derive]]
 version = "1.5.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerotrie]]
 version = "0.2.5"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerovec]]
 version = "0.11.9"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zerovec-derive]]
 version = "0.11.7"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zlib-rs]]
 version = "0.6.8"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zmij]]
 version = "1.0.23"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zruntime]]
 version = "0.2.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zune-core]]
 version = "0.5.3"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zune-inflate]]
 version = "0.2.54"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zune-jpeg]]
 version = "0.5.15"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zvariant]]
 version = "5.15.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zvariant_derive]]
 version = "5.15.1"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"
 
 [[exemptions.zvariant_utils]]
 version = "4.2.0"
-criteria = "safe-to-deploy"
+criteria = "baseline-unreviewed"

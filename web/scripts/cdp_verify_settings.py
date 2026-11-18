@@ -23,6 +23,10 @@
     # 実機 CDP 検証（開発ホストで手動実行。上記の Chrome / 静的サーバが前提）
     python3 web/scripts/cdp_verify_settings.py \\
       --url http://127.0.0.1:8091/ --evidence /tmp/settings-evidence.json
+
+クリック座標の基準は DOM（canvas の getBoundingClientRect / window.innerWidth）から
+取得し、src/shell.rs レイアウト定数との手工同期を廃止している。状態フック
+body[data-gpui-proof] は従来どおり記録・検証する。
 """
 
 from __future__ import annotations
@@ -115,6 +119,19 @@ def self_check() -> int:
         set(helper.column_centers(1440.0)) >= {"name", "cpu"},
         "共有 column_centers を web/scripts から import できる",
     )
+    check(
+        helper.center_from_rect({"left": 100.0, "top": 0.0, "width": 56.0, "height": 36.0})
+        == (128.0, 18.0),
+        "共有 center_from_rect で DOM rect から座標を取得できる",
+    )
+    check(
+        helper.CANVAS_SELECTOR == "canvas" and helper.FILTER_SELECTOR == "textarea",
+        "共有 DOM セレクタが維持されている",
+    )
+    check(
+        "getBoundingClientRect" in helper.rect_expr(helper.CANVAS_SELECTOR),
+        "共有 rect 取得式が DOM 座標を使う",
+    )
 
     passed = not failures
     print(
@@ -172,11 +189,22 @@ async def main() -> int:
     evidence["steps"].append({"step": "fresh", "proof": proof})
 
     # 2) 保存経路: 列ヘッダをクリックして localStorage に書かれることを確認する。
-    viewport_width = float(proof.get("vw", "0") or 0)
-    check(viewport_width > 0, "viewport 幅を取得できる")
+    # 座標基準を DOM から取得する（状態フックの vw には依存しない）。
+    viewport_width, viewport_height = await helper.viewport_size(cdp)
+    check(viewport_width > 0 and viewport_height > 0, "viewport サイズを DOM から取得できる")
+    canvas_rect = await helper.element_rect(cdp, helper.CANVAS_SELECTOR)
+    ox, oy = float(canvas_rect["left"]), float(canvas_rect["top"])
     centers = helper.column_centers(viewport_width)
-    evidence["layout"] = {"column_centers": centers, "header_y": helper.HEADER_Y}
-    await helper.click(cdp, centers["cpu"], helper.HEADER_Y)
+    evidence["layout"] = {
+        "column_centers": centers,
+        "header_y": helper.HEADER_Y,
+        "dom_geometry": {
+            "viewport": {"width": viewport_width, "height": viewport_height},
+            "canvas_rect": canvas_rect,
+            "hook_vw": proof.get("vw"),
+        },
+    }
+    await helper.click(cdp, ox + centers["cpu"], oy + helper.HEADER_Y)
     await asyncio.sleep(1.2)
     raw = await cdp.evaluate(f"localStorage.getItem({json.dumps(STORAGE_KEY)})")
     evidence["steps"].append({"step": "saved", "stored": raw})
@@ -212,9 +240,10 @@ async def main() -> int:
     )
 
     # 4) 切替ボタン: Light → Dark → Light と状態フックと保存値の両方を確認する。
-    theme_x = theme_button_x(viewport_width)
+    theme_x = ox + theme_button_x(viewport_width)
+    theme_y = oy + THEME_BTN_CENTER_Y
     for expected, stored in (("dark", "Dark"), ("light", "Light")):
-        await helper.click(cdp, theme_x, THEME_BTN_CENTER_Y)
+        await helper.click(cdp, theme_x, theme_y)
         await asyncio.sleep(0.8)
         proof = await wait_for_proof(cdp)
         evidence["steps"].append({"step": f"toggled_{expected}", "proof": proof})

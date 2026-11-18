@@ -19,6 +19,10 @@
         --evidence /tmp/ime-evidence.json
 
 詳細は notes/ime.md を参照。
+
+証拠画像の clip 座標は DOM の textarea（IME ミラー）rect から取得し、
+src/shell.rs レイアウト定数との手工同期を廃止している。状態フック
+body[data-gpui-proof] は従来どおり解析・検証する。
 """
 
 from __future__ import annotations
@@ -45,6 +49,51 @@ TOOLBAR_TOP = ROOT_PAD + HEADER_H + GAP + OVERVIEW_H + GAP
 FILTER_X = ROOT_PAD
 FILTER_W = 340.0
 FILTER_H = 30.0
+
+# --- DOM/セレクタ取得（レイアウト定数との手工同期を廃止） ------------------
+CANVAS_SELECTOR = "canvas"
+FILTER_SELECTOR = "textarea"  # IME ミラー = 絞り込み欄の DOM 表現
+
+
+def rect_expr(selector: str) -> str:
+    """セレクタの getBoundingClientRect() を返す JS 式を組み立てる。"""
+    return """(() => {
+  const el = document.querySelector(%s);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return {
+    x: r.x, y: r.y, width: r.width, height: r.height,
+    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+  };
+})()""" % json.dumps(selector)
+
+
+def center_from_rect(rect: dict | None) -> tuple[float, float] | None:
+    """DOM rect の中心座標を返す（ブラウザ不要の純粋関数）。"""
+    if not rect:
+        return None
+    return (
+        float(rect["left"]) + float(rect["width"]) / 2.0,
+        float(rect["top"]) + float(rect["height"]) / 2.0,
+    )
+
+
+def filter_crop(rect: dict) -> dict:
+    """textarea の DOM rect から絞り込み欄の拡大 clip を計算する。"""
+    return {
+        "x": float(rect["left"]) - 8.0,
+        "y": float(rect["top"]) - 8.0,
+        "width": float(rect["width"]) + 16.0,
+        "height": float(rect["height"]) + 16.0,
+        "scale": 3,
+    }
+
+
+async def element_rect(cdp: CDP, selector: str) -> dict:
+    rect = await cdp.evaluate(rect_expr(selector))
+    if not isinstance(rect, dict):
+        raise RuntimeError(f"DOM 要素が見つかりません: {selector}")
+    return rect
 
 
 class CDP:
@@ -304,6 +353,21 @@ def self_check() -> int:
         "IME 状態フック式が維持されている",
     )
 
+    # DOM/セレクタ取得: rect 中心と clip 算出をオフラインで検証する。
+    rect = {
+        "left": 12.0, "top": 348.0, "width": 340.0, "height": 30.0,
+        "right": 352.0, "bottom": 378.0,
+    }
+    check(center_from_rect(rect) == (182.0, 363.0), "rect から中心座標が計算できる")
+    check(center_from_rect(None) is None, "要素が無い場合は None になる")
+    check(
+        filter_crop(rect)
+        == {"x": 4.0, "y": 340.0, "width": 356.0, "height": 46.0, "scale": 3},
+        "DOM rect から証拠 clip が計算できる",
+    )
+    check(CANVAS_SELECTOR == "canvas" and FILTER_SELECTOR == "textarea", "DOM セレクタが維持されている")
+    check("getBoundingClientRect" in rect_expr(FILTER_SELECTOR), "getBoundingClientRect で DOM 座標を取得する")
+
     passed = not failures
     print(
         json.dumps(
@@ -419,13 +483,7 @@ async def main() -> int:
         await ime_compose(cdp, "にほんご", 0)
         current = await state(cdp)
         await screenshot(cdp, out / f"{args.prefix}-05-composing.png")
-        crop = {
-            "x": 0.0,
-            "y": TOOLBAR_TOP - 8,
-            "width": 420.0,
-            "height": FILTER_H + 16,
-            "scale": 3,
-        }
+        crop = filter_crop(await element_rect(cdp, FILTER_SELECTOR))
         await screenshot(cdp, out / f"{args.prefix}-05-composing-filter.png", clip=crop)
         steps.append({"step": "composing", **current})
         check("変換中フラグが立つ", current["proof"].get("ime_composing") == "1")
@@ -449,13 +507,7 @@ async def main() -> int:
         await ime_commit(cdp, "日本語")
         current = await state(cdp)
         await screenshot(cdp, out / f"{args.prefix}-07-committed.png")
-        crop = {
-            "x": 0.0,
-            "y": TOOLBAR_TOP - 8,
-            "width": 420.0,
-            "height": FILTER_H + 16,
-            "scale": 3,
-        }
+        crop = filter_crop(await element_rect(cdp, FILTER_SELECTOR))
         await screenshot(cdp, out / f"{args.prefix}-07-committed-filter.png", clip=crop)
         steps.append({"step": "committed", **current})
         check("確定文字列がフィルタへ反映される", current["proof"].get("filter") == "日本語", current["proof"].get("filter", ""))
