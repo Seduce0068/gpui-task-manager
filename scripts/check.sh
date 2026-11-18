@@ -171,6 +171,14 @@ if [ -f web/Cargo.toml ]; then
   RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path web/Cargo.toml --no-deps
 fi
 
+if optional_gate_enabled gitleaks; then
+  # Secret scanning (working tree + git history). Matches the CI extra gate.
+  echo '==> gitleaks detect --redact'
+  gitleaks detect --source "${repo_root}" --redact --exit-code 1
+else
+  record_skip 'gitleaks' 'gitleaks is not installed'
+fi
+
 if optional_gate_enabled markdownlint; then
   # Markdown lint gate. Keep this scope in sync with extra_gates in
   # .github/workflows/ci.yml.
