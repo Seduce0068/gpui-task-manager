@@ -817,6 +817,16 @@ impl Dashboard {
             );
             return;
         }
+        // Do not open a confirmation dialog from a stale snapshot while paused:
+        // `confirm_kill` would reject it anyway, so the dialog could never be
+        // completed (R34 audit). Capability/protection messages take priority.
+        if self.paused {
+            self.set_status(
+                "更新が一時停止中のため操作できません。再開してからやり直してください",
+                true,
+            );
+            return;
+        }
         // Never silently replace an unanswered confirmation with a different
         // target/signal: the dialog the user is looking at would change under
         // them (R2-F02).
@@ -1428,6 +1438,32 @@ mod tests {
         assert!(dashboard.apply(Command::ConfirmKill).is_empty());
         assert!(dashboard.pending_kill().is_none());
         assert!(dashboard.status().expect("status").is_error);
+    }
+
+    #[test]
+    fn request_signal_is_rejected_while_paused() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        dashboard.apply(Command::SetPaused(true));
+
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Terminate,
+        });
+        assert!(dashboard.pending_kill().is_none());
+        assert!(dashboard
+            .status()
+            .expect("status")
+            .text
+            .contains("一時停止"));
+
+        // After resuming, the dialog opens normally again.
+        dashboard.apply(Command::SetPaused(false));
+        dashboard.apply(Command::RequestSignal {
+            key: firefox_key(),
+            signal: Signal::Terminate,
+        });
+        assert!(dashboard.pending_kill().is_some());
     }
 
     #[test]

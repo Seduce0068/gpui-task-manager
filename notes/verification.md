@@ -2096,3 +2096,21 @@ bond0 の仮想 IF 追加（実機確認が必要）、diverge 解消（rebase �
 
 - viewmodel 64 passed / workspace 363 passed / clippy / fmt / machete / deny
   成功。
+
+## 2026-11-18（エージェント並列調査 第27弾 → request_signal の paused ガード）
+
+第25弾 probe-vmfinal が「低優先・要判断」として残した UX 不一致を解消。
+worktree（round31-safe）で実装・検証。
+
+- 一時停止中に Ctrl+K／詳細パネルの終了ボタンを押すと、古い snapshot で
+  確認ダイアログが開いていた。確定時に `confirm_kill` の paused ガードが
+  拒否するため信号発行はされないが、「開けるのに確定できない」矛盾があった。
+- `request_signal()` に paused ガードを追加（capability／保護チェックの後ろ、
+  pending 上書き防止の前）。メッセージは `confirm_kill` と同一。
+- 回帰テスト `request_signal_is_rejected_while_paused` を追加（停止中は
+  pending が作られず、再開後は通常どおりダイアログが開くことを固定）。
+
+**見送り**: bond0 の仮想 IF 追加（実機確認が必要）、diverge 解消（rebase は
+破壊的操作で委任外、別セッションの未 push 2 コミットは触れない）。
+
+- viewmodel 65 passed / workspace 364 passed / clippy / fmt 成功。

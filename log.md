@@ -1309,3 +1309,7 @@
 
 - 未知 enum 値で settings 全体が Corrupt 扱いになる問題を修正。
   lenient deserializer を追加し前方互換契約を回復。workspace 363 passed。
+
+## 2026-11-18（エージェント並列調査 第27弾 → request_signal の paused ガード）
+
+- 一時停止中に確認ダイアログが開く問題を修正。viewmodel 65 / workspace 364 passed。
