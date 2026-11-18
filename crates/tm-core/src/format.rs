@@ -132,9 +132,14 @@ mod tests {
         let bytes = format_bytes(u64::MAX);
         assert_eq!(bytes, "16.0 EiB");
         assert_eq!(format_bytes(1_024_u64.pow(6)), "1.0 EiB");
-        assert!(format_duration(u64::MAX).ends_with('h'));
+        // Pin the full output, not just a suffix/comma: a broken renderer that
+        // emits "0h" or "1,0" would otherwise pass these assertions (R38).
+        assert_eq!(format_duration(u64::MAX), "213503982334601d 7h");
         assert_eq!(format_process_age(0, u64::MAX), "0s");
-        assert!(format_count(u64::MAX as usize).contains(','));
+        assert_eq!(
+            format_count(u64::MAX as usize),
+            "18,446,744,073,709,551,615"
+        );
     }
 
     #[test]

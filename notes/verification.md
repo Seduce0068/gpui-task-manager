@@ -24,8 +24,8 @@ verified: 2026-11-18T10:58:00+09:00
 |---|---|
 | `cargo fmt --all --check` | 成功（差分なし） |
 | `cargo build -p gpui-task-manager` | 成功（警告 0） |
-| `cargo test --workspace` | **334 passed / 0 failed**（tm-core 129 / tm-viewmodel 62 / tm-platform 11 / tm-agent 78 / app 54、2026-11-18） |
-| web ユニットテスト | **57 passed / 0 failed**（capability / 通知 / トレンド / エクスポート 等を含む、2026-11-18） |
+| `cargo test --workspace` | 件数は README.md「検証状況」を参照（2026-11-18 時点のスナップショット） |
+| web ユニットテスト | 件数は README.md「検証状況」を参照（2026-11-18 時点のスナップショット） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
@@ -1644,7 +1644,7 @@ CDP 契约上マスク不可のため、いずれも親の判断として保留�
   `fetch_sub` 削除後は 3 回連続で 503 にならないことを確認。
 - **ドキュメント追随**: app 16 / web 16（agent 7 + settings 5 + theme 4）の
   実測へ README / current-state / verification を更新。current-state の
-  ライセンス（AGPL）とテスト推移（143 → 216）も更新。
+  ライセンス（AGPL）とテスト推移（143 → 364、件数は変動するため README.md を参照）も更新。
 - **保留（要判断）**: app 版 redact は HOME/USER のみで hostname/tailnet を
   マスクせず SECURITY.md の約束と不一致（スクリーンショット経由の漏えい）。
   tm-core 共通化の提案を記録し、次ラウンドの実装候補とする。
@@ -2145,3 +2145,26 @@ worktree で実装・検証。
 
 **見送り**: bond0 の仮想 IF 追加（実機確認が必要）、diverge 解消（rebase は
 破壊的操作で委任外）。
+
+## 2026-11-18（エージェント並列調査 第29弾 → CI/security 文書と weak assertion）
+
+3 観点（CI 整合 / エッジ / 文書）の調査エージェントを並列起動。worktree で実装・検証。
+
+1. **ci.yml:150 コメントの誤った安全感**: 「advisory ignore は 3 か月で expire し
+   期限切れは check を失敗させる」とあったが、Commit 5ae8290 で expiry キーは
+   削除され deny.toml は「手動 3 か月レビュー」に変更済み。コメントを実態へ修正。
+2. **format.rs の weak assertion**: `format_duration(u64::MAX).ends_with('h')` と
+   `format_count(u64::MAX as usize).contains(',')` を、完全出力
+   `"213503982334601d 7h"` / `"18,446,744,073,709,551,615"` との assert_eq に変更。
+3. **notes のテスト件数**: verification.md / current-state.md の 334/57（古い）を
+   「README.md『検証状況』を参照」方式へ置換。DESIGN の AC-12 マトリクス判定と
+   実態が一致するようにした。
+4. **SECURITY.md の未来形**: 「公開リポジトリ化する際は」→「public 化済みのため
+   サポート対象バージョンと連絡先を早急に追記する（現状未追記）」に修正。
+
+**見送り**: check.sh の `cargo audit` / `--locked` 追加（CI との完全同期だが
+ローカル開発での lock 更新義務が生じる副作用あり、要判断）、
+Timestamp::elapsed_secs_since の契約明記（未使用 API、設計判断）、
+export.rs:711 の恒真テスト（修正範囲がやや広い）、bond0、diverge 解消。
+
+- workspace 364 passed / clippy / fmt / yaml / markdownlint 増分ゼロ成功。

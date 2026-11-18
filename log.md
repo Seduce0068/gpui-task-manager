@@ -1318,3 +1318,8 @@
 
 - web/Cargo.lock の serde_json 欠落を修正、同語反復の weak assertion を
   実検証へ変更。workspace 364 passed / web vet --locked 成功。
+
+## 2026-11-18（エージェント並列調査 第29弾 → CI/security 文書と weak assertion）
+
+- ci.yml の expiry コメント、format.rs の weak assertion、notes の件数、
+  SECURITY の公開済み表記を修正。workspace 364 passed。
