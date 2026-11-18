@@ -191,6 +191,12 @@ else
   record_skip 'markdownlint' 'markdownlint is not installed'
 fi
 
+# Public-document disclosure gate (always on, no external tool required).
+# Guards against reintroducing development paths / account identifiers into
+# published docs after the Twitter-publication review.
+echo '==> public-doc disclosure scan'
+bash "${repo_root}/scripts/check-public-docs.sh"
+
 if [ "${unexpected_skips}" -gt 0 ]; then
   printf '\nSKIPPED GATES (%d unexpected):\n' "${unexpected_skips}"
   for detail in "${skipped_unexpected[@]}"; do

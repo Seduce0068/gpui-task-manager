@@ -122,9 +122,9 @@ status: current
 ### 優先度: 高 — Twitter 公開前チェック (swarm-project-review R6)
 
 - [ ] 公開ドキュメントから内部情報を除去: `README.md:35` の内部ブランチ名
-      (`master` / `archive/master`) と「クリーンな履歴」運用、`SECURITY.md:12` の
-      `work/gpui-task-manager/`、`log.md` の旧アカウント名・トークン scope・課金
-      情報・内部サービス名・`/home/koppe/...`、`notes/` のエージェント名・未 push
+      内部ブランチ名と「クリーンな履歴」運用、`SECURITY.md:12` の
+      内部作業パス、`log.md` の旧アカウント名・トークン scope・課金
+      情報・内部サービス名・絶対ホームパス、`notes/` のエージェント名・未 push
       状態、`RESEARCH.md` の Apache-2.0 前提。根拠 R3-DE01 / R5-DC01 / R5-UX01。
 - [ ] DEB 同梱ドキュメントを専用テンプレートへ変更し、生成物 `packaging/linux/build/`
       を git 管理から外す: 現在 `build-deb.sh:84` が開発用 `README.md` を無修正で
