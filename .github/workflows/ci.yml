@@ -147,7 +147,8 @@ jobs:
         run: cargo test -p tm-core -p tm-viewmodel -p tm-platform
 
   # ライセンス・脆弱性・重複バージョンのゲート。ポリシーは deny.toml（ルート）に置く。
-  # advisory ignore は 3 か月で expire し、期限切れは check を失敗させる（再レビュー必須）。
+  # advisory ignore は 3 か月ごとの手動レビュー（deny.toml の [advisories] を参照）。
+  # expiry キーは未設定のため、期限切れで check が失敗するわけではない。
   deny:
     name: cargo-deny (licenses / advisories / duplicates)
     runs-on: ubuntu-24.04
