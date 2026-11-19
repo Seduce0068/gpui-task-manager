@@ -71,6 +71,43 @@ const FILE_NAME: &str = "settings.json";
 /// Maximum number of corrupt backups kept on disk. Older ones are pruned after
 /// a successful backup (H1-BACKUP).
 const CORRUPT_BACKUP_LIMIT: usize = 5;
+/// Largest settings document this build will read (4 MiB).
+///
+/// A valid settings file is a handful of keys (well under 1 KiB). Refusing a
+/// much larger file keeps a corrupt or hostile document from being loaded into
+/// memory unbounded; it is classified as corrupt, backed up and replaced by
+/// defaults exactly like malformed JSON (PC-CSVBOM).
+const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Removes one leading UTF-8 BOM (EF BB BF, decoded as U+FEFF).
+///
+/// Windows editors commonly prepend a BOM to JSON files. `serde_json` rejects a
+/// leading U+FEFF, which would make an otherwise valid settings file look
+/// corrupt and get backed up and replaced by defaults (PC-CSVBOM). Strip exactly
+/// one BOM at the start; a BOM anywhere else stays a parse error.
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// Reads at most [`MAX_SETTINGS_BYTES`] + 1 bytes and validates UTF-8.
+///
+/// `fs::read_to_string` has no size limit, so it is deliberately not used here:
+/// `Read::take` caps the allocation and an over-limit file is reported as
+/// `InvalidData`, which `read_document` classifies as corrupt (backup + defaults
+/// + fixed notice). Genuine I/O and encoding failures keep their old kinds.
+fn read_bounded(path: &Path) -> io::Result<String> {
+    use std::io::Read as _;
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "settings file exceeds the size limit",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
 
 /// Fixed, redacted text shown when a corrupt file was moved aside successfully.
 pub const NOTICE_BACKED_UP: &str =
@@ -229,7 +266,7 @@ fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
 /// An older `version` is upgraded to the current schema, a newer one is kept.
 /// Unknown fields stay in `raw` and are re-emitted by [`merged_map_with_baseline`].
 fn parse_document(text: &str) -> Option<SettingsDocument> {
-    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mut value: serde_json::Value = serde_json::from_str(strip_bom(text)).ok()?;
     let raw = value.as_object()?.clone();
     let stored_version = interpretable_version(raw.get("version"));
 
@@ -334,10 +371,11 @@ fn read_document(path: &Path) -> ReadOutcome {
             };
         }
     }
-    let text = match fs::read_to_string(path) {
+    let text = match read_bounded(path) {
         Ok(text) => text,
         Err(error) => {
-            // Invalid UTF-8 is also InvalidData; preserve those bytes too.
+            // Invalid UTF-8 and over-limit files are both InvalidData; preserve
+            // those bytes too.
             // A directory at the settings path gives IsADirectory (not
             // InvalidData); rename can move it aside just as well, otherwise
             // every later save would fail and leak temp files (R25 audit).
@@ -423,8 +461,10 @@ pub fn take_pending_notice() -> Option<SettingsNotice> {
 /// object, so a value written by a newer shell is usable as the merge base even
 /// when a known field has a type this build cannot deserialize (C2-SETTINGS).
 fn raw_from_path(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let text = fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    // Apply the same cap and BOM handling as the load path: a BOM-prefixed file
+    // must still act as the merge base so its unknown fields survive a save.
+    let text = read_bounded(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(strip_bom(&text)).ok()?;
     value.as_object().cloned()
 }
 
@@ -885,6 +925,69 @@ mod tests {
             b"{ not json"
         );
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn bom_prefixed_settings_load_without_backup_or_notice() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+        let path = temporary_path("bom");
+        let parent = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&parent).expect("create parent");
+        let json = r#"{"version":9,"interval_ms":1500,"future_flag":42}"#;
+        // Windows editors write EF BB BF (decoded as U+FEFF) before the JSON.
+        fs::write(&path, format!("\u{feff}{json}")).expect("write BOM settings");
+
+        let (settings, notice) = load_from_path_with_notice(Some(&path));
+        assert_eq!(notice, None, "a BOM must not look like corruption");
+        assert_eq!(settings.version, 9);
+        assert_eq!(settings.interval_ms, 1_500);
+        assert!(path.exists(), "a healthy BOM file must not be moved aside");
+        let document = load_document_from(&path).expect("BOM document must load");
+        assert_eq!(
+            document.raw.get("future_flag"),
+            Some(&serde_json::json!(42))
+        );
+        let backups: Vec<_> = fs::read_dir(&parent)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert!(
+            backups.is_empty(),
+            "no corrupt backup expected: {backups:?}"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn oversized_settings_are_backed_up_and_defaults_returned() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+        let path = temporary_path("oversized");
+        let parent = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&parent).expect("create parent");
+        // Valid JSON padded past the cap: it must be rejected on size, not
+        // parsed into memory, and must follow the corrupt backup path.
+        let mut text = r#"{"version":9,"interval_ms":1500,"pad":""#.to_string();
+        text.push_str(&"x".repeat(MAX_SETTINGS_BYTES as usize + 1));
+        text.push_str("\"}");
+        fs::write(&path, &text).expect("write oversized settings");
+
+        let (settings, notice) = load_from_path_with_notice(Some(&path));
+        assert_eq!(
+            settings,
+            Settings::default(),
+            "oversized file must not load"
+        );
+        let notice = notice.expect("corrupt notice");
+        assert_eq!(notice.text, NOTICE_BACKED_UP);
+        assert!(!path.exists(), "oversized file must be moved aside");
+        let backups: Vec<_> = fs::read_dir(&parent)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup expected");
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[cfg(unix)]

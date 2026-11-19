@@ -754,24 +754,24 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 中 — 未調査観点の発掘 2026-11-20
 
-- [ ] stdout が閉じたパイプで panic（`--once | head` 等）。Rust は SIGPIPE を
+- [x] stdout が閉じたパイプで panic（`--once | head` 等）。Rust は SIGPIPE を
       無視するため EPIPE で exit 101 + panic 行を stderr へ出す。CLI 出力を
       EPIPE で安全に終了させる。根拠 od-discovery。
-- [ ] `--token-file` が FIFO／デバイス等を受け付け起動ハングまたは無制限
+- [x] `--token-file` が FIFO／デバイス等を受け付け起動ハングまたは無制限
       読取り（`std::fs::read_to_string`）。export/settings と同じ
       symlink_metadata の非通常ファイル拒否を追加。根拠 od-discovery。
-- [ ] 相対 XDG_STATE_HOME で自動トークンが CWD（リポジトリ内）に作られる。
+- [x] 相対 XDG_STATE_HOME で自動トークンが CWD（リポジトリ内）に作られる。
       XDG_CONFIG_HOME のはabsolute 検査と対称に XDG_STATE_HOME も絶対パス
       検査を追加。根拠 od-discovery。
-- [ ] CSV 数式無害化が全角 '＝'（U+FF1D）starter を通す。
+- [x] CSV 数式無害化が全角 '＝'（U+FF1D）starter を通す。
       export.rs:588-621 の neutralise 集合へ全角記号を追加。根拠 od-discovery。
 
 ### 優先度: 低 — 未調査観点の発掘 2026-11-20
 
-- [ ] 設定 JSON の UTF-8 BOM が破損誤判定される＋巨大ファイル無防御。
+- [x] 設定 JSON の UTF-8 BOM が破損誤判定される＋巨大ファイル無防御。
       parse_document / web/src/settings.rs で BOM 除去とサイズ上限を検討。
       根拠 od-discovery。
-- [ ] 自動トークンの絶対パスが stderr に出る（`--redact` 公開スクショでも
+- [x] 自動トークンの絶対パスが stderr に出る（`--redact` 公開スクショでも
       漏れる）。generated_token_message を token_file_name と同じ leaf 名
       規律へ。根拠 od-discovery。
 

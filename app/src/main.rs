@@ -48,6 +48,28 @@ fn probe_sample_failure_message(error: &tm_core::ProbeError) -> String {
     format!("スナップショット取得に失敗 ({})", probe_error_label(error))
 }
 
+/// Writes `content` to `writer`, discarding every I/O error.
+///
+/// Rust ignores `SIGPIPE` on Unix, so a downstream that closes early — e.g.
+/// `gpui-task-manager --version | head -c 1` — makes the write return
+/// `BrokenPipe` instead of terminating the process. `println!` / `print!`
+/// unwrap that error and panic ("failed printing to stdout", exit 101), which
+/// is a false alarm for an ordinary shell pipeline. Restoring the default
+/// `SIGPIPE` disposition would need `unsafe` FFI or a new `libc` dependency;
+/// AGENTS.md §15 forbids `unsafe`, and a dependency is unnecessary. Ignoring
+/// the `write_all` result gives the same quiet-exit behaviour in safe Rust.
+fn write_ignoring_io_errors(writer: &mut impl std::io::Write, content: &str) {
+    let _ = writer.write_all(content.as_bytes());
+    let _ = writer.flush();
+}
+
+/// Terminal output for `--version` / `--help` (both exit before GPUI starts).
+fn write_stdout(content: &str) {
+    let stdout = std::io::stdout();
+    let mut locked = stdout.lock();
+    write_ignoring_io_errors(&mut locked, content);
+}
+
 fn main() {
     // `args()` panics on non-UTF-8 arguments; use `args_os()` so a stray byte
     // in argv cannot abort the GUI before it starts (flags are plain ASCII).
@@ -57,11 +79,11 @@ fn main() {
     // (exit 2), never a version banner.
     let flags = match resolve_cli(&arguments) {
         CliAction::Version => {
-            println!("{VERSION_LINE}");
+            write_stdout(&format!("{VERSION_LINE}\n"));
             return;
         }
         CliAction::Help => {
-            print!("{}", help_text());
+            write_stdout(&help_text());
             return;
         }
         CliAction::UsageError(message) => {
@@ -584,6 +606,27 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
         values.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// A closed stdout (e.g. `| head -c 1`) fails every write with
+    /// `BrokenPipe`; that used to make `println!` panic with exit 101.
+    #[::core::prelude::v1::test]
+    fn terminal_write_ignores_broken_pipe() {
+        struct BrokenPipe;
+        impl std::io::Write for BrokenPipe {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+        }
+        write_ignoring_io_errors(&mut BrokenPipe, VERSION_LINE);
+        write_ignoring_io_errors(&mut BrokenPipe, &help_text());
+
+        let mut sink = Vec::new();
+        write_ignoring_io_errors(&mut sink, VERSION_LINE);
+        assert_eq!(sink, VERSION_LINE.as_bytes());
     }
 
     /// Exit status a real process would use for this argv: `Some(0)` for the
