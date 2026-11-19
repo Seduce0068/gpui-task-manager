@@ -532,6 +532,33 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] デモ詳細パネルのオンボーディングカードが行未選択時のみ表示になるよう
       調整（選択時に本命情報へ到達可能に）。根拠 u4-layout。
 
+### 優先度: 高 — 敵対的レビュー／実測 2026-11-19
+
+- [x] トークンファイル権限チェックが `mode & 0o044`（read のみ）で
+      `0o622` 等の group/other write 可能ファイルを受け付ける。
+      エラー文は 0600 を要求しているため矛盾。`0o077` または厳密 `0o600`
+      へ修正（`agent/src/main.rs:431`）。根拠 x3-sec。
+- [x] 401 案内の「再起動ではトークンは変わりません」が --token /
+      TM_AGENT_TOKEN 経路では偽。条件付き文言へ（`web/src/agent.rs:97`）。
+      根拠 x3-sec。
+
+### 優先度: 中 — 敵対的レビュー／実測 2026-11-19
+
+- [x] 自動トークン生成の TOCTOU: exists → read → generate → write が
+      無ロックで、並列起動でメモリ内トークンとファイルが不一致になり得る
+      (`agent/src/main.rs:544`)。create_new 等で atomic 化。根拠 x3-sec。
+- [x] `--once --demo` が warm-up sleep 250ms を無条件に実行（全体 251ms の
+      99%）。デモ probe は決定的なので sleep をスキップし、実 probe のみ
+      待つ分岐へ（`agent/src/main.rs:598`）。根拠 x2-perf。
+- [x] SSE 2 スロットが切断後も最大 1 秒保持され、1 秒以内の再接続が
+      503 になる。切断検知を早めるか QUICK_RELEASE を検討
+      (`agent/src/main.rs:1191`)。根拠 x2-perf。
+      → フレーム間の待ちを 100 ms スライスへ分割し、各スライスでソケットを
+      probe（read timeout + EOF 検知）して切断と shutdown を早期検知。
+      新規依存なし、Bearer / Host/Origin / redact / StreamSlot RAII /
+      MAX_STREAMS=2 の契約は維持。回帰テスト
+      `stream_slot_is_released_soon_after_client_disconnect` を追加。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

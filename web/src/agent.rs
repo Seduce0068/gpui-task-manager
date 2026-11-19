@@ -91,10 +91,13 @@ pub const FORBIDDEN_GUIDANCE: &str = "別ホスト／別オリジンからのア
 ///
 /// It is a static string with no token, endpoint, hostname or agent-supplied
 /// text, so it can flow into the status bar, the `aria-live` mirror and the DOM
-/// proof unchanged. The token itself is never echoed. The agent reuses its token
-/// file on restart (no new URL is printed), so the user is directed to that
-/// file's contents instead of hunting for a "new" token (R2-AUTHMSG).
-pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。トークンファイル（既定は XDG state 配下）の内容を #token= に貼り付けてください。あるいは --token-file を指定して再起動してください。再起動ではトークンは変わりません";
+/// proof unchanged. The token itself is never echoed. The user is directed to
+/// the token file's contents instead of hunting for a "new" token (R2-AUTHMSG).
+/// The "unchanged on restart" claim is conditional: it holds only for the
+/// auto-generated file path (`--token` / `TM_AGENT_TOKEN` can change between
+/// starts), so the wording says so explicitly instead of promising it for
+/// every token source.
+pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。トークンファイル（既定は XDG state 配下）の内容を #token= に貼り付けてください。あるいは --token-file を指定して再起動してください。自動生成トークンファイル利用時は再起動でも同じトークンが再利用されます";
 
 /// Fixed guidance for a transport failure. The underlying error detail is
 /// written to `console` after redaction; only this summary reaches the UI.
@@ -1137,14 +1140,18 @@ mod tests {
 
     #[test]
     fn reconnect_guidance_is_actionable_and_redaction_safe() {
-        // The guidance tells the user *what* to re-enter and *where*: the token
-        // file is reused on restart, so no "new URL" is promised (R2-AUTHMSG).
+        // The guidance tells the user *what* to re-enter and *where*: no "new
+        // URL" is promised (R2-AUTHMSG). Reuse on restart is stated as a
+        // property of the auto-generated file only, because --token /
+        // TM_AGENT_TOKEN values may differ between starts.
         assert!(RECONNECT_GUIDANCE.contains("#token="));
         assert!(RECONNECT_GUIDANCE.contains("トークンファイル"));
         assert!(RECONNECT_GUIDANCE.contains("XDG state"));
         assert!(RECONNECT_GUIDANCE.contains("--token-file"));
         assert!(RECONNECT_GUIDANCE.contains("貼り付けて"));
-        assert!(RECONNECT_GUIDANCE.contains("再起動ではトークンは変わりません"));
+        assert!(RECONNECT_GUIDANCE.contains("自動生成トークンファイル"));
+        assert!(RECONNECT_GUIDANCE.contains("再利用されます"));
+        assert!(!RECONNECT_GUIDANCE.contains("再起動ではトークンは変わりません"));
         assert!(!RECONNECT_GUIDANCE.contains("新しい URL"));
         // Fixed text: no `;` / newline that could corrupt the DOM proof, and
         // redacting it with any token leaves it byte-for-byte identical.

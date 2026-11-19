@@ -81,6 +81,16 @@ const MAX_STREAMS: usize = 2;
 /// Delay between two `snapshot` events on [`STREAM_PATH`].
 const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 
+/// Longest single wait slice inside the SSE inter-frame delay.
+///
+/// The stream loop no longer blocks in one `sleep(STREAM_INTERVAL)`: it waits
+/// in slices of at most this length, checking the shutdown flag and probing the
+/// socket for a client disconnect after each one. A closed browser tab then
+/// frees its [`StreamSlot`] in ~100 ms instead of holding it for a whole 1 s
+/// frame, which used to make a reconnect within that second fail with 503
+/// (x2-perf). Production keeps the 1 s frame cadence by repeating the slice.
+const STREAM_WAIT_SLICE: Duration = Duration::from_millis(100);
+
 /// How long the accept loop waits for in-flight connection workers once it
 /// stops accepting (R2-X03 / S1-SSE).
 ///
@@ -319,6 +329,7 @@ fn run() -> Result<(), AgentError> {
             probe.as_mut(),
             config.redact,
             config.token.as_deref().unwrap_or_default(),
+            config.demo,
         )
         .map_err(|message| AgentError::new(ExitCategory::Probe, message));
     }
@@ -427,8 +438,10 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
             })?
             .permissions()
             .mode();
-        // Group/other readability would expose the secret to other local users.
-        if mode & 0o044 != 0 {
+        // Any group/other bit is unsafe: read exposes the secret to other local
+        // users, write lets them replace it, and execute keeps the same mode
+        // visible in directory listings. Owner bits are the caller's choice.
+        if mode & 0o077 != 0 {
             return Err(format!(
                 "トークンファイルの権限が緩すぎます ({}): 0600 にしてください (現在 {:04o})",
                 token_file_name(path),
@@ -475,45 +488,94 @@ fn auto_token_dir() -> Result<std::path::PathBuf, String> {
         .join(AUTO_TOKEN_DIR_NAME))
 }
 
-/// Writes a freshly generated token with owner-only permissions.
+/// Monotonic suffix for temporary auto-token files.
 ///
-/// `OpenOptionsExt::mode(0o600)` avoids a window in which a newly created file
-/// is readable by the group or by other users; `set_permissions` additionally
-/// repairs a pre-existing file that had looser permissions. This matches the
-/// `0o044` guard enforced by [`read_token_file`] for an explicit `--token-file`.
-fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
+/// The temp name only has to be unique inside this process (the PID is part of
+/// it); cross-process exclusivity comes from the atomic publish below.
+static AUTO_TOKEN_TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Bound on the create/re-read rounds in [`resolve_auto_token_in`].
+///
+/// Each round either adopts a valid file or wins the atomic publish, so one
+/// extra round covers a starter that publishes while we are preparing our own
+/// candidate. Reaching the bound means sustained contention, not a bad token.
+const AUTO_TOKEN_CREATE_ATTEMPTS: usize = 4;
+
+/// Outcome of one atomic token publication attempt.
+enum TokenPublish {
+    /// This caller's candidate is now the canonical token file.
+    Published,
+    /// Another caller published first; re-read the path to adopt its token.
+    Conflict,
+}
+
+/// Writes a candidate token to a private temp file, then publishes it at `path`
+/// with one atomic link operation.
+///
+/// The temp file is fully written (and chmod'ed to 0600 on Unix) *before* it
+/// becomes visible at `path`, so a concurrent reader can never observe a
+/// half-written credential — the old `create().truncate()` sequence had that
+/// window. `hard_link` is atomic and fails with `AlreadyExists` if another
+/// starter published first; the caller then re-reads that value instead of
+/// overwriting it. Both the temp creation and the publish use no `unsafe`.
+fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublish, String> {
     use std::io::Write as _;
 
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let temp = dir.join(format!(
+        "{AUTO_TOKEN_FILE_NAME}.tmp.{}.{}",
+        std::process::id(),
+        AUTO_TOKEN_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|err| {
-        format!(
-            "トークンファイルを作成できません ({}): {err}",
-            token_file_name(path)
-        )
-    })?;
-    file.write_all(token.as_bytes()).map_err(|err| {
-        format!(
-            "トークンファイルに書き込めません ({}): {err}",
-            token_file_name(path)
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+    let written = (|| -> Result<(), String> {
+        let mut file = options.open(&temp).map_err(|err| {
             format!(
-                "トークンファイルの権限を設定できません ({}): {err}",
-                token_file_name(path)
+                "トークンファイルを作成できません ({}): {err}",
+                token_file_name(&temp)
             )
         })?;
+        file.write_all(token.as_bytes()).map_err(|err| {
+            format!(
+                "トークンファイルに書き込めません ({}): {err}",
+                token_file_name(&temp)
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|err| {
+                    format!(
+                        "トークンファイルの権限を設定できません ({}): {err}",
+                        token_file_name(&temp)
+                    )
+                })?;
+        }
+        Ok(())
+    })();
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
     }
-    Ok(())
+
+    let outcome = match std::fs::hard_link(&temp, path) {
+        Ok(()) => Ok(TokenPublish::Published),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(TokenPublish::Conflict),
+        Err(err) => Err(format!(
+            "トークンファイルを公開できません ({}): {err}",
+            token_file_name(path)
+        )),
+    };
+    let _ = std::fs::remove_file(&temp);
+    outcome
 }
 
 /// Resolves the auto-generated token under an explicit directory.
@@ -522,12 +584,14 @@ fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
 /// tested without mutating process-wide environment variables (tests run in
 /// parallel). A valid existing token is reused: regenerating on every start
 /// would silently invalidate the credential the browser keeps in
-/// `localStorage`. [`read_token_file`] applies the same `0o044` guard as an
+/// `localStorage`. [`read_token_file`] applies the same `0o077` guard as an
 /// explicit `--token-file`, so an unsafe/unreadable file is discarded and a
-/// fresh 0600 token is written instead.
+/// fresh 0600 token is published atomically instead.
 ///
-/// The file is intentionally **not** deleted on exit/SIGINT. Persisting it is
-/// what makes the reuse above possible; the credential is 0600 inside a 0700
+/// Concurrent starters converge on one value: the first atomic publish wins
+/// and every later caller re-reads and adopts that value instead of truncating
+/// it. The file is intentionally **not** deleted on exit/SIGINT. Persisting it
+/// is what makes the reuse above possible; the credential is 0600 inside a 0700
 /// directory under the user's home, so leaving it behind is the safer and more
 /// convenient choice for a loopback-only agent.
 fn resolve_auto_token_in(dir: &std::path::Path) -> Result<(String, std::path::PathBuf), String> {
@@ -541,15 +605,43 @@ fn resolve_auto_token_in(dir: &std::path::Path) -> Result<(String, std::path::Pa
     }
     let path = dir.join(AUTO_TOKEN_FILE_NAME);
 
-    if path.exists() {
+    for _ in 0..AUTO_TOKEN_CREATE_ATTEMPTS {
+        // Any valid file — ours or one a concurrent starter just published —
+        // wins. This is the convergence point for simultaneous starts.
         if let Ok(token) = read_token_file(&path) {
             return Ok((token, path));
         }
+
+        // Missing or unusable. Re-read just before removing: a valid file may
+        // have appeared since the check above, in which case we adopt it
+        // instead of deleting a concurrent winner's credential.
+        if path.exists() {
+            if let Ok(token) = read_token_file(&path) {
+                return Ok((token, path));
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!(
+                        "既存のトークンファイルを削除できません ({}): {err}",
+                        token_file_name(&path)
+                    ));
+                }
+            }
+        }
+
+        let token = auth::generate_token()?;
+        match publish_token_file(&path, &token)? {
+            TokenPublish::Published => return Ok((token, path)),
+            TokenPublish::Conflict => continue,
+        }
     }
 
-    let token = auth::generate_token()?;
-    write_token_file(&path, &token)?;
-    Ok((token, path))
+    Err(format!(
+        "トークンファイルの生成が競合しました ({}): しばらくしてから再試行してください",
+        token_file_name(&path)
+    ))
 }
 
 /// Resolves the auto-generated token in the XDG state directory.
@@ -588,20 +680,48 @@ fn build_probe(config: &args::Config) -> Result<Box<dyn SystemProbe>, String> {
     }
 }
 
+/// Delay before the published `--once` sample.
+///
+/// CPU percentages are deltas to the previous sample, so a **real** probe needs
+/// one discarded warm-up sample plus [`WARMUP_INTERVAL`] before the published
+/// snapshot. Demo ticks are deterministic and need no CPU warm-up, so `--demo`
+/// skips both; the flag is passed in from the agent side because adding an
+/// `is_demo()` method to `SystemProbe` is outside this crate's scope.
+fn once_warmup_delay(demo: bool) -> Duration {
+    if demo {
+        Duration::ZERO
+    } else {
+        WARMUP_INTERVAL
+    }
+}
+
 /// Implements `--once`: one snapshot as JSON on stdout, then exit.
-fn print_once(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<(), String> {
-    println!("{}", once_json(probe, redact, token)?);
+fn print_once(
+    probe: &mut dyn SystemProbe,
+    redact: bool,
+    token: &str,
+    demo: bool,
+) -> Result<(), String> {
+    println!("{}", once_json(probe, redact, token, demo)?);
     Ok(())
 }
 
 /// Builds the `--once` JSON line without printing it (unit-testable).
-fn once_json(probe: &mut dyn SystemProbe, redact: bool, token: &str) -> Result<String, String> {
-    // CPU percentages are deltas to the previous sample, so the first sample
-    // is a warm-up and is not printed.
-    probe
-        .sample()
-        .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
-    std::thread::sleep(WARMUP_INTERVAL);
+fn once_json(
+    probe: &mut dyn SystemProbe,
+    redact: bool,
+    token: &str,
+    demo: bool,
+) -> Result<String, String> {
+    let warmup = once_warmup_delay(demo);
+    if !warmup.is_zero() {
+        // CPU percentages are deltas to the previous sample, so the first
+        // sample is a warm-up and is not printed (real probe only).
+        probe
+            .sample()
+            .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
+        std::thread::sleep(warmup);
+    }
     let mut snapshot = probe
         .sample()
         .map_err(|err| format!("スナップショット取得に失敗 ({})", probe_error_label(&err)))?;
@@ -1217,6 +1337,60 @@ fn try_acquire_stream_slot(streams: &AtomicUsize) -> bool {
     }
 }
 
+/// Why the SSE inter-frame wait stopped early.
+enum StreamWait {
+    /// The browser is still connected and no shutdown was requested.
+    Continue,
+    /// The browser went away (EOF/reset) or the agent is shutting down; the
+    /// caller must leave the loop so [`StreamSlot`] releases the slot.
+    Disconnected,
+}
+
+/// Waits up to `interval` in short slices, returning early on a client
+/// disconnect or an agent shutdown request.
+///
+/// A bounded `read` doubles as the wait: an open SSE browser sends no bytes, so
+/// the read simply times out after one slice, while a closed tab yields `Ok(0)`
+/// (or a reset error) immediately. That releases the slot in ~100 ms instead of
+/// at the next 1 s frame write. `interval` is a parameter so tests can shorten
+/// the production cadence (see [`STREAM_INTERVAL`]) without sleeping a second.
+fn wait_between_stream_frames(
+    stream: &mut TcpStream,
+    state: &SharedState,
+    interval: Duration,
+) -> StreamWait {
+    let slice = STREAM_WAIT_SLICE.min(interval);
+    let mut remaining = interval;
+    while remaining > Duration::ZERO {
+        if state.is_shutdown() {
+            return StreamWait::Disconnected;
+        }
+        let step = slice.min(remaining);
+        let _ = stream.set_read_timeout(Some(step));
+        let mut probe = [0u8; 1];
+        // UFCS keeps this module free of an extra `Read` import; `&mut *stream`
+        // reborrows so the socket stays usable on the next slice.
+        match io::Read::read(&mut *stream, &mut probe) {
+            // EOF: the browser closed the connection. EventSource never sends
+            // application data upstream, so this unambiguously means "gone".
+            Ok(0) => return StreamWait::Disconnected,
+            // Unexpected upstream bytes: SSE is read-only, so ignore them
+            // rather than mistaking stray input for a disconnect.
+            Ok(_) => {}
+            // No data within this slice is the normal case.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            // Reset or another fatal socket error: the peer is gone.
+            Err(_) => return StreamWait::Disconnected,
+        }
+        remaining = remaining.saturating_sub(step);
+    }
+    StreamWait::Continue
+}
+
 /// Writes the SSE response head. There is deliberately no `Content-Length`:
 /// the body is a sequence of events ended only by a client disconnect.
 ///
@@ -1319,10 +1493,10 @@ fn handle_stream_connection(
     write_sse_head(stream, allowed_origin)?;
     trace.finish(200);
 
-    // No request body is expected; disable the read deadline so the socket
-    // stays idle while events are pushed. The write deadline still bounds each
+    // The inter-frame wait uses a bounded read both as a short sleep and as a
+    // disconnect probe (see `wait_between_stream_frames`), so the socket is no
+    // longer left with no read deadline. The write deadline still bounds every
     // individual `write_all` below.
-    stream.set_read_timeout(None)?;
     loop {
         // S1-SSE: after the accept loop ends, `serve` sets this flag before
         // joining workers, so each iteration gets a chance to exit instead of
@@ -1355,7 +1529,12 @@ fn handle_stream_connection(
             };
             match sample {
                 Ok(_) => {
-                    std::thread::sleep(WARMUP_INTERVAL);
+                    if matches!(
+                        wait_between_stream_frames(stream, state, WARMUP_INTERVAL),
+                        StreamWait::Disconnected
+                    ) {
+                        return Ok(());
+                    }
                     state.warmed_up.store(true, Ordering::Release);
                     true
                 }
@@ -1383,7 +1562,12 @@ fn handle_stream_connection(
             if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
                 return Ok(());
             }
-            std::thread::sleep(interval);
+            if matches!(
+                wait_between_stream_frames(stream, state, interval),
+                StreamWait::Disconnected
+            ) {
+                return Ok(());
+            }
             continue;
         }
 
@@ -1453,7 +1637,12 @@ fn handle_stream_connection(
         if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
             return Ok(());
         }
-        std::thread::sleep(interval);
+        if matches!(
+            wait_between_stream_frames(stream, state, interval),
+            StreamWait::Disconnected
+        ) {
+            return Ok(());
+        }
     }
 }
 
@@ -2264,6 +2453,36 @@ mod tests {
     }
 
     #[test]
+    fn once_mode_demo_skips_warmup_without_timing_the_clock() {
+        // Demo ticks are deterministic: no CPU warm-up sample, no 250 ms wait.
+        // The flag-driven policy is asserted directly so the test is not flaky.
+        assert_eq!(once_warmup_delay(true), Duration::ZERO);
+        assert_eq!(once_warmup_delay(false), WARMUP_INTERVAL);
+
+        struct CountingProbe {
+            inner: DemoProbe,
+            samples: usize,
+        }
+        impl SystemProbe for CountingProbe {
+            fn platform_info(&self) -> tm_core::PlatformInfo {
+                self.inner.platform_info()
+            }
+            fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
+                self.samples += 1;
+                self.inner.sample()
+            }
+        }
+
+        let mut probe = CountingProbe {
+            inner: DemoProbe::new(),
+            samples: 0,
+        };
+        let json = once_json(&mut probe, false, "", true).expect("once json");
+        assert!(json.contains("\"snapshot\""));
+        assert_eq!(probe.samples, 1, "demo must take only the published sample");
+    }
+
+    #[test]
     fn once_mode_scrubs_the_token_with_or_without_redact() {
         // `--once --token <secret>` publishes stdout JSON even without
         // `--redact`; the credential must never appear in that JSON (R45).
@@ -2273,7 +2492,7 @@ mod tests {
                 inner: DemoProbe::new(),
                 token: SECRET,
             };
-            let json = once_json(&mut probe, redact, SECRET).expect("once json");
+            let json = once_json(&mut probe, redact, SECRET, true).expect("once json");
             assert!(!json.contains(SECRET), "redact={redact}: {json}");
             assert!(json.contains("***"), "redact={redact}: {json}");
         }
@@ -2445,6 +2664,43 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn token_file_rejects_every_group_and_other_bit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = std::env::temp_dir().join(format!(
+            "tm-agent-token-{}-all-mode-bits",
+            std::process::id()
+        ));
+
+        // Group/other write or execute is rejected too, not just readability:
+        // 0o044 alone would let 0o622 / 0o620 / 0o602 / 0o022 through.
+        for mode in [0o622, 0o620, 0o602, 0o022, 0o644] {
+            let _ = std::fs::remove_file(&path);
+            std::fs::write(&path, "secret-token\n").expect("write token file");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .expect("set mode");
+            let message = format!("mode {mode:04o} must be rejected");
+            let error = read_token_file(&path).expect_err(&message);
+            assert!(error.contains("0600"), "mode {mode:04o}: {error}");
+        }
+
+        // Only owner bits are the caller's business: 0600 and owner-read-only
+        // 0400 are both safe and must keep working.
+        for mode in [0o600, 0o400] {
+            let _ = std::fs::remove_file(&path);
+            std::fs::write(&path, "secret-token\n").expect("write token file");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .expect("set mode");
+            assert_eq!(
+                read_token_file(&path).expect("mode must be accepted"),
+                "secret-token",
+                "mode {mode:04o}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Asserts the token-file error contract: the leaf name may be shown to the
     /// operator, but no parent component (home path, mount point, temp dir) may
     /// appear anywhere in the message.
@@ -2595,6 +2851,54 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "repaired token must be 0600");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_auto_token_resolvers_converge_on_one_value() {
+        // Simultaneous starts must not hand out different credentials. The
+        // atomic publish makes the first writer authoritative; every later
+        // caller re-reads and adopts that value (no truncate, no unsafe).
+        let dir =
+            std::env::temp_dir().join(format!("tm-agent-auto-parallel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let dir = dir.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    resolve_auto_token_in(&dir).expect("resolve")
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker thread"))
+            .collect();
+        let adopted = &results[0].0;
+        let agreeing = results
+            .iter()
+            .filter(|(token, path)| token == adopted && path == &results[0].1)
+            .count();
+        assert_eq!(agreeing, results.len(), "concurrent starters diverged");
+        assert_eq!(
+            read_token_file(&results[0].1).expect("read back"),
+            *adopted,
+            "published file must match the adopted token"
+        );
+
+        // The private staging files are removed after publish/conflict.
+        let leftovers = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0, "temporary token files must be cleaned up");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3458,5 +3762,83 @@ mod tests {
         drop(reader);
         join_demo_server(handle);
         assert_eq!(state.streams.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn stream_slot_is_released_soon_after_client_disconnect() {
+        // x2-perf: a closed browser tab used to hold its slot until the next
+        // 1 s frame, so a reconnect inside that second got a 503. Use the real
+        // cadence here: a shortened interval would let the old single sleep
+        // pass this test too. The chunked wait must release the RAII slot
+        // within one slice, without any shutdown signal from the agent.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false,
+        ));
+        let worker_state = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = http::read_request(&mut stream)
+                .expect("read request")
+                .expect("request head");
+            handle_stream_connection(&mut stream, &request, &worker_state, STREAM_INTERVAL)
+                .expect("handle stream connection");
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write request");
+        let mut reader = BufReader::new(client);
+
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("head line");
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+
+        // One full frame proves the slot is live before the disconnect.
+        let mut frame = String::new();
+        for _ in 0..3 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("frame line");
+            frame.push_str(&line);
+        }
+        assert!(frame.starts_with("event: snapshot\n"), "{frame}");
+        assert_eq!(state.streams.load(Ordering::Acquire), 1);
+        assert!(
+            !state.is_shutdown(),
+            "this test must not rely on an agent shutdown"
+        );
+
+        // Close only the client socket; no agent-side shutdown is involved.
+        drop(reader);
+
+        // The slot must come back within half a production frame, whereas the
+        // old single `sleep(STREAM_INTERVAL)` held it for the full second.
+        let deadline = Instant::now() + STREAM_INTERVAL / 2;
+        while state.streams.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            state.streams.load(Ordering::Acquire),
+            0,
+            "stream slot must be released promptly after client disconnect"
+        );
+        join_demo_server(handle);
     }
 }
