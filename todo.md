@@ -636,7 +636,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       のため外部互換リスクなし。根拠 fb-deadcode。
 - [x] export.rs の cherry-pick 痕跡: `redact_text` の unused import と
       `#[allow(unused_imports)]` を削除し、doc リンクを完全パス化。根拠 fb-deadcode。
-- [ ] `snapshot_to_csv_with_total` の引数名 `_total_process_count` を
+- [x] `snapshot_to_csv_with_total` の引数名 `_total_process_count` を
       `_ignored_wire_total` 等へ改名し、CSV は envelope 総数非対応である旨を
       API 名/doc で明示（JSON 版と挙動が異なるため誤用防止）。根拠 fb-deadcode。
 - [x] 修正済み項目の旧記述を削除: query.rs の `todo 2026-11-19` マーカー、
