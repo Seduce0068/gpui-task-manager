@@ -734,9 +734,14 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] trunk 生成 index.html の modulepreload 順序が非決定的（HashSet 由来、
       Trunk 0.22.2 の copy_dir_recursive）。ビルド後にパス順へ正規化する
       ポストフックまたは上流更新。根拠 mb-repro。
-- [ ] ahash の compile-time-rng（zed-xim 経由）で app バイナリがビルドごとに
+- [x] ahash の compile-time-rng（zed-xim 経由）で app バイナリがビルドごとに
       変化（116 バイト差: build-id と乱数シード）。tm-agent は決定的。
-      固定シード化または既知領域マスクの構造等価ゲート。根拠 mb-repro。
+      `.cargo/config.toml` の `[env] CONST_RANDOM_SEED` で compile-time シードを
+      固定し、同一 target dir の clean ビルド 2 回で app バイナリ SHA256 一致
+      （e0f257737dcb05e2fdbabfb52356a43a551f373807ab0dfe5092902255a260f0）を実証。
+      zed-xim 側に feature オプションは無く（crates.io 最新 0.4.0-zed）、
+      with_seeds / patch は不採用。根拠 mb-repro + oc-ahash、
+      詳細は notes/current-state.md「ビルド再現性」。
 - [x] CI に公開成果物の二重ビルド＋SHA256 比較ゲートが無い。上記 4 種の
       非決定性を検出できず公開後に事後発見し得る。根拠 mb-repro。
 
@@ -746,6 +751,29 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   すべて成功、509/167 pass。時間依存アサート 4 件と PENDING_NOTICE 競合
   ウィンドウ 1 件は speculative（未再現）。app 側 NOTICE_TEST_LOCK 相当の
   導入は予防的価値あり（ma-flaky）。
+
+### 優先度: 中 — 未調査観点の発掘 2026-11-20
+
+- [ ] stdout が閉じたパイプで panic（`--once | head` 等）。Rust は SIGPIPE を
+      無視するため EPIPE で exit 101 + panic 行を stderr へ出す。CLI 出力を
+      EPIPE で安全に終了させる。根拠 od-discovery。
+- [ ] `--token-file` が FIFO／デバイス等を受け付け起動ハングまたは無制限
+      読取り（`std::fs::read_to_string`）。export/settings と同じ
+      symlink_metadata の非通常ファイル拒否を追加。根拠 od-discovery。
+- [ ] 相対 XDG_STATE_HOME で自動トークンが CWD（リポジトリ内）に作られる。
+      XDG_CONFIG_HOME のはabsolute 検査と対称に XDG_STATE_HOME も絶対パス
+      検査を追加。根拠 od-discovery。
+- [ ] CSV 数式無害化が全角 '＝'（U+FF1D）starter を通す。
+      export.rs:588-621 の neutralise 集合へ全角記号を追加。根拠 od-discovery。
+
+### 優先度: 低 — 未調査観点の発掘 2026-11-20
+
+- [ ] 設定 JSON の UTF-8 BOM が破損誤判定される＋巨大ファイル無防御。
+      parse_document / web/src/settings.rs で BOM 除去とサイズ上限を検討。
+      根拠 od-discovery。
+- [ ] 自動トークンの絶対パスが stderr に出る（`--redact` 公開スクショでも
+      漏れる）。generated_token_message を token_file_name と同じ leaf 名
+      規律へ。根拠 od-discovery。
 
 ## 完了
 

@@ -5,7 +5,7 @@ description: 2026-11-20 時点の実装状況・検証結果・未解決事項�
 tags: [status, verification, runtime-proof, gpui, task-manager]
 resource: .
 generated: 2026-11-17T03:46:00+09:00
-verified: 2026-11-20T05:14:02+09:00
+verified: 2026-11-20T08:08:37+09:00
 status: verified
 ---
 
@@ -58,6 +58,47 @@ status: verified
 - SSE スロットが切断後も最大 1 秒保持され、1 秒以内の再接続が 503 になる
   事象を確認。フレーム間の待ちを 100 ms スライスへ分割し、各スライスで
   ソケットを probe して切断を早期検知するよう修正（`agent/src/main.rs`）。
+
+### ビルド再現性 — app バイナリ / ahash compile-time-rng（2026-11-20）
+
+- **事象**: zed-xim 0.4.0-zed が ahash 0.8 を
+  `features = ["compile-time-rng"], default-features = false` で固定依存し
+  （公開 Cargo.toml:102-105 / Cargo.toml.orig）、ahash 0.8.12 の
+  `get_fixed_seeds()` が `const_random!(u64)` × 8 をバイナリへ埋め込む
+  （`src/random_state.rs:81-99`）。このため app バイナリの clean ビルドで
+  SHA256 が変わっていた（mb-repro: 116 バイト差 = 乱数シード + GNU build-id）。
+- **対処**: `.cargo/config.toml:44-64` に `[env] CONST_RANDOM_SEED`
+  （`force = true`）を追加し compile-time シードを固定。const-random 0.1.18 の README
+  「Deterministic builds」が公式に定義する環境変数で、
+  const-random-macro 0.1.16 の `src/span.rs:8-17` が `option_env!` 経由で
+  SHAKE-256 のシードとして使用する。上流変更・fork・依存 feature の変更・
+  unsafe はすべて不要。
+- **検証（2026-11-20、同一 `CARGO_TARGET_DIR` を clean して 2 回）**:
+  `cargo build --release --locked -p gpui-task-manager` の SHA256 は両方
+  `e0f257737dcb05e2fdbabfb52356a43a551f373807ab0dfe5092902255a260f0`。
+  別々の target dir で行った 2 回のビルドでも ahash rlib は
+  `c86e0c08b907c91f17e8574f7b840b5fae1a5148d3ebf85a71f2ebee5aae4a8e` で一致。
+- **既知の制約**: 異なる `CARGO_TARGET_DIR`（例 `/tmp/oc-ahash-b1` と
+  `/tmp/oc-ahash-b2`）間のバイナリは一致しない。rlib の依存パスと
+  `OUT_DIR` 由来のソース位置が絶対パスとして残るため（実測 217,094 バイト差、
+  ただし rodata の文字列の多重集合は同一）。CI の `/home/runner/...` は
+  既存の `--remap-path-prefix` で `/build` へ置換されるため、公開ゲートの
+  再利用ビルドには影響しない。再現性ゲートは同一パス上で clean ビルドを
+  2 回実行して比較する必要がある。
+- **不採用候補**: (a) zed-xim の feature オプション — 公開 Cargo.toml の
+  `[features]` に無効化手段が無く、ahash 依存はハードコード。
+  crates.io 上最新も 0.4.0-zed（2025-10-05 更新）で修正版なし。
+  (b) app 側から `RandomState::with_seeds` を渡す — `const fn` だが
+  zed-xim 内部の `AHashMap::with_hasher(Default::default())`
+  （`zed-xim/src/lib.rs:54`, `zed-xim/src/server/connection.rs:630` 等）には届かない。
+  ahash 0.8.12 に `FixedState` 型は存在しない。
+  (c) `[patch.crates-io]` で feature を除去 — Cargo の feature は加算的で
+  patch はソース差し替えのみ。ahash / zed-xim の fork が必要になり、
+  担当範囲外かつ cargo-vet / cargo-deny の supply-chain gate に影響。
+  (d) ahash を直接依存に追加して `runtime-rng` を unify — cfg 上は
+  `get_fixed_seeds()` の分岐を切り替えられるが、workspace 全体の
+  ahash 0.8 利用者へ及ぶ副作用と未使用依存（cargo machete）のリスクがあり
+  不採用（未検証）。
 
 ## 主な対応済み事項
 

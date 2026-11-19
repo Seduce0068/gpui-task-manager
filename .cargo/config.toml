@@ -40,3 +40,25 @@ rustflags = [
   "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager=/build/private",
   "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager/.agents/worktrees/integration-r1=/build/private",
 ]
+
+# ahash の compile-time-rng（zed-xim 経由）によるビルド非決定性の fix。
+#
+# 根拠:
+#   - zed-xim 0.4.0-zed の公開 Cargo.toml:102-105 は ahash 0.8 を
+#     `features = ["compile-time-rng"], default-features = false` で固定依存し、
+#     外すための feature flag は [features]（同 48-76 行）に存在しない。
+#   - ahash 0.8.12 の get_fixed_seeds() は runtime-rng が無い構成で
+#     const_random!(u64) × 8 を const RAND へ埋め込む
+#     （src/random_state.rs:81-99）。これがビルドごとの app バイナリ差の原因。
+#   - const-random 0.1.18 の README「Deterministic builds」は CONST_RANDOM_SEED
+#     を公式の再現ビルド機構として定義している（同一コード＋同一シードで同一
+#     出力）。const-random-macro 0.1.16 の src/span.rs:8-17 は option_env! で
+#     これを読み、getrandom の代わりに SHAKE-256 のシードとして使う。
+#
+# 影響: ahash の compile-time シードは元々バイナリへ埋め込まれており秘密では
+# ないため、固定化しても HashDoS 耐性は実質的に変わらない。runtime-rng を
+# 追加して feature unification を変える方法と違い、no_std 側の制約も維持される。
+[env]
+# force = true: 開発シェルに CONST_RANDOM_SEED が設定されていても固定値を優先し、
+# 環境差によるバイナリ差を防ぐ（Cargo の [env] は既定で force = false）。
+CONST_RANDOM_SEED = { value = "gpui-task-manager-reproducible-ahash-seed-v1", force = true }
