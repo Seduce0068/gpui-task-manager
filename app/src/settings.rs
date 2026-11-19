@@ -20,6 +20,22 @@
 //! produces a fixed, redacted [`SettingsNotice`] for the status bar; no path,
 //! hostname, token or parser error text is ever put in the notice.
 //!
+//! Concurrent saves (HB-NATIVE) use a three-way merge: the known-field values
+//! observed at the last load/save are the base, the caller's [`Settings`] is
+//! "ours" and the object re-read from disk immediately before writing is
+//! "theirs". A field this instance did not edit keeps the value found on disk,
+//! so two instances editing *different* known fields no longer clobber each
+//! other. `version` still uses max() and unknown fields are still carried over
+//! verbatim.
+//!
+//! Locking scope: `std` has no `flock` equivalent, and a real cross-process
+//! lock would need either `unsafe` FFI or a new dependency. Neither is
+//! acceptable here, so the read-compare-write sequence is serialized in-process
+//! with a `Mutex` only. It is deliberately *not* presented as a CAS: the
+//! temporary-file + rename write still prevents torn files, but two processes
+//! are not mutually excluded. The merge keeps both edits in the normal
+//! sequential case; a same-field conflict remains last-writer-wins.
+//!
 //! Schema-version compatibility policy (R2X-D3), identical in the browser shell:
 //!
 //! - **Backward**: a file from an older build (or with no `version`) is read with
@@ -119,6 +135,10 @@ pub(crate) struct SettingsDocument {
 // successful save so repeated saves keep the same forward-compatible fields.
 static LAST_LOADED: Mutex<Option<serde_json::Map<String, serde_json::Value>>> = Mutex::new(None);
 static PENDING_NOTICE: Mutex<Option<SettingsNotice>> = Mutex::new(None);
+// Serializes the whole read-compare-write-refresh sequence inside this process.
+// See the locking-scope note in the module docs: std has no portable flock, so
+// this is not a cross-process CAS (HB-NATIVE).
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -195,7 +215,7 @@ fn clamped(mut settings: Settings) -> Settings {
 /// Interprets a persisted `version` under the compatibility policy.
 ///
 /// Only a non-negative integer that fits in `u32` is comparable here. Other
-/// JSON forms are opaque: they stay in `raw` and [`merged_map`] writes them back
+/// JSON forms are opaque: they stay in `raw` and [`merged_map_with_baseline`] writes them back
 /// verbatim rather than replacing them with a version this build understands
 /// (R2X-D3).
 fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
@@ -207,7 +227,7 @@ fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
 /// Parses a persisted JSON document, keeping its raw object for round-tripping.
 ///
 /// An older `version` is upgraded to the current schema, a newer one is kept.
-/// Unknown fields stay in `raw` and are re-emitted by [`merged_map`].
+/// Unknown fields stay in `raw` and are re-emitted by [`merged_map_with_baseline`].
 fn parse_document(text: &str) -> Option<SettingsDocument> {
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
     let raw = value.as_object()?.clone();
@@ -226,10 +246,18 @@ fn parse_document(text: &str) -> Option<SettingsDocument> {
     Some(SettingsDocument { settings, raw })
 }
 
-/// Rebuilds the JSON object to save: known fields come from `settings`, every
-/// unknown key and the highest seen `version` come from the loaded document.
-fn merged_map(
+/// Three-way merge of the JSON object to save.
+///
+/// `baseline` is the raw object observed at this instance's last load/save,
+/// `settings` is the caller's current view ("ours") and `raw` is the freshest
+/// object read from the destination ("theirs"). A known field whose value still
+/// equals the baseline was not edited here, so the concurrent value on disk is
+/// kept; a field that differs is written from `settings` (a same-field conflict
+/// is last-writer-wins). Unknown fields come from `raw`, and `version` keeps its
+/// existing max/verbatim policy.
+fn merged_map_with_baseline(
     settings: &Settings,
+    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
     raw: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut map = raw.cloned().unwrap_or_default();
@@ -238,6 +266,10 @@ fn merged_map(
     let serde_json::Value::Object(known) = known else {
         return map;
     };
+    // No earlier load/save means there is nothing to diff against: treat every
+    // known field as edited, which reproduces the old overwrite-all behaviour.
+    let empty = serde_json::Map::new();
+    let base = baseline.unwrap_or(&empty);
     for (key, value) in known {
         if key == "version" {
             match interpretable_version(map.get(&key)) {
@@ -255,11 +287,30 @@ fn merged_map(
                 // shell still recognises its own schema (R2X-D3).
                 None => {}
             }
-        } else {
-            map.insert(key, value);
+            continue;
         }
+        // Unchanged relative to our base: keep what another instance wrote.
+        // If the destination lost the field entirely, write ours so a newer
+        // field is not dropped when migrating an older file.
+        if base.get(&key).is_some_and(|old| old == &value) && map.contains_key(&key) {
+            continue;
+        }
+        map.insert(key, value);
     }
     map
+}
+
+/// Test-only shorthand for the overwrite-all case (no baseline available).
+///
+/// Production saves go through [`save_to_path_with_baseline`] so concurrent
+/// known-field edits survive; regressions that exercise the older contract call
+/// this wrapper directly.
+#[cfg(test)]
+fn merged_map(
+    settings: &Settings,
+    raw: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    merged_map_with_baseline(settings, None, raw)
 }
 
 /// Outcome of reading the settings file, including the reason for a fallback.
@@ -377,18 +428,39 @@ fn raw_from_path(path: &Path) -> Option<serde_json::Map<String, serde_json::Valu
     value.as_object().cloned()
 }
 
-/// Merges against the destination's latest raw object and writes it atomically.
+/// Writes a three-way-merged document to `path` and returns the saved object.
 ///
 /// The destination is re-read immediately before merging so a parallel tab or
 /// instance that wrote a newer `version` or extra fields after our load cannot
-/// be silently rolled back by this save (C2-SETTINGS). The in-memory snapshot is
-/// used only when the destination cannot be read at all.
-fn save_to_path(path: &Path, settings: &Settings) -> io::Result<()> {
-    let raw = raw_from_path(path).or_else(|| lock(&LAST_LOADED).clone());
-    let map = merged_map(settings, raw.as_ref());
+/// be silently rolled back by this save (C2-SETTINGS). The baseline is supplied
+/// explicitly: production passes the snapshot from the last load/save, while
+/// tests pass their own to simulate two instances without racing on
+/// process-wide state. No global state is touched here.
+fn save_to_path_with_baseline(
+    path: &Path,
+    settings: &Settings,
+    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> io::Result<serde_json::Map<String, serde_json::Value>> {
+    let disk = raw_from_path(path);
+    let theirs = disk.as_ref().or(baseline);
+    let map = merged_map_with_baseline(settings, baseline, theirs);
     let json = serde_json::to_string_pretty(&map)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     save_raw_to(path, &json)?;
+    Ok(map)
+}
+
+/// Merges against the destination's latest raw object and writes it atomically.
+///
+/// Known fields unchanged since our last load/save keep the value another
+/// instance just wrote (HB-NATIVE); the in-memory snapshot is used only when
+/// the destination cannot be read at all. [`SAVE_LOCK`] serializes the whole
+/// sequence in-process; see the module docs for why this is not a cross-process
+/// CAS.
+fn save_to_path(path: &Path, settings: &Settings) -> io::Result<()> {
+    let _guard = lock(&SAVE_LOCK);
+    let baseline = lock(&LAST_LOADED).clone();
+    let map = save_to_path_with_baseline(path, settings, baseline.as_ref())?;
     *lock(&LAST_LOADED) = Some(map);
     Ok(())
 }
@@ -1179,5 +1251,122 @@ mod tests {
             );
             assert_eq!(map.get("future_flag"), Some(&serde_json::json!(1)));
         }
+    }
+
+    #[test]
+    fn three_way_merge_keeps_concurrent_edits_to_different_known_fields() {
+        // Both instances load the same document, then edit different fields.
+        // The second merge sees the first save's object as "theirs" and must
+        // preserve both edits, the future version and the unknown field.
+        let shared = Settings {
+            version: CURRENT_VERSION,
+            interval_ms: 1500,
+            theme: tm_viewmodel::Theme::Light,
+            ..Settings::default()
+        };
+        let serde_json::Value::Object(mut base) = serde_json::to_value(&shared).expect("serialize")
+        else {
+            panic!("Settings must serialize to an object")
+        };
+        base.insert("version".to_string(), serde_json::json!(9));
+        base.insert(
+            "future_flag".to_string(),
+            serde_json::json!({"nested": [1, 2]}),
+        );
+
+        let instance_a = Settings {
+            interval_ms: 2_000,
+            ..shared.clone()
+        };
+        let after_a = merged_map_with_baseline(&instance_a, Some(&base), Some(&base));
+        assert_eq!(after_a.get("interval_ms"), Some(&serde_json::json!(2_000)));
+
+        let instance_b = Settings {
+            theme: tm_viewmodel::Theme::Dark,
+            ..shared
+        };
+        let after_b = merged_map_with_baseline(&instance_b, Some(&base), Some(&after_a));
+        assert_eq!(
+            after_b.get("interval_ms"),
+            Some(&serde_json::json!(2_000)),
+            "instance A's interval was clobbered"
+        );
+        assert_eq!(
+            after_b.get("theme"),
+            Some(&serde_json::json!("Dark")),
+            "instance B's theme was clobbered"
+        );
+        assert_eq!(
+            after_b.get("version"),
+            Some(&serde_json::json!(9)),
+            "future version was downgraded"
+        );
+        assert_eq!(
+            after_b.get("future_flag"),
+            Some(&serde_json::json!({"nested": [1, 2]})),
+            "unknown field was dropped"
+        );
+    }
+
+    #[test]
+    fn consecutive_instance_saves_keep_both_interval_and_theme() {
+        // End-to-end through the real writer: two sequential saves with the
+        // same load snapshot, each changing a different known field.
+        let path = temporary_path("two-instances");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        let shared = Settings {
+            version: CURRENT_VERSION,
+            interval_ms: 1500,
+            theme: tm_viewmodel::Theme::Light,
+            ..Settings::default()
+        };
+        let serde_json::Value::Object(mut base) = serde_json::to_value(&shared).expect("serialize")
+        else {
+            panic!("Settings must serialize to an object")
+        };
+        base.insert("version".to_string(), serde_json::json!(9));
+        base.insert(
+            "future_flag".to_string(),
+            serde_json::json!({"nested": [1, 2]}),
+        );
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&base).expect("serialize"),
+        )
+        .expect("write initial settings");
+
+        let instance_a = Settings {
+            interval_ms: 2_000,
+            ..shared.clone()
+        };
+        let saved_a =
+            save_to_path_with_baseline(&path, &instance_a, Some(&base)).expect("save instance A");
+        assert_eq!(saved_a.get("interval_ms"), Some(&serde_json::json!(2_000)));
+
+        // Instance B still holds the snapshot it loaded before A saved; the
+        // writer re-reads the file so A's interval is visible during the merge.
+        let instance_b = Settings {
+            theme: tm_viewmodel::Theme::Dark,
+            ..shared
+        };
+        let saved_b =
+            save_to_path_with_baseline(&path, &instance_b, Some(&base)).expect("save instance B");
+        assert_eq!(saved_b.get("interval_ms"), Some(&serde_json::json!(2_000)));
+        assert_eq!(saved_b.get("theme"), Some(&serde_json::json!("Dark")));
+        assert_eq!(saved_b.get("version"), Some(&serde_json::json!(9)));
+        assert_eq!(
+            saved_b.get("future_flag"),
+            Some(&serde_json::json!({"nested": [1, 2]}))
+        );
+
+        let reloaded = load_document_from(&path).expect("reload document");
+        assert_eq!(reloaded.settings.interval_ms, 2_000);
+        assert_eq!(reloaded.settings.theme, tm_viewmodel::Theme::Dark);
+        assert_eq!(reloaded.settings.version, 9);
+        assert_eq!(
+            reloaded.raw.get("future_flag"),
+            Some(&serde_json::json!({"nested": [1, 2]}))
+        );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }

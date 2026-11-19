@@ -35,6 +35,16 @@
 //!   its own schema; normalising it here would be a silent downgrade.
 //! - **Corruption**: only malformed JSON or a wrong type in a *known* field
 //!   (other than `version`) falls back to defaults with a fixed redacted notice.
+//!
+//! Cross-tab writes (HA-WEBMERGE): `localStorage` has no atomic
+//! compare-and-swap. A naive "load then write the whole document" pair from two
+//! tabs can interleave, and whichever tab saves last silently drops the other
+//! tab's field. The chosen design is therefore **diff merge + storage sync**:
+//! a save starts from the document re-read immediately before the write and
+//! overwrites only the known fields whose value actually changed since the last
+//! load/save ([`LAST_LOADED`]); the shell's `storage` listener mirrors a remote
+//! write back into the UI so the next diff is computed against fresh state.
+//! Unknown fields and the highest `version` always come from the re-read value.
 
 use std::sync::Mutex;
 
@@ -369,6 +379,70 @@ fn merged_map(
     map
 }
 
+/// Rebuilds the object to save from the freshly re-read stored value, applying
+/// **only the known fields the caller actually changed**.
+///
+/// `baseline` is the raw object captured at the previous load/save. A field is
+/// considered changed when its serialised value differs from the baseline's
+/// value (or is absent there, e.g. an older schema). Columns the caller never
+/// touched are left exactly as they were re-read, so another tab's write to
+/// those columns survives. Unknown fields are likewise never rewritten here.
+/// `version` keeps the existing max/opaque policy from [`merged_map`] and is
+/// handled independently of the diff.
+fn merged_map_for_changes(
+    settings: &Settings,
+    stored: Option<&serde_json::Map<String, serde_json::Value>>,
+    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut map = stored.cloned().unwrap_or_default();
+    let known = serde_json::to_value(clamped(settings.clone()))
+        .expect("Settings always serializes to a JSON object");
+    let serde_json::Value::Object(known) = known else {
+        return map;
+    };
+    for (key, value) in known {
+        if key == "version" {
+            match interpretable_version(map.get(&key)) {
+                // Comparable numeric version: upgrade older values, never
+                // downgrade newer ones (R2-D01).
+                Some(stored_version) => {
+                    let current = value.as_u64().unwrap_or(0);
+                    map.insert(key, serde_json::json!((stored_version as u64).max(current)));
+                }
+                // No version at all: record the version this build writes.
+                None if !map.contains_key(&key) => {
+                    map.insert(key, value);
+                }
+                // Opaque or out-of-u32-range value: keep it verbatim so a newer
+                // shell still recognises its own schema (R2X-D3).
+                None => {}
+            }
+            continue;
+        }
+        let changed = baseline
+            .map(|base| base.get(&key) != Some(&value))
+            .unwrap_or(true);
+        if changed {
+            map.insert(key, value);
+        }
+    }
+    map
+}
+
+/// Pure, baseline-injected variant of [`merged_for_save`] so tests can model two
+/// tabs without depending on the process-wide [`LAST_LOADED`] state.
+fn merged_for_save_inner(
+    settings: &Settings,
+    stored: Option<&str>,
+    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let raw = stored
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .or_else(|| baseline.cloned());
+    merged_map_for_changes(settings, raw.as_ref(), baseline)
+}
+
 /// Raw-injected loading, shared by [`load_with_notice`] and the tests
 /// (no browser needed).
 fn load_from_raw(raw: Option<&str>) -> Settings {
@@ -507,19 +581,18 @@ fn parse_saved(raw: &str) -> Settings {
 /// Builds the JSON object to persist from the value currently in `localStorage`.
 ///
 /// `stored` is the value re-read immediately before the write, so another tab
-/// that wrote a newer `version` or extra fields after our load cannot be rolled
-/// back by this save (C2-SETTINGS). The load-time snapshot is only a fallback
-/// for an unreadable destination. Keeping this pure lets the merge be tested
-/// without a browser context.
+/// that wrote a newer `version`, extra fields, or a different known field after
+/// our load cannot be rolled back by this save (C2-SETTINGS / HA-WEBMERGE).
+/// Only known fields that differ from [`LAST_LOADED`] are applied; that
+/// snapshot is also the fallback for an unreadable destination. A full CAS is
+/// impossible with `localStorage`, which is why the diff is paired with the
+/// shell's `storage` reload rather than treated as a transaction.
 fn merged_for_save(
     settings: &Settings,
     stored: Option<&str>,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let raw = stored
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .and_then(|value| value.as_object().cloned())
-        .or_else(|| lock(&LAST_LOADED).clone());
-    merged_map(settings, raw.as_ref())
+    let baseline = lock(&LAST_LOADED).clone();
+    merged_for_save_inner(settings, stored, baseline.as_ref())
 }
 
 /// Records a fixed, redacted save-failure notice and publishes it to the DOM
@@ -534,9 +607,11 @@ fn record_save_failure() {
 /// Persists settings. Returns an error message on failure so the caller can
 /// surface it, but callers are free to ignore it.
 ///
-/// Unknown fields and the newest `version` written by any tab are preserved.
-/// A failure also queues a redacted notice for the status bar / notice node; a
-/// success leaves any existing notice untouched.
+/// Unknown fields and the newest `version` written by any tab are preserved,
+/// and known fields another tab changed are kept unless this caller explicitly
+/// edited them since its last load/save (HA-WEBMERGE). A failure also queues a
+/// redacted notice for the status bar / notice node; a success leaves any
+/// existing notice untouched.
 pub fn save(settings: &Settings) -> Result<(), String> {
     let result = (|| {
         let storage = storage().ok_or_else(|| "localStorage を利用できません".to_string())?;
@@ -732,16 +807,17 @@ mod tests {
     #[test]
     fn save_merges_against_the_freshly_reread_stored_value() {
         // Another tab may have changed localStorage after this process loaded.
-        // The value passed to `merged_for_save` is the one re-read immediately
-        // before the write, and it must drive both `max(version)` and unknown
-        // field preservation (C2-SETTINGS).
+        // The value passed to the merge is the one re-read immediately before
+        // the write, and it must drive both `max(version)` and unknown field
+        // preservation (C2-SETTINGS). The pure, baseline-injected variant keeps
+        // this assertion independent of the process-wide `LAST_LOADED` state.
         let caller = Settings {
             version: tm_viewmodel::SETTINGS_VERSION,
             interval_ms: 2_000,
             ..Settings::default()
         };
         let latest = r#"{"version":11,"interval_ms":1500,"newer_only":{"x":2}}"#;
-        let map = merged_for_save(&caller, Some(latest));
+        let map = merged_for_save_inner(&caller, Some(latest), None);
         let json = serde_json::to_string(&map).expect("serialize");
         let reloaded = parse_document(&json).expect("reload document");
         assert_eq!(
@@ -757,7 +833,7 @@ mod tests {
         // A different `stored` value yields a different result: the merge is
         // driven by the current contents, not a snapshot taken at load time.
         let stale = r#"{"version":9,"interval_ms":1500,"stale_only":1}"#;
-        let stale_map = merged_for_save(&caller, Some(stale));
+        let stale_map = merged_for_save_inner(&caller, Some(stale), None);
         assert_eq!(stale_map.get("version"), Some(&serde_json::json!(9)));
         assert!(stale_map.contains_key("stale_only"));
         assert!(!stale_map.contains_key("newer_only"));
@@ -765,13 +841,142 @@ mod tests {
         // If the newest value has a lower version, max(that, current) wins -
         // an old in-memory version must not be resurrected.
         let downgraded = r#"{"version":1,"interval_ms":1500,"fresh_only":2}"#;
-        let map = merged_for_save(&caller, Some(downgraded));
+        let map = merged_for_save_inner(&caller, Some(downgraded), None);
         assert_eq!(
             map.get("version"),
             Some(&serde_json::json!(tm_viewmodel::SETTINGS_VERSION))
         );
         assert_eq!(map.get("fresh_only"), Some(&serde_json::json!(2)));
         assert!(!map.contains_key("stale_only"));
+    }
+
+    #[test]
+    fn two_tab_sequential_saves_keep_both_interval_and_theme() {
+        // HA-WEBMERGE acceptance: tab A changes interval, tab B changes theme.
+        // Both edits must survive even though each tab re-reads and rewrites the
+        // same single localStorage key.
+        let initial = r#"{"version":2,"interval_ms":1000,"theme":"Dark","unknown_flag":7}"#;
+        let tab_a = parse_document(initial).expect("tab A load");
+        let tab_b = parse_document(initial).expect("tab B load");
+        assert_eq!(tab_a.settings.interval_ms, 1_000);
+        assert_eq!(tab_b.settings.theme, tm_viewmodel::Theme::Dark);
+
+        // Tab A edits only interval.
+        let a_settings = Settings {
+            interval_ms: 2_000,
+            ..tab_a.settings.clone()
+        };
+        let after_a = serde_json::to_string(&merged_for_save_inner(
+            &a_settings,
+            Some(initial),
+            Some(&tab_a.raw),
+        ))
+        .expect("serialize A");
+
+        // Tab B observes the storage event and reloads, so its next diff is
+        // based on the value tab A just wrote.
+        let tab_b_reloaded = parse_document(&after_a).expect("tab B reload");
+        assert_eq!(tab_b_reloaded.settings.interval_ms, 2_000);
+        let b_settings = Settings {
+            theme: tm_viewmodel::Theme::Light,
+            ..tab_b_reloaded.settings.clone()
+        };
+        let after_b = serde_json::to_string(&merged_for_save_inner(
+            &b_settings,
+            Some(&after_a),
+            Some(&tab_b_reloaded.raw),
+        ))
+        .expect("serialize B");
+
+        let final_doc = parse_document(&after_b).expect("final load");
+        assert_eq!(final_doc.settings.interval_ms, 2_000, "tab A edit was lost");
+        assert_eq!(
+            final_doc.settings.theme,
+            tm_viewmodel::Theme::Light,
+            "tab B edit was lost"
+        );
+        assert_eq!(final_doc.settings.version, 2);
+        assert_eq!(
+            final_doc.raw.get("unknown_flag"),
+            Some(&serde_json::json!(7))
+        );
+
+        // Even if the storage event is missed, B's stale interval must not be
+        // written back: the diff only contains the field B actually touched.
+        let b_stale = Settings {
+            theme: tm_viewmodel::Theme::Light,
+            ..tab_b.settings.clone()
+        };
+        let stale_map = merged_for_save_inner(&b_stale, Some(&after_a), Some(&tab_b.raw));
+        assert_eq!(
+            stale_map.get("interval_ms"),
+            Some(&serde_json::json!(2_000))
+        );
+        assert_eq!(stale_map.get("theme"), Some(&serde_json::json!("Light")));
+    }
+
+    #[test]
+    fn diff_merge_keeps_unknown_fields_and_future_version() {
+        // The diff must not rewrite fields this build does not own, and the
+        // version policy from R2-D01 / R2X-D3 must stay byte-for-byte intact.
+        let loaded = r#"{"version":9,"interval_ms":1000,"theme":"Dark","future":{"x":[1,2]}}"#;
+        let document = parse_document(loaded).expect("load future document");
+        let caller = Settings {
+            theme: tm_viewmodel::Theme::Light,
+            ..document.settings.clone()
+        };
+        // Another tab upgraded the version and added a field after our load.
+        let stored = r#"{"version":11,"interval_ms":2000,"theme":"Dark","future":{"x":[1,2]},"newer_only":3}"#;
+        let map = merged_for_save_inner(&caller, Some(stored), Some(&document.raw));
+
+        assert_eq!(map.get("version"), Some(&serde_json::json!(11)));
+        assert_eq!(
+            map.get("interval_ms"),
+            Some(&serde_json::json!(2_000)),
+            "untouched known field must not overwrite the newer stored value"
+        );
+        assert_eq!(map.get("theme"), Some(&serde_json::json!("Light")));
+        assert_eq!(map.get("future"), Some(&serde_json::json!({"x": [1, 2]})));
+        assert_eq!(map.get("newer_only"), Some(&serde_json::json!(3)));
+
+        // Opaque versions are still preserved verbatim by the diff path.
+        let mut document_value = serde_json::json!({"interval_ms": 1000, "future_flag": 1});
+        document_value["version"] = serde_json::json!("9");
+        let opaque = parse_document(&document_value.to_string()).expect("opaque version loads");
+        let opaque_caller = Settings {
+            interval_ms: 2_000,
+            ..opaque.settings.clone()
+        };
+        let opaque_map = merged_for_save_inner(
+            &opaque_caller,
+            Some(&document_value.to_string()),
+            Some(&opaque.raw),
+        );
+        assert_eq!(opaque_map.get("version"), Some(&serde_json::json!("9")));
+        assert_eq!(
+            opaque_map.get("interval_ms"),
+            Some(&serde_json::json!(2_000))
+        );
+        assert_eq!(opaque_map.get("future_flag"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
+    fn merged_for_save_uses_last_loaded_as_the_diff_baseline() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+        let loaded = r#"{"version":2,"interval_ms":1000,"theme":"Dark"}"#;
+        let document = parse_document(loaded).expect("load document");
+        *lock(&LAST_LOADED) = Some(document.raw.clone());
+        let caller = Settings {
+            theme: tm_viewmodel::Theme::Light,
+            ..document.settings.clone()
+        };
+        // The public wrapper must read LAST_LOADED itself: only `theme` changed,
+        // so a newer `interval_ms` written by another tab is kept.
+        let stored = r#"{"version":2,"interval_ms":2000,"theme":"Dark"}"#;
+        let map = merged_for_save(&caller, Some(stored));
+        assert_eq!(map.get("interval_ms"), Some(&serde_json::json!(2_000)));
+        assert_eq!(map.get("theme"), Some(&serde_json::json!("Light")));
+        *lock(&LAST_LOADED) = None;
     }
 
     #[test]
