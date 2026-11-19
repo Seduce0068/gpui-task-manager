@@ -595,6 +595,22 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       aria-sort が AX property として露出せず dir 照合が失敗。期待値と照合方法を
       実 AX に合わせて修正（構造は正しいため warning 解消でよい）。根拠 ac-axverify。
 
+### 優先度: 中 — CLI/データ往復監査 2026-11-20
+
+- [x] `?limit=N` で切り詰めた wire を export すると、`total_process_count=30`
+      が `processes.len()=3` に上書きされ総数が失われる (`export.rs:125`)。
+      envelope の総数を明示保持するか「掲載行数」と明記。根拠 ba-roundtrip
+      （過去 c2-di01 の指摘が未修正）。
+- [x] SSE エンドポイント `/api/v1/stream` が `tm-agent --help` と README に
+      未記載（実装・テスト済み）。args.rs:54 のエンドポイント一覧と
+      README エージェント節へ追記。根拠 bb-cli。
+- [x] GUI が位置引数を黙って無視する一方 tm-agent は終了コード 2 で拒否。
+      `app/src/main.rs:335` の _ アームを agent と揃えるか、許容するなら
+      ヘルプに明記。根拠 bb-cli。
+- [x] GUI の `--version/--help` が他フラグの検証をバイパスし、
+      `--bogusflag --version` が exit 0（tm-agent は exit 2）。
+      全引数検証後に version/help を処理する順序へ統一。根拠 bb-cli。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

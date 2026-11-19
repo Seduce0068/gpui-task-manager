@@ -27,7 +27,7 @@ use gpui::{
     prelude::*, px, rgb, uniform_list,
 };
 use tm_core::demo::DemoProbe;
-use tm_core::export::{snapshot_to_csv, snapshot_to_json};
+use tm_core::export::{snapshot_to_csv_with_total, snapshot_to_json_with_total};
 use tm_core::format;
 use tm_core::port::Section;
 use tm_core::{
@@ -826,9 +826,17 @@ impl TaskManagerApp {
     /// 関数はさらにプライベートな clone へ識別子非依存の redact（tailnet
     /// ドメインなど）を適用する。エージェントのトークンは `AgentClient` 内に
     /// 留まり、ここへは渡らない。
+    /// ライブ由来のスナップショットは wire envelope の `total_process_count`
+    /// を `live_total` に保持しているため、それを export へ渡して `?limit=`
+    /// による切り詰め後もマシン全体の件数を残す。デモでは `None` となり、
+    /// 従来どおり掲載行数を使う。
     fn export_snapshot(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+        let total_process_count = self.live_total.map(|total| total as u64);
         let (content, rows) = match self.dashboard.snapshot() {
-            Some(snapshot) => (export_document(snapshot, format), snapshot.processes.len()),
+            Some(snapshot) => (
+                export_document_with_total(snapshot, format, total_process_count),
+                snapshot.processes.len(),
+            ),
             None => {
                 self.dashboard
                     .set_status("エクスポートできるスナップショットがありません", true);
@@ -4325,12 +4333,31 @@ fn export_identifiers(snapshot: &SystemSnapshot) -> OwnedIdentifiers {
 }
 
 /// Runs the pure `tm_core` exporter for the requested format.
+///
+/// Backward-compatible entry point for callers without a wire envelope (demo
+/// snapshots and existing tests). Live exports use
+/// [`export_document_with_total`] instead.
 fn export_document(snapshot: &SystemSnapshot, format: ExportFormat) -> String {
+    export_document_with_total(snapshot, format, None)
+}
+
+/// Runs the pure exporter while preserving the wire envelope's machine-wide
+/// process count.
+///
+/// `GET /api/v1/snapshot?limit=N` truncates `snapshot.processes` but keeps
+/// `total_process_count`; passing it through here stops an export from
+/// shrinking that count to the number of published rows. `None` keeps the old
+/// row-count fallback for snapshots with no envelope.
+fn export_document_with_total(
+    snapshot: &SystemSnapshot,
+    format: ExportFormat,
+    total_process_count: Option<u64>,
+) -> String {
     let ids = export_identifiers(snapshot);
     let ids = ids.as_redaction_ids();
     match format {
-        ExportFormat::Csv => snapshot_to_csv(snapshot, &ids),
-        ExportFormat::Json => snapshot_to_json(snapshot, &ids),
+        ExportFormat::Csv => snapshot_to_csv_with_total(snapshot, &ids, total_process_count),
+        ExportFormat::Json => snapshot_to_json_with_total(snapshot, &ids, total_process_count),
     }
 }
 
@@ -4720,6 +4747,37 @@ mod tests {
             before,
             "export must not mutate the dashboard snapshot"
         );
+    }
+
+    #[test]
+    fn export_document_preserves_wire_total_process_count() {
+        let snapshot = export_sample_snapshot();
+        let rows = snapshot.processes.len();
+        assert_eq!(rows, 1);
+
+        // Wire envelope: `?limit=` published one row but the machine has 30.
+        let wire = export_document_with_total(&snapshot, ExportFormat::Json, Some(30));
+        let value: serde_json::Value = serde_json::from_str(&wire).expect("valid JSON export");
+        assert_eq!(value["total_process_count"].as_u64(), Some(30), "{wire}");
+        assert_eq!(
+            value["snapshot"]["processes"]
+                .as_array()
+                .map(|processes| processes.len()),
+            Some(rows)
+        );
+
+        // No envelope (demo snapshot): keep the published row count, and the
+        // 2-argument wrapper must stay byte-identical.
+        let local = export_document_with_total(&snapshot, ExportFormat::Json, None);
+        let value: serde_json::Value = serde_json::from_str(&local).expect("valid JSON export");
+        assert_eq!(value["total_process_count"].as_u64(), Some(rows as u64));
+        assert_eq!(export_document(&snapshot, ExportFormat::Json), local);
+
+        // CSV has no envelope field: the fixed 12-column contract is intact.
+        let csv = export_document_with_total(&snapshot, ExportFormat::Csv, Some(30));
+        assert_eq!(csv, export_document(&snapshot, ExportFormat::Csv));
+        assert_eq!(csv.lines().count(), rows + 1, "{csv}");
+        assert_eq!(csv.lines().nth(1).unwrap().matches(',').count(), 11);
     }
 
     #[test]

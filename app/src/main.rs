@@ -49,18 +49,26 @@ fn probe_sample_failure_message(error: &tm_core::ProbeError) -> String {
 }
 
 fn main() {
-    if handle_cli() {
-        return;
-    }
     // `args()` panics on non-UTF-8 arguments; use `args_os()` so a stray byte
     // in argv cannot abort the GUI before it starts (flags are plain ASCII).
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let flags = match parse_gui_flags(&arguments) {
-        Ok(flags) => flags,
-        Err(message) => {
+    // Validate the *whole* argv before honoring `--version` / `--help`, exactly
+    // like `tm-agent::run`: a bad flag next to `--version` is a usage error
+    // (exit 2), never a version banner.
+    let flags = match resolve_cli(&arguments) {
+        CliAction::Version => {
+            println!("{VERSION_LINE}");
+            return;
+        }
+        CliAction::Help => {
+            print!("{}", help_text());
+            return;
+        }
+        CliAction::UsageError(message) => {
             eprintln!("gpui-task-manager: {message}");
             std::process::exit(EXIT_USAGE);
         }
+        CliAction::Run(flags) => flags,
     };
     // `--export` is a headless mode: no GPUI window, no event loop. The pure
     // exporter always redacts, so `--redact` / `TM_REDACT` need not be passed.
@@ -137,6 +145,12 @@ fn main() {
 struct GuiFlags {
     demo: bool,
     redact: bool,
+    /// `--version` / `-V`: validated like every other flag, then handled by
+    /// `resolve_cli` before the GUI starts (same order as `tm-agent`).
+    version: bool,
+    /// `--help` / `-h`: validated like every other flag, then handled by
+    /// `resolve_cli` when no version was requested.
+    help: bool,
     /// Headless export request; `None` keeps the normal GUI startup path.
     export: Option<ExportRequest>,
     /// Accepted and validated for parity with `tm-agent`. This GUI has no
@@ -226,59 +240,40 @@ fn help_text() -> String {
     )
 }
 
-/// `--version` / `--help` short-circuit, like the agent's early exit.
+/// Outcome of validating argv before any GPUI window is created.
 ///
-/// Pure so the precedence can be regression-tested without touching argv.
-/// Version wins over help, matching the previous implementation. Only exact
-/// arguments count: `--version=1` is an unknown flag handled by the strict
-/// parser below, not a version request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EarlyAction {
+/// `tm-agent` parses every argument (including `--version` / `--help`) into its
+/// config and only then checks `version` before `help`. The GUI mirrors that
+/// order: an invalid argument anywhere in argv wins over either terminal flag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CliAction {
+    /// All arguments were valid and `--version` / `-V` was requested.
     Version,
+    /// All arguments were valid and `--help` / `-h` was requested.
     Help,
+    /// Validation failed; the message goes to stderr with exit code 2.
+    UsageError(String),
+    /// Validation passed with no terminal flag: start the GUI.
+    Run(GuiFlags),
 }
 
-fn early_action(args: &[std::ffi::OsString]) -> Option<EarlyAction> {
-    if args
-        .iter()
-        .any(|argument| argument == "--version" || argument == "-V")
-    {
-        Some(EarlyAction::Version)
-    } else if args
-        .iter()
-        .any(|argument| argument == "--help" || argument == "-h")
-    {
-        Some(EarlyAction::Help)
-    } else {
-        None
+fn resolve_cli(arguments: &[std::ffi::OsString]) -> CliAction {
+    match parse_gui_flags(arguments) {
+        Err(message) => CliAction::UsageError(message),
+        Ok(flags) if flags.version => CliAction::Version,
+        Ok(flags) if flags.help => CliAction::Help,
+        Ok(flags) => CliAction::Run(flags),
     }
 }
 
-/// Handles `--version` / `--help` before GPUI starts.
-///
-/// Returns `true` when the process should exit without opening a window.
-fn handle_cli() -> bool {
-    let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    match early_action(&arguments) {
-        Some(EarlyAction::Version) => {
-            println!("{VERSION_LINE}");
-            true
-        }
-        Some(EarlyAction::Help) => {
-            print!("{}", help_text());
-            true
-        }
-        None => false,
-    }
-}
-
-/// Parses `--demo` / `--redact` / `--log-level` without panicking on non-UTF-8
-/// argv.
+/// Parses all GUI flags (including `--version` / `--help`) without panicking on
+/// non-UTF-8 argv.
 ///
 /// A boolean `--flag=value` form is rejected rather than silently ignored:
 /// someone asking for `--demo` by mistake must not end up showing real process
-/// data. The raw argument is never echoed in an error, so a mistaken
-/// `--demo=<secret>` cannot put the secret in stderr.
+/// data. Unknown flags *and* bare positional arguments are both rejected, and
+/// the raw argument is never echoed in an error, so a mistaken `--demo=<secret>`
+/// or a misplaced token cannot put the secret in stderr.
 fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
     let mut flags = GuiFlags::default();
     let mut args = args.iter();
@@ -296,6 +291,14 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
             "--redact" => {
                 reject_inline_value("--redact", inline_value)?;
                 flags.redact = true;
+            }
+            "--version" | "-V" => {
+                reject_inline_value(flag, inline_value)?;
+                flags.version = true;
+            }
+            "--help" | "-h" => {
+                reject_inline_value(flag, inline_value)?;
+                flags.help = true;
             }
             "--log-level" => {
                 let value = match inline_value {
@@ -333,14 +336,11 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
                 });
             }
             _ => {
-                if flag.starts_with('-') {
-                    // A typo such as `--redcat` must not silently disable
-                    // redaction (SECURITY.md public-evidence hygiene). Echo
-                    // only the fact that an unknown flag was seen, never its
-                    // value.
-                    return Err("不明なフラグがあります".to_string());
-                }
-                // Non-flag arguments were ignored before; keep that behaviour.
+                // tm-agent rejects every unrecognised argument — flags and bare
+                // positional values alike — with one fixed message. The raw
+                // value is never echoed: a misplaced token or path must not
+                // reach stderr (SECURITY.md public-evidence hygiene).
+                return Err("不明な引数があります".to_string());
             }
         }
     }
@@ -393,6 +393,11 @@ fn parse_export_format(value: &str) -> Result<ExportFormat, String> {
 /// environment. `tm_core::export` re-applies redaction to a private clone, so
 /// an unredacted snapshot cannot leak local identifiers even when the caller
 /// did not pass `--redact`.
+///
+/// The native probe has no wire envelope, so there is no machine-wide total to
+/// preserve: pass `None` and let the exporter publish the sampled row count, as
+/// before. Only the web shell, which owns the agent's `SnapshotEnvelope`, can
+/// supply an explicit total.
 fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> String {
     let hostname = snapshot.hostname.clone().unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
@@ -405,8 +410,8 @@ fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> St
         hostname: &hostname,
     };
     match format {
-        ExportFormat::Csv => tm_core::export::snapshot_to_csv(snapshot, &ids),
-        ExportFormat::Json => tm_core::export::snapshot_to_json(snapshot, &ids),
+        ExportFormat::Csv => tm_core::export::snapshot_to_csv_with_total(snapshot, &ids, None),
+        ExportFormat::Json => tm_core::export::snapshot_to_json_with_total(snapshot, &ids, None),
     }
 }
 
@@ -581,6 +586,17 @@ mod tests {
         values.iter().map(std::ffi::OsString::from).collect()
     }
 
+    /// Exit status a real process would use for this argv: `Some(0)` for the
+    /// terminal flags, `Some(2)` for any validation failure, `None` when the
+    /// GUI actually starts. Mirrors `main`'s `resolve_cli` dispatch exactly.
+    fn exit_code_for(values: &[&str]) -> Option<i32> {
+        match resolve_cli(&args(values)) {
+            CliAction::Version | CliAction::Help => Some(EXIT_OK),
+            CliAction::UsageError(_) => Some(EXIT_USAGE),
+            CliAction::Run(_) => None,
+        }
+    }
+
     // `use gpui_kit::*` imports GPUI's `test` macro, so name Rust's explicitly.
     #[::core::prelude::v1::test]
     fn version_line_uses_the_shared_binary_space_version_shape() {
@@ -592,23 +608,76 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn early_action_short_circuits_version_before_help() {
+    fn version_wins_over_help_after_full_validation() {
+        // Contract change: version/help are no longer an argv-scanning early
+        // exit. They are parsed flags, so precedence only applies after every
+        // argument has been validated (same order as tm-agent's `run`).
+        assert_eq!(resolve_cli(&args(&["--version"])), CliAction::Version);
+        assert_eq!(resolve_cli(&args(&["-V"])), CliAction::Version);
+        assert_eq!(resolve_cli(&args(&["--help"])), CliAction::Help);
+        assert_eq!(resolve_cli(&args(&["-h"])), CliAction::Help);
         assert_eq!(
-            early_action(&args(&["--version"])),
-            Some(EarlyAction::Version)
+            resolve_cli(&args(&["--help", "--version"])),
+            CliAction::Version
         );
-        assert_eq!(early_action(&args(&["-V"])), Some(EarlyAction::Version));
-        assert_eq!(early_action(&args(&["--help"])), Some(EarlyAction::Help));
-        assert_eq!(early_action(&args(&["-h"])), Some(EarlyAction::Help));
         assert_eq!(
-            early_action(&args(&["--help", "--version"])),
-            Some(EarlyAction::Version)
+            resolve_cli(&args(&["--version", "--help"])),
+            CliAction::Version
         );
-        assert_eq!(early_action(&args(&[])), None);
-        // Inline forms are not the short-circuit flags; the strict parser
-        // rejects them instead of printing a version banner.
-        assert_eq!(early_action(&args(&["--version=1"])), None);
-        assert_eq!(early_action(&args(&["-V=1"])), None);
+        assert!(matches!(resolve_cli(&args(&[])), CliAction::Run(_)));
+        // Inline forms are not terminal flags; the strict parser rejects them
+        // instead of printing a version banner or help text.
+        for inline in ["--version=1", "-V=1", "--help=1", "-h=1"] {
+            assert!(
+                matches!(resolve_cli(&args(&[inline])), CliAction::UsageError(_)),
+                "{inline} must be rejected"
+            );
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn cli_exit_status_matches_agent_validation_order() {
+        // An unknown flag anywhere in argv wins over `--version`: tm-agent
+        // validates the whole argument list before printing a version banner.
+        assert_eq!(
+            exit_code_for(&["--bogusflag", "--version"]),
+            Some(EXIT_USAGE)
+        );
+        assert_eq!(
+            exit_code_for(&["--version", "--bogusflag"]),
+            Some(EXIT_USAGE)
+        );
+        assert_eq!(exit_code_for(&["--bogusflag", "--help"]), Some(EXIT_USAGE));
+        // Positional arguments are rejected the same way (usage error, 2).
+        assert_eq!(exit_code_for(&["some/path"]), Some(EXIT_USAGE));
+        assert_eq!(exit_code_for(&["--demo", "file.csv"]), Some(EXIT_USAGE));
+        // Plain terminal flags still succeed with exit 0.
+        assert_eq!(exit_code_for(&["--version"]), Some(EXIT_OK));
+        assert_eq!(exit_code_for(&["-V"]), Some(EXIT_OK));
+        assert_eq!(exit_code_for(&["--help"]), Some(EXIT_OK));
+        assert_eq!(exit_code_for(&["-h"]), Some(EXIT_OK));
+        // Valid non-terminal argv proceeds to GUI startup (no exit status).
+        assert_eq!(exit_code_for(&[]), None);
+        assert_eq!(exit_code_for(&["--demo", "--redact"]), None);
+        // The positional-looking `--export` path is consumed as a flag value,
+        // not rejected as a stray positional argument.
+        assert_eq!(exit_code_for(&["--export", "csv", "/tmp/out.csv"]), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn unknown_flags_and_positional_args_use_the_fixed_message() {
+        for argv in [
+            vec!["--bogusflag"],
+            vec!["--redcat"],
+            vec!["some/path"],
+            vec!["--demo", "SECRET-POSITIONAL"],
+        ] {
+            let error = parse_gui_flags(&args(&argv)).expect_err(&format!("{argv:?}"));
+            assert!(error.contains("不明な引数があります"), "{error}");
+            // The rejected value must never be echoed to stderr.
+            assert!(!error.contains("SECRET-POSITIONAL"), "{error}");
+            assert!(!error.contains("some/path"), "{error}");
+        }
     }
 
     #[::core::prelude::v1::test]
@@ -642,6 +711,8 @@ mod tests {
         let flags = parse_gui_flags(&args(&[])).expect("empty argv");
         assert!(!flags.demo);
         assert!(!flags.redact);
+        assert!(!flags.version);
+        assert!(!flags.help);
         assert_eq!(flags.log_level, LogLevel::Info);
     }
 
@@ -713,8 +784,8 @@ mod tests {
         assert!(parse_gui_flags(&args(&["--redact=1"])).is_err());
         assert!(parse_gui_flags(&args(&["--redcat"])).is_err());
         assert!(parse_gui_flags(&args(&["--log-level"])).is_err());
-        // Non-flag positional arguments remain ignored as before.
-        assert!(parse_gui_flags(&args(&["some/path"])).is_ok());
+        // Positional arguments are no longer ignored: tm-agent rejects them.
+        assert!(parse_gui_flags(&args(&["some/path"])).is_err());
     }
 
     #[::core::prelude::v1::test]
@@ -837,6 +908,32 @@ mod tests {
                 assert!(!output.contains(&user), "{format:?} leaked user: {output}");
             }
         }
+    }
+
+    #[::core::prelude::v1::test]
+    fn render_export_publishes_sampled_rows_without_an_envelope_total() {
+        // The CLI samples a local probe: there is no `?limit=` envelope, so
+        // `total_process_count` must stay equal to the published row count.
+        let snapshot = tm_core::demo::demo_snapshot(0);
+        let rows = snapshot.processes.len();
+        assert!(rows > 0, "demo probe must publish at least one row");
+
+        let json = render_export(&snapshot, ExportFormat::Json);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON export");
+        assert_eq!(
+            value["total_process_count"].as_u64(),
+            Some(rows as u64),
+            "{json}"
+        );
+        assert_eq!(
+            value["snapshot"]["processes"]
+                .as_array()
+                .map(|processes| processes.len()),
+            Some(rows)
+        );
+
+        let csv = render_export(&snapshot, ExportFormat::Csv);
+        assert_eq!(csv.lines().count(), rows + 1, "{csv}");
     }
 
     #[::core::prelude::v1::test]
