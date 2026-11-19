@@ -321,6 +321,159 @@ def parse_proof(proof: str | None) -> dict:
     return fields
 
 
+# --- DOM proof ↔ AX ロールの対応（AA-AXMIRROR のミラー検証用） ---------------
+# proof の rows / sort / dir / selected_pid に呼応する AX ロール期待値の純粋テーブル。
+# 値の意味:
+#   int             ... 固定出現数
+#   str             ... proof の同名キーを十進整数として読む（"rows" → proof["rows"]）
+#                       "key+N" は読んだ値に N を加える（"rows+1" → proof["rows"] + 1）
+#   tuple[int, int] ... 許容範囲（ヘルプオーバーレイの開閉で 0/1 になる dialog）
+EXPECTED_AX_ROLES: dict[str, int | str | tuple[int, int]] = {
+    "table": 1,           # プロセス表 (Role::Table)
+    "columnheader": 8,    # 列見出し 8 列（ソート可能 7 列 + コマンド列）
+    # ヘッダ行（shell.rs の a11y_mirror_header_html が出す <div role="row">）も
+    # CDP の AX ツリーでは row に数えられる。proof["rows"] はデータ行だけを数える
+    # ため +1 して照合する。ミラー側を rowgroup 直下の columnheader のみにして
+    # row = proof["rows"] へ揃える案もあるが、現行の rowgroup > row > columnheader
+    # は ARIA 構造として正しく、ミラー（Rust 側）は担当外なので期待値を実構造へ
+    # 合わせる。
+    "row": "rows+1",      # データ行 proof["rows"] + ヘッダ行 1
+    "dialog": (0, 1),     # ヘルプオーバーレイ (Role::Dialog) の有無
+}
+# proof フィールドが AX ノードのどの性質へ写るかの対応表（状態の突き合わせ用）。
+PROOF_AX_STATE_FIELDS: dict[str, str] = {
+    "rows": "row",
+    "sort": "columnheader",
+    "dir": "columnheader",
+    "selected_pid": "row",
+}
+# DOM ミラー実装後に True へ反転すると AX 不一致を failure に昇格する。
+# ミラー実装済み。期待値（row = rows + ヘッダ行）と照合方法（dir は名前の
+# 昇順/降順）の修正後、self-check と実 CDP（demo: rows=30 に対して row=31、
+# dir=asc が名前の「昇順」で 1 件一致）の両方で accessibility.warnings = 0 件を
+# 確認した。これは昇格の判断材料だが、AX 検証の未カバー項目が残るため False 維持。
+PROMOTE_AX_TO_FAILURE = False
+
+
+def expected_ax_role_counts(proof: dict[str, str]) -> dict[str, tuple[int, int]]:
+    """EXPECTED_AX_ROLES を proof から解決し、ロールごとの許容範囲を返す純粋関数。"""
+    resolved: dict[str, tuple[int, int]] = {}
+    for role, spec in EXPECTED_AX_ROLES.items():
+        if isinstance(spec, int):
+            resolved[role] = (spec, spec)
+        elif isinstance(spec, str):
+            # "rows" は proof["rows"] そのまま、"rows+1" はヘッダ行の分だけ +1。
+            # proof にキーが無い場合もヘッダ行は存在するので 1 件を期待する。
+            key, sep, offset = spec.partition("+")
+            try:
+                value = max(int(proof.get(key, "0")), 0)
+                if sep:
+                    value += int(offset)
+            except (TypeError, ValueError):
+                value = 1 if sep else 0
+            resolved[role] = (max(value, 0), max(value, 0))
+        else:
+            low, high = spec
+            resolved[role] = (low, high)
+    return resolved
+
+
+def ax_role(node: dict) -> str | None:
+    """CDP の AXNode から role 文字列を取り出す（ignored ノードは除外）。"""
+    if not isinstance(node, dict) or node.get("ignored"):
+        return None
+    role = node.get("role")
+    value = role.get("value") if isinstance(role, dict) else role
+    return value if isinstance(value, str) and value else None
+
+
+def count_ax_roles(nodes: list[dict]) -> dict[str, int]:
+    """Accessibility.getFullAXTree の nodes から role 出現数を集計する純粋関数。"""
+    counts: dict[str, int] = {}
+    for node in nodes or []:
+        role = ax_role(node)
+        if role:
+            counts[role] = counts.get(role, 0) + 1
+    return counts
+
+
+def ax_node_text(node: dict) -> str:
+    name = node.get("name")
+    if isinstance(name, dict):
+        return str(name.get("value") or "")
+    return str(name or "")
+
+
+def ax_property(node: dict, key: str):
+    for prop in node.get("properties") or []:
+        if isinstance(prop, dict) and prop.get("name") == key:
+            value = prop.get("value")
+            return value.get("value") if isinstance(value, dict) else value
+    return None
+
+
+def verify_ax_roles(ax_nodes: list[dict], proof: dict[str, str]) -> tuple[list[str], dict]:
+    """AX ロール出現数と DOM proof の整合を検証する純粋関数。
+
+    戻り値は (warnings, detail)。呼び出し側で failures ではなく warnings へ積む
+    （ミラー実装後の昇格方法は PROMOTE_AX_TO_FAILURE のコメントを参照）。
+    """
+    counts = count_ax_roles(ax_nodes)
+    expected = expected_ax_role_counts(proof)
+    by_role: dict[str, list[dict]] = {}
+    for node in ax_nodes or []:
+        role = ax_role(node)
+        if role:
+            by_role.setdefault(role, []).append(node)
+
+    warnings: list[str] = []
+    detail: dict = {"role_counts": {}, "state": {}, "proof_fields": PROOF_AX_STATE_FIELDS}
+    for role, (low, high) in expected.items():
+        actual = counts.get(role, 0)
+        detail["role_counts"][role] = {"actual": actual, "expected": [low, high]}
+        if not low <= actual <= high:
+            warnings.append(
+                f"AX ロール {role} の出現数 {actual} が期待範囲 [{low}, {high}] 外"
+                "（DOM proof と AX ツリーが不一致: 偽陽性の可能性）"
+            )
+
+    rows = by_role.get(PROOF_AX_STATE_FIELDS["rows"], [])
+    selected_pid = proof.get("selected_pid", "-")
+    if selected_pid not in ("", "-"):
+        matched = [
+            row for row in rows
+            if ax_property(row, "selected") in (True, "true")
+            or selected_pid in ax_node_text(row)
+        ]
+        detail["state"]["selected_pid"] = {"value": selected_pid, "matched_rows": len(matched)}
+        if not matched:
+            warnings.append(f"AX に selected_pid={selected_pid} に対応する選択行がない")
+
+    headers = by_role.get(PROOF_AX_STATE_FIELDS["sort"], [])
+    direction = proof.get("dir")
+    if direction in ("asc", "desc"):
+        # ミラーは active な columnheader に aria-sort と「現在 昇順/降順」を
+        # 付ける（shell.rs: a11y_mirror_header_html）。しかし CDP の AX ツリーは
+        # aria-sort を sort property として露出しないため、property ではなく
+        # 名前テキストの 昇順/降順 で照合する。
+        token = {"asc": "昇順", "desc": "降順"}[direction]
+        matched = [header for header in headers if token in ax_node_text(header)]
+        detail["state"]["dir"] = {
+            "value": direction, "name_token": token, "matched_headers": len(matched),
+        }
+        if not matched:
+            warnings.append(f"AX に dir={direction}（名前の {token}）のソート列見出しがない")
+
+    sort_label = proof.get("sort")
+    if sort_label:
+        matched = [header for header in headers if sort_label in ax_node_text(header)]
+        detail["state"]["sort"] = {"value": sort_label, "matched_headers": len(matched)}
+        if not matched:
+            warnings.append(f"AX に sort={sort_label} の列見出しがない")
+
+    return warnings, detail
+
+
 def collect_network(events: list[dict]) -> dict:
     """スナップショット要求の URL・メソッド・Authorization ヘッダ有無を集計する。
 
@@ -458,6 +611,92 @@ def self_check() -> int:
     check(parsed.get("dir") == "desc", "末尾のフィールドが解析できる")
     check(parse_proof(None) == {} and parse_proof("") == {}, "空のフックは空辞書")
 
+    # DOM proof ↔ AX ロール: オフラインではテーブル構造と純粋関数のみ検証する。
+    check(
+        set(EXPECTED_AX_ROLES) == {"table", "columnheader", "row", "dialog"},
+        "AX ロール期待値テーブルのキーが揃っている",
+    )
+    check(
+        EXPECTED_AX_ROLES["table"] == 1
+        and isinstance(EXPECTED_AX_ROLES["columnheader"], int),
+        "固定ロール期待値が整数で定義されている",
+    )
+    check(
+        EXPECTED_AX_ROLES["row"] == "rows+1",
+        "row が proof の rows + ヘッダ行 1 を参照する",
+    )
+    low, high = EXPECTED_AX_ROLES["dialog"]
+    check(
+        isinstance(low, int) and isinstance(high, int) and 0 <= low <= high,
+        "dialog が 0/1 の範囲で定義されている",
+    )
+    check(
+        set(PROOF_AX_STATE_FIELDS) == {"rows", "sort", "dir", "selected_pid"},
+        "proof の 4 フィールドが AX 状態対応表に含まれる",
+    )
+    resolved = expected_ax_role_counts({"rows": "42"})
+    check(
+        resolved["row"] == (43, 43)
+        and resolved["table"] == (1, 1)
+        and resolved["dialog"] == (0, 1),
+        "proof から AX 期待値が解決できる（row はヘッダ行 +1）",
+    )
+    check(
+        expected_ax_role_counts({})["row"] == (1, 1),
+        "rows 欠損時もヘッダ行 1 件を期待する",
+    )
+
+    def synthetic_ax() -> list[dict]:
+        # 実 CDP と同じく aria-sort の property は付けず、名前の「現在 降順」だけ
+        # で dir を照合できることを確認する（ヘッダ行も row に含まれる）。
+        headers = [
+            {
+                "role": {"value": "columnheader"},
+                "name": {
+                    "value": (
+                        "名前 列で並び替え、現在 降順" if i == 0 else f"列{i}"
+                    )
+                },
+            }
+            for i in range(EXPECTED_AX_ROLES["columnheader"])
+        ]
+        return (
+            [{"role": {"value": "table"}}]
+            + [{"role": {"value": "row"}, "name": {"value": "列見出し行"}}]
+            + headers
+            + [
+                {
+                    "role": {"value": "row"},
+                    "name": {"value": "PID 2500"},
+                    "properties": [{"name": "selected", "value": {"value": True}}],
+                },
+                {"role": {"value": "generic"}, "ignored": True},
+                {"ignored": False},
+            ]
+        )
+
+    synthetic = synthetic_ax()
+    check(
+        count_ax_roles(synthetic) == {"table": 1, "columnheader": 8, "row": 2},
+        "AX ノードから role 出現数を集計し ignored を除外する（ヘッダ行含む）",
+    )
+    consistent_proof = {
+        "rows": "1", "sort": "名前", "dir": "desc", "selected_pid": "2500",
+    }
+    ok_warnings, ok_detail = verify_ax_roles(synthetic, consistent_proof)
+    check(ok_warnings == [], "AX と proof が一致すれば警告が出ない")
+    check(ok_detail["state"]["selected_pid"]["matched_rows"] == 1, "選択行が突き合わされる")
+    check(
+        ok_detail["state"]["dir"]["matched_headers"] == 1
+        and ok_detail["state"]["dir"]["name_token"] == "降順",
+        "dir を AX property ではなく名前の昇順/降順で照合する",
+    )
+    zero_warnings, zero_detail = verify_ax_roles([], consistent_proof)
+    check(
+        len(zero_warnings) >= 4 and zero_detail["role_counts"]["row"]["actual"] == 0,
+        "AX ノード 0 件（ミラー未実装）は警告として検出される",
+    )
+
     # 列座標: 全列が正の座標で、左から右へ単調増加すること。
     centers = column_centers(1440.0)
     expected = ("name", "cpu", "memory", "pid", "user", "status", "threads")
@@ -586,6 +825,7 @@ async def main() -> int:
     await cdp.call("Runtime.enable")
     await cdp.call("Log.enable")
     await cdp.call("Network.enable")
+    await cdp.call("Accessibility.enable")
 
     evidence: dict = {
         "label": args.label,
@@ -599,6 +839,7 @@ async def main() -> int:
         "steps": [],
     }
     failures: list[str] = []
+    warnings: list[str] = []
 
     def check(condition: bool, message: str) -> None:
         if not condition:
@@ -684,6 +925,7 @@ async def main() -> int:
         evidence["panic_or_errors"] = panic_messages
         check(not panic_messages, "コンソールに panic / JS 例外はない")
         evidence["failures"] = failures
+        evidence["warnings"] = warnings
         evidence["passed"] = not failures
         evidence["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         evidence_path = evidence_dir / f"{args.prefix}-evidence-{args.label}.json"
@@ -695,7 +937,12 @@ async def main() -> int:
         for message in console:
             print(f"[{message['source']}/{message['type']}] {message['text']}")
         print("---- checks ----")
-        print(json.dumps({"failures": failures, "passed": not failures}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"failures": failures, "warnings": warnings, "passed": not failures},
+                ensure_ascii=False,
+            )
+        )
         return 0 if not failures else 1
 
     # 1 秒タイマーによる更新
@@ -812,10 +1059,41 @@ async def main() -> int:
     await asyncio.sleep(1.2)
     await cdp.drain()
     env = await cdp.evaluate(PROOF_EXPR)
+    proof_final = parse_proof(env.get("proof") if isinstance(env, dict) else None)
     evidence["steps"].append(
-        {"step": "final", "proof": parse_proof(env.get("proof")), "title": env.get("title")}
+        {"step": "final", "proof": proof_final, "title": env.get("title")}
     )
     await screenshot(cdp, out_dir / f"{args.prefix}-08-final-{args.label}.png")
+
+    # DOM proof ↔ AX ツリーの突き合わせ（偽陽性検出）。
+    # AA-AXMIRROR の DOM ミラー実装前は canvas 内の AccessKit ノードがブラウザ AX
+    # ツリーへ届かず columnheader/row/dialog が 0 件になる。現状はその既知の不一致を
+    # warnings にだけ記録し、failures / passed には影響させない。
+    # ミラー実装後に PROMOTE_AX_TO_FAILURE = True へ反転すると、
+    # 同じ警告が failures へ入り CDP 検証全体が失敗する（エラーへの昇格手順）。
+    try:
+        ax_tree = await cdp.call("Accessibility.getFullAXTree")
+        ax_nodes = ax_tree.get("nodes", []) if isinstance(ax_tree, dict) else []
+    except RuntimeError as error:
+        # AX ドメインが使えない環境でも DOM proof 検証そのものは通す（警告のみ）。
+        ax_nodes = []
+        ax_warnings = [f"Accessibility.getFullAXTree が失敗し AX 検証ができない: {error}"]
+        ax_detail = {"role_counts": {}, "state": {}, "error": repr(error)}
+    else:
+        ax_warnings, ax_detail = verify_ax_roles(ax_nodes, proof_final)
+    evidence["accessibility"] = {
+        "node_count": len(ax_nodes),
+        "role_counts": ax_detail["role_counts"],
+        "state": ax_detail["state"],
+        "warnings": ax_warnings,
+        "enforcement": "failure" if PROMOTE_AX_TO_FAILURE else "warning",
+    }
+    if PROMOTE_AX_TO_FAILURE:
+        failures.extend(ax_warnings)
+    else:
+        warnings.extend(ax_warnings)
+        for message in ax_warnings:
+            print(f"  WARN: {message}")
 
     # ネットワーク（トークンが URL に載らず Authorization ヘッダで送られていること）
     network = collect_network(cdp.events)
@@ -862,6 +1140,7 @@ async def main() -> int:
     check(not panic_messages, "コンソールに panic / JS 例外がない")
 
     evidence["failures"] = failures
+    evidence["warnings"] = warnings
     evidence["passed"] = not failures
     evidence["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -874,7 +1153,12 @@ async def main() -> int:
     for message in console:
         print(f"[{message['source']}/{message['type']}] {message['text']}")
     print("---- checks ----")
-    print(json.dumps({"failures": failures, "passed": not failures}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"failures": failures, "warnings": warnings, "passed": not failures},
+            ensure_ascii=False,
+        )
+    )
     return 0 if not failures else 1
 
 

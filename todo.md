@@ -559,6 +559,42 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       MAX_STREAMS=2 の契約は維持。回帰テスト
       `stream_slot_is_released_soon_after_client_disconnect` を追加。
 
+### 優先度: 高 — 実AXツリー監査 2026-11-20
+
+- [x] Web の AccessKit セマンティクスがブラウザ AX ツリーに到達しない。
+      `Accessibility.getFullAXTree` で columnheader/row/dialog が 0 件、
+      フィルタは無名 textbox、使用率の「高/中/低」と温度状態も不在。
+      canvas 内の GPUI AccessKit ノードを DOM ミラーへ公開するか、
+      主要状態（テーブル見出し・行・選択・ヘルプ・フィルタ値）を
+      role/aria 付き DOM として生成する。根拠 za-ax。
+- [x] ヘルプ表示時に DOM の activeElement が隠し IME textarea のままで
+      「閉じる」へフォーカスが移らない。ヘルプを role=dialog +
+      aria-modal 付き DOM ミラーにし、表示時に閉じるボタンへ
+      DOM フォーカスを移す（閉じたら復帰）。根拠 za-ax。
+- [x] DOM proof と AX ツリーの状態矛盾（rows=30 / dir=desc / selected_pid=2500
+      なのに AX に該当ノードなし）。CDP 検証に proof↔AX 一致チェックを追加
+      し、偽陽性を防ぐ。根拠 za-ax。
+
+### メモ — エラー回復シナリオ検証 2026-11-20
+
+- SIGTERM 後 fallback 保持、同一 0600 トークンでの自動再接続（5s クールダウン）、
+  トークン変更時の 401 案内、0644 権限での起動拒否、トークン非露出、
+  ポート cleanup を実動で確認。修正項目なし（z2-recovery）。
+
+### 優先度: 高 — 実AX再検証 2026-11-20
+
+- [x] ヘルプ表示中に F1 / Escape / 「閉じる」クリックでダイアログが閉じない。
+      DOM ミラーの閉じるボタンへフォーカスを移した結果、GPUI のキーイベント先
+      （隠し IME textarea）へ入力が届かない。DOM ミラーにも閉鎖ハンドラを付け、
+      GPUI 側へ Command を送る経路を確保。根拠 ac-axverify。
+- [x] 絞り込みへ文字列を入力すると平文が AX textbox value / StaticText と
+      DOM textarea.value / data-gpui-proof の filter,ime_field に残る。
+      ミラーの aria-valuetext は伏せ字だが入力表面が未マスク。
+      トークンが貼り付けられた場合の漏洩経路を塞ぐ。根拠 ac-axverify。
+- [x] CDP proof↔AX warning 2 件: row=31（ヘッダ行 role=row を含む）vs proof 30、
+      aria-sort が AX property として露出せず dir 照合が失敗。期待値と照合方法を
+      実 AX に合わせて修正（構造は正しいため warning 解消でよい）。根拠 ac-axverify。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

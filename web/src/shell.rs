@@ -31,13 +31,15 @@ use tm_core::export::{snapshot_to_csv, snapshot_to_json};
 use tm_core::format;
 use tm_core::port::Section;
 use tm_core::{
-    PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
-    SystemSnapshot,
+    PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SortSpec,
+    SystemProbe, SystemSnapshot,
 };
 use tm_viewmodel::{
     Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FILTER_PRESETS, FilterInput,
     FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
 };
+#[cfg(target_family = "wasm")]
+use wasm_bindgen::JsCast;
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_time::Instant;
@@ -48,7 +50,8 @@ use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, filter_preset_chip, h_flex, kv,
     process_sparkline, process_sparkline_value_text, section_title, sparkline, temperature_gauge,
-    temperature_severity, trend_badge, usage_severity, usage_value_text, v_flex,
+    temperature_severity, temperature_value_text, trend_badge, usage_severity, usage_value_text,
+    v_flex,
 };
 
 const FONT_SANS: &str = "IBM Plex Sans";
@@ -82,6 +85,19 @@ const FILTER_BOX_WIDTH: f32 = 340.0;
 /// itself carries no semantics, so this is the browser-side `aria-live`
 /// counterpart of the AccessKit status node in `status_bar()`.
 const A11Y_LIVE_DOM_ID: &str = "tm-web-a11y-live";
+
+/// キャンバス内の AccessKit 構造をブラウザ AX へ橋渡しする非表示ミラーのコンテナ。
+/// `aria-hidden` は付けない（付けると `getFullAXTree` から消える）。
+const A11Y_MIRROR_DOM_ID: &str = "tm-web-a11y-mirror";
+/// テーブル＋指標の領域。サンプルごとに差し替えてもヘルプの DOM は触らない。
+const A11Y_MIRROR_DATA_DOM_ID: &str = "tm-web-a11y-data";
+/// ヘルプダイアログの領域。開閉時だけ更新し、「閉じる」のフォーカスを保持する。
+const A11Y_MIRROR_HELP_DOM_ID: &str = "tm-web-a11y-help";
+/// ミラー内のヘルプ「閉じる」ボタン。DOM フォーカスの移動先。
+const A11Y_HELP_CLOSE_DOM_ID: &str = "tm-web-a11y-help-close";
+/// 視覚的に隠すが AX ツリーには残すスタイル。live リージョンとミラーで共用。
+const A11Y_HIDDEN_STYLE: &str =
+    "position:fixed;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap";
 
 /// 詳細パネルの選択プロセス CPU スパークラインの ElementId。`process_sparkline`
 /// はフレーム内で一意な id を要求するため、固定値をここで共有する。
@@ -360,6 +376,11 @@ pub struct TaskManagerApp {
     help_close_focus: FocusHandle,
     /// 直前フレームのヘルプ表示状態。表示遷移のときだけフォーカスを移動する。
     last_help_shown: bool,
+    /// ヘルプを開く前に DOM でフォーカスされていた要素。閉じたときに復帰する。
+    /// GPUI 側の `help_close_focus` はキー入力の宛先だけを担い、DOM の
+    /// activeElement 復帰はこの 1 箇所でだけ行う（二重管理を避ける）。
+    #[cfg(target_family = "wasm")]
+    dom_help_previous_focus: Option<web_sys::HtmlElement>,
 }
 
 impl TaskManagerApp {
@@ -420,6 +441,8 @@ impl TaskManagerApp {
             show_help: false,
             help_close_focus: cx.focus_handle(),
             last_help_shown: false,
+            #[cfg(target_family = "wasm")]
+            dom_help_previous_focus: None,
         };
         app.restore_settings();
         app.spawn_sampler(cx);
@@ -920,8 +943,14 @@ impl TaskManagerApp {
         // V2-HELP のヘルプオーバーレイが最優先。F1 はトグル、Esc は表示中だけ
         // 閉じる（表示中の Esc が絞り込みを消さない）。修飾キー付きは IME /
         // ショートカット手势としてオーバーレイへ渡さない。
-        if unmodified && let Some(next_shown) = help_overlay_key_state(self.show_help, &key) {
+        if unmodified
+            && let Some(route) = HelpCloseRoute::from_key(&key)
+            && let Some(next_shown) = help_close_state(self.show_help, route)
+        {
             self.show_help = next_shown;
+            // ヘルプの開閉はコマンド扱い。ここでミラーを更新してから notify し、
+            // render の表示遷移で DOM の「閉じる」へフォーカスを移せるようにする。
+            self.sync_a11y_dom_now();
             cx.stop_propagation();
             cx.notify();
             return;
@@ -1011,6 +1040,7 @@ impl TaskManagerApp {
                 // 通常は V2 の help_overlay_key_state が先に F1 を消費する。
                 // ここは修飾キー因素でオーバーレイへ届かなかった場合の保険。
                 self.show_help = true;
+                self.sync_a11y_dom_now();
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -1183,6 +1213,9 @@ impl TaskManagerApp {
                                         .hover(|style| style.bg(rgb(palette().surface)))
                                         .on_click(cx.listener(|this, _event, window, cx| {
                                             this.show_help = false;
+                                            // ミラーからダイアログを除いてから render の
+                                            // 表示遷移で DOM フォーカスを復帰させる。
+                                            this.sync_a11y_dom_now();
                                             this.focus_handle.focus(window, cx);
                                             cx.notify();
                                         }))
@@ -1468,6 +1501,8 @@ impl TaskManagerApp {
                             .hover(|style| style.bg(rgb(palette().surface)))
                             .on_click(cx.listener(|this, _event, window, cx| {
                                 this.show_help = true;
+                                // F1 と同じくコマンド時にミラーを更新する（毎フレームではない）。
+                                this.sync_a11y_dom_now();
                                 this.focus_handle.focus(window, cx);
                                 cx.notify();
                             }))
@@ -2921,11 +2956,11 @@ impl TaskManagerApp {
         // `filter` / `ime_field` はユーザー入力由来。`key=value;` の区切り
         // （';' は従来どおり ',' へ）だけでなく '=' と改行も落として、
         // フィールド境界の注入を防ぐ。
-        let filter = proof_field_text(self.dashboard.filter_text());
+        let filter = proof_user_text(self.dashboard.filter_text());
         // IME 検証用: 入力欄の表示テキスト（変換中を含む）と変換中フラグ。
         // composition 中は `filter` が変わらず `ime_composing=1` になることを
-        // CDP スクリプトが確認する。
-        let ime_field = proof_field_text(self.filter_input.text());
+        // CDP スクリプトが確認する。両値ともトークン様文字列は証跡へ残さない。
+        let ime_field = proof_user_text(self.filter_input.text());
         let ime_composing = if self.filter_input.is_composing() {
             1
         } else {
@@ -2995,51 +3030,134 @@ impl TaskManagerApp {
         self.sync_a11y_dom(&document);
     }
 
-    /// Browser-side `aria-live` mirror for the canvas-only UI.
+    /// Browser-side `aria-live` mirror plus a hidden structural mirror for the
+    /// canvas-only UI.
     ///
     /// The canvas carries no DOM semantics, so a visually hidden
-    /// `role="status" aria-live="polite"` node announces status changes. This
-    /// is additive: `body[data-gpui-proof]` is written just before this call
-    /// and keeps its exact key=value; format. Only already-redacted status
-    /// text is copied here — never the agent token.
+    /// `role="status" aria-live="polite"` node announces status changes while a
+    /// second hidden subtree exposes the table, the help dialog and the metric
+    /// states to `Accessibility.getFullAXTree`. Both are additive: the
+    /// `body[data-gpui-proof]` string written just before this call is
+    /// untouched, including its trailing `sse=` field. Only already-redacted
+    /// display values are copied, and no `aria-hidden` attribute is ever set.
+    ///
+    /// Called only from ingest / command paths (through `sync_proof_dom` or
+    /// `sync_a11y_dom_now`), never from `render`.
     #[cfg(target_family = "wasm")]
     fn sync_a11y_dom(&self, document: &web_sys::Document) {
         let Some(body) = document.body() else {
             return;
         };
-        let element = match document.get_element_by_id(A11Y_LIVE_DOM_ID) {
-            Some(element) => element,
-            None => {
-                let Ok(element) = document.create_element("div") else {
-                    return;
-                };
-                if element.set_attribute("id", A11Y_LIVE_DOM_ID).is_err() {
-                    return;
-                }
-                let _ = element.set_attribute("role", "status");
-                let _ = element.set_attribute("aria-live", "polite");
-                let _ = element.set_attribute("aria-atomic", "true");
-                // Visually hidden but still in the accessibility tree.
-                let _ = element.set_attribute(
-                    "style",
-                    "position:fixed;width:1px;height:1px;overflow:hidden;\
-                     clip:rect(0 0 0 0);white-space:nowrap",
-                );
-                if body.append_child(&element).is_err() {
-                    return;
-                }
-                element
-            }
+        let Some(live) = hidden_dom_node(document, &body, A11Y_LIVE_DOM_ID) else {
+            return;
         };
+        if live.get_attribute("role").as_deref() != Some("status") {
+            let _ = live.set_attribute("role", "status");
+            let _ = live.set_attribute("aria-live", "polite");
+            let _ = live.set_attribute("aria-atomic", "true");
+        }
         let text = a11y_live_text(
             self.dashboard.status(),
             is_stale(matches!(&self.source, DataSource::Live(_)), self.stale),
         );
         // Avoid re-announcing an unchanged message on every sample.
-        if element.text_content().as_deref() != Some(text.as_str()) {
-            element.set_text_content(Some(&text));
+        if live.text_content().as_deref() != Some(text.as_str()) {
+            live.set_text_content(Some(&text));
+        }
+
+        let Some(mirror) = hidden_dom_node(document, &body, A11Y_MIRROR_DOM_ID) else {
+            return;
+        };
+        // データ領域とヘルプ領域は分けて更新する。ヘルプ表示中にサンプルが
+        // 入ってもダイアログ全体を差し替えず、「閉じる」のフォーカスを保つ。
+        let Some(data) = hidden_child_node(document, &mirror, A11Y_MIRROR_DATA_DOM_ID) else {
+            return;
+        };
+        let data_html = a11y_mirror_data_html(
+            self.dashboard.snapshot(),
+            self.dashboard.visible_indices(),
+            self.dashboard.selected_key(),
+            self.dashboard.sort_spec(),
+        );
+        if data.inner_html() != data_html {
+            data.set_inner_html(&data_html);
+        }
+        let Some(help) = hidden_child_node(document, &mirror, A11Y_MIRROR_HELP_DOM_ID) else {
+            return;
+        };
+        // ミラーの「閉じる」/ F1 / Esc を GPUI のヘルプトグルへ橋渡しする。
+        // リスナは安定したコンテナに一度だけ張られ、内_html の差し替えで失われない。
+        ensure_help_dom_bridge();
+        let help_html = a11y_mirror_help_html(self.show_help);
+        if help.inner_html() != help_html {
+            help.set_inner_html(&help_html);
+        }
+        self.sync_filter_textarea_a11y(document);
+    }
+
+    /// A11y-only refresh for command paths that must not rewrite the DOM proof
+    /// (F1 / Esc / help buttons). Native builds have no DOM.
+    #[cfg(target_family = "wasm")]
+    fn sync_a11y_dom_now(&self) {
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            self.sync_a11y_dom(&document);
         }
     }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sync_a11y_dom_now(&self) {}
+
+    /// Names the hidden IME mirror as the filter field and publishes a masked
+    /// value. The plaintext (which may be an agent token pasted by the user)
+    /// is never written to the DOM — only bullet characters and a length.
+    #[cfg(target_family = "wasm")]
+    fn sync_filter_textarea_a11y(&self, document: &web_sys::Document) {
+        // gpui-pre-web の IME ミラーは id を持たない唯一の <textarea>。
+        let Ok(Some(textarea)) = document.query_selector("textarea") else {
+            return;
+        };
+        if textarea.get_attribute("aria-label").as_deref() != Some("プロセスの絞り込み") {
+            let _ = textarea.set_attribute("aria-label", "プロセスの絞り込み");
+        }
+        let value = a11y_filter_value_text(self.filter_input.text());
+        if textarea.get_attribute("aria-valuetext").as_deref() != Some(value.as_str()) {
+            let _ = textarea.set_attribute("aria-valuetext", &value);
+        }
+    }
+
+    /// Moves the *DOM* focus for a help transition. Called once from the same
+    /// transition branch that drives GPUI's `help_close_focus`, so the previous
+    /// active element is captured/restored exactly once per open/close cycle.
+    #[cfg(target_family = "wasm")]
+    fn sync_dom_help_focus(&mut self, change: DomHelpFocus) {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        match change {
+            DomHelpFocus::Enter => {
+                self.dom_help_previous_focus = document
+                    .active_element()
+                    .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok());
+                let Some(close) = document.get_element_by_id(A11Y_HELP_CLOSE_DOM_ID) else {
+                    return;
+                };
+                if let Ok(close) = close.dyn_into::<web_sys::HtmlElement>() {
+                    // tabindex=-1: GPUI が Tab の宛先を管理したまま、AT には
+                    // ダイアログの「閉じる」がフォーカスされているように見える。
+                    let _ = close.focus();
+                }
+            }
+            DomHelpFocus::Leave => {
+                if let Some(previous) = self.dom_help_previous_focus.take() {
+                    let _ = previous.focus();
+                }
+            }
+            DomHelpFocus::Unchanged => {}
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sync_dom_help_focus(&mut self, _change: DomHelpFocus) {}
 
     /// Native builds have no DOM; the hook is a no-op there.
     #[cfg(not(target_family = "wasm"))]
@@ -3180,12 +3298,16 @@ impl Render for TaskManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // ヘルプの表示遷移のときだけフォーカスを移動する。キー・ボタンのどちらで
         // 開いても同じ経路を通り、閉じたらルートへ戻って行操作を再開できる。
-        if self.show_help != self.last_help_shown {
+        // GPUI の `help_close_focus` と DOM の activeElement は同じ遷移判定
+        // （`dom_help_focus`）から一度ずつ更新するので、復帰処理が二重化しない。
+        let help_focus = dom_help_focus(self.last_help_shown, self.show_help);
+        if help_focus != DomHelpFocus::Unchanged {
             if self.show_help {
                 self.help_close_focus.focus(window, cx);
             } else {
                 self.focus_handle.focus(window, cx);
             }
+            self.sync_dom_help_focus(help_focus);
             self.last_help_shown = self.show_help;
         }
         let focused = self.focus_handle.is_focused(window);
@@ -3264,6 +3386,50 @@ fn help_overlay_key_state(show_help: bool, key: &str) -> Option<bool> {
         "f1" => Some(!show_help),
         "escape" if show_help => Some(false),
         _ => None,
+    }
+}
+
+/// ヘルプを閉じる 3 経路（F1 / Escape / DOM「閉じる」）の純粋な表現。
+///
+/// GPUI 側のキー経路と、ミラーの DOM ブリッジ経路で同じ遷移関数を共有し、
+/// 「閉じる」ボタンがトグル扱いになって即再オープンしないことを保証する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpCloseRoute {
+    /// GPUI のキーボードハンドラが受け取る F1（トグル）。
+    F1,
+    /// GPUI のキーボードハンドラが受け取る Escape（表示中だけ閉じる）。
+    Escape,
+    /// DOM ミラーの「閉じる」、およびミラーで捕捉したキーからの転送。
+    DomButton,
+}
+
+impl HelpCloseRoute {
+    fn from_key(key: &str) -> Option<Self> {
+        match key.to_ascii_lowercase().as_str() {
+            "f1" => Some(Self::F1),
+            "escape" => Some(Self::Escape),
+            _ => None,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::F1 => "f1",
+            Self::Escape | Self::DomButton => "escape",
+        }
+    }
+}
+
+/// 3 経路すべての表示状態遷移。`None` は「ヘルプの担当ではない」ことを表す。
+///
+/// DOM 経路はクローズ専用（トグルではない）なので、既に閉じているときに
+/// 二重で届いても `Some(true)` を返さず、オーバーレイが即再オープンしない。
+fn help_close_state(show_help: bool, route: HelpCloseRoute) -> Option<bool> {
+    match route {
+        HelpCloseRoute::DomButton => show_help.then_some(false),
+        HelpCloseRoute::F1 | HelpCloseRoute::Escape => {
+            help_overlay_key_state(show_help, route.key())
+        }
     }
 }
 
@@ -3420,6 +3586,376 @@ fn sort_header_text(label: &str, active: bool, direction: SortDirection) -> Stri
     }
 }
 
+// ------------------------------------------------ hidden accessibility mirror
+//
+// The canvas has no DOM, so the browser's AX tree cannot see the table, the
+// help dialog or the colour-coded states. These pure builders produce the
+// hidden subtree consumed by `sync_a11y_dom`. They stay string-based so the
+// structure can be asserted in unit tests without a browser, and every dynamic
+// value goes through `escape_html` before `set_inner_html`.
+
+/// DOM focus decision for one help visibility transition.
+///
+/// The GPUI `help_close_focus` and the DOM `activeElement` are both driven from
+/// this single value in `render`, so there is only one "previous focus" cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DomHelpFocus {
+    /// No visibility change; leave browser focus alone.
+    Unchanged,
+    /// Remember the current active element and focus the mirror's close button.
+    Enter,
+    /// Restore the element remembered on `Enter`.
+    Leave,
+}
+
+/// Pure transition table used by both the GPUI and the DOM focus paths.
+fn dom_help_focus(last_shown: bool, shown: bool) -> DomHelpFocus {
+    match (last_shown, shown) {
+        (false, true) => DomHelpFocus::Enter,
+        (true, false) => DomHelpFocus::Leave,
+        _ => DomHelpFocus::Unchanged,
+    }
+}
+
+/// Columns of the mirrored table, in canvas header order.
+/// `None` is the non-sortable コマンド column (it still needs a columnheader).
+const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
+    ("名前", Some(SortKey::Name)),
+    ("コマンド", None),
+    ("CPU", Some(SortKey::Cpu)),
+    ("メモリ", Some(SortKey::Memory)),
+    ("PID", Some(SortKey::Pid)),
+    ("ユーザー", Some(SortKey::User)),
+    ("状態", Some(SortKey::Status)),
+    ("スレッド", Some(SortKey::Threads)),
+];
+
+/// Escapes dynamic text before it is written through `set_inner_html`.
+///
+/// Process names and sensor labels come from the (already redacted) snapshot;
+/// escaping keeps markup in those values from becoming DOM nodes.
+fn escape_html(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// ARIA value for the active column's `aria-sort`.
+fn a11y_sort_aria(direction: SortDirection) -> &'static str {
+    match direction {
+        SortDirection::Ascending => "ascending",
+        SortDirection::Descending => "descending",
+    }
+}
+
+/// Header row of the mirrored table.
+///
+/// Only the active sortable column carries `aria-sort`; its accessible name and
+/// visible text repeat the direction so the state is not glyph-only.
+fn a11y_mirror_header_html(sort: SortSpec) -> String {
+    let mut html = String::from("<div role=\"row\">");
+    for (label, key) in A11Y_MIRROR_COLUMNS {
+        let (sort_attribute, aria_label, text) = match key {
+            Some(key) if *key == sort.key => (
+                format!(" aria-sort=\"{}\"", a11y_sort_aria(sort.direction)),
+                format!(
+                    "{label} 列で並び替え、現在 {}",
+                    a11y_sort_direction(sort.direction)
+                ),
+                sort_header_text(label, true, sort.direction),
+            ),
+            Some(_) => (
+                String::new(),
+                format!("{label} 列で並び替え"),
+                sort_header_text(label, false, sort.direction),
+            ),
+            None => (String::new(), (*label).to_string(), (*label).to_string()),
+        };
+        html.push_str(&format!(
+            "<div role=\"columnheader\"{sort_attribute} aria-label=\"{}\">{text}</div>",
+            escape_html(&aria_label),
+            text = escape_html(&text),
+        ));
+    }
+    html.push_str("</div>");
+    html
+}
+
+/// One mirrored process row: selection state plus a text name that repeats
+/// PID / name / CPU / memory and the colour-coded severity word.
+fn a11y_mirror_row_html(
+    name: &str,
+    status: ProcessStatus,
+    cpu: f32,
+    memory_bytes: u64,
+    pid: u32,
+    selected: bool,
+    row_index: usize,
+) -> String {
+    let label = a11y_row_label(name, status, cpu, memory_bytes, pid, selected);
+    let selected = if selected { "true" } else { "false" };
+    format!(
+        "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected}\" \
+         aria-label=\"{}\"><div role=\"cell\">{}</div>\
+         <div role=\"cell\">{}</div><div role=\"cell\">{}</div></div>",
+        escape_html(&label),
+        escape_html(name),
+        escape_html(&usage_value_text(cpu)),
+        escape_html(&format::format_bytes(memory_bytes)),
+    )
+}
+
+/// Body rowgroup of the mirrored table (only the currently visible rows).
+fn a11y_mirror_rows_html(
+    snapshot: Option<&SystemSnapshot>,
+    visible_indices: &[usize],
+    selected: Option<ProcessKey>,
+) -> String {
+    let mut html = String::from("<div role=\"rowgroup\">");
+    if let Some(snapshot) = snapshot {
+        for (index, process_index) in visible_indices.iter().enumerate() {
+            let Some(process) = snapshot.processes.get(*process_index) else {
+                continue;
+            };
+            html.push_str(&a11y_mirror_row_html(
+                &process.name,
+                process.status,
+                process.cpu_percent,
+                process.memory_bytes,
+                process.key.pid,
+                selected == Some(process.key),
+                index + 1,
+            ));
+        }
+    }
+    html.push_str("</div>");
+    html
+}
+
+/// Colour-coded usage and temperature states as hidden text.
+///
+/// Reuses the exact values drawn on the canvas (`usage_value_text` /
+/// `temperature_value_text`), so 高/中/低 and 正常/注意/危険/不明 are present
+/// in the AX tree without relying on colour perception.
+fn a11y_mirror_metrics_html(snapshot: Option<&SystemSnapshot>) -> String {
+    let Some(snapshot) = snapshot else {
+        return String::new();
+    };
+    let mut html = String::from("<div role=\"group\" aria-label=\"使用率と温度\">");
+    let mut push_metric = |label: &str, value: String| {
+        html.push_str(&format!(
+            "<div>{}: {}</div>",
+            escape_html(label),
+            escape_html(&value)
+        ));
+    };
+    push_metric("CPU 使用率", usage_value_text(snapshot.cpu.total_percent));
+    push_metric(
+        "メモリ使用率",
+        usage_value_text(snapshot.memory.used_percent()),
+    );
+    push_metric(
+        "スワップ使用率",
+        usage_value_text(snapshot.memory.swap_used_percent()),
+    );
+    for disk in snapshot.disks.iter().take(2) {
+        push_metric(
+            &format!("ディスク {} 使用率", disk.mount_point),
+            usage_value_text(disk.used_percent()),
+        );
+    }
+    for component in snapshot.components.iter().take(3) {
+        let label = if component.label.is_empty() {
+            "センサー"
+        } else {
+            &component.label
+        };
+        push_metric(
+            &format!("{label} 温度"),
+            temperature_value_text(
+                component.temperature_c,
+                component.max_c,
+                component.critical_c,
+            ),
+        );
+    }
+    html.push_str("</div>");
+    html
+}
+
+/// Help dialog mirror. Empty when the overlay is closed, so the AX tree has no
+/// stale modal. The close button is `tabindex=-1`: GPUI keeps owning Tab, while
+/// assistive tech sees a focusable button that `sync_dom_help_focus` targets.
+fn a11y_mirror_help_html(show_help: bool) -> String {
+    if !show_help {
+        return String::new();
+    }
+    let mut html = format!(
+        "<div role=\"dialog\" aria-modal=\"true\" aria-label=\"{title}\">\
+         <div role=\"heading\" aria-level=\"1\">{title}</div>",
+        title = escape_html(HELP_TITLE),
+    );
+    for (keys, description) in HELP_SHORTCUTS {
+        html.push_str(&format!(
+            "<div>{}: {}</div>",
+            escape_html(keys),
+            escape_html(description),
+        ));
+    }
+    html.push_str(&format!(
+        "<div id=\"{}\" role=\"button\" tabindex=\"-1\" aria-label=\"ヘルプを閉じる\">閉じる</div>",
+        A11Y_HELP_CLOSE_DOM_ID,
+    ));
+    html.push_str("</div>");
+    html
+}
+
+/// Data part of the hidden subtree: the table (header + visible rows) and the
+/// colour-coded metric states. Refreshed on ingest / command, never per frame.
+fn a11y_mirror_data_html(
+    snapshot: Option<&SystemSnapshot>,
+    visible_indices: &[usize],
+    selected: Option<ProcessKey>,
+    sort: SortSpec,
+) -> String {
+    let mut html = String::from("<div role=\"table\" aria-label=\"プロセス一覧\">");
+    html.push_str("<div role=\"rowgroup\">");
+    html.push_str(&a11y_mirror_header_html(sort));
+    html.push_str("</div>");
+    html.push_str(&a11y_mirror_rows_html(snapshot, visible_indices, selected));
+    html.push_str("</div>");
+    html.push_str(&a11y_mirror_metrics_html(snapshot));
+    html
+}
+
+/// Whole hidden subtree (data + optional help modal), kept as one pure value
+/// so the AX structure can be asserted without a browser.
+fn a11y_mirror_html(
+    snapshot: Option<&SystemSnapshot>,
+    visible_indices: &[usize],
+    selected: Option<ProcessKey>,
+    sort: SortSpec,
+    show_help: bool,
+) -> String {
+    format!(
+        "{}{}",
+        a11y_mirror_data_html(snapshot, visible_indices, selected, sort),
+        a11y_mirror_help_html(show_help)
+    )
+}
+
+/// Masked value published on the hidden IME textarea.
+///
+/// Never returns the plaintext (an agent token may have been pasted into the
+/// filter): only bullet characters and a character count reach the DOM.
+fn a11y_filter_value_text(text: &str) -> String {
+    let count = text.chars().count();
+    if count == 0 {
+        "未入力".to_string()
+    } else {
+        let bullets = "•".repeat(count.min(64));
+        format!("{bullets}（{count} 文字、伏せ字）")
+    }
+}
+
+/// Returns an existing hidden node or creates one under `body`.
+#[cfg(target_family = "wasm")]
+fn hidden_dom_node(
+    document: &web_sys::Document,
+    body: &web_sys::HtmlElement,
+    id: &str,
+) -> Option<web_sys::Element> {
+    if let Some(element) = document.get_element_by_id(id) {
+        return Some(element);
+    }
+    let element = document.create_element("div").ok()?;
+    element.set_attribute("id", id).ok()?;
+    element.set_attribute("style", A11Y_HIDDEN_STYLE).ok()?;
+    body.append_child(&element).ok()?;
+    Some(element)
+}
+
+/// Returns an existing child region of the mirror or creates it in place.
+#[cfg(target_family = "wasm")]
+fn hidden_child_node(
+    document: &web_sys::Document,
+    parent: &web_sys::Element,
+    id: &str,
+) -> Option<web_sys::Element> {
+    if let Some(element) = document.get_element_by_id(id) {
+        return Some(element);
+    }
+    let element = document.create_element("div").ok()?;
+    element.set_attribute("id", id).ok()?;
+    parent.append_child(&element).ok()?;
+    Some(element)
+}
+
+/// Installs the DOM → GPUI help bridge once, on the *stable* help container.
+///
+/// `gpui-pre-web` attaches its `keydown` listener to the hidden IME textarea, so
+/// once DOM focus moves to the mirrored close button, F1 / Escape no longer
+/// reach GPUI and the overlay cannot be dismissed. The bridge listens on the
+/// help container instead (its `inner_html` is rewritten on open/close but the
+/// container itself is never replaced) and forwards an `Escape` keystroke to
+/// the textarea. GPUI's existing `on_key_down` → `help_close_state` then closes
+/// the overlay exactly once; `stopPropagation` prevents the original DOM event
+/// from being handled twice. `Escape` rather than `F1` is forwarded so a stale
+/// / duplicated DOM event can never toggle the overlay straight back open.
+///
+/// Inline JS is used because `web/Cargo.toml` (out of scope here) does not
+/// enable the `KeyboardEventInit` web-sys feature needed for a synthetic key.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen(inline_js = r#"
+export function tmInstallHelpBridge(helpId, closeId, marker) {
+  const root = document.getElementById(helpId);
+  if (!root || root.getAttribute(marker)) return;
+  root.setAttribute(marker, '1');
+  const forward = () => {
+    const field = document.querySelector('textarea');
+    if (!field) return;
+    field.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+    }));
+  };
+  root.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || target.id !== closeId) return;
+    event.stopPropagation();
+    event.preventDefault();
+    forward();
+  });
+  root.addEventListener('keydown', (event) => {
+    if (event.key !== 'F1' && event.key !== 'Escape') return;
+    event.stopPropagation();
+    event.preventDefault();
+    forward();
+  });
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = "tmInstallHelpBridge")]
+    fn tm_install_help_bridge(help_id: &str, close_id: &str, marker: &str);
+}
+
+#[cfg(target_family = "wasm")]
+fn ensure_help_dom_bridge() {
+    tm_install_help_bridge(
+        A11Y_MIRROR_HELP_DOM_ID,
+        A11Y_HELP_CLOSE_DOM_ID,
+        "data-tm-help-bridge",
+    );
+}
+
 /// Text shown in place of a capability-gated section (R5-I04).
 ///
 /// Fixed strings only: no user input or agent data, and no `;` / newline that
@@ -3513,6 +4049,40 @@ fn proof_field_text(text: &str) -> String {
         .filter(|ch| !matches!(ch, '=' | '\r' | '\n'))
         .map(|ch| if ch == ';' { ',' } else { ch })
         .collect()
+}
+
+/// `filter` / `ime_field` 用の証跡テキスト。
+///
+/// CDP 検証が値を参照する契約があるため入力を完全に消すことはできないが、
+/// 「機微情報を含む可能性のある値は証跡へ残さない」方針をここで守る。
+/// `tm-agent` の自動生成トークンは 32 バイト = 64 hex（agent/src/auth.rs）なので、
+/// 32 文字以上の連続 hex をトークン様として検出して `***` に置き換える。
+/// 既存の `key=value;` キー、区切り、末尾 `sse=` 契約はバイト単位で不変。
+#[cfg(any(target_family = "wasm", test))]
+fn proof_user_text(text: &str) -> String {
+    let sanitized = proof_field_text(text);
+    let mut out = String::with_capacity(sanitized.len());
+    let mut hex_run = String::new();
+    for ch in sanitized.chars() {
+        if ch.is_ascii_hexdigit() {
+            hex_run.push(ch);
+        } else {
+            flush_proof_hex_run(&mut out, &mut hex_run);
+            out.push(ch);
+        }
+    }
+    flush_proof_hex_run(&mut out, &mut hex_run);
+    out
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn flush_proof_hex_run(out: &mut String, run: &mut String) {
+    if run.len() >= 32 {
+        out.push_str("***");
+    } else {
+        out.push_str(run);
+    }
+    run.clear();
 }
 
 /// Builds the human-facing browser-tab title from the data source alone.
@@ -4072,6 +4642,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dom_proof_masks_token_like_hex_without_changing_contract() {
+        // tm-agent のトークンは 64 hex。証跡へ平文を残さない。
+        let token = "a".repeat(64);
+        let masked = proof_user_text(&format!("filter {token}"));
+        assert!(!masked.contains(&token), "{masked}");
+        assert!(masked.contains("***"), "{masked}");
+        assert!(masked.starts_with("filter "), "{masked}");
+        // 32 未満の hex（PID や短い識別子）は従来どおり残す。
+        assert_eq!(proof_user_text("deadbeef"), "deadbeef");
+        assert_eq!(proof_user_text(&"a".repeat(31)), "a".repeat(31));
+        assert_eq!(proof_user_text(&"a".repeat(32)), "***");
+
+        // トークン様文字列が無い入力は既存 proof_field_text とバイト同一。
+        for raw in ["cpu;mem", "plain", "a=1;\r\nb=2;=;\n", ""] {
+            assert_eq!(proof_user_text(raw), proof_field_text(raw), "{raw:?}");
+        }
+
+        // 既存キーと末尾 sse= 契約を壊さない。
+        let proof = format!(
+            "mode=demo;filter={};ime_field={};rows=3;sse={};",
+            proof_user_text(&token),
+            proof_user_text(&format!("x{token}y")),
+            StreamMode::Fallback.proof_value(),
+        );
+        assert!(proof.ends_with("sse=fallback;"), "{proof}");
+        assert!(!proof.contains(&token), "{proof}");
+        let fields: Vec<&str> = proof.split(';').filter(|part| !part.is_empty()).collect();
+        assert_eq!(fields.len(), 5, "{proof}");
+        for field in fields {
+            assert_eq!(field.matches('=').count(), 1, "{field} in {proof}");
+        }
+    }
+
     fn export_sample_snapshot() -> SystemSnapshot {
         SystemSnapshot {
             hostname: Some("host".into()),
@@ -4280,6 +4884,34 @@ mod tests {
             None,
             "navigation keys must not change the overlay"
         );
+    }
+
+    #[test]
+    fn help_closes_via_all_three_routes_without_reopening() {
+        assert_eq!(HelpCloseRoute::from_key("F1"), Some(HelpCloseRoute::F1));
+        assert_eq!(
+            HelpCloseRoute::from_key("escape"),
+            Some(HelpCloseRoute::Escape)
+        );
+        assert_eq!(HelpCloseRoute::from_key("arrowdown"), None);
+
+        // F1 / Escape（GPUI 側）と DOM「閉じる」の 3 経路すべてが閉じる。
+        for route in [
+            HelpCloseRoute::F1,
+            HelpCloseRoute::Escape,
+            HelpCloseRoute::DomButton,
+        ] {
+            assert_eq!(help_close_state(true, route), Some(false), "{route:?}");
+        }
+        // DOM 経路はクローズ専用。二重に届いてもトグルで再オープンしない。
+        assert_eq!(help_close_state(false, HelpCloseRoute::DomButton), None);
+        assert_eq!(help_close_state(false, HelpCloseRoute::Escape), None);
+        // F1 だけは明示的なトグルとして残る（ネイティブ契約を壊さない）。
+        assert_eq!(help_close_state(false, HelpCloseRoute::F1), Some(true));
+
+        // いずれの経路で閉じてもフォーカス復帰は dom_help_focus の 1 箇所だけ。
+        let after = help_close_state(true, HelpCloseRoute::DomButton).unwrap();
+        assert_eq!(dom_help_focus(true, after), DomHelpFocus::Leave);
     }
 
     #[test]
@@ -5233,5 +5865,168 @@ mod tests {
         assert_eq!(help_overlay_key_state(true, "f1"), Some(false));
         assert_eq!(help_overlay_key_state(true, "escape"), Some(false));
         assert_eq!(help_overlay_key_state(false, "escape"), None);
+    }
+
+    // ------------------------------------------------ hidden DOM mirror tests
+
+    #[test]
+    fn mirror_header_exposes_single_active_sort_column() {
+        let asc = a11y_mirror_header_html(SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Ascending,
+        });
+        assert_eq!(asc.matches("aria-sort=").count(), 1, "{asc}");
+        assert!(asc.contains("aria-sort=\"ascending\""), "{asc}");
+        assert!(asc.contains("CPU ↑"), "{asc}");
+        assert!(asc.contains("現在 昇順"), "{asc}");
+        assert_eq!(
+            asc.matches("role=\"columnheader\"").count(),
+            A11Y_MIRROR_COLUMNS.len(),
+            "{asc}"
+        );
+        let desc = a11y_mirror_header_html(SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Descending,
+        });
+        assert!(desc.contains("aria-sort=\"descending\""), "{desc}");
+        assert!(desc.contains("現在 降順"), "{desc}");
+        assert!(!asc.contains("aria-hidden"), "{asc}");
+    }
+
+    #[test]
+    fn mirror_row_exposes_selection_and_escaped_display_values() {
+        let selected = a11y_mirror_row_html(
+            "<script>alert(1)</script>",
+            ProcessStatus::Zombie,
+            92.0,
+            4_096,
+            42,
+            true,
+            3,
+        );
+        assert!(selected.contains("role=\"row\""), "{selected}");
+        assert!(selected.contains("aria-rowindex=\"3\""), "{selected}");
+        assert!(selected.contains("aria-selected=\"true\""), "{selected}");
+        assert!(selected.contains("PID 42"), "{selected}");
+        assert!(selected.contains("選択中"), "{selected}");
+        assert!(selected.contains("高"), "{selected}");
+        assert!(selected.contains("&lt;script&gt;"), "{selected}");
+        assert!(!selected.contains("<script>"), "{selected}");
+        let unselected = a11y_mirror_row_html("idle", ProcessStatus::Idle, 1.0, 0, 7, false, 1);
+        assert!(
+            unselected.contains("aria-selected=\"false\""),
+            "{unselected}"
+        );
+        assert!(!unselected.contains("選択中"), "{unselected}");
+    }
+
+    #[test]
+    fn mirror_help_dialog_exposes_heading_shortcuts_and_close_button() {
+        let open = a11y_mirror_help_html(true);
+        assert!(open.contains("role=\"dialog\""), "{open}");
+        assert!(open.contains("aria-modal=\"true\""), "{open}");
+        assert!(open.contains(HELP_TITLE), "{open}");
+        assert!(open.contains("role=\"heading\""), "{open}");
+        assert!(open.contains("F1"), "{open}");
+        assert!(open.contains("Esc"), "{open}");
+        assert!(
+            open.contains(&format!("id=\"{}\"", A11Y_HELP_CLOSE_DOM_ID)),
+            "{open}"
+        );
+        assert!(open.contains("role=\"button\""), "{open}");
+        assert!(open.contains("tabindex=\"-1\""), "{open}");
+        assert!(open.contains("閉じる"), "{open}");
+        assert!(!open.contains("aria-hidden"), "{open}");
+        assert!(a11y_mirror_help_html(false).is_empty());
+    }
+
+    #[test]
+    fn mirror_table_contains_header_rows_and_help_in_one_subtree() {
+        let snapshot = tm_core::demo::demo_snapshot(0);
+        let visible: Vec<usize> = (0..snapshot.processes.len().min(3)).collect();
+        let html = a11y_mirror_html(Some(&snapshot), &visible, None, SortSpec::default(), true);
+        assert!(html.contains("role=\"table\""), "{html}");
+        assert_eq!(html.matches("role=\"rowgroup\"").count(), 2, "{html}");
+        assert!(html.contains("role=\"row\""), "{html}");
+        assert!(html.contains("role=\"dialog\""), "{html}");
+        assert_eq!(
+            html.matches("aria-selected=").count(),
+            visible.len(),
+            "{html}"
+        );
+        assert!(!html.contains("aria-hidden"), "{html}");
+        assert_ne!(A11Y_MIRROR_DOM_ID, A11Y_LIVE_DOM_ID);
+        assert_ne!(A11Y_HELP_CLOSE_DOM_ID, A11Y_MIRROR_DOM_ID);
+    }
+
+    #[test]
+    fn mirror_metrics_spell_out_usage_and_temperature_states() {
+        assert!(a11y_mirror_metrics_html(None).is_empty());
+        let snapshot = tm_core::demo::demo_snapshot(0);
+        let html = a11y_mirror_metrics_html(Some(&snapshot));
+        let cpu = usage_value_text(snapshot.cpu.total_percent);
+        let mem = usage_value_text(snapshot.memory.used_percent());
+        assert!(html.contains(&escape_html(&cpu)), "{html}");
+        assert!(html.contains(&escape_html(&mem)), "{html}");
+        for component in snapshot.components.iter().take(3) {
+            let value = temperature_value_text(
+                component.temperature_c,
+                component.max_c,
+                component.critical_c,
+            );
+            assert!(html.contains(&escape_html(&value)), "{html}");
+        }
+        // 同じ表示値ヘルパーが色語をテキストに載せることを固定する。
+        assert!(usage_value_text(90.0).contains("高"));
+        assert!(usage_value_text(70.0).contains("中"));
+        assert!(usage_value_text(10.0).contains("低"));
+        assert!(temperature_value_text(Some(105.0), Some(90.0), Some(100.0)).contains("危険"));
+        assert!(!html.contains("aria-hidden"), "{html}");
+    }
+
+    #[test]
+    fn mirror_filter_value_is_masked_and_never_plaintext() {
+        let token = "dsh_token_abc123";
+        let masked = a11y_filter_value_text(token);
+        assert!(!masked.contains("token"), "{masked}");
+        assert!(!masked.contains("abc123"), "{masked}");
+        assert!(masked.contains('•'), "{masked}");
+        assert!(
+            masked.contains(&format!("{} 文字", token.chars().count())),
+            "{masked}"
+        );
+        assert_eq!(a11y_filter_value_text(""), "未入力");
+        assert_eq!(
+            a11y_filter_value_text(&"x".repeat(100))
+                .matches('•')
+                .count(),
+            64
+        );
+    }
+
+    #[test]
+    fn help_focus_transition_is_single_sourced() {
+        assert_eq!(dom_help_focus(false, false), DomHelpFocus::Unchanged);
+        assert_eq!(dom_help_focus(true, true), DomHelpFocus::Unchanged);
+        assert_eq!(dom_help_focus(false, true), DomHelpFocus::Enter);
+        assert_eq!(dom_help_focus(true, false), DomHelpFocus::Leave);
+        // 開閉を往復しても enter / leave は 1 回ずつ（復帰の二重化なし）。
+        let mut shown = false;
+        let mut changes = 0;
+        for next in [true, true, false, false] {
+            if dom_help_focus(shown, next) != DomHelpFocus::Unchanged {
+                changes += 1;
+            }
+            shown = next;
+        }
+        assert_eq!(changes, 2);
+    }
+
+    #[test]
+    fn escape_html_neutralises_markup_in_snapshot_text() {
+        assert_eq!(
+            escape_html("a&b<c>\"d\"'"),
+            "a&amp;b&lt;c&gt;&quot;d&quot;&#39;"
+        );
     }
 }

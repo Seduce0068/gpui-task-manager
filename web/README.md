@@ -201,8 +201,9 @@ python3 cdp_verify_web.py \
   とデータ源だけに限定し、DOM proof の内部フィールド（`mode` / `tick` / `rows` /
   `filter` / …）はタイトルへ書き出しません。CSP を無闇に追加してタイトル更新を
   止める必要はありません（フックは body 属性で完結しています）。GPUI は canvas
-  描画なので、CDP から観測できるのはこのフックだけです。全キーと値域は下記
-  「DOM proof フィールド一覧」を参照してください。
+  描画なので従来 CDP から観測できるのはこのフックだけでしたが、現在は下記のとおり
+  AX ツリーも突き合わせます。全キーと値域は下記「DOM proof フィールド一覧」を
+  参照してください。
 - クリック座標は `src/shell.rs` のレイアウト定数（ヘッダー 52px、概要 260px、
   ツールバー 36px、行 30px など）から計算しています。レイアウトを変えたら
   `scripts/cdp_verify_web.py` の定数も更新してください。
@@ -247,6 +248,34 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
 | `sampling_ms` | ミリ秒の整数 | 適応・クランプ後の実際のサンプラー待機時間 |
 | `cgroups` | 非負整数 | cgroup 数（スナップショット無しは 0） |
 | `sse` | `active` / `fallback` | ライブ転送状態（初フレーム受信で `active`、終了・失敗・アイドルで `fallback`） |
+
+### DOM proof と AX ロールの対応検証
+
+`body[data-gpui-proof]` は DOM 属性フックにすぎず、canvas 内の GPUI AccessKit
+セマンティクスがブラウザのアクセシビリティツリーへ届いている保証はありません。
+ミラー実装前は `Accessibility.getFullAXTree` で `columnheader` / `row` / `dialog`
+が 0 件なのに DOM proof だけが成功する偽陽性状態が確認されていました。現在は
+`web/src/shell.rs` のミラーが role / aria 付き DOM を公開するため、DOM proof 単独
+では不十分として AX ツリーも突き合わせます。
+
+- `Accessibility.enable` + `Accessibility.getFullAXTree` で AX ノードを取得し、
+  `role` の出現数を集計して proof と比較します。期待値は
+  `scripts/cdp_verify_web.py` の `EXPECTED_AX_ROLES`（`table` = 1、
+  `columnheader` = 8〔ソート可能 7 列 + コマンド列〕、`row` = proof の `rows` + 1
+  〔データ行 + ヘッダ行〕、`dialog` = 0 または 1〔ヘルプ表示の有無〕）で定義しています。
+- `selected_pid` / `sort` / `dir` についても、選択行・列見出し・ソート方向が
+  proof と一致するかを確認します（対応表は `PROOF_AX_STATE_FIELDS`）。`dir` は
+  CDP の AX ツリーが `aria-sort` を property として露出しないため、列見出しの
+  名前テキストに含まれる `昇順` / `降順` で照合します。
+- 現状は **warning 扱い**です。不一致は証拠 JSON の `accessibility.warnings` と
+  最終チェック出力の `warnings` に記録し、`failures` / `passed` には影響させません。
+  ミラー実装と期待値・照合方法の修正後、`--self-check` と実 CDP の両方で
+  `accessibility.warnings` = 0 件を確認済みです。AX 検証の未カバー項目が残るため
+  `PROMOTE_AX_TO_FAILURE` は `False` のままで、残項目が解消されたら `True` へ
+  反転して同じチェックをエラーへ昇格します。
+- `--self-check`（オフライン）では `EXPECTED_AX_ROLES` の構造と、proof からの
+  期待値解決（`rows+1` を含む）・AX ノード集計・名前テキストによる `dir` 照合の
+  純粋関数だけを検証します（ブラウザ不要）。
 
 ## 既知の制約
 
