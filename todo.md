@@ -426,6 +426,26 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       長寿命ストリームを壊さないこと、watchdog 時刻逆行、DOM proof の
       active→fallback 即時更新。根拠 w3-tests。
 
+### 優先度: 中 — 未レビュー領域の探索 2026-11-19（第4次）
+
+- [x] ステータスバーの AccessKit live 文言が --redact を迂回（high）:
+      `app/src/app.rs:2153` の aria_value / live ノードへ self.display() 済み
+      文字列を渡す。根拠 y1-native。
+- [x] cgroup 詳細行の生ラベルが --redact で伏せ字化されない（medium）:
+      `app/src/app.rs:2011` を self.display(&group.label) 経由へ。根拠 y1-native。
+- [x] SSE の OPTIONS/405 が Host 検証をバイパス（medium）:
+      `agent/src/main.rs:963` の分岐前に is_allowed_host を追加。根拠 y3-server。
+- [x] shutdown AtomicBool が accept ループから監視されず 8s join がデッドコード（high）: シグナル配線は #![forbid(unsafe_code)] / 依存追加 / blocking accept の理由で見送り、コメントを「accept ループ終了後の後始末」に訂正して graceful を謳わない（Z2-AGENT）。根拠 y3-server。
+- [x] DEB 同梱 README が新機能未反映、--skip-build の版数不一致、
+      チェックサム manifest 欠落（medium）。根拠 y2-deb。
+- [x] 認証失敗 auth.denied に request_id が無く --log-level error で抑制
+      (`agent/src/main.rs:1214`)。相関 ID 付与と Level::Error 昇格。根拠 y3-server。
+- [x] SSE ハッピーパス（1 フレーム→shutdown→streams 0）のテスト欠落、
+      streams ゲージが /metrics に未公開。根拠 y3-server。
+- [x] リリースバイナリの --remap-path-prefix / strings 検査が無い
+      (Cargo.toml:41, ci.yml:83)。成果物の開発パス混入を防止。根拠 y2-deb。
+- [x] release-linux / web-dist / sbom のビルドが --locked でない。根拠 y2-deb。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

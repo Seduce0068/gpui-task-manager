@@ -85,8 +85,9 @@ const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 /// stops accepting (R2-X03 / S1-SSE).
 ///
 /// Must exceed `http::WRITE_TIMEOUT` (5 s): an SSE worker can be mid-write when
-/// the accept loop signals shutdown, then still sleep `STREAM_INTERVAL` (1 s)
-/// before observing the flag at the next loop iteration. 8 s covers that worst
+/// the accept loop stops, then still sleep `STREAM_INTERVAL` (1 s) before
+/// observing the flag that `serve` sets for post-loop cleanup at the next
+/// iteration. 8 s covers that worst
 /// case plus `WARMUP_INTERVAL` (250 ms) and join polling overhead. A dedicated
 /// SSE cancellation channel would react sooner, but would add a second
 /// synchronisation primitive to a loopback-only agent; the flag is checked once
@@ -156,6 +157,23 @@ fn emit(level: Level, event: &str, fields: serde_json::Value) {
     if level_allowed(level, minimum) {
         telemetry::emit(level, event, fields);
     }
+}
+
+/// Fields of an authentication failure, always correlated with its request.
+fn auth_denied_fields(request_id: u64, reason: &'static str, path: &str) -> serde_json::Value {
+    json!({ "request_id": request_id, "reason": reason, "path": path })
+}
+
+/// Emits `auth.denied` at ERROR with the trace id.
+///
+/// ERROR always passes `--log-level error`, so a rejected credential stays
+/// visible and can be joined to the 401 `http.request.end` event by id.
+fn emit_auth_denied(request_id: u64, reason: &'static str, path: &str) {
+    emit(
+        Level::Error,
+        "auth.denied",
+        auth_denied_fields(request_id, reason, path),
+    );
 }
 
 /// Wire envelope returned by `/api/v1/snapshot` and by `--once`.
@@ -608,8 +626,9 @@ struct SharedState {
     warmed_up: AtomicBool,
     /// Live SSE streams, capped separately from [`MAX_CONNECTIONS`].
     streams: AtomicUsize,
-    /// Set once [`serve`] stops accepting, so each SSE loop can exit instead of
-    /// holding a worker thread open for the whole client lifetime (S1-SSE).
+    /// Set once [`serve`] has stopped accepting, purely to release SSE workers
+    /// during post-loop cleanup. No signal handler sets it, so this is not a
+    /// Ctrl-C-driven graceful shutdown (R2 decision).
     shutdown: AtomicBool,
     /// Request counters/gauges exposed read-only at [`METRICS_PATH`].
     metrics: Arc<Metrics>,
@@ -629,7 +648,8 @@ impl SharedState {
         }
     }
 
-    /// Signals every long-lived stream to leave its loop on the next iteration.
+    /// Signals every long-lived stream to leave its loop on the next iteration
+    /// during post-accept-loop cleanup (not from a signal handler).
     fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
     }
@@ -725,7 +745,10 @@ impl JoinTracker {
     }
 }
 
-/// Accepts connections until the process is terminated.
+/// Accepts connections until the listener stops yielding them.
+///
+/// There is no Ctrl-C/signal handler: the flag set below is for post-loop
+/// cleanup only, not a graceful shutdown trigger (R2 decision).
 ///
 /// One thread per connection. An idle peer waiting for the read timeout can no
 /// longer stall `/healthz` or another snapshot (review item s1); the probe mutex
@@ -755,9 +778,10 @@ fn serve(
             }
         }
     }
-    // S1-SSE: signal the flag before joining. Long-lived streams are the only
-    // workers that can outlive a normal response, and they check it at the top
-    // of every iteration (see `handle_stream_connection`).
+    // R2: post-accept-loop cleanup only. No signal handler sets the flag, so
+    // this is not a Ctrl-C-driven graceful shutdown. Long-lived streams are the
+    // only workers that can outlive a normal response; they check the flag at
+    // the top of every iteration (see `handle_stream_connection`).
     state.request_shutdown();
     // R2-X03: the accept loop has ended, so no new workers can appear. Reap the
     // in-flight ones with a deadline instead of dropping their handles. This
@@ -827,46 +851,55 @@ fn spawn_connection(
             // `_slot` is moved into the worker so the counter is released when the
             // worker exits — or unwinds after a panic — never on the accept thread.
             let _slot = _slot;
-            let result = handle_connection_with_stream(&mut stream, &worker_state, |request| {
-                // Only snapshot requests need the probe. Acquiring it for
-                // /healthz, /metrics and the SSE path would make liveness wait
-                // for a slow sample (including the 250 ms warm-up sleep) — R40 audit.
-                // The SSE path samples the shared probe inside its own loop and
-                // never invokes this closure.
-                let needs_probe = request.path == SNAPSHOT_PATH;
-                let mut guard = if needs_probe {
-                    // Rust の Mutex はパニックで poison する可能性があるが、
-                    // プローブ側の致命的失敗でエージェント全体を止めないよう
-                    // guard を回収して続行する（無ログの fail-open は避ける）。
-                    Some(match worker_state.probe.lock() {
-                        Ok(guard) => guard,
-                        Err(err) => {
-                            eprintln!(
-                                "tm-agent: プローブの mutex が poison しました; 回収して続行します"
-                            );
-                            emit(
-                                Level::Warn,
-                                "probe.mutex_poisoned",
-                                json!({ "recovered": true }),
-                            );
-                            err.into_inner()
-                        }
-                    })
-                } else {
-                    None
-                };
-                route(
-                    request,
-                    guard
-                        .as_deref_mut()
-                        .map(|guard| &mut **guard as &mut dyn SystemProbe),
-                    &worker_state.token,
-                    worker_state.redact,
-                    &worker_state.warmed_up,
-                    &worker_state.metrics,
-                    &worker_state.active,
-                )
-            });
+            let result = handle_connection_with_stream(
+                &mut stream,
+                &worker_state,
+                |request, request_id, metrics| {
+                    // Only snapshot requests need the probe. Acquiring it for
+                    // /healthz, /metrics and the SSE path would make liveness wait
+                    // for a slow sample (including the 250 ms warm-up sleep) — R40 audit.
+                    // The SSE path samples the shared probe inside its own loop and
+                    // never invokes this closure.
+                    let needs_probe = request.path == SNAPSHOT_PATH;
+                    let mut guard = if needs_probe {
+                        // Rust の Mutex はパニックで poison する可能性があるが、
+                        // プローブ側の致命的失敗でエージェント全体を止めないよう
+                        // guard を回収して続行する（無ログの fail-open は避ける）。
+                        Some(match worker_state.probe.lock() {
+                            Ok(guard) => guard,
+                            Err(err) => {
+                                eprintln!(
+                                    "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                                );
+                                emit(
+                                    Level::Warn,
+                                    "probe.mutex_poisoned",
+                                    json!({ "recovered": true }),
+                                );
+                                err.into_inner()
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    let context = RequestContext {
+                        request_id,
+                        metrics,
+                        active: &worker_state.active,
+                        streams: &worker_state.streams,
+                    };
+                    route(
+                        request,
+                        guard
+                            .as_deref_mut()
+                            .map(|guard| &mut **guard as &mut dyn SystemProbe),
+                        &worker_state.token,
+                        worker_state.redact,
+                        &worker_state.warmed_up,
+                        &context,
+                    )
+                },
+            );
             if let Err(err) = result {
                 eprintln!("tm-agent: 接続処理に失敗: {err}");
             }
@@ -938,7 +971,7 @@ fn read_request_head(
 fn handle_connection(
     stream: &mut TcpStream,
     metrics: &Metrics,
-    route: impl FnMut(&http::Request) -> http::Response,
+    route: impl FnMut(&http::Request, u64, &Metrics) -> http::Response,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
     stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
@@ -953,7 +986,7 @@ fn handle_connection(
 fn handle_connection_with_stream(
     stream: &mut TcpStream,
     state: &SharedState,
-    route: impl FnMut(&http::Request) -> http::Response,
+    route: impl FnMut(&http::Request, u64, &Metrics) -> http::Response,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
     stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
@@ -961,13 +994,30 @@ fn handle_connection_with_stream(
         return Ok(());
     };
     if request.path == STREAM_PATH {
-        // S1-SSE: validate the method before entering the long-lived handler so
-        // preflight and unsupported methods keep the exact same contract as
-        // `route()`. Only a genuine GET may open a stream and consume a slot.
+        // R2: preflight/405 must not bypass the ordinary route's Host check.
+        // A missing Host is accepted here (browsers always send one); the
+        // genuine GET path below keeps its stricter "Host required" rule.
         let origin = request.header("origin").map(str::to_string);
         let allowed_origin = origin
             .as_deref()
             .filter(|origin| http::is_allowed_origin(origin));
+        if let Some(host) = request.header("host") {
+            if !http::is_allowed_host(host) {
+                let mut response = http::Response::json(
+                    403,
+                    "Forbidden",
+                    error_body(
+                        ErrorCode::Forbidden,
+                        "Host ヘッダがループバックではありません",
+                    ),
+                );
+                add_cors_if_absent(&mut response, allowed_origin);
+                return write_short_response(stream, &request, state, response);
+            }
+        }
+        // S1-SSE: validate the method before entering the long-lived handler so
+        // preflight and unsupported methods keep the exact same contract as
+        // `route()`. Only a genuine GET may open a stream and consume a slot.
         if request.method.eq_ignore_ascii_case("OPTIONS") {
             let response = preflight_response(&request, allowed_origin);
             return write_short_response(stream, &request, state, response);
@@ -976,7 +1026,7 @@ fn handle_connection_with_stream(
             let response = method_not_allowed_response(allowed_origin);
             return write_short_response(stream, &request, state, response);
         }
-        return handle_stream_connection(stream, &request, state);
+        return handle_stream_connection(stream, &request, state, STREAM_INTERVAL);
     }
     handle_request(stream, &request, &state.metrics, route)
 }
@@ -1001,7 +1051,7 @@ fn handle_request(
     stream: &mut TcpStream,
     request: &http::Request,
     metrics: &Metrics,
-    mut route: impl FnMut(&http::Request) -> http::Response,
+    mut route: impl FnMut(&http::Request, u64, &Metrics) -> http::Response,
 ) -> io::Result<()> {
     // Only `path` is traced. The raw target (with `?token=...`) and the
     // Authorization header must never reach a log line.
@@ -1031,7 +1081,7 @@ fn handle_request(
         }
     }
 
-    let mut response = route(request);
+    let mut response = route(request, trace.id(), metrics);
     trace.finish(response.status);
     add_cors_if_absent(&mut response, allowed_origin);
     http::write_response(stream, &response)
@@ -1056,6 +1106,17 @@ fn add_cors_if_absent(response: &mut http::Response, origin: Option<&str>) {
     http::add_cors_headers(response, origin);
 }
 
+/// Per-request inputs threaded into [`route`] without growing its signature.
+///
+/// `request_id` comes from the `RequestTrace`, so `auth.denied` can be correlated
+/// with the 401 trace; the gauges stay owned by the caller's `SharedState`.
+struct RequestContext<'a> {
+    request_id: u64,
+    metrics: &'a Metrics,
+    active: &'a AtomicUsize,
+    streams: &'a AtomicUsize,
+}
+
 /// Routes a parsed request to its handler.
 fn route(
     request: &http::Request,
@@ -1063,8 +1124,7 @@ fn route(
     token: &str,
     redact: bool,
     warmed_up: &AtomicBool,
-    metrics: &Metrics,
-    active: &AtomicUsize,
+    context: &RequestContext<'_>,
 ) -> http::Response {
     let allowed_origin = request
         .header("origin")
@@ -1079,7 +1139,9 @@ fn route(
     match request.path.as_str() {
         HEALTH_PATH => health_response(),
         SNAPSHOT_PATH => match probe {
-            Some(probe) => snapshot_response(request, probe, token, redact, warmed_up),
+            Some(probe) => {
+                snapshot_response(request, probe, token, redact, warmed_up, context.request_id)
+            }
             // The caller only acquires the probe mutex for snapshot requests;
             // reaching here means the lock failed to be passed through.
             None => http::Response::json(
@@ -1091,7 +1153,7 @@ fn route(
                 ),
             ),
         },
-        METRICS_PATH => metrics_response(metrics, active),
+        METRICS_PATH => metrics_response(context.metrics, context.active, context.streams),
         _ => http::Response::json(
             404,
             "Not Found",
@@ -1184,10 +1246,14 @@ fn sse_event(event: &str, data: &str) -> String {
 /// This path never reads a request body and keeps no probe lock between events,
 /// so an open browser tab cannot stall ordinary `/api/v1/snapshot` polls.
 /// A write failure is treated as a normal client disconnect.
+///
+/// `interval` is a parameter so tests can shorten the 1 s production delay
+/// (see [`STREAM_INTERVAL`]) without sleeping through a whole frame cycle.
 fn handle_stream_connection(
     stream: &mut TcpStream,
     request: &http::Request,
     state: &SharedState,
+    interval: Duration,
 ) -> io::Result<()> {
     let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
     let origin = request.header("origin").map(str::to_string);
@@ -1212,11 +1278,7 @@ fn handle_stream_connection(
     }
 
     let Some(supplied) = auth::request_token(request) else {
-        emit(
-            Level::Warn,
-            "auth.denied",
-            json!({ "reason": "missing_token", "path": request.path }),
-        );
+        emit_auth_denied(trace.id(), "missing_token", &request.path);
         let mut response = unauthorized_response();
         if let Some(origin) = allowed_origin {
             http::add_cors_headers(&mut response, origin);
@@ -1225,11 +1287,7 @@ fn handle_stream_connection(
         return http::write_response(stream, &response);
     };
     if !auth::constant_time_eq(&state.token, &supplied) {
-        emit(
-            Level::Warn,
-            "auth.denied",
-            json!({ "reason": "invalid_token", "path": request.path }),
-        );
+        emit_auth_denied(trace.id(), "invalid_token", &request.path);
         let mut response = unauthorized_response();
         if let Some(origin) = allowed_origin {
             http::add_cors_headers(&mut response, origin);
@@ -1261,9 +1319,10 @@ fn handle_stream_connection(
     // individual `write_all` below.
     stream.set_read_timeout(None)?;
     loop {
-        // S1-SSE: the accept loop signals shutdown before joining workers, so
-        // each iteration gets a chance to exit instead of pinning a thread
-        // until the browser disconnects.
+        // S1-SSE: after the accept loop ends, `serve` sets this flag before
+        // joining workers, so each iteration gets a chance to exit instead of
+        // pinning a thread until the browser disconnects. No signal handler is
+        // wired: this is post-loop cleanup, not a graceful Ctrl-C shutdown.
         if state.is_shutdown() {
             return Ok(());
         }
@@ -1319,7 +1378,7 @@ fn handle_stream_connection(
             if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
                 return Ok(());
             }
-            std::thread::sleep(STREAM_INTERVAL);
+            std::thread::sleep(interval);
             continue;
         }
 
@@ -1389,7 +1448,7 @@ fn handle_stream_connection(
         if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
             return Ok(());
         }
-        std::thread::sleep(STREAM_INTERVAL);
+        std::thread::sleep(interval);
     }
 }
 
@@ -1445,8 +1504,15 @@ fn health_response() -> http::Response {
 ///
 /// Deliberately public like `/healthz` (loopback-only listener, no machine
 /// data). It does not replace or alter any existing endpoint.
-fn metrics_response(metrics: &Metrics, active: &AtomicUsize) -> http::Response {
-    let body = metrics.render_prometheus(active.load(Ordering::Acquire));
+fn metrics_response(
+    metrics: &Metrics,
+    active: &AtomicUsize,
+    streams: &AtomicUsize,
+) -> http::Response {
+    let body = metrics.render_prometheus(
+        active.load(Ordering::Acquire),
+        streams.load(Ordering::Acquire),
+    );
     let mut response = http::Response::json(200, "OK", body);
     response.content_type = "text/plain; version=0.0.4; charset=utf-8";
     response
@@ -1459,22 +1525,15 @@ fn snapshot_response(
     token: &str,
     redact: bool,
     warmed_up: &AtomicBool,
+    request_id: u64,
 ) -> http::Response {
     let Some(supplied) = auth::request_token(request) else {
         // Never log the supplied value; only the fact that it was absent.
-        emit(
-            Level::Warn,
-            "auth.denied",
-            json!({ "reason": "missing_token", "path": request.path }),
-        );
+        emit_auth_denied(request_id, "missing_token", &request.path);
         return unauthorized_response();
     };
     if !auth::constant_time_eq(token, &supplied) {
-        emit(
-            Level::Warn,
-            "auth.denied",
-            json!({ "reason": "invalid_token", "path": request.path }),
-        );
+        emit_auth_denied(request_id, "invalid_token", &request.path);
         return unauthorized_response();
     }
 
@@ -1696,7 +1755,7 @@ fn error_body(code: ErrorCode, message: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{Shutdown, SocketAddr};
     use std::time::Instant;
 
@@ -1738,17 +1797,23 @@ mod tests {
             let warm = AtomicBool::new(true); // demo data needs no warm-up
             let metrics = Metrics::new();
             let active = AtomicUsize::new(0);
+            let streams = AtomicUsize::new(0);
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().expect("accept");
-                handle_connection(&mut stream, &metrics, |request| {
+                handle_connection(&mut stream, &metrics, |request, request_id, metrics| {
+                    let context = RequestContext {
+                        request_id,
+                        metrics,
+                        active: &active,
+                        streams: &streams,
+                    };
                     route(
                         request,
                         Some(&mut probe),
                         TEST_TOKEN,
                         redact,
                         &warm,
-                        &metrics,
-                        &active,
+                        &context,
                     )
                 })
                 .expect("handle connection");
@@ -1821,16 +1886,22 @@ mod tests {
             let warm = AtomicBool::new(true); // the error path never warms up
             let metrics = Metrics::new();
             let active = AtomicUsize::new(0);
+            let streams = AtomicUsize::new(0);
             let (mut stream, _) = listener.accept().expect("accept");
-            handle_connection(&mut stream, &metrics, |request| {
+            handle_connection(&mut stream, &metrics, |request, request_id, metrics| {
+                let context = RequestContext {
+                    request_id,
+                    metrics,
+                    active: &active,
+                    streams: &streams,
+                };
                 route(
                     request,
                     Some(&mut probe),
                     TEST_TOKEN,
                     false,
                     &warm,
-                    &metrics,
-                    &active,
+                    &context,
                 )
             })
             .expect("handle connection");
@@ -2185,16 +2256,22 @@ mod tests {
             let warm = AtomicBool::new(true); // demo data needs no warm-up
             let metrics = Metrics::new();
             let active = AtomicUsize::new(0);
+            let streams = AtomicUsize::new(0);
             let (mut stream, _) = listener.accept().expect("accept");
-            handle_connection(&mut stream, &metrics, |request| {
+            handle_connection(&mut stream, &metrics, |request, request_id, metrics| {
+                let context = RequestContext {
+                    request_id,
+                    metrics,
+                    active: &active,
+                    streams: &streams,
+                };
                 route(
                     request,
                     Some(&mut probe),
                     SECRET,
                     false, // no --redact
                     &warm,
-                    &metrics,
-                    &active,
+                    &context,
                 )
             })
             .expect("handle connection");
@@ -2900,6 +2977,11 @@ mod tests {
             "{body}"
         );
         assert!(
+            body.contains("# TYPE tm_agent_stream_sessions gauge"),
+            "{body}"
+        );
+        assert!(body.contains("tm_agent_stream_sessions 0"), "{body}");
+        assert!(
             !body.contains(TEST_TOKEN),
             "metrics must never expose the bearer token"
         );
@@ -2953,6 +3035,22 @@ mod tests {
             LOG_THRESHOLD.load(Ordering::Relaxed),
             threshold_rank(args::LogLevel::Info)
         );
+    }
+
+    #[test]
+    fn auth_denied_is_error_level_and_carries_the_trace_id() {
+        let fields = auth_denied_fields(42, "invalid_token", "/api/v1/snapshot");
+        let line = telemetry::format_event(Level::Error, "auth.denied", fields);
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("event must be JSON");
+        assert_eq!(parsed["request_id"].as_u64(), Some(42));
+        assert_eq!(parsed["level"], "ERROR");
+        assert_eq!(parsed["event"], "auth.denied");
+        assert_eq!(parsed["reason"], "invalid_token");
+        assert_eq!(parsed["path"], "/api/v1/snapshot");
+        // ERROR survives the strictest --log-level, and 401 stays in the 4xx
+        // bucket used by response counters (status_class is unchanged).
+        assert!(level_allowed(Level::Error, args::LogLevel::Error));
+        assert_eq!(telemetry::status_class(401), "4xx");
     }
 
     #[test]
@@ -3087,18 +3185,27 @@ mod tests {
             ));
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().expect("accept");
-                handle_connection_with_stream(&mut stream, &state, |request| {
-                    let mut guard = state.probe.lock().unwrap_or_else(|err| err.into_inner());
-                    route(
-                        request,
-                        Some(guard.as_mut()),
-                        &state.token,
-                        state.redact,
-                        &state.warmed_up,
-                        &state.metrics,
-                        &state.active,
-                    )
-                })
+                handle_connection_with_stream(
+                    &mut stream,
+                    &state,
+                    |request, request_id, metrics| {
+                        let context = RequestContext {
+                            request_id,
+                            metrics,
+                            active: &state.active,
+                            streams: &state.streams,
+                        };
+                        let mut guard = state.probe.lock().unwrap_or_else(|err| err.into_inner());
+                        route(
+                            request,
+                            Some(guard.as_mut()),
+                            &state.token,
+                            state.redact,
+                            &state.warmed_up,
+                            &context,
+                        )
+                    },
+                )
                 .expect("handle connection");
             }
         });
@@ -3192,6 +3299,37 @@ mod tests {
     }
 
     #[test]
+    fn stream_method_branches_apply_the_ordinary_host_check() {
+        let (address, handle) = spawn_demo_server_with_stream(3);
+        let options = send_request(
+            address,
+            "OPTIONS /api/v1/stream HTTP/1.1\r\nHost: evil.example\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
+        );
+        assert!(options.starts_with("HTTP/1.1 403 Forbidden"), "{options}");
+        assert_eq!(parse_body(&options)["code"], "forbidden");
+        assert!(options.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
+        assert!(!options.contains("Access-Control-Allow-Methods"));
+
+        // The 405 branch gets the same treatment: a foreign Host must not get
+        // an unauthenticated method-comparison oracle.
+        let post = send_request(
+            address,
+            "POST /api/v1/stream HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(post.starts_with("HTTP/1.1 403 Forbidden"), "{post}");
+        assert_eq!(parse_body(&post)["code"], "forbidden");
+
+        // Missing Host stays acceptable for preflight; the GET-side handler
+        // keeps its own stricter "Host required" rule (unchanged).
+        let no_host = send_request(
+            address,
+            "OPTIONS /api/v1/stream HTTP/1.1\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
+        );
+        assert!(no_host.starts_with("HTTP/1.1 204 No Content"), "{no_host}");
+        handle.join().expect("demo stream server thread");
+    }
+
+    #[test]
     fn stream_rejects_non_get_methods_with_allow_header() {
         let (address, handle) = spawn_demo_server_with_stream(1);
         let response = send_request(
@@ -3219,5 +3357,68 @@ mod tests {
         assert_eq!(parse_body(&response)["code"], "forbidden");
         assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
         handle.join().expect("demo stream server thread");
+    }
+
+    #[test]
+    fn stream_frame_then_shutdown_releases_the_slot() {
+        // Short interval keeps the happy path fast; production still uses
+        // `STREAM_INTERVAL` via `handle_connection_with_stream`.
+        const TEST_INTERVAL: Duration = Duration::from_millis(20);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false,
+        ));
+        let worker_state = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = http::read_request(&mut stream)
+                .expect("read request")
+                .expect("request head");
+            handle_stream_connection(&mut stream, &request, &worker_state, TEST_INTERVAL)
+                .expect("handle stream connection");
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write request");
+        let mut reader = BufReader::new(client);
+
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("head line");
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("Content-Type: text/event-stream"), "{head}");
+
+        let mut frame = String::new();
+        for _ in 0..3 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("frame line");
+            frame.push_str(&line);
+        }
+        assert!(frame.starts_with("event: snapshot\n"), "{frame}");
+        assert!(frame.contains("\"schema_version\":"), "{frame}");
+        assert!(frame.ends_with("\n\n"), "{frame}");
+        assert_eq!(state.streams.load(Ordering::Acquire), 1);
+
+        state.request_shutdown();
+        drop(reader);
+        join_demo_server(handle);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
     }
 }

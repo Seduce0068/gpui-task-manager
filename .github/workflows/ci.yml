@@ -258,9 +258,42 @@ jobs:
             libx11-xcb-dev \
             jq
       - name: Build release binary
-        run: cargo build --release -p gpui-task-manager
+        # gates の locked: true と揃え、暗黙の Cargo.lock 更新を禁止する。
+        run: cargo build --release --locked -p gpui-task-manager
       - name: Build DEB
         run: bash packaging/linux/build-deb.sh --skip-build
+      # 公開成果物の開示ゲート。gitleaks --redact と同じ方針で、一致した文字列は
+      # CI ログへ出さずパターン名のみを報告する。upload 直前に置くことで、
+      # 開発パス / アカウント識別子が混入した成果物が配布されるのを防ぐ。
+      - name: Gate - no development paths in release binary
+        run: |
+          set -euo pipefail
+          binary="target/release/gpui-task-manager"
+          if [ ! -f "${binary}" ]; then
+            echo "binary-disclosure: ${binary} is missing" >&2
+            exit 1
+          fi
+          if ! command -v strings >/dev/null 2>&1; then
+            echo 'binary-disclosure: strings (binutils) is not available' >&2
+            exit 1
+          fi
+          dump="$(mktemp)"
+          trap 'rm -f -- "${dump}"' EXIT
+          strings -a -- "${binary}" > "${dump}"
+
+          # パターン名 -> 拡張正規表現。一致行は絶対に出力しない（--redact 相当）。
+          check() {
+            local name="$1" pattern="$2"
+            if grep -Eq -- "${pattern}" "${dump}"; then
+              echo "binary-disclosure: pattern '${name}' found in ${binary} (value redacted)" >&2
+              exit 1
+            fi
+          }
+          check dev-home-path '/home/'
+          check account-identifier '(koppe|onoderakeita)'
+          check noreply-email '[0-9]{6,}\+[A-Za-z0-9_-]+@users\.noreply\.github\.com'
+          check tailscale-domain '\.ts\.net'
+          echo 'binary-disclosure: OK (no development paths / account identifiers in release binary)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-linux
@@ -289,7 +322,9 @@ jobs:
         # artifact (Trunk 0.22 has no `copy` config key).
         run: |
           cd web
-          trunk build --release
+          # trunk 0.22.1 の --locked は Cargo.lock が最新であることを要求する。
+          # gates の locked: true と同じロック整合性を wasm ビルドにも適用する。
+          trunk build --release --locked
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -311,6 +346,14 @@ jobs:
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-cyclonedx@0.5.10
+      # cargo-cyclonedx 0.5.10 には --locked オプションが無く、
+      # generate-sbom.sh は担当外のため書き換えない。gates の locked: true と
+      # 同じ整合性を、生成直前に cargo metadata --locked で明示的に担保する。
+      - name: Verify Cargo.lock consistency before SBOM generation
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo metadata --locked --format-version 1 --manifest-path web/Cargo.toml >/dev/null
       - name: Generate SBOMs
         run: bash scripts/generate-sbom.sh target/sbom
       # 2 回連続で生成し、成果物のファイル集合が変わらない（古いコピーが

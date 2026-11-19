@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# リリース成果物へ開発環境の絶対パスが埋め込まれないようにする設定。
+#
+# 理由:
+#   rustc は panic! の source_location や debug 情報にソースファイルの絶対パスを
+#   埋め込む。GitHub Actions の /home/runner/... や開発ホストの /home/koppe/... が
+#   バイナリへ残ると、公開時に内部パスやアカウント識別子が漏れる。
+#   --remap-path-prefix はコンパイル時にそのプレフィックスを仮想パスへ置換する。
+#   release-linux の strings ゲートは、この設定が効かなかった場合の検出装置である。
+#
+# 注意（既存設定との衝突回避）:
+#   - RUSTFLAGS 環境変数が設定されると Cargo は [build].rustflags を無視する。
+#     現時点で scripts/check.sh と .github/workflows/ci.yml に RUSTFLAGS は無く、
+#     RUSTDOCFLAGS("-D warnings") は rustdoc のみに作用するため衝突しない。
+#     将来 RUSTFLAGS を追加する場合は、同じ --remap-path-prefix を必ず含めること。
+#   - このファイルはリポジトリ直下に置くため、別 workspace の web/ にも適用される。
+#   - 置換先は固定の仮想パス /build とし、ホスト名 / アカウント名を残さない。
+#     具体的なプレフィックスを先に置き、一般的な /home/ はフォールバックとして
+#     最後に置く（rustc は先に一致したプレフィックスを使用する）。
+[build]
+rustflags = [
+  "--remap-path-prefix=/home/koppe=/build",
+  "--remap-path-prefix=/home/runner=/build",
+  "--remap-path-prefix=/Users/runner=/build",
+  "--remap-path-prefix=/home/=/build/",
+]
