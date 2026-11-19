@@ -3625,7 +3625,7 @@ fn dom_help_focus(last_shown: bool, shown: bool) -> DomHelpFocus {
     }
 }
 
-/// Columns of the mirrored table, in canvas header order.
+/// Columns of the mirrored grid, in canvas header order.
 /// `None` is the non-sortable コマンド column (it still needs a columnheader).
 const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
     ("名前", Some(SortKey::Name)),
@@ -3665,10 +3665,11 @@ fn a11y_sort_aria(direction: SortDirection) -> &'static str {
     }
 }
 
-/// Header row of the mirrored table.
+/// Header row of the mirrored grid.
 ///
 /// Only the active sortable column carries `aria-sort`; its accessible name and
 /// visible text repeat the direction so the state is not glyph-only.
+/// `columnheader` is valid inside a `role="grid"`, so it is kept as-is.
 fn a11y_mirror_header_html(sort: SortSpec) -> String {
     let mut html = String::from("<div role=\"row\">");
     for (label, key) in A11Y_MIRROR_COLUMNS {
@@ -3700,6 +3701,13 @@ fn a11y_mirror_header_html(sort: SortSpec) -> String {
 
 /// One mirrored process row: selection state plus a text name that repeats
 /// PID / name / CPU / memory and the colour-coded severity word.
+///
+/// The enclosing `role="grid"` is deliberate: per ARIA, `aria-selected` is only
+/// exposed on rows inside `grid`/`treegrid`, so a `role="table"` mirror makes
+/// Chrome drop the selected state from the AX tree. With `grid` + `gridcell`
+/// (header `columnheader` remains valid) the selected row publishes a
+/// `selected=true` AX property. `aria-current="true"` duplicates the state for
+/// assistive tech that does not surface `selected`.
 fn a11y_mirror_row_html(
     name: &str,
     status: ProcessStatus,
@@ -3710,11 +3718,15 @@ fn a11y_mirror_row_html(
     row_index: usize,
 ) -> String {
     let label = a11y_row_label(name, status, cpu, memory_bytes, pid, selected);
-    let selected = if selected { "true" } else { "false" };
+    let (selected, current_attribute) = if selected {
+        ("true", " aria-current=\"true\"")
+    } else {
+        ("false", "")
+    };
     format!(
-        "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected}\" \
-         aria-label=\"{}\"><div role=\"cell\">{}</div>\
-         <div role=\"cell\">{}</div><div role=\"cell\">{}</div></div>",
+        "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected}\"{current_attribute} \
+         aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
+         <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div></div>",
         escape_html(&label),
         escape_html(name),
         escape_html(&usage_value_text(cpu)),
@@ -3722,7 +3734,7 @@ fn a11y_mirror_row_html(
     )
 }
 
-/// Body rowgroup of the mirrored table (only the currently visible rows).
+/// Body rowgroup of the mirrored grid (only the currently visible rows).
 fn a11y_mirror_rows_html(
     snapshot: Option<&SystemSnapshot>,
     visible_indices: &[usize],
@@ -3827,15 +3839,18 @@ fn a11y_mirror_help_html(show_help: bool) -> String {
     html
 }
 
-/// Data part of the hidden subtree: the table (header + visible rows) and the
+/// Data part of the hidden subtree: the grid (header + visible rows) and the
 /// colour-coded metric states. Refreshed on ingest / command, never per frame.
+///
+/// `role="grid"` (not `table`) is required so Chrome exposes the selected row's
+/// `aria-selected=true` as a `selected=true` property in the AX tree.
 fn a11y_mirror_data_html(
     snapshot: Option<&SystemSnapshot>,
     visible_indices: &[usize],
     selected: Option<ProcessKey>,
     sort: SortSpec,
 ) -> String {
-    let mut html = String::from("<div role=\"table\" aria-label=\"プロセス一覧\">");
+    let mut html = String::from("<div role=\"grid\" aria-label=\"プロセス一覧\">");
     html.push_str("<div role=\"rowgroup\">");
     html.push_str(&a11y_mirror_header_html(sort));
     html.push_str("</div>");
@@ -5963,8 +5978,15 @@ mod tests {
             3,
         );
         assert!(selected.contains("role=\"row\""), "{selected}");
+        assert_eq!(
+            selected.matches("role=\"gridcell\"").count(),
+            3,
+            "{selected}"
+        );
+        assert!(!selected.contains("role=\"cell\""), "{selected}");
         assert!(selected.contains("aria-rowindex=\"3\""), "{selected}");
         assert!(selected.contains("aria-selected=\"true\""), "{selected}");
+        assert!(selected.contains("aria-current=\"true\""), "{selected}");
         assert!(selected.contains("PID 42"), "{selected}");
         assert!(selected.contains("選択中"), "{selected}");
         assert!(selected.contains("高"), "{selected}");
@@ -5975,6 +5997,7 @@ mod tests {
             unselected.contains("aria-selected=\"false\""),
             "{unselected}"
         );
+        assert!(!unselected.contains("aria-current"), "{unselected}");
         assert!(!unselected.contains("選択中"), "{unselected}");
     }
 
@@ -5999,11 +6022,25 @@ mod tests {
     }
 
     #[test]
-    fn mirror_table_contains_header_rows_and_help_in_one_subtree() {
+    fn mirror_grid_contains_header_rows_and_help_in_one_subtree() {
         let snapshot = tm_core::demo::demo_snapshot(0);
         let visible: Vec<usize> = (0..snapshot.processes.len().min(3)).collect();
         let html = a11y_mirror_html(Some(&snapshot), &visible, None, SortSpec::default(), true);
-        assert!(html.contains("role=\"table\""), "{html}");
+        // ARIA 仕様上 aria-selected は grid/treegrid の row でのみ露出されるため、
+        // ミラーは table/cell ではなく grid/gridcell を使う（columnheader は維持）。
+        assert!(html.contains("role=\"grid\""), "{html}");
+        assert!(!html.contains("role=\"table\""), "{html}");
+        assert!(!html.contains("role=\"cell\""), "{html}");
+        assert_eq!(
+            html.matches("role=\"gridcell\"").count(),
+            3 * visible.len(),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches("role=\"columnheader\"").count(),
+            A11Y_MIRROR_COLUMNS.len(),
+            "{html}"
+        );
         assert_eq!(html.matches("role=\"rowgroup\"").count(), 2, "{html}");
         assert!(html.contains("role=\"row\""), "{html}");
         assert!(html.contains("role=\"dialog\""), "{html}");
@@ -6015,6 +6052,43 @@ mod tests {
         assert!(!html.contains("aria-hidden"), "{html}");
         assert_ne!(A11Y_MIRROR_DOM_ID, A11Y_LIVE_DOM_ID);
         assert_ne!(A11Y_HELP_CLOSE_DOM_ID, A11Y_MIRROR_DOM_ID);
+    }
+
+    #[test]
+    fn mirror_selected_row_exposes_ax_selected_property_contract() {
+        // CDP の verify_ax_roles は名称フォールバックを廃し、AX property の
+        // selected=true のみを厳格照合する。ミラー側がその property を生むことを
+        // 純粋 HTML レベルで固定する（aria-current は冗長化）。
+        let snapshot = tm_core::demo::demo_snapshot(0);
+        let selected_key = snapshot.processes[0].key;
+        let visible: Vec<usize> = (0..snapshot.processes.len().min(3)).collect();
+        let html = a11y_mirror_html(
+            Some(&snapshot),
+            &visible,
+            Some(selected_key),
+            SortSpec::default(),
+            false,
+        );
+        assert_eq!(html.matches("aria-selected=\"true\"").count(), 1, "{html}");
+        assert_eq!(html.matches("aria-current=\"true\"").count(), 1, "{html}");
+        assert_eq!(
+            html.matches("aria-selected=\"false\"").count(),
+            visible.len() - 1,
+            "{html}"
+        );
+        // 選択行の role は grid 配下の row であり、cell は gridcell である。
+        let selected_row = html
+            .split("<div role=\"row\"")
+            .find(|part| part.contains("aria-selected=\"true\""))
+            .expect("選択行が存在する");
+        assert!(
+            selected_row.contains("aria-current=\"true\""),
+            "{selected_row}"
+        );
+        assert!(selected_row.contains("role=\"gridcell\""), "{selected_row}");
+        assert!(!selected_row.contains("role=\"cell\""), "{selected_row}");
+        let expected_pid = format!("PID {}", selected_key.pid);
+        assert!(selected_row.contains(&expected_pid), "{selected_row}");
     }
 
     #[test]

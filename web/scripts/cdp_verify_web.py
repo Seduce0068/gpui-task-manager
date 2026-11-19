@@ -329,7 +329,10 @@ def parse_proof(proof: str | None) -> dict:
 #                       "key+N" は読んだ値に N を加える（"rows+1" → proof["rows"] + 1）
 #   tuple[int, int] ... 許容範囲（ヘルプオーバーレイの開閉で 0/1 になる dialog）
 EXPECTED_AX_ROLES: dict[str, int | str | tuple[int, int]] = {
-    "table": 1,           # プロセス表 (Role::Table)
+    # ミラーは role="table" ではなく role="grid" を使う。ARIA 仕様上
+    # aria-selected は grid/treegrid の row でのみ露出され、table の row では
+    # Chrome が selected state を AX ツリーから落とすため（制御実験済み）。
+    "grid": 1,            # プロセス表 (Role::Grid)
     "columnheader": 8,    # 列見出し 8 列（ソート可能 7 列 + コマンド列）
     # ヘッダ行（shell.rs の a11y_mirror_header_html が出す <div role="row">）も
     # CDP の AX ツリーでは row に数えられる。proof["rows"] はデータ行だけを数える
@@ -347,11 +350,13 @@ PROOF_AX_STATE_FIELDS: dict[str, str] = {
     "dir": "columnheader",
     "selected_pid": "row",
 }
-# DOM ミラー実装後に True へ反転すると AX 不一致を failure に昇格する。
+# ロール出現数・ソート状態などの AX 不一致を failure へ昇格するか。
 # ミラー実装済み。期待値（row = rows + ヘッダ行）と照合方法（dir は名前の
 # 昇順/降順）の修正後、self-check と実 CDP（demo: rows=30 に対して row=31、
 # dir=asc が名前の「昇順」で 1 件一致）の両方で accessibility.warnings = 0 件を
 # 確認した。これは昇格の判断材料だが、AX 検証の未カバー項目が残るため False 維持。
+# なお選択行の selected property 照合は、ミラー実装に伴いこのフラグに関わらず
+# 常に failure へ昇格する（verify_ax_roles の selected_pid 処理を参照）。
 PROMOTE_AX_TO_FAILURE = False
 
 
@@ -412,11 +417,14 @@ def ax_property(node: dict, key: str):
     return None
 
 
-def verify_ax_roles(ax_nodes: list[dict], proof: dict[str, str]) -> tuple[list[str], dict]:
+def verify_ax_roles(
+    ax_nodes: list[dict], proof: dict[str, str]
+) -> tuple[list[str], list[str], dict]:
     """AX ロール出現数と DOM proof の整合を検証する純粋関数。
 
-    戻り値は (warnings, detail)。呼び出し側で failures ではなく warnings へ積む
-    （ミラー実装後の昇格方法は PROMOTE_AX_TO_FAILURE のコメントを参照）。
+    戻り値は (failures, warnings, detail)。選択行の `selected=true` property 照合
+    だけを常時 failure とし、それ以外の AX 不一致は warnings に積む（呼び出し側が
+    PROMOTE_AX_TO_FAILURE で failure へ昇格する）。
     """
     counts = count_ax_roles(ax_nodes)
     expected = expected_ax_role_counts(proof)
@@ -426,6 +434,7 @@ def verify_ax_roles(ax_nodes: list[dict], proof: dict[str, str]) -> tuple[list[s
         if role:
             by_role.setdefault(role, []).append(node)
 
+    failures: list[str] = []
     warnings: list[str] = []
     detail: dict = {"role_counts": {}, "state": {}, "proof_fields": PROOF_AX_STATE_FIELDS}
     for role, (low, high) in expected.items():
@@ -440,14 +449,28 @@ def verify_ax_roles(ax_nodes: list[dict], proof: dict[str, str]) -> tuple[list[s
     rows = by_role.get(PROOF_AX_STATE_FIELDS["rows"], [])
     selected_pid = proof.get("selected_pid", "-")
     if selected_pid not in ("", "-"):
+        # 名称フォールバック（selected_pid in ax_node_text(row)）は廃止した。
+        # ミラーが role="grid" + aria-selected="true" を出すようになり、ARIA 仕様上
+        # Chrome は選択 row に selected=true property を露出する（role="table" では
+        # 落とされる）。名前だけの一致は non-selected 行にも命中し得る偽陽性なので、
+        # property の厳格照合のみを採用する。aria-current="true" も併記しているが、
+        # property の露出そのものはブラウザ側の挙動であり、CDP が property を出さない
+        # 環境差ではミラーが正しくても failure になる。その場合でも検証を通さず可視化
+        # する（受け入れ条件は AX 上に selected=true が 1 件以上見えること）。
         matched = [
             row for row in rows
             if ax_property(row, "selected") in (True, "true")
-            or selected_pid in ax_node_text(row)
         ]
-        detail["state"]["selected_pid"] = {"value": selected_pid, "matched_rows": len(matched)}
+        detail["state"]["selected_pid"] = {
+            "value": selected_pid,
+            "matched_rows": len(matched),
+            "match": "ax-property:selected=true",
+            "name_fallback": False,
+        }
         if not matched:
-            warnings.append(f"AX に selected_pid={selected_pid} に対応する選択行がない")
+            failures.append(
+                f"AX に selected=true の選択行がない（selected_pid={selected_pid}）"
+            )
 
     headers = by_role.get(PROOF_AX_STATE_FIELDS["sort"], [])
     direction = proof.get("dir")
@@ -471,7 +494,7 @@ def verify_ax_roles(ax_nodes: list[dict], proof: dict[str, str]) -> tuple[list[s
         if not matched:
             warnings.append(f"AX に sort={sort_label} の列見出しがない")
 
-    return warnings, detail
+    return failures, warnings, detail
 
 
 def collect_network(events: list[dict]) -> dict:
@@ -613,11 +636,15 @@ def self_check() -> int:
 
     # DOM proof ↔ AX ロール: オフラインではテーブル構造と純粋関数のみ検証する。
     check(
-        set(EXPECTED_AX_ROLES) == {"table", "columnheader", "row", "dialog"},
-        "AX ロール期待値テーブルのキーが揃っている",
+        set(EXPECTED_AX_ROLES) == {"grid", "columnheader", "row", "dialog"},
+        "AX ロール期待値テーブルのキーが揃っている（table ではなく grid）",
     )
     check(
-        EXPECTED_AX_ROLES["table"] == 1
+        "table" not in EXPECTED_AX_ROLES,
+        "aria-selected が露出されない table ロールは期待値に残っていない",
+    )
+    check(
+        EXPECTED_AX_ROLES["grid"] == 1
         and isinstance(EXPECTED_AX_ROLES["columnheader"], int),
         "固定ロール期待値が整数で定義されている",
     )
@@ -637,7 +664,7 @@ def self_check() -> int:
     resolved = expected_ax_role_counts({"rows": "42"})
     check(
         resolved["row"] == (43, 43)
-        and resolved["table"] == (1, 1)
+        and resolved["grid"] == (1, 1)
         and resolved["dialog"] == (0, 1),
         "proof から AX 期待値が解決できる（row はヘッダ行 +1）",
     )
@@ -661,7 +688,7 @@ def self_check() -> int:
             for i in range(EXPECTED_AX_ROLES["columnheader"])
         ]
         return (
-            [{"role": {"value": "table"}}]
+            [{"role": {"value": "grid"}}]
             + [{"role": {"value": "row"}, "name": {"value": "列見出し行"}}]
             + headers
             + [
@@ -677,24 +704,75 @@ def self_check() -> int:
 
     synthetic = synthetic_ax()
     check(
-        count_ax_roles(synthetic) == {"table": 1, "columnheader": 8, "row": 2},
+        count_ax_roles(synthetic) == {"grid": 1, "columnheader": 8, "row": 2},
         "AX ノードから role 出現数を集計し ignored を除外する（ヘッダ行含む）",
     )
     consistent_proof = {
         "rows": "1", "sort": "名前", "dir": "desc", "selected_pid": "2500",
     }
-    ok_warnings, ok_detail = verify_ax_roles(synthetic, consistent_proof)
+    ok_failures, ok_warnings, ok_detail = verify_ax_roles(synthetic, consistent_proof)
+    check(ok_failures == [], "AX と proof が一致すれば selected property の failure が出ない")
     check(ok_warnings == [], "AX と proof が一致すれば警告が出ない")
-    check(ok_detail["state"]["selected_pid"]["matched_rows"] == 1, "選択行が突き合わされる")
+    check(
+        ok_detail["state"]["selected_pid"]["matched_rows"] == 1,
+        "選択行が AX property selected=true で突き合わされる",
+    )
+    check(
+        ok_detail["state"]["selected_pid"]["match"] == "ax-property:selected=true"
+        and ok_detail["state"]["selected_pid"]["name_fallback"] is False,
+        "selected 照合は名称フォールバックを使わない",
+    )
     check(
         ok_detail["state"]["dir"]["matched_headers"] == 1
         and ok_detail["state"]["dir"]["name_token"] == "降順",
         "dir を AX property ではなく名前の昇順/降順で照合する",
     )
-    zero_warnings, zero_detail = verify_ax_roles([], consistent_proof)
+
+    # 選択状態の厳格照合: 名前だけの一致や selected=false は failure になる。
+    name_only_ax = [
+        {"role": {"value": "grid"}},
+        {"role": {"value": "row"}, "name": {"value": "PID 2500"}},
+    ]
+    name_failures, _, name_detail = verify_ax_roles(name_only_ax, consistent_proof)
     check(
-        len(zero_warnings) >= 4 and zero_detail["role_counts"]["row"]["actual"] == 0,
-        "AX ノード 0 件（ミラー未実装）は警告として検出される",
+        len(name_failures) == 1
+        and name_detail["state"]["selected_pid"]["matched_rows"] == 0,
+        "selected property が無い行は PID 名が一致しても failure になる",
+    )
+    false_property_ax = [
+        {"role": {"value": "grid"}},
+        {
+            "role": {"value": "row"},
+            "name": {"value": "PID 2500"},
+            "properties": [{"name": "selected", "value": {"value": False}}],
+        },
+    ]
+    false_failures, _, _ = verify_ax_roles(false_property_ax, consistent_proof)
+    check(
+        len(false_failures) == 1,
+        "selected=false の行は選択行として数えない",
+    )
+    property_only_ax = [
+        {"role": {"value": "grid"}},
+        {
+            "role": {"value": "row"},
+            "name": {"value": "選択行"},
+            "properties": [{"name": "selected", "value": True}],
+        },
+    ]
+    property_failures, _, property_detail = verify_ax_roles(property_only_ax, consistent_proof)
+    check(
+        property_failures == []
+        and property_detail["state"]["selected_pid"]["matched_rows"] == 1,
+        "selected=true property があれば名前が PID を含まなくても一致する",
+    )
+
+    zero_failures, zero_warnings, zero_detail = verify_ax_roles([], consistent_proof)
+    check(
+        len(zero_warnings) >= 4
+        and len(zero_failures) == 1
+        and zero_detail["role_counts"]["row"]["actual"] == 0,
+        "AX ノード 0 件（ミラー未実装）は警告と selected failure で検出される",
     )
 
     # 列座標: 全列が正の座標で、左から右へ単調増加すること。
@@ -1066,28 +1144,34 @@ async def main() -> int:
     await screenshot(cdp, out_dir / f"{args.prefix}-08-final-{args.label}.png")
 
     # DOM proof ↔ AX ツリーの突き合わせ（偽陽性検出）。
-    # AA-AXMIRROR の DOM ミラー実装前は canvas 内の AccessKit ノードがブラウザ AX
-    # ツリーへ届かず columnheader/row/dialog が 0 件になる。現状はその既知の不一致を
-    # warnings にだけ記録し、failures / passed には影響させない。
-    # ミラー実装後に PROMOTE_AX_TO_FAILURE = True へ反転すると、
-    # 同じ警告が failures へ入り CDP 検証全体が失敗する（エラーへの昇格手順）。
+    # ミラー実装後は role="grid" + aria-selected="true" により Chrome の AX ツリーに
+    # 選択 row の selected=true property が露出される。selected 照合はこの property
+    # のみを厳格に見て、未検出なら PROMOTE_AX_TO_FAILURE に関わらず failure にする。
+    # その他のロール/ソート不一致は従来どおり warnings（フラグで昇格）に留める。
+    ax_failures: list[str] = []
     try:
         ax_tree = await cdp.call("Accessibility.getFullAXTree")
         ax_nodes = ax_tree.get("nodes", []) if isinstance(ax_tree, dict) else []
     except RuntimeError as error:
-        # AX ドメインが使えない環境でも DOM proof 検証そのものは通す（警告のみ）。
+        # AX ドメイン自体が使えない環境では「selected property が無い」と断定できない
+        # ため failure ではなく warning に留める（property 非露出の環境差への配慮）。
         ax_nodes = []
         ax_warnings = [f"Accessibility.getFullAXTree が失敗し AX 検証ができない: {error}"]
         ax_detail = {"role_counts": {}, "state": {}, "error": repr(error)}
     else:
-        ax_warnings, ax_detail = verify_ax_roles(ax_nodes, proof_final)
+        ax_failures, ax_warnings, ax_detail = verify_ax_roles(ax_nodes, proof_final)
     evidence["accessibility"] = {
         "node_count": len(ax_nodes),
         "role_counts": ax_detail["role_counts"],
         "state": ax_detail["state"],
+        "failures": ax_failures,
         "warnings": ax_warnings,
         "enforcement": "failure" if PROMOTE_AX_TO_FAILURE else "warning",
+        "selected_enforcement": "failure",
     }
+    failures.extend(ax_failures)
+    for message in ax_failures:
+        print(f"  FAIL: {message}")
     if PROMOTE_AX_TO_FAILURE:
         failures.extend(ax_warnings)
     else:
