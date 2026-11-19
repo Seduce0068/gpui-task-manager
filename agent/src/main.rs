@@ -82,10 +82,16 @@ const MAX_STREAMS: usize = 2;
 const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// How long the accept loop waits for in-flight connection workers once it
-/// stops accepting. A worker can hold a 1 s read timeout plus a ~250 ms probe
-/// warm-up, so 2 s is enough for a well-behaved peer without blocking shutdown
-/// forever (R2-X03).
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// stops accepting (R2-X03 / S1-SSE).
+///
+/// Must exceed `http::WRITE_TIMEOUT` (5 s): an SSE worker can be mid-write when
+/// the accept loop signals shutdown, then still sleep `STREAM_INTERVAL` (1 s)
+/// before observing the flag at the next loop iteration. 8 s covers that worst
+/// case plus `WARMUP_INTERVAL` (250 ms) and join polling overhead. A dedicated
+/// SSE cancellation channel would react sooner, but would add a second
+/// synchronisation primitive to a loopback-only agent; the flag is checked once
+/// per iteration, and every blocking step in the loop is already bounded.
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// `JoinHandle::join` has no deadline, so the tracker checks `is_finished`
 /// between short sleeps to bound the wait without spawning a helper thread.
@@ -602,6 +608,9 @@ struct SharedState {
     warmed_up: AtomicBool,
     /// Live SSE streams, capped separately from [`MAX_CONNECTIONS`].
     streams: AtomicUsize,
+    /// Set once [`serve`] stops accepting, so each SSE loop can exit instead of
+    /// holding a worker thread open for the whole client lifetime (S1-SSE).
+    shutdown: AtomicBool,
     /// Request counters/gauges exposed read-only at [`METRICS_PATH`].
     metrics: Arc<Metrics>,
 }
@@ -615,8 +624,18 @@ impl SharedState {
             active: AtomicUsize::new(0),
             warmed_up: AtomicBool::new(!needs_warmup),
             streams: AtomicUsize::new(0),
+            shutdown: AtomicBool::new(false),
             metrics: Arc::new(Metrics::new()),
         }
+    }
+
+    /// Signals every long-lived stream to leave its loop on the next iteration.
+    fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+    }
+
+    fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
     }
 }
 
@@ -736,6 +755,10 @@ fn serve(
             }
         }
     }
+    // S1-SSE: signal the flag before joining. Long-lived streams are the only
+    // workers that can outlive a normal response, and they check it at the top
+    // of every iteration (see `handle_stream_connection`).
+    state.request_shutdown();
     // R2-X03: the accept loop has ended, so no new workers can appear. Reap the
     // in-flight ones with a deadline instead of dropping their handles. This
     // adds no telemetry events and leaves the CLI/error contract untouched.
@@ -938,10 +961,39 @@ fn handle_connection_with_stream(
         return Ok(());
     };
     if request.path == STREAM_PATH {
-        handle_stream_connection(stream, &request, state)
-    } else {
-        handle_request(stream, &request, &state.metrics, route)
+        // S1-SSE: validate the method before entering the long-lived handler so
+        // preflight and unsupported methods keep the exact same contract as
+        // `route()`. Only a genuine GET may open a stream and consume a slot.
+        let origin = request.header("origin").map(str::to_string);
+        let allowed_origin = origin
+            .as_deref()
+            .filter(|origin| http::is_allowed_origin(origin));
+        if request.method.eq_ignore_ascii_case("OPTIONS") {
+            let response = preflight_response(&request, allowed_origin);
+            return write_short_response(stream, &request, state, response);
+        }
+        if !request.method.eq_ignore_ascii_case("GET") {
+            let response = method_not_allowed_response(allowed_origin);
+            return write_short_response(stream, &request, state, response);
+        }
+        return handle_stream_connection(stream, &request, state);
     }
+    handle_request(stream, &request, &state.metrics, route)
+}
+
+/// Writes a one-shot [`STREAM_PATH`] response (preflight or method rejection).
+///
+/// The response already carries CORS headers from `preflight_response` or
+/// `method_not_allowed_response`; this helper only adds the matching trace.
+fn write_short_response(
+    stream: &mut TcpStream,
+    request: &http::Request,
+    state: &SharedState,
+    response: http::Response,
+) -> io::Result<()> {
+    let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
+    trace.finish(response.status);
+    http::write_response(stream, &response)
 }
 
 /// Writes one ordinary response after the shared Host/CORS checks.
@@ -973,9 +1025,7 @@ fn handle_request(
                     "Host ヘッダがループバックではありません",
                 ),
             );
-            if let Some(origin) = allowed_origin {
-                http::add_cors_headers(&mut response, origin);
-            }
+            add_cors_if_absent(&mut response, allowed_origin);
             trace.finish(response.status);
             return http::write_response(stream, &response);
         }
@@ -983,10 +1033,27 @@ fn handle_request(
 
     let mut response = route(request);
     trace.finish(response.status);
-    if let Some(origin) = allowed_origin {
-        http::add_cors_headers(&mut response, origin);
-    }
+    add_cors_if_absent(&mut response, allowed_origin);
     http::write_response(stream, &response)
+}
+
+/// Adds CORS headers unless the handler already set them.
+///
+/// `preflight_response` and `method_not_allowed_response` now emit their own
+/// CORS headers so the SSE branch can reuse them; the ordinary path must not
+/// duplicate `Access-Control-Allow-Origin` when it calls the same helpers.
+fn add_cors_if_absent(response: &mut http::Response, origin: Option<&str>) {
+    let Some(origin) = origin else {
+        return;
+    };
+    if response
+        .extra_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Access-Control-Allow-Origin"))
+    {
+        return;
+    }
+    http::add_cors_headers(response, origin);
 }
 
 /// Routes a parsed request to its handler.
@@ -999,22 +1066,14 @@ fn route(
     metrics: &Metrics,
     active: &AtomicUsize,
 ) -> http::Response {
+    let allowed_origin = request
+        .header("origin")
+        .filter(|origin| http::is_allowed_origin(origin));
     if request.method.eq_ignore_ascii_case("OPTIONS") {
-        return preflight_response(request);
+        return preflight_response(request, allowed_origin);
     }
     if !request.method.eq_ignore_ascii_case("GET") {
-        let mut response = http::Response::json(
-            405,
-            "Method Not Allowed",
-            error_body(
-                ErrorCode::MethodNotAllowed,
-                "このエージェントは GET のみ対応しています",
-            ),
-        );
-        response
-            .extra_headers
-            .push(("Allow".to_string(), "GET, OPTIONS".to_string()));
-        return response;
+        return method_not_allowed_response(allowed_origin);
     }
 
     match request.path.as_str() {
@@ -1039,6 +1098,23 @@ fn route(
             error_body(ErrorCode::NotFound, "エンドポイントが見つかりません"),
         ),
     }
+}
+
+/// 405 with the `Allow` header, shared by the ordinary and SSE dispatch paths.
+fn method_not_allowed_response(allowed_origin: Option<&str>) -> http::Response {
+    let mut response = http::Response::json(
+        405,
+        "Method Not Allowed",
+        error_body(
+            ErrorCode::MethodNotAllowed,
+            "このエージェントは GET のみ対応しています",
+        ),
+    );
+    response
+        .extra_headers
+        .push(("Allow".to_string(), "GET, OPTIONS".to_string()));
+    add_cors_if_absent(&mut response, allowed_origin);
+    response
 }
 
 /// RAII release for a [`STREAM_PATH`] slot.
@@ -1119,23 +1195,20 @@ fn handle_stream_connection(
         .as_deref()
         .filter(|origin| http::is_allowed_origin(origin));
 
-    // Same defence in depth as the ordinary request path.
-    if let Some(host) = request.header("host") {
-        if !http::is_allowed_host(host) {
-            let mut response = http::Response::json(
-                403,
-                "Forbidden",
-                error_body(
-                    ErrorCode::Forbidden,
-                    "Host ヘッダがループバックではありません",
-                ),
-            );
-            if let Some(origin) = allowed_origin {
-                http::add_cors_headers(&mut response, origin);
-            }
-            trace.finish(response.status);
-            return http::write_response(stream, &response);
-        }
+    // S1-SSE: unlike the ordinary path, a stream requires an explicit Host.
+    // A browser always sends one, so rejecting a missing Host only blocks
+    // hand-crafted clients (the DNS-rebinding case the helper guards against).
+    let invalid_host_message = match request.header("host") {
+        Some(host) if http::is_allowed_host(host) => None,
+        Some(_) => Some("Host ヘッダがループバックではありません"),
+        None => Some("Host ヘッダが必要です"),
+    };
+    if let Some(message) = invalid_host_message {
+        let mut response =
+            http::Response::json(403, "Forbidden", error_body(ErrorCode::Forbidden, message));
+        add_cors_if_absent(&mut response, allowed_origin);
+        trace.finish(response.status);
+        return http::write_response(stream, &response);
     }
 
     let Some(supplied) = auth::request_token(request) else {
@@ -1178,30 +1251,45 @@ fn handle_stream_connection(
         return http::write_response(stream, &response);
     }
     let _stream_slot = StreamSlot(state);
-    trace.finish(200);
+    // S1-SSE: only a successfully written head is a 200. On failure the
+    // `RequestTrace` drop records finish(0) instead of over-reporting success.
     write_sse_head(stream, allowed_origin)?;
+    trace.finish(200);
 
     // No request body is expected; disable the read deadline so the socket
     // stays idle while events are pushed. The write deadline still bounds each
     // individual `write_all` below.
     stream.set_read_timeout(None)?;
     loop {
+        // S1-SSE: the accept loop signals shutdown before joining workers, so
+        // each iteration gets a chance to exit instead of pinning a thread
+        // until the browser disconnects.
+        if state.is_shutdown() {
+            return Ok(());
+        }
         let warmed = if state.warmed_up.load(Ordering::Acquire) {
             true
         } else {
-            let mut guard = match state.probe.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
-                    emit(
-                        Level::Warn,
-                        "probe.mutex_poisoned",
-                        json!({ "recovered": true }),
-                    );
-                    err.into_inner()
-                }
+            // Scope the guard: the 250 ms warm-up sleep below must not hold the
+            // probe mutex, or a streaming client would block ordinary samples.
+            let sample = {
+                let mut guard = match state.probe.lock() {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        eprintln!(
+                            "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                        );
+                        emit(
+                            Level::Warn,
+                            "probe.mutex_poisoned",
+                            json!({ "recovered": true }),
+                        );
+                        err.into_inner()
+                    }
+                };
+                guard.sample()
             };
-            match guard.sample() {
+            match sample {
                 Ok(_) => {
                     std::thread::sleep(WARMUP_INTERVAL);
                     state.warmed_up.store(true, Ordering::Release);
@@ -1305,11 +1393,12 @@ fn handle_stream_connection(
     }
 }
 
-/// Answers a CORS preflight request.
+/// Answers a CORS preflight request, including its CORS headers.
 ///
 /// Preflights carry no credentials, so they are answered without a token; the
-/// actual `GET` still needs one.
-fn preflight_response(request: &http::Request) -> http::Response {
+/// actual `GET` still needs one. `allowed_origin` is the already-validated
+/// Origin supplied by the caller, so both dispatch paths emit identical headers.
+fn preflight_response(request: &http::Request, allowed_origin: Option<&str>) -> http::Response {
     let Some(origin) = request.header("origin") else {
         return http::Response::json(
             403,
@@ -1336,6 +1425,7 @@ fn preflight_response(request: &http::Request) -> http::Response {
     response
         .extra_headers
         .push(("Access-Control-Max-Age".to_string(), "600".to_string()));
+    add_cors_if_absent(&mut response, allowed_origin);
     response
 }
 
@@ -3079,6 +3169,55 @@ mod tests {
             "GET /api/v1/stream?token=test-token HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
         );
         assert!(query_token.starts_with("HTTP/1.1 401"), "{query_token}");
+        handle.join().expect("demo stream server thread");
+    }
+
+    #[test]
+    fn stream_options_returns_preflight_with_cors_headers() {
+        let (address, handle) = spawn_demo_server_with_stream(1);
+        let preflight = send_request(
+            address,
+            "OPTIONS /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "{preflight}"
+        );
+        assert!(preflight.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
+        assert!(preflight.contains("Access-Control-Allow-Methods: GET, OPTIONS"));
+        assert!(preflight.contains("Access-Control-Allow-Headers: Authorization, Content-Type"));
+        // Preflight stays credential-free, just like the ordinary endpoint.
+        assert!(!preflight.contains("WWW-Authenticate"));
+        handle.join().expect("demo stream server thread");
+    }
+
+    #[test]
+    fn stream_rejects_non_get_methods_with_allow_header() {
+        let (address, handle) = spawn_demo_server_with_stream(1);
+        let response = send_request(
+            address,
+            "POST /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 405 Method Not Allowed"),
+            "{response}"
+        );
+        assert!(response.contains("Allow: GET, OPTIONS"), "{response}");
+        assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
+        assert_eq!(parse_body(&response)["code"], "method_not_allowed");
+        handle.join().expect("demo stream server thread");
+    }
+
+    #[test]
+    fn stream_rejects_a_missing_host_header() {
+        let (address, handle) = spawn_demo_server_with_stream(1);
+        let response = send_request(
+            address,
+            "GET /api/v1/stream HTTP/1.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+        assert_eq!(parse_body(&response)["code"], "forbidden");
+        assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
         handle.join().expect("demo stream server thread");
     }
 }

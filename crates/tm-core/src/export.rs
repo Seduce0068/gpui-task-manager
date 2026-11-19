@@ -22,6 +22,7 @@ use crate::model::{BatteryState, PowerSource, ProcessStatus, SamplingProfile, Sy
 // for the documented primitive but has no direct call site here.
 #[allow(unused_imports)]
 use crate::redact::{redact_snapshot, redact_text, RedactionIdentifiers};
+use crate::sanitize::sanitize_snapshot;
 
 /// Header row of the process CSV written by [`snapshot_to_csv`].
 ///
@@ -40,6 +41,12 @@ pub const PROCESS_CSV_HEADER: &str = "sampled_at_unix_millis,pid,start_time_secs
 /// masking left here; the operation is idempotent if the caller already redacted
 /// its snapshot.
 ///
+/// [`crate::sanitize::sanitize_snapshot`] is applied to the same clone as a
+/// second, defensive boundary: an exporter must not emit ANSI escapes or other
+/// control characters even when the caller skipped sanitisation. Both passes
+/// are idempotent, so re-applying them to a snapshot that was already redacted
+/// and sanitised (as the agent shell does) is safe.
+///
 /// The input snapshot is never mutated and `ids` must be built from values
 /// captured **before** any redaction (see [`RedactionIdentifiers`]).
 pub fn redact_for_export(
@@ -48,6 +55,7 @@ pub fn redact_for_export(
 ) -> SystemSnapshot {
     let mut copy = snapshot.clone();
     redact_snapshot(&mut copy, ids);
+    sanitize_snapshot(&mut copy);
     copy
 }
 
@@ -774,19 +782,17 @@ mod tests {
             ..crate::model::ProcessSnapshot::default()
         });
         let csv = snapshot_to_csv(&snapshot, &secret_ids());
-        // Header terminator, the quoted CRLF inside the command, and the row
-        // terminator: three LFs total. The CRLF must remain inside one field.
-        assert_eq!(
-            csv.matches('\n').count(),
-            3,
-            "a command newline must stay quoted: {csv}"
-        );
+        // The exporter now sanitises before serialising (R2-DATA), so the CRLF
+        // is folded into a space: only the header and the row terminator remain
+        // and no raw control character reaches the file.
+        assert_eq!(csv.matches('\n').count(), 2, "{csv}");
+        assert!(!csv.contains('\r'), "{csv}");
+        // RFC 4180 quoting is still applied to names with commas/quotes.
         assert!(csv.contains("\"a,b\"\"c\""), "{csv}");
-        // The apostrophe sits *inside* the RFC 4180 quotes so a comma or
-        // newline in the value cannot split the field (R29 export audit).
-        assert!(csv.contains("\"'=cmd|' /C calc'!A0\r\nnext\""), "{csv}");
+        // The spreadsheet formula is still neutralised after sanitisation.
+        assert!(csv.contains("'=cmd|' /C calc'!A0 next"), "{csv}");
         // Empty Option fields stay empty instead of inventing a value.
-        assert!(csv.contains("0,0,0,,,\"'=cmd|'"), "{csv}");
+        assert!(csv.contains("0,0,0,,,'=cmd|'"), "{csv}");
     }
 
     #[test]
@@ -808,7 +814,18 @@ mod tests {
     #[test]
     fn csv_neutralises_leading_whitespace_and_newline_before_formulas() {
         // A leading newline or space can be ignored by a spreadsheet importer,
-        // exposing the '=' that follows as a formula (R28 export audit).
+        // exposing the '=' that follows as a formula (R28 export audit). Keep
+        // the CSV-layer guard pinned directly: the exporter sanitises first, so
+        // these raw values no longer reach `csv_text` through the public path.
+        for value in ["\n=1+1", " =1+1", "\u{0b}=1+1", "\u{0c}=1+1"] {
+            let field = csv_text(value);
+            // A quoted field puts the apostrophe after the opening quote.
+            let content = field.strip_prefix('"').unwrap_or(&field);
+            assert!(content.starts_with('\''), "{value:?} -> {field:?}");
+            assert!(field.contains("=1+1"), "{value:?} -> {field:?}");
+        }
+        // Through the export path the control character is removed by the new
+        // sanitisation pass, and the leading '=' still gets its apostrophe.
         for value in ["\n=1+1", " =1+1", "\u{0b}=1+1", "\u{0c}=1+1"] {
             let mut snapshot = SystemSnapshot::default();
             snapshot.processes.push(crate::model::ProcessSnapshot {
@@ -816,14 +833,7 @@ mod tests {
                 ..crate::model::ProcessSnapshot::default()
             });
             let csv = snapshot_to_csv(&snapshot, &secret_ids());
-            // `csv.lines()` would split inside a quoted newline, hiding the
-            // field shape. Check the complete CSV suffix (R39 audit).
-            let expected = if value.starts_with('\n') {
-                format!("\"'{value}\"\n")
-            } else {
-                format!("'{value}\n")
-            };
-            assert!(csv.ends_with(&expected), "unexpected field: {csv:?}");
+            assert!(csv.ends_with("'=1+1\n"), "unexpected field: {csv:?}");
         }
     }
 
@@ -839,12 +849,62 @@ mod tests {
         snapshot.cpu.total_percent = f32::NAN;
         let json = snapshot_to_json(&snapshot, &secret_ids());
         assert_well_formed_json(&json);
+        // Control characters are removed by the exporter's sanitisation pass,
+        // so the JSON escaper no longer needs to emit `\t` / `\n` escapes for
+        // process-supplied text (R2-DATA).
         assert!(
-            json.contains("quote \\\" backslash \\\\ tab \\t newline \\n"),
+            json.contains("quote \\\" backslash \\\\ tab newline"),
             "{json}"
         );
+        assert!(!json.contains("\\t"), "{json}");
+        assert!(!json.contains("\\n"), "{json}");
         assert!(json.contains("\"cpu_percent\": 0"), "{json}");
         assert!(json.contains("\"total_percent\": 0"), "{json}");
+    }
+
+    #[test]
+    fn export_sanitises_untrusted_text_even_without_a_prior_pass() {
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.processes.push(crate::model::ProcessSnapshot {
+            name: "wor\u{1b}[31mker\u{202e}".into(),
+            command: "--home /home/alice https://my-host.tail1234.ts.net\u{1b}]0;title\u{7}".into(),
+            ..crate::model::ProcessSnapshot::default()
+        });
+        snapshot
+            .power
+            .batteries
+            .push(crate::model::BatterySnapshot {
+                name: "BA\u{1b}[31mT0".into(),
+                ..crate::model::BatterySnapshot::default()
+            });
+        snapshot.cgroups.push(crate::model::CgroupGroup {
+            label: "a.slice/w\u{1b}[31morker.service".into(),
+            members: vec![crate::model::ProcessKey::new(4242, 1)],
+        });
+
+        let json = snapshot_to_json(&snapshot, &secret_ids());
+        assert_well_formed_json(&json);
+        for control in ['\u{1b}', '\u{7}', '\u{202e}'] {
+            assert!(!json.contains(control), "control character leaked: {json}");
+        }
+        assert!(!json.contains("\\u001b"), "{json}");
+        assert!(!json.contains("alice"), "{json}");
+        assert!(!json.contains("my-host"), "{json}");
+        assert!(json.contains("\"name\": \"worker\""), "{json}");
+        assert!(json.contains("\"name\": \"BAT0\""), "{json}");
+        assert!(
+            json.contains("\"label\": \"a.slice/worker.service\""),
+            "{json}"
+        );
+
+        // CSV takes the same defensive path.
+        let csv = snapshot_to_csv(&snapshot, &secret_ids());
+        for control in ['\u{1b}', '\u{7}', '\u{202e}', '\r'] {
+            assert!(!csv.contains(control), "control character leaked: {csv}");
+        }
+        // The caller's snapshot is never mutated by the extra pass.
+        assert!(snapshot.processes[0].name.contains('\u{1b}'));
+        assert!(snapshot.power.batteries[0].name.contains('\u{1b}'));
     }
 
     #[test]

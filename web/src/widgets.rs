@@ -234,11 +234,22 @@ pub fn filter_preset_a11y_label(preset: &FilterPreset, active: bool) -> String {
     }
 }
 
+/// AccessKit role for a filter preset chip.
+///
+/// [`accessible_pill`] marks its pill as `Role::Label`, but a preset chip is
+/// clickable (the shell attaches `on_click`), so it must be exposed as a
+/// `Role::Button`. Kept as a pure helper so the a11y contract is testable
+/// without rendering a window.
+pub fn filter_preset_a11y_role() -> Role {
+    Role::Button
+}
+
 /// A preset chip with a stable ElementId and AccessKit name.
 ///
 /// `id` must be unique within a frame; pass `(id, index)` when building the
 /// preset row. Reuses [`accessible_pill`], so no existing DOM hook / aria
-/// contract changes.
+/// contract changes; only the role is overridden from `Label` to `Button`
+/// because the chip is an action.
 pub fn filter_preset_chip(
     id: impl Into<ElementId>,
     preset: &FilterPreset,
@@ -257,6 +268,8 @@ pub fn filter_preset_chip(
         bg,
         filter_preset_a11y_label(preset, active),
     )
+    // Override accessible_pill's Role::Label: this pill is clickable.
+    .role(filter_preset_a11y_role())
 }
 
 /// A utilisation bar with a numeric accessible value and a textual name.
@@ -699,6 +712,20 @@ mod tests {
         let label = filter_preset_a11y_label(preset, true);
         assert!(label.contains("適用中"), "{label}");
         assert!(label.contains("高 CPU"), "{label}");
+    }
+
+    #[test]
+    fn filter_preset_chip_is_a_named_button() {
+        // The chip overrides accessible_pill's Role::Label because it is
+        // clickable, and its accessible name still contains the preset name.
+        assert_eq!(filter_preset_a11y_role(), Role::Button);
+        let preset = filter_preset(FilterPresetId::HighCpu);
+        let name = preset.label;
+        for active in [false, true] {
+            let label = filter_preset_a11y_label(preset, active);
+            assert!(label.contains(name), "{label}");
+            let _chip = filter_preset_chip(("filter-preset-test", active as usize), preset, active);
+        }
     }
 
     #[test]

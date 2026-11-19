@@ -105,6 +105,10 @@ const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実デ
 /// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
 const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
 
+/// 行メニューを開いてからプロセスが入れ替わった（PID 再利用）ときの固定文言。
+/// 数値 PID すら含めず、`;` / 改行も無いので DOM proof / aria の契約を壊さない。
+const STALE_ROW_MENU_NOTICE: &str = "行のプロセスが更新されたため、PID をコピーしませんでした";
+
 /// 設定保存失敗時に status へ出す固定文言（C2-WEB）。
 ///
 /// `save()` の詳細メッセージは console にだけ残し、status / `aria-live` / DOM
@@ -398,6 +402,7 @@ impl TaskManagerApp {
                 }
             }
         }
+        self.revalidate_row_menu();
         self.sync_proof_dom();
     }
 
@@ -432,6 +437,7 @@ impl TaskManagerApp {
                     .set_status(format!("エージェントから取得できません: {text}"), true);
             }
         }
+        self.revalidate_row_menu();
         self.sync_proof_dom();
     }
 
@@ -601,7 +607,7 @@ impl TaskManagerApp {
     /// `keydown` / `composition*` / `input` を受け取り、[`EntityInputHandler`]
     /// 経由で [`Self::replace_text_in_range`] などへ届く。ここで文字を足すと
     /// 二重挿入になるので、この関数はナビゲーションと Esc だけを担当する。
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.control || keystroke.modifiers.alt || keystroke.modifiers.platform {
             return;
@@ -615,7 +621,7 @@ impl TaskManagerApp {
                     self.sync_proof_dom();
                     cx.notify();
                 } else {
-                    self.clear_filter(cx);
+                    self.clear_filter(window, cx);
                 }
                 cx.stop_propagation();
             }
@@ -650,10 +656,22 @@ impl TaskManagerApp {
         }
     }
 
+    /// IME ミラー（ブラウザ側の隠し textarea）へ編集・選択の変化を通知する。
+    ///
+    /// [`Self::apply_input_outcome`] と同じ経路を、Esc / プリセット適用など
+    /// `filter_input` を直接クリアする経路でも使う。これを省くと GPUI 側の
+    /// 表示テキストは消えても textarea の値が残り、次の入力で古い文字が
+    /// 再挿入される。
+    fn notify_ime_mirror(&self, window: &mut Window) {
+        window.notify_text_input_changed(&self.focus_handle);
+        window.notify_text_selection_changed(&self.focus_handle);
+    }
+
     /// 絞り込み欄を空にして、一覧の絞り込みも解除する。
-    fn clear_filter(&mut self, cx: &mut Context<Self>) {
+    fn clear_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.filter_input.clear();
         self.handle_command(Command::ClearFilter, cx);
+        self.notify_ime_mirror(window);
     }
 
     /// 組み込みフィルタプリセットを適用する（R1-I06）。
@@ -661,9 +679,15 @@ impl TaskManagerApp {
     /// すべてのプリセットは `filter.text` が空なので、IME ミラーの表示テキストも
     /// 同時にクリアしないと「欄には前の検索語が残っているのに一覧はプリセット」
     /// という不一致になる。`ClearFilter` と同じ手順を踏むこと。
-    fn apply_filter_preset(&mut self, id: FilterPresetId, cx: &mut Context<Self>) {
+    fn apply_filter_preset(
+        &mut self,
+        id: FilterPresetId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.filter_input.clear();
         self.handle_command(Command::ApplyFilterPreset(id), cx);
+        self.notify_ime_mirror(window);
     }
 
     /// 行メニューを開く。PID と行番号以外の情報は保持しない（R1-I19）。
@@ -674,10 +698,22 @@ impl TaskManagerApp {
         cx.notify();
     }
 
+    /// 最新スナップショットにメニューの対象が居なくなったらメニューを閉じる。
+    ///
+    /// PID は再利用されるので数値ではなく完全な [`ProcessKey`] で照合する。
+    /// 呼び出し側のサンプラが `cx.notify()` を行うため、ここでは状態のみ更新する。
+    fn revalidate_row_menu(&mut self) {
+        if row_menu_is_stale(self.dashboard.snapshot(), self.row_menu) {
+            self.row_menu = None;
+            self.menu_proof = MenuProof::None;
+        }
+    }
+
     /// 行コンテキストメニュー。絶対配置のため既存レイアウト座標を変更しない。
     fn row_context_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.row_menu?;
-        let pid = menu.key.pid;
+        let key = menu.key;
+        let pid = key.pid;
         Some(
             div()
                 .id("row-context-menu")
@@ -710,8 +746,19 @@ impl TaskManagerApp {
                     format!("PID {pid} をコピー"),
                     move |this, cx| {
                         this.row_menu = None;
-                        this.menu_proof = MenuProof::CopyPid;
-                        this.dashboard.set_status(row_menu_pid_status(pid), false);
+                        // 描画時点の PID ではなく、クリック時点のスナップショットで
+                        // 完全な ProcessKey を再検証する（PID 再利用対策）。
+                        match row_menu_copy_pid(this.dashboard.snapshot(), key) {
+                            Some(live_pid) => {
+                                this.menu_proof = MenuProof::CopyPid;
+                                this.dashboard
+                                    .set_status(row_menu_pid_status(live_pid), false);
+                            }
+                            None => {
+                                this.menu_proof = MenuProof::None;
+                                this.dashboard.set_status(STALE_ROW_MENU_NOTICE, false);
+                            }
+                        }
                         this.sync_proof_dom();
                         cx.notify();
                     },
@@ -780,8 +827,7 @@ impl TaskManagerApp {
             cx.notify();
         }
         // ネイティブテキストサービス（Web では IME ミラー）へ編集・選択の変化を通知する。
-        window.notify_text_input_changed(&self.focus_handle);
-        window.notify_text_selection_changed(&self.focus_handle);
+        self.notify_ime_mirror(window);
     }
 
     // ---------------------------------------------------------------- header
@@ -1295,7 +1341,7 @@ impl TaskManagerApp {
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
-                        this.apply_filter_preset(id, cx);
+                        this.apply_filter_preset(id, window, cx);
                     }))
             })
             .collect();
@@ -2334,11 +2380,14 @@ impl TaskManagerApp {
             .selected_key()
             .map(|key| key.pid.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let filter = self.dashboard.filter_text().replace(';', ",");
+        // `filter` / `ime_field` はユーザー入力由来。`key=value;` の区切り
+        // （';' は従来どおり ',' へ）だけでなく '=' と改行も落として、
+        // フィールド境界の注入を防ぐ。
+        let filter = proof_field_text(self.dashboard.filter_text());
         // IME 検証用: 入力欄の表示テキスト（変換中を含む）と変換中フラグ。
         // composition 中は `filter` が変わらず `ime_composing=1` になることを
         // CDP スクリプトが確認する。
-        let ime_field = self.filter_input.text().replace(';', ",");
+        let ime_field = proof_field_text(self.filter_input.text());
         let ime_composing = if self.filter_input.is_composing() {
             1
         } else {
@@ -2799,6 +2848,19 @@ fn proof_with_reconnect(proof: &str, required: bool) -> String {
     format!("{proof}reconnect={};", u8::from(required))
 }
 
+/// Sanitises user text for a `key=value;` DOM proof field.
+///
+/// The legacy `;` → `,` replacement is preserved byte-for-byte. `=`, CR and LF
+/// are dropped as well: without this, a filter or IME value such as `a=1;\r\n`
+/// could forge a field boundary and break the parser used by the CDP checks.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_field_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !matches!(ch, '=' | '\r' | '\n'))
+        .map(|ch| if ch == ';' { ',' } else { ch })
+        .collect()
+}
+
 /// Builds the human-facing browser-tab title from the data source alone.
 ///
 /// The DOM proof fields live exclusively in `body[data-gpui-proof]`; the title
@@ -2874,6 +2936,26 @@ fn proof_with_sampling(
     format!(
         "{proof}power={source};sampling={profile};sampling_ms={effective_interval_ms};cgroups={groups};"
     )
+}
+
+/// Whether the row menu's full process identity is still in the snapshot.
+///
+/// A bare PID is not identity: the kernel reuses PIDs. The menu keeps the whole
+/// [`ProcessKey`] (PID + start time), so a stale key must never authorise an
+/// action after the next sample replaces the process.
+fn row_menu_key_is_live(snapshot: Option<&SystemSnapshot>, key: ProcessKey) -> bool {
+    snapshot.is_some_and(|snapshot| snapshot.processes.iter().any(|process| process.key == key))
+}
+
+/// Whether an open row menu must be closed after a new snapshot arrives.
+fn row_menu_is_stale(snapshot: Option<&SystemSnapshot>, menu: Option<RowMenu>) -> bool {
+    menu.is_some_and(|menu| !row_menu_key_is_live(snapshot, menu.key))
+}
+
+/// PID the CopyPid action may report, or `None` if the process was replaced or
+/// vanished before the click. Kept pure so the PID-reuse rule is testable.
+fn row_menu_copy_pid(snapshot: Option<&SystemSnapshot>, key: ProcessKey) -> Option<u32> {
+    row_menu_key_is_live(snapshot, key).then_some(key.pid)
 }
 
 /// Status announced after the row menu's PID action. No clipboard write is
@@ -3187,6 +3269,33 @@ mod tests {
                 proof.split(';').any(|part| part == field),
                 "{field} missing from {proof}"
             );
+        }
+    }
+
+    #[test]
+    fn dom_proof_filter_fields_cannot_inject_key_value_boundaries() {
+        // 既存の ';' -> ',' 置換はバイト単位で維持（旧 CDP フック不変）。
+        assert_eq!(proof_field_text("cpu;mem"), "cpu,mem");
+        assert_eq!(proof_field_text(""), "");
+
+        let clean = proof_field_text("a=1;\r\nb=2;=;\n");
+        assert_eq!(clean, "a1,b2,,");
+        assert!(!clean.contains('='));
+        assert!(!clean.contains(';'));
+        assert!(!clean.contains('\r'));
+        assert!(!clean.contains('\n'));
+
+        // filter / ime_field を実際の proof と同じ形へ埋め込むと、どんな
+        // ユーザー入力でも key=value; のフィールド数が増えない。
+        for raw in ["a=1;\r\nb=2;=;\n", "plain", "a=b;\r\ninject=1", ""] {
+            let value = proof_field_text(raw);
+            let proof = format!("mode=demo;filter={value};ime_field={value};rows=3;");
+            let fields: Vec<&str> = proof.split(';').filter(|part| !part.is_empty()).collect();
+            assert_eq!(fields.len(), 4, "{proof}");
+            for field in fields {
+                assert_eq!(field.matches('=').count(), 1, "{field} in {proof}");
+            }
+            assert!(proof.starts_with("mode=demo;"), "{proof}");
         }
     }
 
@@ -3585,6 +3694,54 @@ mod tests {
         assert!(!status.contains('\n'));
         assert!(!status.contains('/'));
         assert!(!status.contains("token"));
+    }
+
+    #[test]
+    fn row_menu_key_validation_rejects_reused_pids_and_missing_processes() {
+        let snapshot = export_sample_snapshot();
+        let live = tm_core::ProcessKey::new(4242, 1_700_000_000);
+        let reused = tm_core::ProcessKey::new(4242, 1_700_000_001);
+        let gone = tm_core::ProcessKey::new(9_999, 1_700_000_000);
+        assert_eq!(live.pid, reused.pid, "PID 再利用は開始時刻で見分ける");
+
+        assert!(row_menu_key_is_live(Some(&snapshot), live));
+        assert!(!row_menu_key_is_live(Some(&snapshot), reused));
+        assert!(!row_menu_key_is_live(Some(&snapshot), gone));
+        assert!(!row_menu_key_is_live(None, live));
+
+        // ingest 後のメニュー閉鎖判定。
+        assert!(!row_menu_is_stale(Some(&snapshot), None));
+        assert!(!row_menu_is_stale(
+            Some(&snapshot),
+            Some(RowMenu {
+                key: live,
+                index: 0
+            })
+        ));
+        assert!(row_menu_is_stale(
+            Some(&snapshot),
+            Some(RowMenu {
+                key: reused,
+                index: 0
+            })
+        ));
+        assert!(row_menu_is_stale(
+            None,
+            Some(RowMenu {
+                key: live,
+                index: 0
+            })
+        ));
+
+        // CopyPid はクリック時点のキーを再検証し、古い PID を出さない。
+        assert_eq!(row_menu_copy_pid(Some(&snapshot), live), Some(4242));
+        assert_eq!(row_menu_copy_pid(Some(&snapshot), reused), None);
+        assert_eq!(row_menu_copy_pid(None, live), None);
+
+        // 固定通知に PID / 区切り文字 / 改行は出ない。
+        assert!(!STALE_ROW_MENU_NOTICE.contains("4242"));
+        assert!(!STALE_ROW_MENU_NOTICE.contains(';'));
+        assert!(!STALE_ROW_MENU_NOTICE.contains('\n'));
     }
 
     #[test]
