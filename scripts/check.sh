@@ -195,8 +195,10 @@ if optional_gate_enabled markdownlint; then
   # - log.md: append-only historical record (duplicate headings / bare URLs).
   # - SECURITY.md, notes/{verification,cargo-vet-adoption,ime}.md: pre-existing
   #   MD012/MD024/MD034/MD047 violations that are out of scope for this task.
+  # - packaging/linux/README.deb.md ships in the DEB and is required by
+  #   check-public-docs.sh; lint scope follows that public-document surface.
   echo '==> markdownlint (documentation)'
-  markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'poc-wasm/README.md' 'web/README.md' \
+  markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'packaging/linux/README.deb.md' 'poc-wasm/README.md' 'web/README.md' \
     --ignore log.md \
     --ignore SECURITY.md \
     --ignore notes/verification.md \

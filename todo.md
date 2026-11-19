@@ -406,6 +406,26 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       根拠 u1-sec / u2-state。
 - [x] フレーム分割の O(n^2) 再走査（low）。根拠 u1-sec。
 
+### 優先度: 中 — 最終監査 2026-11-19（第3次）
+
+- [x] watchdog の 3× sampler 周期が 250ms 設定で 750ms となりエージェントの
+      1s フレームを誤判定、再接続ループに陥る (`web/src/shell.rs:3181`)。
+      固定下限（3s 以上）を max 適用し 250/500ms ケースを固定。根拠 w1-diff。
+- [x] SSE 端点エラーが直前フレームを stale と誤表示 (`web/src/shell.rs:552`)。
+      SSE エラー専用ハンドラで stale を変更しない。根拠 w1-diff。
+- [x] SECURITY/DESIGN が SSE を「未実装」と誤記（high）。実装済みの認証・
+      Host/CORS・接続枠を追記、AC-12 マトリクスに SSE 行を追加。根拠 w2-public。
+- [x] プリセット／電源／cgroup の README/DESIGN 未反映、cgroup の「未実装」
+      誤記を訂正。根拠 w2-public。
+- [x] DESIGN のトークン永続化記述を SECURITY/README と整合（0600 保存・
+      再起動再利用）。根拠 w2-public。
+- [x] notes/current-state.md のテスト件数を 485/130 へ更新。根拠 w2-public。
+- [x] markdownlint ゲートへ packaging/linux/README.deb.md を追加
+      (scripts/check.sh, .github/workflows/ci.yml)。根拠 w2-public。
+- [x] テスト追加: SSE 実経路の 403→Forbidden、セットアップ deadline が
+      長寿命ストリームを壊さないこと、watchdog 時刻逆行、DOM proof の
+      active→fallback 即時更新。根拠 w3-tests。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
