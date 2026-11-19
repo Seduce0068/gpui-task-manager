@@ -167,7 +167,7 @@ fn redact_tailnet_tokens(value: &str) -> String {
 pub fn redact_text(value: &str, ids: &RedactionIdentifiers<'_>) -> String {
     let mut out = value.to_string();
     if ids.home.chars().count() >= 3 {
-        out = replace_case_insensitive(&out, ids.home, "/home/user");
+        out = replace_case_insensitive(&out, ids.home, "<home>");
     }
     // The first label of the host name is also used in service names; derive
     // it here so every caller applies the same rule.
@@ -272,7 +272,7 @@ mod tests {
         let value = "/home/alice/work https://my-host.tail1234.ts.net:8443 alice";
         assert_eq!(
             redact_text(value, &ids),
-            "/home/user/work https://host:8443 user"
+            "<home>/work https://host:8443 user"
         );
     }
 
@@ -322,7 +322,7 @@ mod tests {
         // home / hostname: values shorter than 3 chars stay, 3+ are replaced.
         // "/ab" is 3 chars including the leading slash, so it is replaced.
         assert_eq!(redact_text("/a", &ids("/a", "", "")), "/a");
-        assert_eq!(redact_text("/ab", &ids("/ab", "", "")), "/home/user");
+        assert_eq!(redact_text("/ab", &ids("/ab", "", "")), "<home>");
         assert_eq!(redact_text("ab", &ids("", "", "ab")), "ab");
         assert_eq!(redact_text("abc", &ids("", "", "abc")), "host");
         // user: 1 char stays, 2 chars are replaced.
@@ -506,11 +506,11 @@ mod tests {
         let value = "/HOME/ALICE/work https://MY-HOST.TAIL1234.TS.NET:8443 ALICE";
         assert_eq!(
             redact_text(value, &ids),
-            "/home/user/work https://host:8443 user"
+            "<home>/work https://host:8443 user"
         );
         // Mixed case is covered too, including the uppercase `.Ts.Net` suffix.
         let mixed = "/Home/Alice https://My-Host.TailAbCd.Ts.Net AlIcE";
-        assert_eq!(redact_text(mixed, &ids), "/home/user https://host user");
+        assert_eq!(redact_text(mixed, &ids), "<home> https://host user");
         // A bare uppercase tail token goes through `redact_tailnet_tokens`.
         assert_eq!(
             redact_text("--id=TAIL1234ABCD --id=TaIlAbCdEf", &ids),
@@ -528,7 +528,7 @@ mod tests {
         // Multibyte characters before the identifier must not shift the byte
         // offsets used for the replacement or split a UTF-8 code point.
         let value = "日本語 /HOME/ALICE/仕事 MY-HOST ALICE";
-        assert_eq!(redact_text(value, &ids), "日本語 /home/user/仕事 host user");
+        assert_eq!(redact_text(value, &ids), "日本語 <home>/仕事 host user");
     }
 
     #[test]

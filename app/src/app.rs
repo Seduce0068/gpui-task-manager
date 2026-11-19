@@ -3339,7 +3339,7 @@ mod tests {
         assert!(!redacted.contains("koppe"), "{redacted}");
         assert!(!redacted.contains("/home/koppe"), "{redacted}");
         assert!(!redacted.contains("host:nuc"), "{redacted}");
-        assert!(redacted.contains("/home/user"), "{redacted}");
+        assert!(redacted.contains("<home>"), "{redacted}");
     }
 
     #[test]
@@ -3453,7 +3453,7 @@ mod tests {
         assert!(!row.contains("/home/koppe"), "{row}");
         assert!(!row.contains("koppe"), "{row}");
         assert!(!row.contains("nuc"), "{row}");
-        assert!(row.contains("/home/user"), "{row}");
+        assert!(row.contains("<home>"), "{row}");
         assert!(row.ends_with("— 3 件"), "{row}");
     }
 

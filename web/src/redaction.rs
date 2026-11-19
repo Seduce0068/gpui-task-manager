@@ -173,7 +173,7 @@ mod tests {
                 process.name
             );
         }
-        assert_eq!(snapshot.disks[0].mount_point, "/home/user/work");
+        assert_eq!(snapshot.disks[0].mount_point, "<home>/work");
     }
 
     #[test]
