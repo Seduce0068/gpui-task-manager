@@ -60,8 +60,8 @@ trunk build --release
 ```
 
 - 初回は依存 crate のコンパイル込みで 1〜2 分、2 回目以降は数秒です。
-- 生成物サイズ（release、2026-11-17 再計測）: wasm 7.29 MiB（7,642,794 B、
-  gzip 3,044,134 B）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
+- 生成物サイズ（release、2026-11-20 再計測）: wasm 7.58 MiB（7,949,118 B、
+  gzip 3,165,445 B）、JS 156 KiB、`index.html` 1.3 KiB。`data-wasm-opt="z"` により
   trunk が wasm-opt（-Oz）を適用します（初回は wasm-opt を自動ダウンロード）。
 
 ## 起動（デモモード）
@@ -290,7 +290,7 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
   取得できず、GPUI が WebGL2（ANGLE + SwiftShader）へ自動フォールバックします。
   WebGPU を強制すると device lost で描画が停止します（スパイクで確認済み）。
   実 GPU の通常 Chrome での WebGPU 描画は未確認です。
-- **wasm サイズ**: 7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）。wasm-opt（-Oz）適用後も大きいため、
+- **wasm サイズ**: 7.58 MiB（gzip 3.02 MiB、2026-11-20 計測）。wasm-opt（-Oz）適用後も大きいため、
   初回ロードに時間がかかります。配信時は gzip/brotli を有効にしてください。
 - **単一ウィンドウ**: GPUI Web はトップレベルウィンドウ 1 個のみで、
   ポップアップ・ダイアログ・ファイルダイアログは使えません。

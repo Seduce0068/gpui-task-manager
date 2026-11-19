@@ -674,6 +674,30 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   sse_epoch ガードは再接続後に古いフレームを正しく無視。9177 リクエストの
   負荷でハング/クラッシュ/リーク/unknown=0 を確認（ga-multitab / gb-stress）。
 
+### 優先度: 高 — 公開準備最終監査 2026-11-20
+
+- [x] リリース成果物（binary + wasm）に開発 worktree パス
+      （内部開発 worktree の絶対パス）が混入。remap-path-prefix が
+      `/home/` → `/build/` に置換するため既存ゲートがすり抜ける。
+      release-linux ゲートへ内部 worktree パターンを追加し、
+      wasm/dist も走査対象に含める。根拠 ib-publish。
+- [x] README / notes/current-state / DESIGN §12.1 のテスト件数を
+      workspace 509（core 174 / vm 80 / platform 44 / agent 111 / app 100）
+      / web 167、日付 2026-11-20 へ更新。根拠 ib-publish。
+- [x] 実装済みの AX ミラー（role=grid）とマルチタブ三方マージ／storage 同期を
+      DESIGN（ADR 追加）と README「できること」へ反映。根拠 ib-publish。
+- [x] NOTICE.md の直接依存一覧を修正: console_error_panic_hook は推移依存へ、
+      web-time 1.1.0 を直接依存として追加。根拠 ib-publish。
+- [x] wasm サイズ記述（7,642,794 B / 2026-11-17「再ビルド未実施」）を
+      現行 dist の 7,949,118 B / gzip 3,165,445 B / 2026-11-20 へ更新。
+      根拠 ib-publish。
+
+### メモ — Web 長時間安定性 2026-11-20
+
+- 60 秒計測で DOM ノード 164 / AX row 31 / proof キー 30 が一定、tick 単調、
+  ヒープは GC ノコギリでネット -830KB、console error 0、2 タブ同期も動作。
+  修正項目なし（ia-webstab）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

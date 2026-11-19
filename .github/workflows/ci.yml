@@ -296,6 +296,15 @@ jobs:
           check account-identifier '(koppe|onoderakeita)'
           check noreply-email '[0-9]{6,}\+[A-Za-z0-9_-]+@users\.noreply\.github\.com'
           check tailscale-domain 'tail[0-9A-Za-z_-]+\.ts\.net'
+          # remap-path-prefix replaces /home/ with /build/, so the existing
+          # dev-home-path check cannot see an internal worktree path. Match the
+          # path fragments that survive the remap instead (name only, redacted).
+          # A bare `work/gpui-` would also match the normal Actions checkout
+          # /home/runner/work/gpui-task-manager/..., so require the internal
+          # `default-workspace/` component to keep a clean CI build passing.
+          check internal-worktree-dir '\.agents/worktrees'
+          check internal-workspace-root 'default-workspace/work/gpui-'
+          check remapped-dev-home '/build/document/'
           echo 'binary-disclosure: OK (no development paths / account identifiers in release binary)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -329,6 +338,45 @@ jobs:
           # gates の locked: true と同じロック整合性を wasm ビルドにも適用する。
           trunk build --release --locked
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
+      # 公開成果物（wasm / JS）の開示ゲート。release-linux と同じ方針で、
+      # remap をすり抜ける内部 worktree パスを検知する。一致行は出力しない。
+      - name: Gate - no development paths in web dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(web/dist/*.wasm web/dist/*.js)
+          if (( ${#files[@]} == 0 )); then
+            echo 'web-disclosure: no web/dist/*.wasm or *.js files found' >&2
+            exit 1
+          fi
+          if ! command -v strings >/dev/null 2>&1; then
+            echo 'web-disclosure: strings (binutils) is not available' >&2
+            exit 1
+          fi
+          dump="$(mktemp)"
+          trap 'rm -f -- "${dump}"' EXIT
+
+          # パターン名 -> 拡張正規表現。一致行は絶対に出力しない（--redact 相当）。
+          # 素の `/home/` は wasm 内の一般的な文字列リテラルにも一致しうるため、
+          # アカウント名を伴う形に限定する（check-public-docs.sh と同じ方針）。
+          check() {
+            local name="$1" pattern="$2" file
+            for file in "${files[@]}"; do
+              strings -a -n 6 -- "${file}" > "${dump}"
+              if grep -Eq -- "${pattern}" "${dump}"; then
+                echo "web-disclosure: pattern '${name}' found in ${file} (value redacted)" >&2
+                exit 1
+              fi
+            done
+          }
+          check dev-home-path '/home/(koppe|onoderakeita)/'
+          check account-identifier '(koppe|onoderakeita)'
+          check noreply-email '[0-9]{6,}\+[A-Za-z0-9_-]+@users\.noreply\.github\.com'
+          check tailscale-domain 'tail[0-9A-Za-z_-]+\.ts\.net'
+          check internal-worktree-dir '\.agents/worktrees'
+          check internal-workspace-root 'default-workspace/work/gpui-'
+          check remapped-dev-home '/build/document/'
+          echo 'web-disclosure: OK (no development paths / account identifiers in web dist)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-web

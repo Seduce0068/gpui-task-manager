@@ -64,6 +64,8 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - ブラウザ版（読み取り専用）: `web/` + `poc-wasm/`。ローカルエージェント経由で
   実データを表示（wasm / GPUI Web）
 - **ライトテーマ（Catppuccin Latte）**: ネイティブ版・ブラウザ版ともヘッダーの「ライト/ダーク」ボタンで切替、設定に永続化（ブラウザ版は `localStorage`）
+- **スクリーンリーダー向け AX ミラー（ブラウザ版）**: GPUI canvas の AccessKit がブラウザ AX に届かないため、非表示 DOM ミラーを `role=grid` で公開し、行・列・セルを読み上げ可能にする（ADR-022）
+- **複数タブ設定同期（ブラウザ版）**: `localStorage` への差分マージ保存と `storage` イベント同期で、複数タブ / インスタンス間の設定変更を調停する（ADR-023）
 
 ## クイックスタート（Kubuntu / Wayland）
 
@@ -182,7 +184,7 @@ cd poc-wasm && trunk build --release
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
 （`gpui-pre-web`、WebGPU → WebGL2 自動フォールバック）で描画します。
 `tm-agent` に接続しない場合は決定的なデモデータで動作します。プロセス操作は
-**提供しません**（読み取り専用）。wasm サイズは **7.29 MiB（gzip 2.90 MiB、2026-11-17 最終計測）**で、
+**提供しません**（読み取り専用）。wasm サイズは **7,949,118 B（gzip 3,165,445 B、2026-11-20 計測）**で、
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用しています。日本語 IME は
 `EntityInputHandler` + composition で対応済みです（[notes/ime.md](notes/ime.md)）。
 
@@ -297,12 +299,12 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 - Gitleaks でシークレットスキャン: `.git/hooks/pre-commit` がコミット前にステージ済み
   差分を検査し、CI も最終ゲートとして全履歴を走査する（ローカルフックは回避可能なため）
 
-## 検証状況（2026-11-19、Runtime Proof）
+## 検証状況（2026-11-20、Runtime Proof）
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **491 passed / 0 failed**（core 170 / viewmodel 79 / platform 44 / agent 104 / app 94、2026-11-19 実測） |
-| web ユニットテスト | **136 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-19 実測） |
+| `cargo test --workspace` | **509 passed / 0 failed**（core 174 / viewmodel 80 / platform 44 / agent 111 / app 100、2026-11-20 実測） |
+| web ユニットテスト | **167 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
@@ -314,7 +316,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions はコミット SHA 固定（タグはコメント併記）、Dependabot github-actions 週次更新で追従 |
-| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、最終再計測 7,642,794 B（gzip 3,044,134 B、2026-11-17） |
+| wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、2026-11-17 最終再計測 7,642,794 B（gzip 3,044,134 B）、2026-11-20 現行 dist 7,949,118 B（gzip 3,165,445 B） |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
@@ -348,7 +350,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
   [SECURITY.md](SECURITY.md) の GitHub Security Advisory を参照）。配布用に
   ビルドする場合は環境変数 `DEB_MAINTAINER` に実在の maintainer 名と連絡先を
   指定する（例: `DEB_MAINTAINER='Name <real-email>' bash packaging/linux/build-deb.sh`）
-- ブラウザ wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 最終計測、以降再ビルド未実施）
+- ブラウザ wasm は 7,949,118 B（gzip 3,165,445 B、wasm-opt -Oz 適用済み、2026-11-20 計測）
 - エージェントのサンプリングは共有プローブで直列化（1 スナップショット約 250 ms）。接続は最大 8 本まで並列処理し、超過は即座に 503（アイドル接続が他のリクエストをブロックしない）
 - GPUI 系は個人アカウントが再公開するスナップショット。完全ピンで運用し、更新は
   まとめて行う必要がある

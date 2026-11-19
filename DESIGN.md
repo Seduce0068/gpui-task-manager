@@ -306,7 +306,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - CJK は `CanvasFontFallback::EmojiAndCjk` が必須。`gpui_platform::application()`
   では設定できないため、`gpui_web::WebPlatform` を直接構築して
   `fetch_http_client` を注入する。
-- wasm サイズは wasm-opt（-Oz）適用後 **7.29 MiB（gzip 2.90 MiB、2026-11-17 計測）**。
+- wasm サイズは wasm-opt（-Oz）適用後 **7,949,118 B（gzip 3,165,445 B、2026-11-20 計測）**。
   `web/index.html` の `data-wasm-opt="z"` で trunk が wasm-opt を自動適用する。
 
 ### 6.5 ブラウザ版シェルの実装結果（`web/`）
@@ -451,7 +451,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 | ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
 | エージェント 1 スナップショット | 約 250 ms（共有プローブで直列化、接続は最大 8 並列） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
-| wasm（release、wasm-opt -Oz） | 7.29 MiB / gzip 2.90 MiB（2026-11-17 計測） |
+| wasm（release、wasm-opt -Oz） | 7,949,118 B / gzip 3,165,445 B（2026-11-20 計測） |
 
 ---
 
@@ -554,9 +554,9 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
 | DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
 | DESIGN.md §6.3 / SECURITY.md §3 | SSE（`/api/v1/stream`）の実装 | Bearer 認証・Host 必須検証・loopback CORS・専用接続枠 `MAX_STREAMS`（2 枠）・読み取りタイムアウト非適用を実装 | `agent/src/main.rs:51,79,1187-1262` | 一致（R2-X03 反映） |
-| notes/current-state.md | 検証状況 | workspace 485 / web 130（core 170 / viewmodel 79 / platform 44 / agent 100 / app 92）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-19 実測を反映） |
+| notes/current-state.md | 検証状況 | workspace 509 / web 167（core 174 / viewmodel 80 / platform 44 / agent 111 / app 100）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
-| notes/index.md | current-state の日付 | 2026-11-18 | 本文 | 一致 |
+| notes/index.md | current-state の日付 | 2026-11-20 | 本文 | 一致 |
 | RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みで本文にも反映済み（R1-D02、2026-11-18） | `notes/ime.md`、README.md | 一致（反映済み） |
 
 - 時系列ログ（`log.md`、`notes/verification.md` の個別記録、
@@ -768,6 +768,41 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   強いコピーレフトを採用したため、今後の第三者コード取り込み時はライセンス
   互換性の確認が必須となる。
 
+### ADR-022: ブラウザの AX は非表示 DOM ミラー + role=grid で公開する
+
+- 状況: ブラウザ版は GPUI Web の canvas に描画するため、ネイティブ版の
+  AccessKit ツリーがブラウザのアクセシビリティツリーへ届かない。
+  スクリーンリーダーが行・列・セルを読み取れない。
+- 決定: 描画とは別に視覚的に隠した DOM ミラーを生成し、表を `role=grid` /
+  `role=row` / `role=gridcell` で公開する。見出しは `role=columnheader`、
+  選択状態は `aria-selected` で表現する。
+- 理由: canvas はピクセルしか提供せず、ブラウザ AX へ構造を渡す経路が無い。
+  DOM ミラーなら既存のスクリーンリーダーとアクセシビリティ検査がそのまま
+  利用できる。
+- 代替: GPUI Web 側に独自の AX ブリッジを実装する（外部クレートの変更が
+  必要で採否を依存に委ねる）、AX を断念する（要件を満たさない）。
+- 結果: スクリーンリーダーが行・列・セルの読み上げと選択状態の把握が可能に
+  なる。ミラーは描画と同じスナップショットから生成し、表示内容との乖離を
+  防ぐ。
+
+### ADR-023: 設定は差分マージ + storage 同期で複数タブ/インスタンスを調停する
+
+- 状況: ブラウザ版は `localStorage` に設定を保存するが、`localStorage` には
+  原子的な compare-and-swap が無い。複数タブ / インスタンスが同時に保存すると
+  後の書き込みが先の書き込みを上書きする。
+- 決定: 保存はフィールド単位の差分マージとし、`storage` イベントで他タブの
+  変更を購読して状態へ反映する。更新時刻を見て競合を調停し、変更の無い
+  フィールドは保持する。
+- 理由: `localStorage` は同期的に読み書きできるが所有権や CAS が無いため、
+  全体置き換えでは並行編集の変更が失われる。差分とイベント同期なら
+  追加依存なしで複数タブ間の一貫性を保てる。
+- 代替: `IndexedDB` のトランザクション（実装コストが大きい）、Web Locks API
+  （ブラウザ差と旧環境のフォールバックが必要）、ロック用サーバの設置
+  （読み取り専用のブラウザ版構成と矛盾する）。
+- 結果: 複数タブ / インスタンスで設定を開いても変更が失われず、`storage`
+  イベントで他タブの更新が反映される。ネイティブ版の原子書き込み（ADR-012）
+  とは経路を分け、共通スキーマ `tm-viewmodel::Settings` は維持する。
+
 ---
 
 ## 14. 既知の制限・未検証
@@ -785,7 +820,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   ネイティブ版はファイル、ブラウザ版は `localStorage` に永続化する。ブラウザ版の
   状態フックは `theme=dark|light` を公開し、CDP で切替・復元を検証する。
 - GPUI 系の完全ピンは更新を止めるため、定期的な見直しが必要。
-- ブラウザ版の wasm は 7.29 MiB（gzip 2.90 MiB、wasm-opt -Oz 適用済み、2026-11-17 計測）。
+- ブラウザ版の wasm は 7,949,118 B（gzip 3,165,445 B、wasm-opt -Oz 適用済み、2026-11-20 計測）。
 - ブラウザ版は単一ウィンドウのみ（ポップアップ / ダイアログ不可）。CJK は
   Canvas フォールバック描画のため、ネイティブのシェーピングより品質が劣る。
 - ヘッドレス環境では WebGPU が使えず WebGL2 フォールバックになる。実 GPU での
