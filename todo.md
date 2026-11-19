@@ -134,7 +134,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
  再現には 2 枚目のモニタ接続または KDE 表示設定の scale 変更が必要。
 
 - [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 435/90・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）（R1-G12, R1-G13）。調査内容は notes/environment-verification.md に記録。性能再測定は実環境・大規模データが必要で未実施。
-- [ ] 放置されたローカルブランチ／merged リモートブランチを整理する（R1-G14）。調査内容は notes/environment-verification.md に記録済み。削除は破壊的操作のためユーザー承認待ち（未実行）。 削除候補と復元経路:
+- [x] 放置されたローカルブランチ／merged リモートブランチを整理する（R1-G14）。調査内容は notes/environment-verification.md に記録済み。削除は破壊的操作のためユーザー承認待ち（未実行）。 削除候補と復元経路:（ユーザー承認を得て 2026-11-19 に実行: fix / backup 3 件を削除。master / アーカイブは reflog 依存のため保持）
 - `fix/tm-agent-test-shutdown-race`: `origin/main` マージ済み、リモートに同一 SHA
   (`dab7520`) が残るため `git branch -d fix/tm-agent-test-shutdown-race` は安全。
 - `backup/main-pre-integration` / `backup/round31-safe-pre-integration`: 統合前の
