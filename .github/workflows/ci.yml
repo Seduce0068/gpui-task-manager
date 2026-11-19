@@ -131,9 +131,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: "1.95"
+          toolchain: "1.95.0"
       - name: Check workspace with MSRV
-        run: cargo +1.95 check --workspace --locked
+        run: cargo +1.95.0 check --workspace --locked
 
   # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
   # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と
