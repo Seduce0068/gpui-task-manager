@@ -611,6 +611,24 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       `--bogusflag --version` が exit 0（tm-agent は exit 2）。
       全引数検証後に version/help を処理する順序へ統一。根拠 bb-cli。
 
+### 優先度: 中 — 回帰／設定マイグレーション監査 2026-11-20
+
+- [x] AX ミラーが role="table" のため Chrome が aria-selected の selected state
+      を落とす（AX properties に selected 0 件）。role="grid" + gridcell へ変更
+      して state を暴露し、CDP 検証も property で厳格化。根拠 da-regress。
+- [x] native の保存失敗ステータスだけ transient（web は persistent）。
+      `app/src/app.rs:241` を set_persistent_status へ変更しテスト更新。
+      根拠 db-migrate。
+- [x] web の corrupt 退避キーが 1ms 分解能で衝突し得る。`-N` サフィックスを
+      解釈するだけのデッドロジックを生成側へ反映（既存キー列挙）。根拠 db-migrate。
+
+### メモ — 実動確認 2026-11-20
+
+- F1 ヘルプ3経路、64-hex proof マスク、ソート反転と AX 名、選択行同期、
+  エクスポート total 保持、CLI exit code、v1→v2 読み込み、未来 version 保持、
+  opaque version、corrupt 6 連鎖（5件 prune）、保存失敗通知は実動で確認。
+  修正項目は上記 3 件のみ（da-regress / db-migrate）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

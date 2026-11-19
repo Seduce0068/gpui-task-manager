@@ -235,10 +235,13 @@ pub struct TaskManagerApp {
 /// action notice must not be erased by an unrelated save (C2-SETTINGS). The
 /// message is a fixed, redacted constant, so no path or I/O detail leaks into
 /// the UI. Factored out of the shell so the policy is directly testable.
+///
+/// The failure is persistent (not cleared by the next successful sample),
+/// matching the web shell's `SettingsNotice::save_failed()` (EB-SAVE).
 fn report_save_result(dashboard: &mut Dashboard, result: Result<(), std::io::Error>) {
     if let Err(error) = result {
         eprintln!("gpui-task-manager: 設定を保存できません: {error}");
-        dashboard.set_status(crate::settings::NOTICE_SAVE_FAILED, true);
+        dashboard.set_persistent_status(crate::settings::NOTICE_SAVE_FAILED);
     }
 }
 
@@ -3495,6 +3498,10 @@ mod tests {
         );
         let status = dashboard.status().expect("failed save must be visible");
         assert!(status.is_error);
+        assert!(
+            status.persistent,
+            "save failure must persist like the web shell"
+        );
         assert!(status.text.ends_with(NOTICE_SAVE_FAILED), "{}", status.text);
         assert!(
             !status.text.contains("/home"),

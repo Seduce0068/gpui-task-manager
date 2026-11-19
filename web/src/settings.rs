@@ -148,12 +148,39 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
 
-/// Builds the quarantine key for a value backed up at `nanos`.
+/// Builds a collision-free quarantine key for a value backed up at `nanos`.
 ///
-/// Pure and timestamp-injected so the key format is testable without a browser.
+/// `existing` is the snapshot of `localStorage` keys taken immediately before
+/// the write. The plain `prefix + hex(nanos)` key is used when free; when it is
+/// already taken (a second tab, or an earlier quarantine in the same
+/// millisecond — `web-time` only has millisecond resolution) a numeric `-N`
+/// suffix is appended until a free key is found.
+///
+/// Judgment (EC-BACKUP): an in-process monotonic counter was rejected because
+/// it cannot see keys another tab wrote and would add shared state that races
+/// on startup. Reusing the `-N` form already parsed by
+/// [`corrupt_backup_sort_key`] activates that previously dead logic, keeps the
+/// key self-describing and correctly ordered by the existing retention sweep,
+/// and needs no extra state. A failed enumeration arrives here as an empty
+/// slice, i.e. the unsuffixed fallback key.
+///
+/// Pure and timestamp/key-injected so the format stays testable without a
+/// browser; [`quarantine_corrupt_with`] supplies the real storage snapshot.
 #[cfg(any(target_family = "wasm", test))]
-fn corrupt_backup_key(nanos: u128) -> String {
-    format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}")
+fn corrupt_backup_key(nanos: u128, existing: &[String]) -> String {
+    let base = format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}");
+    if !existing.iter().any(|key| key == &base) {
+        return base;
+    }
+    // At most `existing.len()` candidates can be occupied, so the bounded range
+    // always contains a free suffix; no unbounded loop is needed.
+    for suffix in 1..=(existing.len() as u64 + 1) {
+        let candidate = format!("{base}-{suffix}");
+        if !existing.iter().any(|key| key == &candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("bounded suffix search always finds a free key")
 }
 
 /// Wall-clock nanoseconds since the Unix epoch, used to keep quarantine keys
@@ -170,10 +197,10 @@ fn now_nanos() -> u128 {
 /// preserve the offending bytes under, and the default JSON to install at the
 /// primary key so a reload no longer sees the corrupt document.
 #[cfg(any(target_family = "wasm", test))]
-fn quarantine_writes(nanos: u128) -> (String, String) {
+fn quarantine_writes(nanos: u128, existing: &[String]) -> (String, String) {
     let default = serde_json::to_string(&Settings::default())
         .expect("Settings always serializes to a JSON object");
-    (corrupt_backup_key(nanos), default)
+    (corrupt_backup_key(nanos, existing), default)
 }
 
 /// Sort key for a quarantine key: fixed-width timestamp, then the numeric
@@ -209,7 +236,11 @@ fn quarantine_corrupt_with(
     keys: impl Fn() -> Vec<String>,
     remove: impl Fn(&str),
 ) -> String {
-    let (backup_key, default_json) = quarantine_writes(nanos);
+    // Snapshot the namespace before choosing the key. `keys()` is the injected
+    // storage enumeration; on wasm it uses `Storage::length`/`key`, whose
+    // failures already degrade to an empty snapshot (see `quarantine_corrupt`).
+    let existing = keys();
+    let (backup_key, default_json) = quarantine_writes(nanos, &existing);
     let backed_up = write(&backup_key, raw);
     let _ = write(STORAGE_KEY, &default_json);
     if backed_up {
@@ -855,14 +886,65 @@ mod tests {
 
     #[test]
     fn corrupt_backup_sort_key_orders_numeric_suffixes() {
-        let two =
-            corrupt_backup_sort_key(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}-2", 0x1000u128));
-        let ten = corrupt_backup_sort_key(&format!(
-            "{CORRUPT_BACKUP_KEY_PREFIX}{:016x}-10",
-            0x1000u128
-        ));
+        let stamp = 0x1000u128;
+        let key = |suffix: &str| format!("{CORRUPT_BACKUP_KEY_PREFIX}{stamp:016x}{suffix}");
+        let plain = corrupt_backup_sort_key(&key(""));
+        let one = corrupt_backup_sort_key(&key("-1"));
+        let two = corrupt_backup_sort_key(&key("-2"));
+        let ten = corrupt_backup_sort_key(&key("-10"));
+        assert!(plain < one, "base must sort before -1");
+        assert!(one < two, "-1 must sort before -2");
         assert!(two < ten, "-2 must sort before -10");
+        assert_eq!(one, Some((format!("{stamp:016x}"), 1)));
+        assert_eq!(plain, Some((format!("{stamp:016x}"), 0)));
         assert!(corrupt_backup_sort_key(STORAGE_KEY).is_none());
+    }
+
+    #[test]
+    fn corrupt_backup_key_avoids_collisions_with_numeric_suffix() {
+        let nanos = 0x0000_0000_0000_1234u128;
+        let base = format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}");
+        // Empty snapshot is also the enumeration-failure fallback.
+        assert_eq!(corrupt_backup_key(nanos, &[]), base);
+
+        let first = corrupt_backup_key(nanos, std::slice::from_ref(&base));
+        assert_eq!(first, format!("{base}-1"));
+        let second = corrupt_backup_key(nanos, &[base.clone(), first.clone()]);
+        assert_eq!(second, format!("{base}-2"));
+
+        // A different timestamp is never a collision.
+        let other = corrupt_backup_key(nanos + 1, &[base, first, second]);
+        assert_eq!(
+            other,
+            format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}", nanos + 1)
+        );
+    }
+
+    #[test]
+    fn quarantines_in_the_same_millisecond_get_distinct_keys() {
+        let raw = "{ not json";
+        let nanos = 0x0000_0000_0000_1234u128;
+        let storage = MemoryStorage::default();
+        let first = quarantine_corrupt_with(
+            raw,
+            nanos,
+            |key, value| storage.write(key, value),
+            || storage.keys(),
+            |key| storage.remove(key),
+        );
+        let second = quarantine_corrupt_with(
+            raw,
+            nanos,
+            |key, value| storage.write(key, value),
+            || storage.keys(),
+            |key| storage.remove(key),
+        );
+        assert_ne!(first, second);
+        assert_eq!(second, format!("{first}-1"));
+        // Both offending documents survive side by side instead of overwriting.
+        let entries = storage.entries.borrow();
+        assert_eq!(entries.get(&first).map(String::as_str), Some(raw));
+        assert_eq!(entries.get(&second).map(String::as_str), Some(raw));
     }
 
     #[test]
@@ -886,6 +968,44 @@ mod tests {
         assert_eq!(backups.len(), CORRUPT_BACKUP_LIMIT, "oldest must be pruned");
         assert!(!backups.contains(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}", 0x1000)));
         assert!(backups.contains(&format!("{CORRUPT_BACKUP_KEY_PREFIX}{:016x}", 0x1005)));
+        assert!(storage.entries.borrow().contains_key(STORAGE_KEY));
+    }
+
+    #[test]
+    fn six_quarantines_in_one_millisecond_keep_only_the_five_newest() {
+        // web-time has 1ms resolution, so a burst of quarantines can share one
+        // timestamp. Collision suffixes must stay distinct AND prune correctly.
+        let nanos = 0x0000_0000_0000_1234u128;
+        let storage = MemoryStorage::default();
+        let mut issued = Vec::new();
+        for _ in 0..6 {
+            issued.push(quarantine_corrupt_with(
+                "{ not json",
+                nanos,
+                |key, value| storage.write(key, value),
+                || storage.keys(),
+                |key| storage.remove(key),
+            ));
+        }
+        assert_eq!(
+            issued[0],
+            format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}")
+        );
+        assert_eq!(
+            issued[5],
+            format!("{CORRUPT_BACKUP_KEY_PREFIX}{nanos:016x}-5")
+        );
+
+        let backups: Vec<String> = storage
+            .keys()
+            .into_iter()
+            .filter(|key| key.starts_with(CORRUPT_BACKUP_KEY_PREFIX))
+            .collect();
+        assert_eq!(backups.len(), CORRUPT_BACKUP_LIMIT, "oldest must be pruned");
+        assert!(!backups.contains(&issued[0]), "plain key is the oldest");
+        for key in &issued[1..] {
+            assert!(backups.contains(key), "{key} must survive");
+        }
         assert!(storage.entries.borrow().contains_key(STORAGE_KEY));
     }
 
