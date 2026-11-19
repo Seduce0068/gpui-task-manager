@@ -17,7 +17,17 @@
 #   - このファイルはリポジトリ直下に置くため、別 workspace の web/ にも適用される。
 #   - 置換先は固定の仮想パス /build とし、ホスト名 / アカウント名を残さない。
 #     一般的な /home/ と /Users/ を先に置き、具体的なプレフィックスを後に置く
-#     （rustc は複数指定を順に適用するため、後の指定が優先される）。
+#     （rustc は複数指定を順に適用するため、後の指定が優先される。実測:
+#     /tmp/=/build/ と /tmp/remap-probe=/build/foo の併記では後者が採用される）。
+#   - ローカル作業ツリーは /home/koppe=/build だけだと /build/document/... として
+#     残り、公開ゲートの remapped-dev-home / internal-workspace-root /
+#     internal-worktree-dir に一致する。以下のローカル固有エントリでリポジトリ
+#     ルートと、この worktree のルート（.agents/worktrees/integration-r1 配下の
+#     target/ を含む）をまとめて /build/private へ置換する。
+#     /build/document=... は remap 後に残ったパスの二次置換（多層防御）。
+#     いずれも CI の /home/runner/... には一致しないため公開ゲートの
+#     CI 側の false positive は発生しない。他の worktree を使う場合は
+#     integration-r1 のエントリをその worktree 名に差し替えること。
 [build]
 rustflags = [
   "--remap-path-prefix=/home/=/build/",
@@ -25,4 +35,8 @@ rustflags = [
   "--remap-path-prefix=/home/koppe=/build",
   "--remap-path-prefix=/home/runner=/build",
   "--remap-path-prefix=/Users/runner=/build",
+  "--remap-path-prefix=/home/koppe/document=/build/private",
+  "--remap-path-prefix=/build/document=/build/private",
+  "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager=/build/private",
+  "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager/.agents/worktrees/integration-r1=/build/private",
 ]

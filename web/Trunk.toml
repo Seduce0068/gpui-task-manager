@@ -5,3 +5,23 @@ dist = "dist"
 [serve]
 address = "127.0.0.1"
 port = 8091
+
+# Trunk が自動取得するツール版を明示固定する（R2 supply-chain / 再現性）。
+# 実測: Trunk ツールキャッシュの wasm-opt-version_131 は
+#   "wasm-opt version 131 (version_131)"、wasm-bindgen-0.2.130 は
+#   "wasm-bindgen 0.2.130"。web/Cargo.lock の wasm-bindgen も 0.2.130。
+# 未指定だと wasm-opt は version_131 が暗黙選択され、将来のキャッシュ更新で
+# 出力が変わり得るため明示する。
+[tools]
+wasm_opt = "version_131"
+wasm_bindgen = "0.2.130"
+
+# Trunk 0.22.x は modulepreload タグを HashSet の反復順で書き出すため、
+# 同一入力の 2 回ビルドで index.html の SHA256 が変動する（wasm / JS 本体は
+# 毎回一致）。post_build で href のパス順へ正規化し、SRI 属性はタグ単位で保持する。
+# Trunk は finalize 済み index.html を $TRUNK_STAGING_DIR に書いてから
+# post_build フックを実行し、その後に staging -> dist へ move する。
+[[hooks]]
+stage = "post_build"
+command = "python3"
+command_arguments = ["scripts/normalize_index_modulepreload.py"]

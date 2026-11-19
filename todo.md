@@ -720,6 +720,33 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   2 タブ差分マージの 6 シナリオすべて期待どおり。トークン露出・例外 0 件。
   回帰なし（ka-recovery）。
 
+### 優先度: 中 — ビルド再現性／フレーキネス監査 2026-11-20
+
+- [x] DEB がビルド時刻に依存（SOURCE_DATE_EPOCH 未設定）。同一入力で 23 秒
+      隔てた 2 回の SHA256 が不一致。SOURCE_DATE_EPOCH=1700000000 で一致を
+      実証済み。build-deb.sh で固定。根拠 mb-repro。
+- [x] web/Trunk.toml に wasm-opt 版が未固定（version_131 が暗黙選択）。
+      [tools] で wasm_opt / wasm_bindgen を固定。根拠 mb-repro。
+- [x] remap-path-prefix が /home/ と /Users/ のみで checkout サブパスと
+      CARGO_TARGET_DIR が残る（wasm 5 件、binary 1 件）。リポジトリルートと
+      target 全体を置換対象に追加。wasm は wasm-opt --strip-debug 検討。
+      根拠 mb-repro。
+- [x] trunk 生成 index.html の modulepreload 順序が非決定的（HashSet 由来、
+      Trunk 0.22.2 の copy_dir_recursive）。ビルド後にパス順へ正規化する
+      ポストフックまたは上流更新。根拠 mb-repro。
+- [ ] ahash の compile-time-rng（zed-xim 経由）で app バイナリがビルドごとに
+      変化（116 バイト差: build-id と乱数シード）。tm-agent は決定的。
+      固定シード化または既知領域マスクの構造等価ゲート。根拠 mb-repro。
+- [x] CI に公開成果物の二重ビルド＋SHA256 比較ゲートが無い。上記 4 種の
+      非決定性を検出できず公開後に事後発見し得る。根拠 mb-repro。
+
+### メモ — フレーキネス 2026-11-20
+
+- workspace 26 回（default 10 / serial 3 / threads16 3 / 他）+ web 10 回
+  すべて成功、509/167 pass。時間依存アサート 4 件と PENDING_NOTICE 競合
+  ウィンドウ 1 件は speculative（未再現）。app 側 NOTICE_TEST_LOCK 相当の
+  導入は予防的価値あり（ma-flaky）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
