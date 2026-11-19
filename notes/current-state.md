@@ -28,7 +28,7 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **485 passed / 0 failed**（tm-core 170 / tm-viewmodel 79 / tm-platform 44 / tm-agent 100 / app 92、2026-11-19 実測） |
+| `cargo test --workspace` | **491 passed / 0 failed**（tm-core 170 / tm-viewmodel 79 / tm-platform 44 / tm-agent 100 / app 92、2026-11-19 実測） |
 | web ユニットテスト | **136 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-19 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
@@ -68,6 +68,12 @@ status: verified
 - 431 / 400 / 503 の CORS 付与（リクエストが parse できない／未読のため Origin 不明）。
 - Windows / macOS の物理実機検証（CI ランナーで代替中）。
 - 優先度変更、GPU 詳細監視、DEB 署名・公開。
+- 公開成果物（`.deb` / wasm dist / SBOM 等）に `SHA256SUMS` が未同梱。
+  ダウンロード側で完全性を検証できるチェックサム manifest が生成・添付
+  されていない（実装は本担当範囲外）。
+- 成果物の `strings` 検査（開発パス混入検査）が未導入。`--remap-path-prefix`
+  設定はあるが、リリースバイナリ / dist を走査して開発ホストのパス混入を
+  検出し失敗させるゲートが無い（実装は本担当範囲外）。
 
 ## 関連文書
 

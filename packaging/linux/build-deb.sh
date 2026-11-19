@@ -175,4 +175,22 @@ trap 'rm -rf "${extract_dir}"' EXIT
 dpkg-deb -x "${output}" "${extract_dir}"
 version_output="$("${extract_dir}/usr/bin/${package}" --version)"
 echo "==> extracted binary: ${version_output}"
+
+# A stale target/release binary (the --skip-build path) must not be packaged
+# under a different version than the one recorded in DEBIAN/control. The native
+# binary prints "<binary> <version>" for --version, while the control Version
+# carries an extra Debian revision ("<version>-<release>").
+control_version="$(
+  awk -F': ' '$1 == "Version" { print $2; exit }' "${staging}/DEBIAN/control"
+)"
+binary_version="${version_output##* }"
+if [ "${version_output}" != "${package} ${binary_version}" ] ||
+  [ "${binary_version}" != "${control_version%-"${release}"}" ]; then
+  # Do not leave a mismatched artifact for the release wildcard to upload.
+  rm -f "${output}"
+  echo "error: version mismatch: extracted binary reports '${version_output}'," >&2
+  echo "       DEBIAN/control Version is '${control_version}'." >&2
+  exit 1
+fi
+
 dpkg-deb -I "${output}" | sed -n '1,20p'

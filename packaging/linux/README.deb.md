@@ -3,6 +3,48 @@
 A system task manager for Ubuntu-family desktops.
 It shows process, CPU, memory, network and disk usage.
 
+## Features
+
+- Process list with name, command, CPU, memory, PID, user, state and thread
+  count, plus a tree-view toggle
+- Overview cards for CPU (total, per-core and history), memory / swap,
+  network receive / transmit rates, host / uptime / disk usage and temperature
+  sensors when available
+- Column-click sorting, filtering by name / command / user / PID and a details
+  panel
+- **Filter presets** (all / high CPU / high memory / large virtual memory /
+  running) applied in one click; **refresh-interval presets** (0.5s / 1s / 2s /
+  5s) can be switched and saved (native and browser)
+- **Power- and window-aware sampling**: 1s on AC, 2.5s on battery, 5s at low
+  battery (20% or less) or when the window is hidden. Applied as a lower bound
+  on the configured interval, so deliberately slower settings are preserved
+  (native and browser)
+- **Read-only cgroup view**: normalized group labels, member counts and the
+  group count in the status bar; no process control or limit changes
+- Signal actions (SIGTERM / SIGKILL / SIGSTOP / SIGCONT) behind a confirmation
+  dialog, with PID 1 / self protection and PID-reuse detection
+- Keyboard shortcuts: Up/Down, PgUp/PgDn, Home/End, Space, Ctrl+F, Ctrl+K, F2,
+  F5, F1
+- **Japanese IME (composition) support** in both the browser and native builds:
+  uncommitted text stays in the input field and only committed text is applied
+  to the filter
+- **CSV / JSON export**: `gpui-task-manager --export csv|json PATH` writes a
+  redacted snapshot with mode 0600 and exits; the browser toolbar has matching
+  CSV / JSON export buttons (both share `tm_core::export`)
+- **Settings persistence** (native and browser): refresh interval, sort column
+  and direction, details panel and tree view are restored on next launch.
+  Native uses XDG config (`~/.config/gpui-task-manager/settings.json`, with
+  platform-specific paths on Windows / macOS, atomic writes, mode 0600 and a
+  schema version); browser uses the `localStorage` key
+  `gpui-task-manager.settings`
+- **Corrupted-settings eviction**: a corrupt settings file is moved aside with
+  a `.corrupt-<timestamp>` suffix and the app starts with defaults; only the
+  five most recent backups are kept and manual restore is documented in the
+  repository README
+- **Light theme (Catppuccin Latte)**: a header Light/Dark button in both builds
+  toggles the theme and persists the choice in settings
+- Deterministic `--demo` data for screenshots and regression checks
+
 ## Install
 
 ```bash

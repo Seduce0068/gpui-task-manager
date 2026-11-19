@@ -21,7 +21,7 @@ use tm_core::{
     PlatformInfo, ProcessKey, ProcessStatus, Signal, SortDirection, SortKey, SystemProbe, Timestamp,
 };
 use tm_viewmodel::{
-    Command, Dashboard, EditOutcome, Effect, FilterInput, StatusMessage, DEFAULT_REFRESH_INTERVAL,
+    Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
 };
 
 use crate::settings::Settings;
@@ -2004,12 +2004,9 @@ impl TaskManagerApp {
             );
         } else {
             for group in groups {
-                content = content.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(palette().text))
-                        .child(cgroup_group_text(&group.label, group.members.len())),
-                );
+                content = content.child(div().text_xs().text_color(rgb(palette().text)).child(
+                    cgroup_group_text(&self.display(&group.label), group.members.len()),
+                ));
             }
         }
         content = content.child(section_title("センサー / 温度"));
@@ -2101,7 +2098,15 @@ impl TaskManagerApp {
         let summary = self.summary();
         let platform = self.dashboard.platform_info().label();
         let status = self.dashboard.status().cloned();
-        let live_text = a11y_live_text(status.as_ref());
+        // AccessKit exposes this text to assistive technology, so announce the
+        // same redacted display string as the visible bar (Z1-A11Y). Only the
+        // error tone is derived from the original StatusMessage flag.
+        let status_text = status.as_ref().map(|status| self.display(&status.text));
+        let live_text = a11y_live_text(
+            status_text
+                .as_deref()
+                .zip(status.as_ref().map(|status| status.is_error)),
+        );
         let announcement = live_text.clone();
         let left = h_flex()
             .items_center()
@@ -2741,16 +2746,21 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
 /// announce: a failed native probe is a persistent `StatusMessage` instead.
 /// If a freshness flag is added later, its user-facing wording must be the
 /// Japanese `古いデータ` — never the internal `stale` / `赤退` terms.
-fn a11y_live_text(status: Option<&StatusMessage>) -> String {
-    let Some(status) = status else {
+///
+/// The `text` is the already-redacted display string (Z1-A11Y); only the
+/// `is_error` flag comes from the original `StatusMessage`. Callers must never
+/// pass raw `StatusMessage::text` here, or a probe/control error could leak a
+/// local path or host name through the native accessibility tree.
+fn a11y_live_text(status: Option<(&str, bool)>) -> String {
+    let Some((text, is_error)) = status else {
         return "ステータス: 変更なし".to_string();
     };
-    let prefix = if status.is_error && !status.text.contains("エラー") {
+    let prefix = if is_error && !text.contains("エラー") {
         "エラー: "
     } else {
         ""
     };
-    format!("{prefix}{}", truncate_label(&status.text, 160))
+    format!("{prefix}{}", truncate_label(text, 160))
 }
 
 /// Replaces local identifiers with generic values for public screenshots.
@@ -3365,13 +3375,86 @@ mod tests {
             is_error: true,
             persistent: true,
         };
-        assert_eq!(a11y_live_text(Some(&error)), "エラー: 収集不可");
+        assert_eq!(
+            a11y_live_text(Some((&error.text, error.is_error))),
+            "エラー: 収集不可"
+        );
         let info = StatusMessage {
             text: "  更新  しました ".to_string(),
             is_error: false,
             persistent: false,
         };
-        assert_eq!(a11y_live_text(Some(&info)), "更新 しました");
+        assert_eq!(
+            a11y_live_text(Some((&info.text, info.is_error))),
+            "更新 しました"
+        );
+    }
+
+    #[test]
+    fn status_a11y_announcement_never_speaks_raw_local_identifiers() {
+        // Z1-A11Y: the AccessKit live region is fed the same redacted display
+        // string as the visible status bar, never raw `StatusMessage::text`.
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains(concat!(
+                "let status_text = status.as_ref().map(|status| self.",
+                "display(&status.text));"
+            )),
+            "the announcement must be built from the redacted status text"
+        );
+        assert!(
+            source.contains(concat!(".aria_value(", "live_text)")),
+            "aria_value must expose the redacted announcement"
+        );
+        assert!(
+            source.contains(concat!("node.set_label(", "announcement)")),
+            "the synthetic live node must expose the redacted announcement"
+        );
+
+        // Behavioural proof: with --redact the shared boundary strips local
+        // paths, user names and host names from the announced error text.
+        use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
+        let ids = RedactionIdentifiers {
+            home: "/home/koppe",
+            user: "koppe",
+            hostname: "nuc",
+        };
+        let raw = "probe failed under /home/koppe/proj on nuc for user koppe";
+        let redacted = core_redact_text(raw, &ids);
+        let announced = a11y_live_text(Some((&redacted, true)));
+        assert!(!announced.contains("/home/koppe"), "{announced}");
+        assert!(!announced.contains("koppe"), "{announced}");
+        assert!(!announced.contains("nuc"), "{announced}");
+        assert!(announced.starts_with("エラー: "), "{announced}");
+    }
+
+    #[test]
+    fn cgroup_detail_row_never_shows_raw_local_identifiers() {
+        // Z1-A11Y: cgroup labels derive from /proc paths and can embed local
+        // identifiers; the detail row must use the sensor-row redaction path.
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains(concat!(
+                "cgroup_group_text(&self.display(&group.label), ",
+                "group.members.len())"
+            )),
+            "cgroup detail row must feed its label through self.display"
+        );
+
+        use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
+        let ids = RedactionIdentifiers {
+            home: "/home/koppe",
+            user: "koppe",
+            hostname: "nuc",
+        };
+        let raw = "/home/koppe/nuc.slice";
+        let redacted = core_redact_text(raw, &ids);
+        let row = cgroup_group_text(&redacted, 3);
+        assert!(!row.contains("/home/koppe"), "{row}");
+        assert!(!row.contains("koppe"), "{row}");
+        assert!(!row.contains("nuc"), "{row}");
+        assert!(row.contains("/home/user"), "{row}");
+        assert!(row.ends_with("— 3 件"), "{row}");
     }
 
     #[test]

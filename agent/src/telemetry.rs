@@ -129,9 +129,9 @@ impl Metrics {
 
     /// Renders a Prometheus-compatible text exposition (no dependencies).
     ///
-    /// `active` is supplied by the caller because the live-connection gauge
-    /// already lives in `SharedState`; duplicating it would risk drift.
-    pub fn render_prometheus(&self, active: usize) -> Vec<u8> {
+    /// `active` and `streams` are supplied by the caller because both gauges
+    /// already live in `SharedState`; duplicating them would risk drift.
+    pub fn render_prometheus(&self, active: usize, streams: usize) -> Vec<u8> {
         let uptime = self.started.elapsed().as_secs();
         format!(
             "\
@@ -148,6 +148,9 @@ tm_agent_responses_total{{class=\"unknown\"}} {responses_unknown}
 # HELP tm_agent_active_connections Currently admitted connections.
 # TYPE tm_agent_active_connections gauge
 tm_agent_active_connections {active}
+# HELP tm_agent_stream_sessions Currently active SSE streams.
+# TYPE tm_agent_stream_sessions gauge
+tm_agent_stream_sessions {streams}
 # HELP tm_agent_uptime_seconds Seconds since the agent started.
 # TYPE tm_agent_uptime_seconds gauge
 tm_agent_uptime_seconds {uptime}
@@ -158,6 +161,7 @@ tm_agent_uptime_seconds {uptime}
             responses_4xx = self.responses_4xx.load(Ordering::Relaxed),
             responses_5xx = self.responses_5xx.load(Ordering::Relaxed),
             responses_unknown = self.responses_unknown.load(Ordering::Relaxed),
+            streams = streams,
         )
         .into_bytes()
     }
@@ -206,6 +210,15 @@ impl<'a> RequestTrace<'a> {
     /// Used when the request head could not be parsed; no method/path exist.
     pub fn begin_unknown(metrics: &'a Metrics) -> Self {
         Self::begin(metrics, "-", "-")
+    }
+
+    /// Identifier shared by every event of this request.
+    ///
+    /// Structured error events (notably `auth.denied`) attach it so they can be
+    /// correlated with the `http.request.start` / `http.request.end` pair even
+    /// when those Info-level events are filtered out by `--log-level error`.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Records the terminal status. Subsequent calls are no-ops.
@@ -384,7 +397,7 @@ mod tests {
         trace.finish(500); // duplicate call must be ignored
         drop(trace);
 
-        let rendered = String::from_utf8(metrics.render_prometheus(1)).expect("utf8");
+        let rendered = String::from_utf8(metrics.render_prometheus(1, 0)).expect("utf8");
         assert!(rendered.contains("tm_agent_requests_total 1"), "{rendered}");
         assert!(
             rendered.contains("tm_agent_responses_total{class=\"2xx\"} 1"),
@@ -398,7 +411,46 @@ mod tests {
             rendered.contains("tm_agent_active_connections 1"),
             "{rendered}"
         );
+        assert!(
+            rendered.contains("# TYPE tm_agent_stream_sessions gauge"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("tm_agent_stream_sessions 0"),
+            "{rendered}"
+        );
         assert!(rendered.contains("# TYPE tm_agent_uptime_seconds gauge"));
+    }
+
+    #[test]
+    fn trace_id_can_correlate_an_error_event_with_the_401_trace() {
+        let metrics = Metrics::new();
+        let mut trace = RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot");
+        let id = trace.id();
+        trace.finish(401);
+        drop(trace);
+
+        let next = RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot");
+        assert_eq!(next.id(), id + 1, "request ids must stay monotonic");
+        drop(next);
+
+        // `auth.denied` is emitted at ERROR with the trace's id, so it survives
+        // `--log-level error` even though the Info-level span lines are filtered.
+        let line = format_event(
+            Level::Error,
+            "auth.denied",
+            json!({
+                "request_id": id,
+                "reason": "invalid_token",
+                "path": "/api/v1/snapshot",
+            }),
+        );
+        let parsed: Value = serde_json::from_str(&line).expect("event must be JSON");
+        assert_eq!(parsed["request_id"].as_u64(), Some(id));
+        assert_eq!(parsed["level"], "ERROR");
+        assert_eq!(parsed["event"], "auth.denied");
+        assert_eq!(parsed["reason"], "invalid_token");
+        assert_eq!(parsed["path"], "/api/v1/snapshot");
     }
 
     #[test]
@@ -408,7 +460,11 @@ mod tests {
         metrics.record_response(200);
         metrics.record_response(503);
 
-        let rendered = String::from_utf8(metrics.render_prometheus(0)).expect("utf8");
+        let rendered = String::from_utf8(metrics.render_prometheus(0, 2)).expect("utf8");
+        assert!(
+            rendered.contains("tm_agent_stream_sessions 2"),
+            "the caller-supplied stream gauge must be rendered verbatim: {rendered}"
+        );
         let requests = counter_value(&rendered, "tm_agent_requests_total ");
         let responses = total_responses(&rendered);
         assert_eq!(requests, 3, "{rendered}");
@@ -427,7 +483,7 @@ mod tests {
     fn dropped_trace_is_still_counted_as_unknown() {
         let metrics = Metrics::new();
         drop(RequestTrace::begin_unknown(&metrics));
-        let rendered = String::from_utf8(metrics.render_prometheus(0)).expect("utf8");
+        let rendered = String::from_utf8(metrics.render_prometheus(0, 0)).expect("utf8");
         assert!(rendered.contains("tm_agent_requests_total 1"), "{rendered}");
         assert!(
             rendered.contains("tm_agent_active_connections 0"),
