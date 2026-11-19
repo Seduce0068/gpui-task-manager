@@ -102,8 +102,8 @@ fn derive_home(snapshot: &SystemSnapshot, user: &str) -> String {
 
 /// Redacts and then sanitises a snapshot that arrived over the HTTP wire.
 ///
-/// Despite the historical function name, the order is deliberately
-/// **identify → redact → sanitise** and must not be swapped:
+/// The order is deliberately **identify → redact → sanitise** and must not be
+/// swapped; the name follows that order for the two mutation steps:
 ///
 /// 1. Capture identifiers from the raw wire snapshot, before any mutation.
 /// 2. Redact against those raw strings. Sanitisation turns Cf/control characters
@@ -112,7 +112,7 @@ fn derive_home(snapshot: &SystemSnapshot, user: &str) -> String {
 ///    host name, or an identifier crossing the truncation cut).
 /// 3. Sanitise last, so ANSI/control/Cf injection is still stripped and every
 ///    rendered string stays bounded regardless of the agent's `--redact` flag.
-pub(crate) fn sanitize_and_redact_wire_snapshot(snapshot: &mut SystemSnapshot) {
+pub(crate) fn redact_and_sanitize_wire_snapshot(snapshot: &mut SystemSnapshot) {
     let ids = identifiers_from_snapshot(snapshot);
     redact_snapshot(snapshot, &ids.as_redaction_ids());
     sanitize_snapshot(snapshot);
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn wire_snapshot_is_sanitized_and_redacted_before_display() {
         let mut snapshot = wire_snapshot();
-        sanitize_and_redact_wire_snapshot(&mut snapshot);
+        redact_and_sanitize_wire_snapshot(&mut snapshot);
 
         assert_eq!(snapshot.hostname.as_deref(), Some("host"));
         let process = &snapshot.processes[0];
@@ -177,12 +177,30 @@ mod tests {
     }
 
     #[test]
+    fn renamed_wire_gate_keeps_the_redact_then_sanitize_contract_and_is_idempotent() {
+        // The renamed entry point must keep the old function's exact contract:
+        // recover ids from the raw wire, redact them, then sanitise last.
+        let mut once = wire_snapshot();
+        redact_and_sanitize_wire_snapshot(&mut once);
+
+        assert_eq!(once.hostname.as_deref(), Some("host"));
+        assert_eq!(once.processes[0].user.as_deref(), Some("user"));
+        assert_eq!(once.disks[0].mount_point, "<home>/work");
+
+        // Re-deriving ids from an already redacted / sanitised snapshot must be
+        // a no-op, so applying the gate twice yields the same output as once.
+        let mut twice = once.clone();
+        redact_and_sanitize_wire_snapshot(&mut twice);
+        assert_eq!(twice, once, "the wire gate must be idempotent");
+    }
+
+    #[test]
     fn missing_identifiers_are_handled_without_panicking() {
         let ids = identifiers_from_snapshot(&SystemSnapshot::default());
         assert_eq!(ids, OwnedIdentifiers::default());
 
         let mut empty = SystemSnapshot::default();
-        sanitize_and_redact_wire_snapshot(&mut empty);
+        redact_and_sanitize_wire_snapshot(&mut empty);
         assert_eq!(empty.hostname, None);
     }
 
@@ -214,7 +232,7 @@ mod tests {
             }],
             ..SystemSnapshot::default()
         };
-        sanitize_and_redact_wire_snapshot(&mut snapshot);
+        redact_and_sanitize_wire_snapshot(&mut snapshot);
 
         let process = &snapshot.processes[0];
         assert_eq!(process.user.as_deref(), Some("user"));
@@ -238,7 +256,7 @@ mod tests {
             }],
             ..SystemSnapshot::default()
         };
-        sanitize_and_redact_wire_snapshot(&mut snapshot);
+        redact_and_sanitize_wire_snapshot(&mut snapshot);
 
         let command = &snapshot.processes[0].command;
         assert!(!command.contains("my-host"), "hostname survived: {command}");

@@ -81,10 +81,8 @@ impl SortDirection {
 
     /// Direction glyph for headers.
     ///
-    /// U+2191/U+2193 are used instead of ▲/▼ (U+25B2/U+25BC): the latter are
-    /// missing from the bundled IBM Plex face and render as tofu, which made
-    /// ascending and descending screenshots byte-identical even though the
-    /// state differed (R4-VISUAL / todo 2026-11-19).
+    /// U+2191/U+2193 (↑/↓) are used instead of ▲/▼ (U+25B2/U+25BC): the latter
+    /// are missing from the bundled IBM Plex face and render as tofu.
     pub const fn arrow(self) -> &'static str {
         match self {
             Self::Ascending => "↑",

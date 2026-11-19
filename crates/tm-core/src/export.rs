@@ -22,12 +22,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{BatteryState, PowerSource, ProcessStatus, SamplingProfile, SystemSnapshot};
-// Union of both sides of the cherry-pick. The merged `redact_for_export`
-// delegates every field (including battery names and cgroup labels) to
-// `redact_snapshot`, which applies `redact_text` internally; the import is kept
-// for the documented primitive but has no direct call site here.
-#[allow(unused_imports)]
-use crate::redact::{redact_snapshot, redact_text, RedactionIdentifiers};
+use crate::redact::{redact_snapshot, RedactionIdentifiers};
 use crate::sanitize::sanitize_snapshot;
 
 /// Header row of the process CSV written by [`snapshot_to_csv`].
@@ -41,8 +36,9 @@ pub const PROCESS_CSV_HEADER: &str = "sampled_at_unix_millis,pid,start_time_secs
 /// This is the exact data the exporters convert. [`crate::redact::redact_snapshot`]
 /// is the single source of truth and now masks every identifier-bearing display
 /// string: host name, OS name, kernel version, process user/name/command, mount
-/// points, interface names and sensor labels. It applies [`redact_text`] to each
-/// string field (including component labels, battery names and cgroup labels).
+/// points, interface names and sensor labels. It applies
+/// [`crate::redact::redact_text`] to each string field (including component
+/// labels, battery names and cgroup labels).
 /// Re-applying it to a private clone is therefore enough, with no field-specific
 /// masking left here; the operation is idempotent if the caller already redacted
 /// its snapshot.
@@ -81,17 +77,20 @@ pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>
     snapshot_to_csv_with_total(snapshot, ids, None)
 }
 
-/// CSV variant of [`snapshot_to_csv`] that accepts the wire envelope's
-/// `total_process_count`.
+/// CSV variant of [`snapshot_to_csv`] that keeps the wire envelope's
+/// `total_process_count` in its signature for a uniform exporter API.
 ///
 /// The CSV deliberately keeps its fixed 12-column process-row contract: the
-/// envelope total describes the machine, not a row, so it is not emitted here
-/// and does not change the output. The parameter exists so a shell that owns a
-/// wire envelope can call both exporters through one uniform API.
+/// envelope total describes the whole machine, not a row, so it is **not
+/// written to the output** and changing this argument never changes the result
+/// (hence `_ignored_wire_total`). This differs from
+/// [`snapshot_to_json_with_total`], which preserves an explicit envelope total
+/// verbatim. The argument exists only so a shell that owns a wire envelope can
+/// call both exporters through one API; callers need no changes.
 pub fn snapshot_to_csv_with_total(
     snapshot: &SystemSnapshot,
     ids: &RedactionIdentifiers<'_>,
-    _total_process_count: Option<u64>,
+    _ignored_wire_total: Option<u64>,
 ) -> String {
     let snap = redact_for_export(snapshot, ids);
     let mut out = String::with_capacity(PROCESS_CSV_HEADER.len() + 1 + snap.processes.len() * 192);
@@ -1174,5 +1173,35 @@ mod tests {
         for line in lines {
             assert_eq!(line.matches(',').count(), 11, "12 columns: {line}");
         }
+    }
+
+    #[test]
+    fn csv_ignores_the_wire_total_argument_while_json_preserves_it() {
+        let mut snapshot = SystemSnapshot::default();
+        for pid in [10, 20, 30] {
+            snapshot.processes.push(crate::model::ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                ..crate::model::ProcessSnapshot::default()
+            });
+        }
+        let ids = secret_ids();
+        let baseline = snapshot_to_csv(&snapshot, &ids);
+
+        // The renamed `_ignored_wire_total` argument must be observationally
+        // inert: CSV has no envelope field, only one row per published process.
+        let huge_total = 9_999_999_u64;
+        for total in [None, Some(30), Some(huge_total)] {
+            let csv = snapshot_to_csv_with_total(&snapshot, &ids, total);
+            assert_eq!(csv, baseline, "CSV must not depend on {total:?}");
+            assert!(
+                !csv.contains(&huge_total.to_string()),
+                "CSV emitted an envelope total: {csv}"
+            );
+        }
+
+        // The JSON counterpart deliberately differs: it writes the total.
+        let json = snapshot_to_json_with_total(&snapshot, &ids, Some(30));
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["total_process_count"].as_u64(), Some(30), "{json}");
     }
 }
