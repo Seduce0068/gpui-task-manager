@@ -68,8 +68,10 @@ jobs:
         # GFM tables used throughout the existing documents. log.md is an
         # append-only historical record; SECURITY.md and three notes have
         # pre-existing structural violations and are therefore out of scope.
+        # packaging/linux/README.deb.md ships in the DEB and is required by
+        # check-public-docs.sh; keep lint scope aligned with that public surface.
         npm install --global markdownlint-cli@0.50.0
-        markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'poc-wasm/README.md' 'web/README.md' \
+        markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'packaging/linux/README.deb.md' 'poc-wasm/README.md' 'web/README.md' \
           --ignore log.md \
           --ignore SECURITY.md \
           --ignore notes/verification.md \

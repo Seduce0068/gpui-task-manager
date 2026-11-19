@@ -114,6 +114,16 @@ const SSE_FALLBACK_NOTICE: &str = "ストリーム接続が終了したため、
 /// agent does not offer SSE, while still recovering without a page reload.
 const SSE_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+/// Fixed lower bound for the SSE idle watchdog.
+///
+/// The agent emits snapshot frames on its own `STREAM_INTERVAL` (1 s in
+/// `tm-agent`), which is independent of the sampler's refresh interval.
+/// Deriving the watchdog only from `effective_interval()` would shrink the grace
+/// window to 750 ms at the sampler's 250 ms floor and misclassify healthy 1 s
+/// frames as idle. This 3 s floor tolerates roughly three missed agent frames
+/// without coupling the browser watchdog to the agent's cadence.
+const MIN_SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// 行メニューを開いてからプロセスが入れ替わった（PID 再利用）ときの固定文言。
 /// 数値 PID すら含めず、`;` / 改行も無いので DOM proof / aria の契約を壊さない。
 const STALE_ROW_MENU_NOTICE: &str = "行のプロセスが更新されたため、PID をコピーしませんでした";
@@ -545,19 +555,34 @@ impl TaskManagerApp {
 
     /// Returns the view to the existing fetch poll after a subscription ends.
     ///
-    /// A clean EOF gets a fixed, DOM-safe notice; a typed error reuses the
-    /// existing `handle_live_result` path so `401` still drives token re-entry
-    /// and `403` still stays an origin problem (C2-WEB). Either way the user
-    /// keeps receiving snapshots from the poll while the retry cooldown runs.
+    /// A clean EOF gets a fixed, DOM-safe notice. A typed error goes through
+    /// [`Self::handle_sse_error`]: the `401` / `403` contract is preserved, but
+    /// a snapshot delivered by this stream is never re-labelled stale just
+    /// because its endpoint failed afterwards (X2-STALE). Either way the user
+    /// keeps receiving snapshots from the poll while the retry cooldown runs,
+    /// and the `sse=` field is rewritten in the same callback.
     fn on_sse_ended(&mut self, outcome: Result<(), FetchError>) {
         self.stream_mode = stream_mode_after_sse_end(&outcome);
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
         match outcome {
             Ok(()) => self.dashboard.set_status(SSE_FALLBACK_NOTICE, false),
-            Err(error) => self.handle_live_result(Err(error)),
+            Err(error) => self.handle_sse_error(error),
         }
         self.sync_proof_dom();
+    }
+
+    /// Records an SSE endpoint error without touching the displayed snapshot.
+    ///
+    /// A BodyRead / Parse failure means the *stream endpoint* broke, not that
+    /// the last frame it delivered is old. Going through
+    /// `handle_live_result(Err(..))` would re-apply `stale_after_poll` to that
+    /// frame and show `stale=1` immediately after a successful frame (X2-STALE).
+    /// Only the error fields and the status bar change here; the retry cooldown
+    /// is set by [`Self::on_sse_ended`], and `stale`, `ticks`, the snapshot and
+    /// the row menu stay exactly as the last frame left them.
+    fn handle_sse_error(&mut self, error: FetchError) {
+        self.record_live_error(&error);
     }
 
     /// Whether the active stream has gone quiet long enough to force a fallback.
@@ -631,24 +656,24 @@ impl TaskManagerApp {
                 self.reconnect_required = false;
                 self.dashboard.ingest(response.snapshot);
             }
-            Err(error) => {
-                // Only `401` (FetchError::Auth) carries the token re-entry
-                // guidance; `403` (Forbidden) is an origin problem and must not
-                // raise the DOM proof's `reconnect=` flag (C2-WEB). The flag
-                // stays sticky across transient follow-up failures and is
-                // cleared only on success or an actual config change.
-                let newly_required = crate::agent::requires_reconnect(&error);
-                self.reconnect_required = next_reconnect_required(self.reconnect_required, &error);
-                let text = error.to_string();
-                if !newly_required || self.live_error.is_none() {
-                    self.live_error = Some(text.clone());
-                }
-                self.dashboard
-                    .set_status(format!("エージェントから取得できません: {text}"), true);
-            }
+            Err(error) => self.record_live_error(&error),
         }
         self.revalidate_row_menu();
         self.sync_proof_dom();
+    }
+
+    /// Writes the error-only fields shared by poll failures and SSE failures.
+    ///
+    /// The `401` / `403` decision lives in [`live_error_fields`] so both paths
+    /// behave identically, while freshness stays the caller's responsibility:
+    /// the poll path sets it in [`Self::handle_live_result`], the SSE endpoint
+    /// path deliberately leaves it alone (X2-STALE).
+    fn record_live_error(&mut self, error: &FetchError) {
+        let (live_error, reconnect_required, status) =
+            live_error_fields(self.live_error.as_deref(), self.reconnect_required, error);
+        self.live_error = live_error;
+        self.reconnect_required = reconnect_required;
+        self.dashboard.set_status(status, true);
     }
 
     /// 保存された表示設定（更新間隔・ソート・詳細パネル）を復元する。
@@ -3095,6 +3120,36 @@ fn next_reconnect_required(current: bool, error: &FetchError) -> bool {
     current || crate::agent::requires_reconnect(error)
 }
 
+/// Error-only fields written when a live transport fails, plus the status text.
+///
+/// Only `401` (FetchError::Auth) carries the token re-entry guidance; `403`
+/// (Forbidden) is an origin problem and must not raise the DOM proof's
+/// `reconnect=` flag (C2-WEB). The flag stays sticky across transient follow-up
+/// failures and is cleared only on success or an actual config change.
+///
+/// There is deliberately no `stale` output: a failed SSE endpoint must not age
+/// the snapshot that the same stream just delivered (X2-STALE). Kept pure so
+/// that contract is testable without a GPUI context.
+fn live_error_fields(
+    current_live_error: Option<&str>,
+    reconnect_required: bool,
+    error: &FetchError,
+) -> (Option<String>, bool, String) {
+    let newly_required = crate::agent::requires_reconnect(error);
+    let reconnect_required = next_reconnect_required(reconnect_required, error);
+    let text = error.to_string();
+    let live_error = if !newly_required || current_live_error.is_none() {
+        Some(text.clone())
+    } else {
+        current_live_error.map(str::to_string)
+    };
+    (
+        live_error,
+        reconnect_required,
+        format!("エージェントから取得できません: {text}"),
+    )
+}
+
 /// Appends the row-context-menu state to the DOM proof string.
 ///
 /// Additive only: the value is one of four fixed identifiers (never a process
@@ -3171,14 +3226,17 @@ fn stream_mode_while_connecting() -> StreamMode {
 
 /// How long an active stream may stay silent before polling is resumed.
 ///
-/// Design choice: three times the *applied* refresh interval. One missed frame
-/// is tolerated (the agent may be busy), two more still bound how long updates
-/// can stop. `effective_interval()` already carries the adaptive power floor,
-/// so a low-power plan cannot shorten the grace period below the cadence the
-/// sampler actually runs at. `sampler_wait` clamps before multiplying, keeping
-/// the window inside 750 ms .. 30 s.
+/// Design choice: three times the *applied* refresh interval, with a fixed
+/// [`MIN_SSE_IDLE_TIMEOUT`] floor. The floor keeps the grace window independent
+/// of the sampler cadence: agent frames arrive on the agent's own 1 s
+/// `STREAM_INTERVAL`, so a 250 ms sampler interval must not turn a healthy 1 s
+/// frame into an idle timeout. `effective_interval()` already carries the
+/// adaptive power floor and `sampler_wait` clamps before multiplying; the final
+/// `max` guarantees a window of 3 s .. 30 s.
 fn sse_idle_timeout(interval: Duration) -> Duration {
-    sampler_wait(interval).saturating_mul(3)
+    sampler_wait(interval)
+        .saturating_mul(3)
+        .max(MIN_SSE_IDLE_TIMEOUT)
 }
 
 /// Pure idle-watchdog decision, testable without a GPUI entity.
@@ -4246,6 +4304,87 @@ mod tests {
     }
 
     #[test]
+    fn sse_endpoint_error_keeps_a_just_delivered_snapshot_fresh() {
+        // `handle_live_result(Ok(frame))` just ran: with a snapshot already on
+        // screen the poll helper reports fresh, i.e. stale=0.
+        let stale_after_frame = stale_after_poll(true, true);
+        assert!(!stale_after_frame);
+        // The poll helper would have set stale=1 for the same failure. That is
+        // exactly the call the SSE endpoint path must not make (X2-STALE).
+        assert!(stale_after_poll(true, false));
+        for error in [
+            FetchError::BodyRead,
+            FetchError::Parse("SSE データの解析に失敗しました".to_string()),
+        ] {
+            let (live_error, reconnect_required, status) = live_error_fields(None, false, &error);
+            assert!(live_error.is_some(), "{error:?}");
+            assert!(!reconnect_required, "{error:?}");
+            assert!(
+                status.contains("エージェントから取得できません"),
+                "{status}"
+            );
+            // `handle_sse_error` writes only those fields, never `stale`.
+            assert!(
+                !stale_after_frame,
+                "{error:?}: stream snapshot stayed fresh"
+            );
+        }
+    }
+
+    #[test]
+    fn sse_endpoint_error_keeps_the_401_403_reconnect_contract() {
+        // 401 raises the token re-entry flag and keeps its guidance in status.
+        let (live_error, reconnect_required, status) =
+            live_error_fields(None, false, &FetchError::Auth);
+        assert!(reconnect_required);
+        assert_eq!(
+            live_error.as_deref(),
+            Some(crate::agent::RECONNECT_GUIDANCE)
+        );
+        assert!(status.contains("#token="), "{status}");
+
+        // 403 (`status_error(403)`) is an origin problem, not a token problem.
+        // The real variant is checked here so the SSE path cannot silently
+        // reintroduce reconnect=1 for it (w3-tests 実経路).
+        let forbidden = FetchError::Forbidden;
+        assert_eq!(forbidden.to_string(), crate::agent::FORBIDDEN_GUIDANCE);
+        assert!(!crate::agent::requires_reconnect(&forbidden));
+        let (live_error, reconnect_required, status) = live_error_fields(None, false, &forbidden);
+        assert!(!reconnect_required, "403 must not set reconnect=1");
+        assert_eq!(
+            live_error.as_deref(),
+            Some(crate::agent::FORBIDDEN_GUIDANCE)
+        );
+        assert!(status.contains("同一ホスト"), "{status}");
+
+        // A sticky 401 flag survives a following 403.
+        let (_, reconnect_required, _) = live_error_fields(
+            Some(crate::agent::RECONNECT_GUIDANCE),
+            true,
+            &FetchError::Forbidden,
+        );
+        assert!(reconnect_required);
+    }
+
+    #[test]
+    fn dom_proof_sse_field_flips_to_fallback_when_the_stream_ends() {
+        let base = "mode=live;stale=0;tick=9;";
+        let active = proof_with_sse(base, StreamMode::Active);
+        assert_eq!(active, format!("{base}sse=active;"));
+        // `on_sse_ended` rewrites the mode and calls `sync_proof_dom` before it
+        // returns, so the proof changes in the same callback as the error.
+        let mode = stream_mode_after_sse_end(&Err(FetchError::BodyRead));
+        assert_eq!(mode, StreamMode::Fallback);
+        let fallback = proof_with_sse(base, mode);
+        assert_eq!(fallback, format!("{base}sse=fallback;"));
+        assert_ne!(active, fallback);
+        assert_eq!(active.replace("sse=active;", "sse=fallback;"), fallback);
+        // Only the transport marker changed: stale stays 0 across the flip.
+        assert!(active.contains("stale=0;") && fallback.contains("stale=0;"));
+        assert!(!active.contains("stale=1;") && !fallback.contains("stale=1;"));
+    }
+
+    #[test]
     fn every_sse_termination_falls_back_to_the_existing_poll() {
         // A clean EOF and every typed error must return to polling so the user
         // is never left staring at a frozen snapshot (R3-S01).
@@ -4292,20 +4431,74 @@ mod tests {
     }
 
     #[test]
-    fn sse_idle_timeout_is_three_times_the_applied_interval() {
+    fn sse_idle_timeout_is_three_times_the_applied_interval_with_a_fixed_floor() {
+        // At the default cadence the three-times rule and the floor coincide.
         assert_eq!(
             sse_idle_timeout(DEFAULT_REFRESH_INTERVAL),
             DEFAULT_REFRESH_INTERVAL.saturating_mul(3)
         );
-        // Clamp before multiplying, matching the sampler's real cadence.
+        // Clamp before multiplying, then raise the sub-floor result to 3 s.
         assert_eq!(
             sse_idle_timeout(Duration::from_millis(1)),
-            MIN_REFRESH_INTERVAL.saturating_mul(3)
+            MIN_SSE_IDLE_TIMEOUT
         );
         assert_eq!(
             sse_idle_timeout(Duration::from_secs(3_600)),
             MAX_REFRESH_INTERVAL.saturating_mul(3)
         );
+    }
+
+    #[test]
+    fn sse_idle_timeout_floor_clamps_sub_three_second_windows() {
+        // Every computation below the floor resolves to MIN_SSE_IDLE_TIMEOUT:
+        // the sampler's 250 ms lower clamp can never shrink the watchdog.
+        for interval_ms in [1, 250, 500, 999] {
+            assert_eq!(
+                sse_idle_timeout(Duration::from_millis(interval_ms)),
+                MIN_SSE_IDLE_TIMEOUT
+            );
+        }
+        // Above the floor the three-times rule still governs.
+        assert_eq!(
+            sse_idle_timeout(Duration::from_secs(4)),
+            Duration::from_secs(12)
+        );
+    }
+
+    #[test]
+    fn sse_idle_watchdog_tolerates_one_second_frames_at_short_intervals() {
+        // The agent streams a snapshot every STREAM_INTERVAL (1 s). Whatever the
+        // sampler interval is, a 1 s gap must never look like an idle stream,
+        // which is the misclassification the fixed floor prevents.
+        for interval_ms in [250, 500, 1_000] {
+            let interval = Duration::from_millis(interval_ms);
+            let mut last_frame = Instant::now();
+            for _ in 0..4 {
+                assert!(!sse_idle_expired(
+                    StreamMode::Active,
+                    Some(last_frame),
+                    last_frame + Duration::from_secs(1),
+                    interval
+                ));
+                last_frame += Duration::from_secs(1);
+            }
+        }
+    }
+
+    #[test]
+    fn sse_idle_watchdog_never_fires_when_the_clock_goes_backwards() {
+        // A clock observed out of order (now < last_snapshot) must not be
+        // treated as an elapsed idle period (w3-tests finding).
+        let now = Instant::now();
+        let future_snapshot = now + Duration::from_secs(5);
+        for interval_ms in [250, 1_000] {
+            assert!(!sse_idle_expired(
+                StreamMode::Active,
+                Some(future_snapshot),
+                now,
+                Duration::from_millis(interval_ms)
+            ));
+        }
     }
 
     #[test]

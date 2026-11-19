@@ -40,6 +40,10 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - 概要カード: CPU（全体 + コア別 + 履歴）、メモリ / スワップ、ネットワーク
   受信・送信レート、ホスト / 稼働時間 / ディスク使用率、温度センサー（取得可能な場合）
 - ソート（列クリック）、絞り込み（名前・コマンド・ユーザー・PID）、詳細パネル
+- **フィルタプリセット**（すべて / 高 CPU / 高メモリ / 大きな仮想メモリ / 実行中）をワンクリックで適用（`tm-viewmodel` 共通の組み込み定義、ブラウザ版のツールバーにチップ表示）
+- **更新間隔プリセット**（0.5s / 1s / 2s / 5s）をボタンで切替・保存（ネイティブ / ブラウザ共通）
+- **電源・ウィンドウ状態に応じたサンプリング**: AC 表示時 1s、バッテリー 2.5s、低バッテリー（20% 以下）・ウィンドウ非表示 5s。設定した更新間隔の下限として適用し、意図的に遅い設定は維持（ネイティブ / ブラウザ）
+- **cgroup の読み取り専用表示**: 正規化したグループラベルとメンバー数、ステータスバーのグループ数を表示。操作・上限変更は不可
 - シグナル操作（SIGTERM / SIGKILL / SIGSTOP / SIGCONT）を**確認ダイアログ経由**で実行
 - 安全装置: PID 1 と自分自身の拒否、PID + 起動時刻による PID 再利用検出
 - キーボード操作: ↑↓ / PgUp/PgDn / Home/End / Space / Ctrl+F / Ctrl+K / F2 / F5 / F1
@@ -276,7 +280,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 項目 | 結果 |
 | --- | --- |
 | `cargo test --workspace` | **485 passed / 0 failed**（core 170 / viewmodel 79 / platform 44 / agent 100 / app 92、2026-11-19 実測） |
-| web ユニットテスト | **130 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-19 実測） |
+| web ユニットテスト | **136 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-19 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
