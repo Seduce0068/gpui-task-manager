@@ -224,6 +224,18 @@ pub(crate) struct SnapshotEnvelope {
     snapshot: SystemSnapshot,
 }
 
+impl SnapshotEnvelope {
+    /// Converts a validated wire frame into the public response the shell
+    /// already uses for its polling path, so both sources share one ingest
+    /// function (and therefore the same redaction / stale / reconnect logic).
+    pub(crate) fn into_response(self) -> SnapshotResponse {
+        SnapshotResponse {
+            snapshot: self.snapshot,
+            total_process_count: self.total_process_count,
+        }
+    }
+}
+
 /// Returns `true` only for a loopback HTTP endpoint.
 ///
 /// The token comes from the URL fragment and is sent as a Bearer header. If a
@@ -284,17 +296,19 @@ pub struct SnapshotResponse {
 #[derive(Debug)]
 struct SharedConfig {
     config: RwLock<AgentConfig>,
-    /// Bumped only on a real change. An in-flight body read captures this value
-    /// at fetch start and aborts early if it changes mid-read, so a stale
+    /// Bumped only on a real change. An in-flight body read (or SSE stream)
+    /// captures this value at start and aborts early if it changes, so a stale
     /// response stops consuming wasm heap as soon as new settings arrive.
-    generation: AtomicU64,
+    /// The `Arc` lets a long-lived stream own an abort handle without borrowing
+    /// the client (GPUI tasks require `'static` futures).
+    generation: Arc<AtomicU64>,
 }
 
 impl SharedConfig {
     fn new(config: AgentConfig) -> Self {
         Self {
             config: RwLock::new(config),
-            generation: AtomicU64::new(0),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -494,6 +508,39 @@ impl AgentClient {
             total_process_count: envelope.total_process_count,
         })
     }
+
+    /// Subscribes to the agent's long-lived `GET /api/v1/stream` endpoint.
+    ///
+    /// Setup errors (invalid endpoint / malformed URI) are returned eagerly;
+    /// transport, status, stream and frame errors are reported by the returned
+    /// future. The future owns its request and an `Arc` to the settings
+    /// generation, so it is `'static` and can be spawned by GPUI: dropping the
+    /// task **or** changing the page URL (which bumps that generation) stops the
+    /// body read and cancels the browser-side `ReadableStream`.
+    ///
+    /// `EventSource` is deliberately not used: it cannot send the
+    /// `Authorization: Bearer` header. `FetchHttpClient` exposes the response
+    /// as a streaming `AsyncBody`, and the browser adds `Host` itself.
+    pub fn subscribe_snapshot_stream<F>(
+        &self,
+        on_snapshot: F,
+    ) -> Result<impl Future<Output = Result<(), FetchError>>, FetchError>
+    where
+        F: FnMut(SnapshotEnvelope),
+    {
+        let config = self.config.snapshot();
+        let params = prepare_stream(
+            &config,
+            Arc::clone(&self.http),
+            Arc::clone(&self.config.generation),
+        )?;
+        // Only the *setup* is deadline-bounded: a long-lived stream has no
+        // overall timeout. Without this, a server that accepts the connection
+        // but never sends headers would keep the shell in `sse=active` while
+        // polling is suspended, leaving the user without fresh snapshots.
+        let setup_deadline = self.executor.timer(FETCH_TIMEOUT);
+        Ok(drive_snapshot_stream(params, on_snapshot, setup_deadline))
+    }
 }
 
 /// Races a fallible operation against a deadline future.
@@ -671,6 +718,169 @@ pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, Str
         serde_json::from_str(data).map_err(|_| PARSE_ERROR.to_string())?;
     check_schema_version(envelope.schema_version).map_err(|error| error.to_string())?;
     Ok(envelope)
+}
+
+/// Owned inputs for one SSE subscription.
+///
+/// Cloned out of [`AgentClient`] so the driving future is `'static` and never
+/// borrows the client (GPUI foreground tasks require `'static` futures).
+struct StreamParams {
+    http: Arc<dyn HttpClient>,
+    request: Request<AsyncBody>,
+    token: Option<String>,
+    generation: Arc<AtomicU64>,
+}
+
+/// Prepares the `GET /api/v1/stream` request.
+///
+/// Kept synchronous so an invalid endpoint or a malformed URI is rejected
+/// before a task is spawned. The token is placed **only** in the
+/// `Authorization` header — never in the URL, query string or an error string.
+/// `Host` is intentionally not set: `web_sys::Headers` forbids it and the
+/// browser always supplies it from the request URL (the agent requires a
+/// loopback Host).
+fn prepare_stream(
+    config: &AgentConfig,
+    http: Arc<dyn HttpClient>,
+    generation: Arc<AtomicU64>,
+) -> Result<StreamParams, FetchError> {
+    if !is_loopback_http_endpoint(&config.endpoint) {
+        return Err(FetchError::InvalidEndpoint);
+    }
+    let url = stream_url(&config.endpoint);
+    let mut builder = Request::builder().method("GET").uri(&url);
+    if let Some(token) = &config.token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = builder.body(AsyncBody::empty()).map_err(|error| {
+        FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
+    })?;
+    Ok(StreamParams {
+        http,
+        request,
+        token: config.token.clone(),
+        generation,
+    })
+}
+
+/// Splits the first complete SSE frame off `buffer`.
+///
+/// Returns `(frame_without_delimiter, bytes_consumed_including_delimiter)`.
+/// Both LF (`\n\n`, which the agent emits) and CRLF (`\r\n\r\n`) blank lines are
+/// accepted, and the earliest delimiter wins. A frame split across several
+/// reads simply stays in `buffer` until its delimiter arrives.
+fn take_sse_frame(buffer: &[u8]) -> Option<(&[u8], usize)> {
+    let lf = buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| (position, 2));
+    let crlf = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4));
+    match (lf, crlf) {
+        (Some((lf_at, lf_len)), Some((crlf_at, crlf_len))) => {
+            if lf_at <= crlf_at {
+                Some((&buffer[..lf_at], lf_at + lf_len))
+            } else {
+                Some((&buffer[..crlf_at], crlf_at + crlf_len))
+            }
+        }
+        (Some((at, len)), None) | (None, Some((at, len))) => Some((&buffer[..at], at + len)),
+        (None, None) => None,
+    }
+}
+
+/// Drives one long-lived SSE subscription, calling `on_snapshot` per frame.
+///
+/// The future ends on a settings-generation change ([`FetchError::BodyAborted`]),
+/// a setup timeout ([`FetchError::Timeout`]), an HTTP/read error, a malformed
+/// frame, EOF or a size-cap breach. The shell
+/// uses that termination to switch back to the ordinary snapshot poll, so a
+/// broken or closing stream never leaves the user without monitoring.
+async fn drive_snapshot_stream<F, Deadline>(
+    params: StreamParams,
+    mut on_snapshot: F,
+    setup_deadline: Deadline,
+) -> Result<(), FetchError>
+where
+    F: FnMut(SnapshotEnvelope),
+    Deadline: Future<Output = ()>,
+{
+    let StreamParams {
+        http,
+        request,
+        token,
+        generation,
+    } = params;
+    let started_at = generation.load(Ordering::SeqCst);
+    let aborted = || generation.load(Ordering::SeqCst) != started_at;
+    if aborted() {
+        return Err(FetchError::BodyAborted);
+    }
+
+    let response = with_deadline(
+        async {
+            http.send(request).await.map_err(|error| {
+                log::warn!(
+                    "エージェントのストリーム接続に失敗: {}",
+                    redact_token(&format!("{error:#}"), token.as_deref())
+                );
+                FetchError::Connect
+            })
+        },
+        setup_deadline,
+    )
+    .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_error(status.as_u16()));
+    }
+    // A long-lived stream normally has no Content-Length; if one is declared
+    // and already over the cap, reject it before pulling any bytes.
+    let declared = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok());
+    if content_length_exceeds_cap(declared) {
+        return Err(FetchError::SizeLimit);
+    }
+
+    let mut body = response.into_body();
+    let mut pending = Vec::new();
+    let mut scratch = [0u8; BODY_READ_CHUNK];
+    loop {
+        if aborted() {
+            return Err(FetchError::BodyAborted);
+        }
+        let read = body.read(&mut scratch).await.map_err(|error| {
+            log::warn!(
+                "エージェントのストリーム読み取りに失敗: {}",
+                redact_token(&format!("{error:#}"), token.as_deref())
+            );
+            FetchError::BodyRead
+        })?;
+        if read == 0 {
+            // SSE dispatches a frame only on its closing blank line; a partial
+            // tail is discarded instead of being parsed as a snapshot.
+            return Ok(());
+        }
+        pending.extend_from_slice(&scratch[..read]);
+        if pending.len() as u64 > MAX_SNAPSHOT_BYTES {
+            return Err(FetchError::SizeLimit);
+        }
+        while let Some((frame, consumed)) = take_sse_frame(&pending) {
+            let text = std::str::from_utf8(frame)
+                .map_err(|_| FetchError::Parse("SSE データの解析に失敗しました".to_string()))?;
+            let envelope = parse_sse_event_frame(text)
+                .map_err(|detail| FetchError::Parse(redact_token(&detail, token.as_deref())))?;
+            if aborted() {
+                return Err(FetchError::BodyAborted);
+            }
+            on_snapshot(envelope);
+            pending.drain(..consumed);
+        }
+    }
 }
 
 /// Removes the token from any diagnostic string.
@@ -1261,5 +1471,291 @@ mod tests {
         let error = parse_sse_event_frame(&frame).expect_err("duplicate data must be rejected");
         assert_eq!(error, "SSE データの解析に失敗しました");
         assert!(!error.contains('{'));
+    }
+
+    // ------------------------------------------------------ SSE stream support
+
+    #[derive(Clone)]
+    struct RecordedRequest {
+        uri: String,
+        authorization: Option<String>,
+    }
+
+    /// An `AsyncRead` that returns at most `chunk` bytes per poll, so the frame
+    /// splitter is exercised with boundaries inside JSON *and* inside `\n\n`.
+    struct ChunkedReader {
+        bytes: Vec<u8>,
+        position: usize,
+        chunk: usize,
+    }
+
+    impl AsyncRead for ChunkedReader {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let remaining = self.bytes.len() - self.position;
+            if remaining == 0 {
+                return std::task::Poll::Ready(Ok(0));
+            }
+            let take = remaining.min(buf.len()).min(self.chunk);
+            buf[..take].copy_from_slice(&self.bytes[self.position..self.position + take]);
+            self.position += take;
+            std::task::Poll::Ready(Ok(take))
+        }
+    }
+
+    struct FakeStreamHttpClient {
+        requests: Arc<std::sync::Mutex<Vec<RecordedRequest>>>,
+        body: Vec<u8>,
+        chunk: usize,
+        status: u16,
+    }
+
+    impl HttpClient for FakeStreamHttpClient {
+        fn user_agent(&self) -> Option<&header::HeaderValue> {
+            None
+        }
+
+        fn proxy(&self) -> Option<&gpui::http_client::Url> {
+            None
+        }
+
+        fn send(
+            &self,
+            request: Request<AsyncBody>,
+        ) -> futures::future::BoxFuture<
+            'static,
+            anyhow::Result<gpui::http_client::http::Response<AsyncBody>>,
+        > {
+            self.requests.lock().unwrap().push(RecordedRequest {
+                uri: request.uri().to_string(),
+                authorization: request
+                    .headers()
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string),
+            });
+            let body = self.body.clone();
+            let chunk = self.chunk;
+            let status = self.status;
+            Box::pin(async move {
+                let reader = ChunkedReader {
+                    bytes: body,
+                    position: 0,
+                    chunk,
+                };
+                gpui::http_client::http::Response::builder()
+                    .status(status)
+                    .body(AsyncBody::from_reader(reader))
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+            })
+        }
+    }
+
+    fn stream_params(
+        token: Option<&str>,
+        body: Vec<u8>,
+        chunk: usize,
+        status: u16,
+        generation: Arc<AtomicU64>,
+    ) -> (StreamParams, Arc<std::sync::Mutex<Vec<RecordedRequest>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let http = FakeStreamHttpClient {
+            requests: Arc::clone(&requests),
+            body,
+            chunk,
+            status,
+        };
+        let config = AgentConfig::new("http://127.0.0.1:18787", token.map(str::to_string));
+        let params = prepare_stream(&config, Arc::new(http), generation).expect("prepare stream");
+        (params, requests)
+    }
+
+    /// A transport whose headers never arrive. The setup deadline must fire so
+    /// the shell never stays in `sse=active` with polling suspended.
+    struct HangingHttpClient;
+
+    impl HttpClient for HangingHttpClient {
+        fn user_agent(&self) -> Option<&header::HeaderValue> {
+            None
+        }
+
+        fn proxy(&self) -> Option<&gpui::http_client::Url> {
+            None
+        }
+
+        fn send(
+            &self,
+            _request: Request<AsyncBody>,
+        ) -> futures::future::BoxFuture<
+            'static,
+            anyhow::Result<gpui::http_client::http::Response<AsyncBody>>,
+        > {
+            Box::pin(futures::future::pending())
+        }
+    }
+
+    /// Test deadline that never fires: the stream itself is long-lived.
+    fn never_timeout() -> impl Future<Output = ()> {
+        futures::future::pending::<()>()
+    }
+
+    fn sse_snapshot_frame(total: usize) -> Vec<u8> {
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": total,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string();
+        format!("event: snapshot\ndata: {json}\n\n").into_bytes()
+    }
+
+    #[test]
+    fn stream_request_keeps_the_token_out_of_the_url() {
+        let (params, _) = stream_params(
+            Some("secret-agent-token"),
+            Vec::new(),
+            8,
+            200,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let uri = params.request.uri().to_string();
+        assert_eq!(uri, "http://127.0.0.1:18787/api/v1/stream");
+        assert!(!uri.contains("secret"), "{uri}");
+        assert_eq!(
+            params
+                .request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer secret-agent-token")
+        );
+        // The browser adds Host itself; web_sys rejects a manually set one.
+        assert!(!params.request.headers().contains_key(header::HOST));
+    }
+
+    #[test]
+    fn sse_frame_splitter_handles_crlf_and_waits_for_partial_frames() {
+        let frame = b"event: snapshot\ndata: 1";
+        let mut buffer = frame.to_vec();
+        buffer.extend_from_slice(b"\r\n\r\nrest");
+        let (body, consumed) = take_sse_frame(&buffer).expect("CRLF blank line ends a frame");
+        assert_eq!(body, frame);
+        assert_eq!(&buffer[consumed..], b"rest");
+        assert!(
+            take_sse_frame(&frame[..5]).is_none(),
+            "an unterminated frame must stay buffered"
+        );
+    }
+
+    #[test]
+    fn sse_frames_split_across_chunks_are_delivered_in_order() {
+        let mut body = sse_snapshot_frame(11);
+        body.extend_from_slice(&sse_snapshot_frame(22));
+        let (params, requests) = stream_params(
+            Some("secret-agent-token"),
+            body,
+            7,
+            200,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        futures::executor::block_on(drive_snapshot_stream(
+            params,
+            move |envelope| {
+                sink.lock().unwrap().push(envelope.total_process_count);
+            },
+            never_timeout(),
+        ))
+        .expect("a well-formed stream drains to EOF");
+        assert_eq!(*seen.lock().unwrap(), vec![11, 22]);
+        let recorded = requests.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].uri, "http://127.0.0.1:18787/api/v1/stream");
+    }
+
+    #[test]
+    fn generation_change_aborts_the_live_stream() {
+        let generation = Arc::new(AtomicU64::new(0));
+        let mut body = sse_snapshot_frame(11);
+        body.extend_from_slice(&sse_snapshot_frame(22));
+        let (params, _) = stream_params(None, body, 16, 200, Arc::clone(&generation));
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&seen);
+        let bump = Arc::clone(&generation);
+        let error = futures::executor::block_on(drive_snapshot_stream(
+            params,
+            move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                // Simulates `set_config` being called from a refreshed page URL.
+                bump.fetch_add(1, Ordering::SeqCst);
+            },
+            never_timeout(),
+        ))
+        .expect_err("a settings change must abort the stream");
+        assert_eq!(error, FetchError::BodyAborted);
+        assert_eq!(error.to_string(), BODY_ABORTED_ERROR);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "no stale frame is delivered"
+        );
+    }
+
+    #[test]
+    fn stalled_stream_setup_times_out_and_reports_a_typed_error() {
+        let config = AgentConfig::new(
+            "http://127.0.0.1:18787",
+            Some("secret-agent-token".to_string()),
+        );
+        let params = prepare_stream(
+            &config,
+            Arc::new(HangingHttpClient),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .expect("prepare stream");
+        // An already-fired deadline stands in for `BackgroundExecutor::timer`.
+        let error = futures::executor::block_on(drive_snapshot_stream(params, |_| {}, async {}))
+            .expect_err("a stalled setup must time out");
+        assert_eq!(error, FetchError::Timeout);
+        assert_eq!(error.to_string(), fetch_timeout_error());
+        assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn stream_errors_are_typed_and_never_echo_the_token() {
+        let token = "secret-agent-token";
+        let (unauthorized, _) =
+            stream_params(Some(token), Vec::new(), 8, 401, Arc::new(AtomicU64::new(0)));
+        let error = futures::executor::block_on(drive_snapshot_stream(
+            unauthorized,
+            |_| {},
+            never_timeout(),
+        ))
+        .expect_err("401 must be an auth error");
+        assert_eq!(error, FetchError::Auth);
+        assert!(requires_reconnect(&error));
+        assert!(!error.to_string().contains("secret"));
+
+        let (malformed, _) = stream_params(
+            Some(token),
+            b"event: snapshot\ndata: {SECRET-PATH}\n\n".to_vec(),
+            8,
+            200,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let error =
+            futures::executor::block_on(drive_snapshot_stream(malformed, |_| {}, never_timeout()))
+                .expect_err("a malformed frame must end the stream");
+        match error {
+            FetchError::Parse(detail) => {
+                assert_eq!(detail, "SSE データの解析に失敗しました");
+                assert!(!detail.contains("SECRET"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

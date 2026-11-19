@@ -16,15 +16,15 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    KeyDownEvent, MouseButton, Pixels, Render, ScrollStrategy, Stateful, TextInputConfiguration,
-    UTF16Selection, UniformListScrollHandle, Window, canvas, div, prelude::*, px, rgb,
-    uniform_list,
+    KeyDownEvent, MouseButton, Pixels, Render, ScrollStrategy, Stateful, Task,
+    TextInputConfiguration, UTF16Selection, UniformListScrollHandle, Window, canvas, div,
+    prelude::*, px, rgb, uniform_list,
 };
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv, snapshot_to_json};
@@ -41,7 +41,7 @@ use tm_viewmodel::{
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use crate::agent::{AgentClient, AgentConfig, FetchError, onboarding_steps};
+use crate::agent::{AgentClient, AgentConfig, FetchError, SnapshotEnvelope, onboarding_steps};
 use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
@@ -104,6 +104,15 @@ const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実デ
 
 /// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
 const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
+
+/// Fixed notice when a snapshot stream ends cleanly and monitoring falls back
+/// to the existing poll. No token, endpoint or agent text, and no `;` / newline
+/// that could corrupt the `key=value;` DOM proof grammar.
+const SSE_FALLBACK_NOTICE: &str = "ストリーム接続が終了したため、定期取得に切り替えました";
+
+/// Cooldown before retrying a failed stream. Bounds request churn when the
+/// agent does not offer SSE, while still recovering without a page reload.
+const SSE_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// 行メニューを開いてからプロセスが入れ替わった（PID 再利用）ときの固定文言。
 /// 数値 PID すら含めず、`;` / 改行も無いので DOM proof / aria の契約を壊さない。
@@ -209,6 +218,28 @@ enum DataSource {
     Live(Arc<AgentClient>),
 }
 
+/// Which live transport currently keeps the view fresh.
+///
+/// Mirrored into the DOM proof as a trailing `sse=active|fallback` field. The
+/// value is fixed ASCII and can never carry a token or agent-derived text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamMode {
+    /// The `/api/v1/stream` subscription is pushing snapshots.
+    Active,
+    /// The stream ended or failed; the existing fetch poll keeps the view fresh.
+    Fallback,
+}
+
+impl StreamMode {
+    #[cfg(any(target_family = "wasm", test))]
+    fn proof_value(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
 /// Browser application state.
 pub struct TaskManagerApp {
     dashboard: Dashboard,
@@ -240,6 +271,17 @@ pub struct TaskManagerApp {
     row_menu: Option<RowMenu>,
     /// 直近のメニュー操作。DOM フックの `menu=` にのみ使う固定値。
     menu_proof: MenuProof,
+    /// Current live transport. Demo mode always stays in `Fallback`.
+    stream_mode: StreamMode,
+    /// Handle for the SSE task: dropping it cancels an idle old stream when the
+    /// connection settings change (the generation check inside `agent.rs` is
+    /// the second line of defence for a read already in flight).
+    sse_task: Option<Task<()>>,
+    /// Bumped on every subscription attempt so a stale task that unwinds late
+    /// cannot overwrite the state of its replacement.
+    sse_epoch: u64,
+    /// Earliest instant at which a failed stream may be retried.
+    sse_retry_at: Option<Instant>,
 }
 
 impl TaskManagerApp {
@@ -290,9 +332,16 @@ impl TaskManagerApp {
             last_export: None,
             row_menu: None,
             menu_proof: MenuProof::None,
+            stream_mode: StreamMode::Fallback,
+            sse_task: None,
+            sse_epoch: 0,
+            sse_retry_at: None,
         };
         app.restore_settings();
         app.spawn_sampler(cx);
+        // Live mode prefers SSE. Any failure flips back to the existing fetch
+        // poll, so a monitor is never left without updates (R3-S01).
+        app.start_sse_stream(cx);
         app.sync_proof_dom();
         app
     }
@@ -314,33 +363,51 @@ impl TaskManagerApp {
                 // `?agent=` / `#token=` can change without a page reload when
                 // the loopback agent is restarted with a fresh token. Re-read
                 // them every cycle so the *same* client (and its single
-                // in-flight fetch) picks up the new settings (R3-S04).
+                // in-flight fetch) picks up the new settings (R3-S04). A real
+                // change bumps the generation, aborting the old stream, and
+                // `refresh_agent_config` reconnects it immediately.
                 let alive = this.update(cx, |app, cx| {
-                    if app.refresh_agent_config() {
+                    if app.refresh_agent_config(cx) {
+                        cx.notify();
+                    }
+                    // A terminated stream is retried after its cooldown so a
+                    // transient outage does not force a page reload.
+                    if app.should_retry_sse() {
+                        app.start_sse_stream(cx);
                         cx.notify();
                     }
                 });
                 if alive.is_err() {
                     break;
                 }
-                match &live {
-                    Some(client) => {
-                        let result = client.fetch_snapshot().await;
-                        let alive = this.update(cx, |app, cx| {
-                            app.handle_live_result(result);
-                            cx.notify();
-                        });
-                        if alive.is_err() {
-                            break;
+                // While SSE is active it pushes snapshots; polling in parallel
+                // would duplicate work and consume one of the agent's two
+                // long-lived stream slots for no benefit.
+                let stream_active =
+                    match this.update(cx, |app, _| app.stream_mode == StreamMode::Active) {
+                        Ok(active) => active,
+                        Err(_) => break,
+                    };
+                if !stream_active {
+                    match &live {
+                        Some(client) => {
+                            let result = client.fetch_snapshot().await;
+                            let alive = this.update(cx, |app, cx| {
+                                app.handle_live_result(result);
+                                cx.notify();
+                            });
+                            if alive.is_err() {
+                                break;
+                            }
                         }
-                    }
-                    None => {
-                        let alive = this.update(cx, |app, cx| {
-                            app.ingest_demo();
-                            cx.notify();
-                        });
-                        if alive.is_err() {
-                            break;
+                        None => {
+                            let alive = this.update(cx, |app, cx| {
+                                app.ingest_demo();
+                                cx.notify();
+                            });
+                            if alive.is_err() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -368,7 +435,7 @@ impl TaskManagerApp {
     /// changes, the browser never reloads the page; polling `agent_config_from_url`
     /// here is what closes that gap. Returns `true` only on a real change so the
     /// sampler avoids notifying the UI on every poll.
-    fn refresh_agent_config(&mut self) -> bool {
+    fn refresh_agent_config(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(config) = agent_config_from_url() else {
             return false;
         };
@@ -383,8 +450,84 @@ impl TaskManagerApp {
         // Transient: the next successful sample clears it, and the auth
         // guidance (if any) is replaced by the fresh connection attempt.
         self.dashboard.set_status(RELOAD_NOTICE, false);
+        // `set_config` bumps the generation (the in-flight read aborts); drop
+        // the task as well so an *idle* stream cancels without waiting for the
+        // agent's next event, then subscribe against the new settings.
+        self.start_sse_stream(cx);
         self.sync_proof_dom();
         true
+    }
+
+    /// Opens (or reopens) the SSE subscription for live mode.
+    ///
+    /// Demo mode is a no-op. The previous task is dropped first, which cancels
+    /// the browser-side `ReadableStream` even while idle; the generation check
+    /// inside `agent.rs` independently stops a read already in flight. A stale
+    /// task cannot overwrite the replacement's state because it carries the
+    /// epoch captured when it was spawned.
+    fn start_sse_stream(&mut self, cx: &mut Context<Self>) {
+        let DataSource::Live(client) = &self.source else {
+            return;
+        };
+        let client = Arc::clone(client);
+        self.sse_task = None;
+        self.sse_epoch = self.sse_epoch.wrapping_add(1);
+        let epoch = self.sse_epoch;
+        self.stream_mode = StreamMode::Active;
+        self.sse_retry_at = None;
+
+        let task = cx.spawn(async move |this, cx| {
+            let outcome = {
+                // Reborrow `cx` for the callback; the outer context is reused
+                // below once this block (and the borrowed future) has ended.
+                let stream_cx = &mut *cx;
+                let this_for_snapshot = this.clone();
+                match client.subscribe_snapshot_stream(move |envelope: SnapshotEnvelope| {
+                    let _ = this_for_snapshot.update(stream_cx, |app, cx| {
+                        // Same ingest path as polling: redaction, ticks, stale
+                        // and reconnect handling stay in exactly one place.
+                        app.handle_live_result(Ok(envelope.into_response()));
+                        cx.notify();
+                    });
+                }) {
+                    Ok(stream) => stream.await,
+                    Err(error) => Err(error),
+                }
+            };
+            // A released entity simply ends the task; there is nothing left
+            // to update and no stream to keep alive.
+            let _ = this.update(cx, |app, cx| {
+                if app.sse_epoch == epoch {
+                    app.on_sse_ended(outcome);
+                }
+                cx.notify();
+            });
+        });
+        self.sse_task = Some(task);
+        self.sync_proof_dom();
+    }
+
+    /// Returns the view to the existing fetch poll after a subscription ends.
+    ///
+    /// A clean EOF gets a fixed, DOM-safe notice; a typed error reuses the
+    /// existing `handle_live_result` path so `401` still drives token re-entry
+    /// and `403` still stays an origin problem (C2-WEB). Either way the user
+    /// keeps receiving snapshots from the poll while the retry cooldown runs.
+    fn on_sse_ended(&mut self, outcome: Result<(), FetchError>) {
+        self.stream_mode = stream_mode_after_sse_end(&outcome);
+        self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
+        match outcome {
+            Ok(()) => self.dashboard.set_status(SSE_FALLBACK_NOTICE, false),
+            Err(error) => self.handle_live_result(Err(error)),
+        }
+        self.sync_proof_dom();
+    }
+
+    /// Whether a terminated stream's retry cooldown has elapsed.
+    fn should_retry_sse(&self) -> bool {
+        matches!(&self.source, DataSource::Live(_))
+            && self.stream_mode == StreamMode::Fallback
+            && self.sse_retry_at.is_some_and(|at| Instant::now() >= at)
     }
 
     /// Takes one sample from the deterministic demo probe.
@@ -2444,6 +2587,9 @@ impl TaskManagerApp {
         let proof = proof_with_menu(&proof, menu);
         let proof = proof_with_preset(&proof, self.dashboard.active_filter_preset());
         let proof = proof_with_sampling(&proof, self.dashboard.snapshot(), effective_interval_ms);
+        // Last field on purpose: every pre-existing `key=value;` pair keeps its
+        // exact bytes and the new marker is always the final one.
+        let proof = proof_with_sse(&proof, self.stream_mode);
         // タブのタイトルは人間向けの固定文言＋データ源のみ。DOM 証跡の内部
         // フィールド（mode/tick/rows/filter/…）は `body[data-gpui-proof]` に
         // だけ書き、ここには一切露出させない。
@@ -2936,6 +3082,25 @@ fn proof_with_sampling(
     format!(
         "{proof}power={source};sampling={profile};sampling_ms={effective_interval_ms};cgroups={groups};"
     )
+}
+
+/// Any termination of an SSE subscription returns monitoring to the poll.
+///
+/// A clean EOF, a transport error and a settings change all leave the stream
+/// unable to deliver snapshots, so the legacy path takes over. Kept pure so the
+/// fallback contract can be tested without a browser context.
+fn stream_mode_after_sse_end(_outcome: &Result<(), FetchError>) -> StreamMode {
+    StreamMode::Fallback
+}
+
+/// Appends the SSE transport marker to the DOM proof.
+///
+/// Additive only: a fixed `active` / `fallback` token as the final field, so
+/// every pre-existing `key=value;` pair stays byte-for-byte identical and no
+/// token, endpoint or agent-supplied text can enter the proof.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_sse(proof: &str, mode: StreamMode) -> String {
+    format!("{proof}sse={};", mode.proof_value())
 }
 
 /// Whether the row menu's full process identity is still in the snapshot.
@@ -3943,5 +4108,61 @@ mod tests {
             cgroup_group_text("demo.slice/system.service", 3),
             "demo.slice/system.service — 3 件"
         );
+    }
+
+    // ---------------------------------------------------------------- T-SSE
+
+    #[test]
+    fn dom_proof_sse_field_is_appended_last_and_token_free() {
+        let token = "super-secret-agent-token";
+        let legacy = "mode=live;tick=7;interval=2000;cgroups=2;";
+        let active = proof_with_sse(legacy, StreamMode::Active);
+        assert!(active.starts_with(legacy), "{active}");
+        assert_eq!(active, format!("{legacy}sse=active;"));
+        let fallback = proof_with_sse(legacy, StreamMode::Fallback);
+        assert_eq!(fallback, format!("{legacy}sse=fallback;"));
+        assert_eq!(StreamMode::Active.proof_value(), "active");
+        assert_eq!(StreamMode::Fallback.proof_value(), "fallback");
+        for proof in [&active, &fallback] {
+            assert!(!proof.contains(token), "{proof}");
+            assert!(!proof.contains(' '), "{proof}");
+            assert!(!proof.contains('\n'), "{proof}");
+            assert_eq!(proof.matches("sse=").count(), 1, "{proof}");
+        }
+    }
+
+    #[test]
+    fn every_sse_termination_falls_back_to_the_existing_poll() {
+        // A clean EOF and every typed error must return to polling so the user
+        // is never left staring at a frozen snapshot (R3-S01).
+        assert_eq!(stream_mode_after_sse_end(&Ok(())), StreamMode::Fallback);
+        for error in [
+            FetchError::Auth,
+            FetchError::Forbidden,
+            FetchError::Http(503),
+            FetchError::Timeout,
+            FetchError::Busy,
+            FetchError::BodyAborted,
+            FetchError::SizeLimit,
+            FetchError::BodyRead,
+            FetchError::Parse("SSE データの解析に失敗しました".to_string()),
+            FetchError::Build("bad uri".to_string()),
+            FetchError::Connect,
+            FetchError::InvalidEndpoint,
+            FetchError::SchemaVersion {
+                agent: 99,
+                web: tm_core::WIRE_SCHEMA_VERSION,
+            },
+        ] {
+            let debug = format!("{error:?}");
+            assert_eq!(
+                stream_mode_after_sse_end(&Err(error)),
+                StreamMode::Fallback,
+                "{debug}"
+            );
+        }
+        // The fallback notice stays inside the DOM-proof grammar.
+        assert!(!SSE_FALLBACK_NOTICE.contains(';'));
+        assert!(!SSE_FALLBACK_NOTICE.contains('\n'));
     }
 }

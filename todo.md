@@ -345,7 +345,7 @@ status: current
 - [x] SSE が method 検証／プリフライトをバイパス: `agent/src/main.rs:940` の
       `STREAM_PATH` 分岐が route() を通らないため OPTIONS が 401、POST でも
       ストリーム開始する。GET のみ＋OPTIONS preflight を追加。根拠 q1-sse。
-- [ ] Authorization 必須 SSE のクライアント認証経路を確定: EventSource は（サーバ側は method/Host/CORS を整備済み。EventSource vs fetch()+ReadableStream の選択と ACA-Credentials 設計は未決定 — q1-sse）
+- [x] Authorization 必須 SSE のクライアント認証経路を確定: EventSource は（サーバ側は method/Host/CORS を整備済み。EventSource vs fetch()+ReadableStream の選択と ACA-Credentials 設計は未決定 — q1-sse）（fetch() + ReadableStream を採用、Bearer ヘッダ、generation 変更で再接続、EOF/エラー時にポーリングへフォールバック、DOM proof 末尾に sse= 追加 — T-SSE）
       カスタムヘッダ不可、fetch()+ReadableStream なら CORS preflight と
       ACA-Credentials の設計が必要。根拠 q1-sse（設計判断）。
 - [x] 新規 wire enum (PowerSource / BatteryState / SamplingProfile /
