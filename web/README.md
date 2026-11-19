@@ -6,7 +6,9 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 データ供給だけを差し替えます。
 
 - 既定: ブラウザ内で `tm_core::demo::DemoProbe` を更新間隔ごとにサンプリング
-- ライブ: ループバックの `tm-agent` から `GET /api/v1/snapshot?limit=500` を更新間隔ごとに取得
+- ライブ: ループバックの `tm-agent` の `GET /api/v1/stream`（SSE）を優先し、
+  未接続・終了・失敗・アイドル時は `GET /api/v1/snapshot?limit=500` の定期取得へ
+  フォールバック（DOM proof の `sse=active|fallback` で確認）
 - 更新間隔はツールバーの **0.5s / 1s / 2s / 5s プリセット**で切り替えられます。
   選択値は `localStorage` の `gpui-task-manager.settings` に保存され、起動時に復元されます。
   適用中の値は DOM proof の `interval=<ミリ秒>` フィールド（`interval=500` / `1000` /
@@ -20,7 +22,9 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 |---|---|
 | `src/lib.rs` | エントリ（`WebPlatform` 直接構築、フォントロード、ウィンドウ生成） |
 | `src/shell.rs` | 画面（ヘッダー / 概要 / 表 / 詳細 / ステータスバー）、入力、データ経路 |
-| `src/agent.rs` | `tm-agent` クライアント（Authorization ヘッダ、JSON パース、エラー整形） |
+| `src/settings.rs` | `localStorage` の読み書き（更新間隔プリセット・テーマ、スキーマ互換・破損時隔離） |
+| `src/redaction.rs` | ワイヤの生スナップショットから識別子を回収し伏せ字化（表示・エクスポートへ適用） |
+| `src/agent.rs` | `tm-agent` クライアント（Authorization ヘッダ、JSON / SSE パース、エラー整形） |
 | `src/theme.rs` | Catppuccin Mocha / Latte の配色トークンと切替状態（ネイティブ版と同系） |
 | `src/widgets.rs` | card / metric_bar / sparkline / pill / kv などの小さな部品 |
 | `index.html` | trunk のエントリ（`data-trunk rel="rust"`） |
@@ -92,11 +96,16 @@ http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test
    クエリ `?token=` は廃止されており、エージェントは 401 を返します。
 2. エージェントへのリクエストは
    `Authorization: Bearer <token>` ヘッダで認証します（クエリには載せません）。
-3. `?agent=` はエージェントのベース URL です。`limit=500` で取得します。
-4. 取得は設定した更新間隔（0.5s / 1s / 2s / 5s）・**多重取得なし**
-   （前回の応答を待ってから次を発行）です。
+3. `?agent=` はエージェントのベース URL です。ポーリングでは `limit=500` で取得します。
+4. **SSE 優先**: `GET /api/v1/stream` を購読し、最初のフレームを受信した時点で
+   `sse=active` となり定期取得を一時停止します。接続前・終了・失敗・アイドル
+   （3 秒以上フレーム無し）のときは `sse=fallback` に戻り、設定した更新間隔
+   （0.5s / 1s / 2s / 5s）のポーリングへフォールバックします。ポーリング自体は
+   **多重取得なし**（前回の応答を待ってから次を発行）です。終了・失敗後は
+   5 秒のクールダウンで SSE の再接続を試みます。
 5. 取得に失敗した場合はステータスバーと表にエラーを表示し、
    **デモへはフォールバックしません**（直前のスナップショットは保持）。
+   これはデータ源の切替えの話であり、上記の SSE → ポーリングのフォールバックとは別です。
 6. CORS は loopback オリジンのみ許可され、`Authorization` ヘッダ用の
    プリフライトにもエージェントが対応しています（`Host` ヘッダも loopback 必須）。
 7. 更新に失敗して古いスナップショットが画面に残った場合は、ヘッダーと
@@ -105,7 +114,7 @@ http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test
    無い場合は stale 表示を行わず、エラーメッセージのみを出します。
    更新が成功すると stale は解消します。
 8. **URL の `?agent=` / `#token=` 変更はページ再読込なしで検知**されます。
-   サンプラーが各ポーリングで URL を読み直し、接続先またはトークンの差分を検知すると
+   サンプラーが各周期で URL を読み直し、接続先またはトークンの差分を検知すると
    自動的に再接続します。エージェント再起動でトークンが変わった場合も、
    アドレスバーの `#token=` を貼り替えるだけで再接続できます。このとき
    ステータスに固定文言の **RELOAD_NOTICE**
@@ -179,17 +188,58 @@ python3 cdp_verify_web.py \
 - スクリーンショット: `../notes/assets/web-shell-*.png`
 - 証拠 JSON: `verification/web-shell-evidence-*.json`
   （状態フック、ネットワーク要求、コンソール、チェック結果）
-- 検証用の状態フック: アプリは `document.title` と
-  `body[data-gpui-proof]` に状態（mode / tick / rows / filter / selected_pid /
-  sort / live_error / viewport サイズ）を書き出します。更新間隔は
-  `interval=<ミリ秒>`（例: `interval=2000`）、直近のエクスポートは `export=csv` /
-  `export=json` / `export=none`、stale 表示は `stale=0|1`、再接続要否は
-  `reconnect=0|1`、テーマは `theme=dark|light` として追加されます（いずれも
-  トークン・ホスト名を含まない付加的な `key=value;` です）。GPUI は canvas 描画なので、
-  CDP から観測できるのはこのフックだけです。
+- 検証用の状態フック: アプリは `body[data-gpui-proof]` にのみ `key=value;` 形式の
+  状態を書き出します。`document.title` は人間向けの固定文言
+  （`GPUI タスクマネージャー (Web) — デモ` / `GPUI タスクマネージャー (Web) — ライブ`）
+  とデータ源だけに限定し、DOM proof の内部フィールド（`mode` / `tick` / `rows` /
+  `filter` / …）はタイトルへ書き出しません。CSP を無闇に追加してタイトル更新を
+  止める必要はありません（フックは body 属性で完結しています）。GPUI は canvas
+  描画なので、CDP から観測できるのはこのフックだけです。全キーと値域は下記
+  「DOM proof フィールド一覧」を参照してください。
 - クリック座標は `src/shell.rs` のレイアウト定数（ヘッダー 52px、概要 260px、
   ツールバー 36px、行 30px など）から計算しています。レイアウトを変えたら
   `scripts/cdp_verify_web.py` の定数も更新してください。
+
+### DOM proof フィールド一覧
+
+`body[data-gpui-proof]` に書き出される現行の全キーです（`web/src/shell.rs:2661-2684`
+の `sync_proof_dom()` と `proof_with_*` ヘルパーが根拠）。値は固定識別子・数値・
+サニタイズ済みテキストのみで、トークン・ホスト名・エンドポイントは含まれません。
+CDP 検証では次の値域でパースしてください（`../notes/web-shell.md` の
+「検証用フック」も参照）。
+
+| キー | 値域 | 内容 |
+| --- | --- | --- |
+| `mode` | `demo` / `live` | データ源 |
+| `tick` | 非負整数 | サンプル回数 |
+| `cpu` | 小数 1 桁 | CPU 全体使用率（%） |
+| `mem` | 小数 1 桁 | メモリ使用率（%） |
+| `rows` | 非負整数 | 表示行数 |
+| `total` | 非負整数 | プロセス数（スナップショット無しは 0） |
+| `filter` | サニタイズ済み文字列（空可） | 絞り込み入力（`;` → `,`、`=`・改行は除去） |
+| `selected_pid` | PID の十進数 / `-` | 選択行（未選択は `-`） |
+| `sort` | `CPU` / `メモリ` / `仮想メモリ` / `PID` / `名前` / `ユーザー` / `状態` / `スレッド` / `起動時刻` | ソート列の固定ラベル |
+| `dir` | `asc` / `desc` | ソート方向 |
+| `sampled` | UNIX 秒の整数（スナップショット無しは 0） | 最終サンプル時刻 |
+| `vw` | 非負整数 | ビューポート幅（px） |
+| `vh` | 非負整数 | ビューポート高さ（px） |
+| `live_error` | `0` / `1` | ライブ取得エラーの有無 |
+| `stale` | `0` / `1` | 古いスナップショットを表示中か |
+| `ime_composing` | `0` / `1` | IME 変換中か |
+| `ime_field` | サニタイズ済み文字列（空可） | 入力欄の表示テキスト（未確定文字列を含む） |
+| `ime_marked` | `<start>:<end>` / `-` | 変換中範囲（範囲無しは `-`） |
+| `ime_selection` | `<start>:<end>` | 選択範囲 |
+| `theme` | `dark` / `light` | 適用中のテーマ |
+| `interval` | ミリ秒の整数（250〜10000、プリセットは 500 / 1000 / 2000 / 5000） | ユーザー設定の更新間隔（クランプ後） |
+| `export` | `csv` / `json` / `none` | 直近のエクスポート形式 |
+| `reconnect` | `0` / `1` | 401 による再接続要否（成功まで保持） |
+| `menu` | `none` / `open` / `select` / `copy_pid` | 行コンテキストメニューの状態 |
+| `preset` | `none` / `all` / `high_cpu` / `high_memory` / `large_virtual_memory` / `running` | 適用中のフィルタプリセット |
+| `power` | `none` / `ac` / `battery` / `unknown` | 電源（スナップショット無しは `none`） |
+| `sampling` | `none` / `interactive` / `battery` / `battery_saver` / `background` | 適応サンプリングプロファイル |
+| `sampling_ms` | ミリ秒の整数 | 適応・クランプ後の実際のサンプラー待機時間 |
+| `cgroups` | 非負整数 | cgroup 数（スナップショット無しは 0） |
+| `sse` | `active` / `fallback` | ライブ転送状態（初フレーム受信で `active`、終了・失敗・アイドルで `fallback`） |
 
 ## 既知の制約
 

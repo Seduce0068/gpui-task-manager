@@ -456,6 +456,22 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   Tailnet ドメインのパターンは、redact 処理に必要なサフィックス定数自体を
   誤検出しないよう、実ホスト名を伴う形式へ絞った。
 
+### 優先度: 中 — 未調査領域の探索 2026-11-19（第5次）
+
+- [x] `deny.toml:23` の `all-features = false` を true へ変更し optional 依存も
+      監査対象に（a2-supply が 0.21.0 で成功実証済み）。
+- [x] CDP ゲートの py_compile / self-check 対象へ `poc-wasm/scripts/cdp_verify.py`
+      を追加。PoC の CDP 切断時 pending future 解除も web 版から移植。
+- [x] cdp_verify_ime.py のローカル parse_proof を web 共有版へ置換、
+      self-check に現行 DOM proof 全キー（sse/preset/power/sampling/cgroups 等）
+      の gold 文字列を追加。
+- [x] web/README の SSE 優先＋フォールバック記述、DOM proof キー一覧、
+      document.title 固定契約、構成表（settings.rs/redaction.rs）を実装へ同期。
+- [x] notes/current-state.md の内訳（agent 104 / app 94）と履歴 485→491 を修正。
+- [x] PoC cdp_verify.py の出力先既定値を README と同じ ../../notes/assets へ。
+- [x] Dependabot ignore へ sysinfo / rustix の完全一致ピンを追加するか、
+      方針文書を整合（a2-supply）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

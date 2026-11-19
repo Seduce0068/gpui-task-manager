@@ -175,11 +175,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Syntax check (py_compile)
-        run: python3 -m py_compile web/scripts/cdp_verify_*.py
+        run: python3 -m py_compile web/scripts/cdp_verify_*.py poc-wasm/scripts/cdp_verify.py
       - name: Offline self-check
         run: |
           set -euo pipefail
-          for script in web/scripts/cdp_verify_*.py; do
+          for script in web/scripts/cdp_verify_*.py poc-wasm/scripts/cdp_verify.py; do
             echo "==> python3 ${script} --self-check"
             python3 "${script}" --self-check
           done

@@ -12,7 +12,7 @@
 body[data-gpui-proof] は従来どおり証拠として記録する。
 
 使い方:
-    python3 cdp_verify.py --url http://127.0.0.1:8090/ --out ../notes/assets \
+    python3 cdp_verify.py --url http://127.0.0.1:8090/ --out ../../notes/assets \
         --prefix wasm-spike
 
     # CI ゲート: ブラウザ/サーバ不要のオフライン自己検証（失敗時は終了コード 1）
@@ -108,6 +108,17 @@ class CDP:
                     self.events.append(message)
         except Exception as error:  # noqa: BLE001 - 検証スクリプトなので握りつぶして記録
             self.events.append({"method": "__reader_closed__", "error": repr(error)})
+            self._fail_pending(error)
+
+    def _fail_pending(self, error: Exception) -> None:
+        """reader 終了時に in-flight の call() を例外で解除する（R2-CDP）。
+
+        ページ/ブラウザが消えた場合に call() が 120 秒タイムアウトまで
+        ハングするのを防ぐ。web/scripts/cdp_verify_web.py と同じ処理。
+        """
+        for future in self.pending.values():
+            if not future.done():
+                future.set_exception(error)
 
     async def call(self, method: str, params: dict | None = None):
         self._id += 1
@@ -326,7 +337,8 @@ ENV_PROBE = """
 def self_check() -> int:
     """オフライン自己検証（CI ゲート）。ブラウザもサーバも起動しない。
 
-    DOM rect 由来の座標計算とセレクタ取得式、状態フック式だけを検証する。
+    DOM rect 由来の座標計算とセレクタ取得式、状態フック式に加え、
+    reader クローズ時に pending future が例外で解除されることを検証する。
     実機の証拠収集は通常実行（--url / --port）で行う。
     """
     failures: list[str] = []
@@ -360,6 +372,22 @@ def self_check() -> int:
     check("getBoundingClientRect" in dom_expr, "getBoundingClientRect で DOM 座標を取得する")
     check("data-gpui-proof" in ENV_PROBE, "DOM 状態フック式が維持されている")
 
+    # CDP 切断時のハング解消: reader クローズで pending future が例外解除されること
+    # （websockets / ブラウザ不要のオフライン検証）。
+    loop = asyncio.new_event_loop()
+    try:
+        cdp = CDP()
+        pending = loop.create_future()
+        cdp.pending[1] = pending
+        cdp._fail_pending(RuntimeError("reader closed"))
+        check(pending.done(), "reader クローズ時に pending future が done になる")
+        check(
+            pending.done() and isinstance(pending.exception(), RuntimeError),
+            "reader クローズ時に pending が例外で解除される",
+        )
+    finally:
+        loop.close()
+
     passed = not failures
     print(
         json.dumps(
@@ -375,7 +403,7 @@ async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=9222)
     parser.add_argument("--url", default="http://127.0.0.1:8090/")
-    parser.add_argument("--out", default="../notes/assets")
+    parser.add_argument("--out", default="../../notes/assets")
     parser.add_argument("--prefix", default="wasm-spike")
     parser.add_argument("--label", default="default", help="Chrome 起動条件のラベル")
     parser.add_argument("--wait", type=float, default=5.0)

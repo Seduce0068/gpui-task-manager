@@ -97,15 +97,21 @@ status: verified
 
 ### 検証用フック
 
-GPUI は canvas に描画するため DOM から状態を読めない。CDP 検証用に
-`document.title` と `body[data-gpui-proof]` へ状態を書き出す:
+GPUI は canvas に描画するため DOM から状態を読めない。CDP 検証用の状態は
+`body[data-gpui-proof]` にのみ書き出す。`document.title` は人間向けの固定文言
+（`GPUI タスクマネージャー (Web) — デモ` / `GPUI タスクマネージャー (Web) — ライブ`）
+とデータ源だけに限定し、`mode` / `tick` / `rows` / `filter` などの DOM proof
+フィールドはタイトルへ書き出さない（そのため CSP を無闇に追加してタイトル更新を
+止める必要は無い）:
 
 ```text
 mode=demo;tick=5;cpu=32.6;mem=57.2;rows=28;total=28;filter=;selected_pid=900;
 sort=CPU;dir=desc;sampled=1760000004;vw=1440;vh=857;live_error=0;
 ```
 
-これは検証専用の計装で、トークンやエンドポイントは含めない。
+これは検証専用の計装で、トークンやエンドポイントは含めない。現行の全キーと
+値域（`sse=active|fallback`、`preset=`、`power=`、`sampling=`、`sampling_ms=`、
+`cgroups=`、`menu=` 等）は `./web/README.md` の「DOM proof フィールド一覧」を参照。
 
 ## 画面仕様
 

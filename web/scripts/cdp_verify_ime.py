@@ -183,16 +183,9 @@ PROOF_EXPR = """
 """
 
 
-def parse_proof(proof: str | None) -> dict:
-    fields: dict = {}
-    if not proof:
-        return fields
-    for part in proof.split(";"):
-        if not part:
-            continue
-        key, _, value = part.partition("=")
-        fields[key] = value
-    return fields
+# parse_proof は web 共有版（cdp_verify_web.py）へ一本化する。
+# 共有版は '=' が無い断片を無視し、値中の '=' は区切らず保持する。
+from cdp_verify_web import parse_proof
 
 
 async def state(cdp: CDP) -> dict:
@@ -343,6 +336,38 @@ def self_check() -> int:
     check(parsed.get("ime_composing") == "1", "変換中フラグが解析できる")
     check(parsed.get("ime_marked") == "0:4", "marked range が解析できる")
     check(parse_proof(None) == {}, "空のフックは空辞書")
+
+    # 共有版 parse_proof の区切り処理を固定する:
+    # '=' を持たない断片は捨てられ、空キー/空値エントリを生成しない。
+    no_sep = parse_proof("mode=demo;bare-token;filter=a=b")
+    check(
+        "bare-token" not in no_sep and "" not in no_sep,
+        "'=' を持たない断片で空キーが生成されない",
+    )
+    check(no_sep.get("filter") == "a=b", "値中の '=' は区切りとして扱わない")
+
+    # 現行 DOM proof の全キーを含む gold 文字列をオフラインで固定する。
+    gold_keys = (
+        "mode", "tick", "rows", "selected", "filter", "interval", "export",
+        "reconnect", "stale", "menu", "preset", "power", "sampling",
+        "sampling_ms", "cgroups", "sse",
+    )
+    gold_proof = (
+        "mode=demo;tick=7;rows=3;selected=42;selected_pid=42;filter=;interval=2000;"
+        "export=none;reconnect=0;stale=0;menu=none;preset=none;power=ac;"
+        "sampling=interactive;sampling_ms=2500;cgroups=2;sse=active;"
+    )
+    gold = parse_proof(gold_proof)
+    missing = [key for key in gold_keys if key not in gold]
+    check(not missing, f"gold proof の全キーが parse 後に参照できる: 欠落={missing}")
+    check(
+        gold.get("mode") == "demo"
+        and gold.get("sampling_ms") == "2500"
+        and gold.get("sse") == "active"
+        and gold.get("filter") == "",
+        "gold proof の各キーの値が保持される",
+    )
+
     check(TOOLBAR_TOP == 348.0, "ツールバー上端がレイアウト定数と一致する")
     check(FILTER_X == ROOT_PAD, "絞り込み欄の x がルート余白と一致する")
     check(FILTER_W > 0 and FILTER_H > 0, "絞り込み欄のサイズが正")

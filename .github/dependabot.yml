@@ -39,6 +39,10 @@ updates:
       - dependency-name: "gpui-component"
       - dependency-name: "gpui-base"
       - dependency-name: "gpui-kit-assets"
+      # Exact-version pins in crates/tm-platform/Cargo.toml (ADR-001 style);
+      # keep automation from drifting sysinfo / rustix off the reviewed lock.
+      - dependency-name: "sysinfo"
+      - dependency-name: "rustix"
     commit-message:
       prefix: "chore(deps)"
 
