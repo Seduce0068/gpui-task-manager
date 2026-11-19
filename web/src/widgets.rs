@@ -302,6 +302,20 @@ pub fn usage_severity(percent: f32) -> &'static str {
     }
 }
 
+/// Visible utilisation text: the number followed by its textual severity.
+///
+/// Mirrors [`temperature_value_text`]: the colour of the number is not the
+/// only signal. The same 高/中/低 word used by the accessible name is drawn
+/// next to the value, so a colour-blind reader sees the state as well.
+pub fn usage_value_text(percent: f32) -> String {
+    let percent = percent.clamp(0.0, 100.0);
+    format!(
+        "{} {}",
+        tm_core::format::format_percent(percent),
+        usage_severity(percent)
+    )
+}
+
 // ------------------------------------------------------------ temperature gauge
 //
 // `critical_c` is the halt threshold and `max_c` the upper operating limit
@@ -551,6 +565,15 @@ mod tests {
     fn usage_severity_clamps_against_nan_like_inputs() {
         // Negative values cannot come from a probe, but must not be "高".
         assert_eq!(usage_severity(-1.0), "低");
+    }
+
+    #[test]
+    fn usage_value_text_keeps_the_number_and_spells_out_the_severity() {
+        assert_eq!(usage_value_text(42.0), "42.0% 低");
+        assert_eq!(usage_value_text(70.0), "70.0% 中");
+        assert_eq!(usage_value_text(95.5), "95.5% 高");
+        // Non-finite input must not render NaN% or contradict the a11y name.
+        assert_eq!(usage_value_text(f32::NAN), "0.0% 低");
     }
 
     #[test]

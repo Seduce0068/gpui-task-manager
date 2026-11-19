@@ -98,6 +98,17 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(8);
 /// between short sleeps to bound the wait without spawning a helper thread.
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// User-facing body for every `403`, byte-identical to the Web shell's
+/// `FORBIDDEN_GUIDANCE` (R2-AUTHMSG).
+///
+/// The old per-branch strings ("Host ヘッダがループバックではありません",
+/// "許可されていない Origin です", ...) described internal request checks a
+/// browser user cannot act on. One static string also guarantees no request-
+/// derived Host/Origin value is ever echoed back into the body. The wire
+/// contract is unchanged: `code` stays `forbidden`.
+const FORBIDDEN_GUIDANCE: &str =
+    "別ホスト／別オリジンからのアクセスはサポートしていません。アプリとブラウザを同一ホストで起動してください";
+
 /// Warning emitted whenever `--token` is present on the command line.
 ///
 /// `/proc/<pid>/cmdline` is world-readable by default, so the credential is
@@ -1006,10 +1017,7 @@ fn handle_connection_with_stream(
                 let mut response = http::Response::json(
                     403,
                     "Forbidden",
-                    error_body(
-                        ErrorCode::Forbidden,
-                        "Host ヘッダがループバックではありません",
-                    ),
+                    error_body(ErrorCode::Forbidden, FORBIDDEN_GUIDANCE),
                 );
                 add_cors_if_absent(&mut response, allowed_origin);
                 return write_short_response(stream, &request, state, response);
@@ -1070,10 +1078,7 @@ fn handle_request(
             let mut response = http::Response::json(
                 403,
                 "Forbidden",
-                error_body(
-                    ErrorCode::Forbidden,
-                    "Host ヘッダがループバックではありません",
-                ),
+                error_body(ErrorCode::Forbidden, FORBIDDEN_GUIDANCE),
             );
             add_cors_if_absent(&mut response, allowed_origin);
             trace.finish(response.status);
@@ -1264,14 +1269,14 @@ fn handle_stream_connection(
     // S1-SSE: unlike the ordinary path, a stream requires an explicit Host.
     // A browser always sends one, so rejecting a missing Host only blocks
     // hand-crafted clients (the DNS-rebinding case the helper guards against).
-    let invalid_host_message = match request.header("host") {
-        Some(host) if http::is_allowed_host(host) => None,
-        Some(_) => Some("Host ヘッダがループバックではありません"),
-        None => Some("Host ヘッダが必要です"),
-    };
-    if let Some(message) = invalid_host_message {
-        let mut response =
-            http::Response::json(403, "Forbidden", error_body(ErrorCode::Forbidden, message));
+    let host_is_allowed =
+        matches!(request.header("host"), Some(host) if http::is_allowed_host(host));
+    if !host_is_allowed {
+        let mut response = http::Response::json(
+            403,
+            "Forbidden",
+            error_body(ErrorCode::Forbidden, FORBIDDEN_GUIDANCE),
+        );
         add_cors_if_absent(&mut response, allowed_origin);
         trace.finish(response.status);
         return http::write_response(stream, &response);
@@ -1462,14 +1467,14 @@ fn preflight_response(request: &http::Request, allowed_origin: Option<&str>) -> 
         return http::Response::json(
             403,
             "Forbidden",
-            error_body(ErrorCode::Forbidden, "Origin ヘッダが必要です"),
+            error_body(ErrorCode::Forbidden, FORBIDDEN_GUIDANCE),
         );
     };
     if !http::is_allowed_origin(origin) {
         return http::Response::json(
             403,
             "Forbidden",
-            error_body(ErrorCode::Forbidden, "許可されていない Origin です"),
+            error_body(ErrorCode::Forbidden, FORBIDDEN_GUIDANCE),
         );
     }
     let mut response = http::Response::empty(204, "No Content");
@@ -2004,6 +2009,39 @@ mod tests {
             !foreign.contains("Access-Control-Allow-Origin"),
             "{foreign}"
         );
+    }
+
+    #[test]
+    fn forbidden_bodies_use_the_shared_user_facing_guidance() {
+        // Every 403 branch emits the text the Web shell shows, not internal
+        // request-check jargon. `code: forbidden` stays the stable wire value.
+        let (address, handle) = spawn_demo_server(3);
+        let bad_host = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let bad_origin = send_request(
+            address,
+            "OPTIONS /api/v1/snapshot HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n",
+        );
+        let no_origin = send_request(address, "OPTIONS /api/v1/snapshot HTTP/1.1\r\n\r\n");
+        join_demo_server(handle);
+
+        for response in [&bad_host, &bad_origin, &no_origin] {
+            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+            let body = parse_body(response);
+            assert_eq!(body["code"], "forbidden", "{response}");
+            assert_eq!(body["message"], FORBIDDEN_GUIDANCE, "{response}");
+            assert_eq!(body["error"], FORBIDDEN_GUIDANCE, "{response}");
+            for jargon in [
+                "Host ヘッダ",
+                "Origin ヘッダ",
+                "ループバック",
+                "許可されていない",
+            ] {
+                assert!(!response.contains(jargon), "{jargon} leaked in {response}");
+            }
+        }
     }
 
     #[test]

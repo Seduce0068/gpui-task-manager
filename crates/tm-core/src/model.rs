@@ -637,8 +637,17 @@ impl SamplingProfile {
     }
 }
 
-/// Sampling interval in milliseconds used when the window is visible on mains power (R1-I11).
-pub const INTERACTIVE_INTERVAL_MS: u64 = 1_000;
+/// Lower bound for the sampling interval when the window is visible on mains power (R1-I11).
+///
+/// R2-DEMO: this used to be 1 000 ms, which silently raised the advertised
+/// 0.5 s refresh preset to 1 s via [`SamplingPlan::effective_interval`]. Both
+/// shells already accept a 250 ms floor in their settings, and the 0.5 s
+/// preset is shown in the UI, so lowering this floor to 500 ms makes the
+/// setting honest. A UI-only "currently limited to 1 s" notice was rejected:
+/// it would keep a selectable preset that never takes effect. The default
+/// configured interval stays 1 000 ms, so an untouched installation keeps its
+/// exact cadence; only users who pick 0.5 s get faster sampling.
+pub const INTERACTIVE_INTERVAL_MS: u64 = 500;
 /// Sampling interval in milliseconds used while the window is hidden (R1-I11).
 pub const BACKGROUND_INTERVAL_MS: u64 = 5_000;
 /// Sampling interval in milliseconds used while running on battery (R1-I11).
@@ -666,10 +675,11 @@ impl SamplingPlan {
 
     /// Applies this plan as a *floor* on a user-configured refresh interval.
     ///
-    /// A fast interactive plan leaves the configured cadence untouched (the
-    /// default 1 s keeps its exact behaviour), while a battery / saver /
-    /// background plan slows a too-fast setting down to the recommended delay.
-    /// A deliberately slower user setting is always respected.
+    /// The interactive floor is [`INTERACTIVE_INTERVAL_MS`] (500 ms), so the
+    /// 0.5 s preset now takes effect while the default 1 s keeps its exact
+    /// behaviour. A battery / saver / background plan still slows a too-fast
+    /// setting down to its recommended delay. A deliberately slower user
+    /// setting is always respected.
     pub fn effective_interval(self, configured: std::time::Duration) -> std::time::Duration {
         configured.max(self.duration())
     }
@@ -1307,15 +1317,20 @@ mod tests {
 
     #[test]
     fn sampling_plan_is_a_floor_not_an_accelerator() {
+        let interactive = SamplingPlan {
+            interval_ms: INTERACTIVE_INTERVAL_MS,
+            profile: SamplingProfile::Interactive,
+        };
         let configured = std::time::Duration::from_millis(1_000);
-        // Interactive: the existing 1 s cadence is byte-for-byte unchanged.
+        // The default 1 s cadence is byte-for-byte unchanged.
+        assert_eq!(interactive.effective_interval(configured), configured);
+        // R2-DEMO: the advertised 0.5 s preset must survive the floor, and an
+        // even faster raw setting is still raised to 500 ms.
+        let fast = std::time::Duration::from_millis(500);
+        assert_eq!(interactive.effective_interval(fast), fast);
         assert_eq!(
-            SamplingPlan {
-                interval_ms: INTERACTIVE_INTERVAL_MS,
-                profile: SamplingProfile::Interactive,
-            }
-            .effective_interval(configured),
-            configured
+            interactive.effective_interval(std::time::Duration::from_millis(250)),
+            fast
         );
         // Battery and background plans slow a too-fast setting down.
         for (interval_ms, profile) in [

@@ -42,7 +42,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - ソート（列クリック）、絞り込み（名前・コマンド・ユーザー・PID）、詳細パネル
 - **フィルタプリセット**（すべて / 高 CPU / 高メモリ / 大きな仮想メモリ / 実行中）をワンクリックで適用（`tm-viewmodel` 共通の組み込み定義、ブラウザ版のツールバーにチップ表示）
 - **更新間隔プリセット**（0.5s / 1s / 2s / 5s）をボタンで切替・保存（ネイティブ / ブラウザ共通）
-- **電源・ウィンドウ状態に応じたサンプリング**: AC 表示時 1s、バッテリー 2.5s、低バッテリー（20% 以下）・ウィンドウ非表示 5s。設定した更新間隔の下限として適用し、意図的に遅い設定は維持（ネイティブ / ブラウザ）
+- **電源・ウィンドウ状態に応じたサンプリング**: AC 表示時は下限 0.5s（未変更の既定は 1s）、バッテリー 2.5s、低バッテリー（20% 以下）・ウィンドウ非表示 5s。設定した更新間隔の下限として適用し、意図的に遅い設定は維持（ネイティブ / ブラウザ）
 - **cgroup の読み取り専用表示**: 正規化したグループラベルとメンバー数、ステータスバーのグループ数を表示。操作・上限変更は不可
 - シグナル操作（SIGTERM / SIGKILL / SIGSTOP / SIGCONT）を**確認ダイアログ経由**で実行
 - 安全装置: PID 1 と自分自身の拒否、PID + 起動時刻による PID 再利用検出
@@ -67,18 +67,26 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 
 ## クイックスタート（Kubuntu / Wayland）
 
+### まず試す（最短）
+
 ```bash
-# 1. 初回のみ: libxkbcommon-x11 のローカル shim（-dev パッケージが無いホスト向け）
+# Kubuntu / Wayland: 初回のみ、libxkbcommon-x11 のローカル shim を用意
 bash scripts/dev-setup.sh
 
-# 2. ビルドとテスト
+# ビルドして合成データで起動（エージェント不要・実データの権限不要）
 cargo build -p gpui-task-manager
+./target/debug/gpui-task-manager --demo
+```
+
+`--demo` は決定的な合成データです。フィルタプリセットの「高 CPU」は 50% 超の
+行を表示し、更新間隔プリセットの 0.5s も実効します（未変更の既定は 1s）。
+実データを見る場合は `./target/debug/gpui-task-manager` を起動してください。
+
+### 重い検証（必要なときだけ）
+
+```bash
 cargo test --workspace
 bash scripts/check.sh        # fmt + clippy + test + wasm + web clippy/test + deny + vet + machete + rustdoc + markdownlint を一括実行
-
-# 3. 起動（実データ / 合成データ）
-./target/debug/gpui-task-manager
-./target/debug/gpui-task-manager --demo
 ```
 
 前提パッケージ（Ubuntu 系）:
@@ -129,10 +137,16 @@ ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正
 
 ```bash
 cargo run -p tm-agent -- --once --demo      # 1 スナップショットを JSON で出力
-# 常用時はトークンを自動生成（0600 ファイルに保存し場所を stderr で案内、
-# 値はログに出力しない）するか、--token-file または TM_AGENT_TOKEN で渡す
-TM_AGENT_TOKEN=test cargo run -p tm-agent -- --listen 127.0.0.1:18787
-curl -s -H 'Authorization: Bearer test' \
+# トークンは省略して自動生成（0600 ファイル、場所は stderr で案内）する。
+# 既定の待受ポートは 8787（画面案内と同じ）。
+cargo run -p tm-agent
+token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
+curl -s -H "Authorization: Bearer $(cat "${token_file}")" \
+  'http://127.0.0.1:8787/api/v1/snapshot?limit=5' | jq .
+
+# 別ポートの明示例（既定の 8787 が競合する並行検証などでだけ指定）
+cargo run -p tm-agent -- --listen 127.0.0.1:18787
+curl -s -H "Authorization: Bearer $(cat "${token_file}")" \
   'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | jq .
 ```
 
@@ -151,7 +165,7 @@ CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:
 # ブラウザ版シェル（読み取り専用）
 cd web && trunk build --release && trunk serve
 # デモ表示:  http://127.0.0.1:8091/
-# ライブ表示: http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=<token>
+# ライブ表示: http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=<token>
 #   （トークンは URL フラグメントで渡し、fetch の Authorization ヘッダで送る）
 
 # GPUI Web の最小スパイク（Runtime Proof）
@@ -179,8 +193,9 @@ cd poc-wasm && trunk build --release
 echo '--- 待ち受けポートの確認 ---'
 ss -ltnp | grep -E ':(18787|18788|8091|8092)\b' || echo '該当なし'
 
-# 2 つ目のエージェント（--listen で別の loopback ポートを指定）
-TM_AGENT_TOKEN=test cargo run -p tm-agent -- --listen 127.0.0.1:18788
+# 2 つ目のエージェント（--listen で別の loopback ポートを指定。
+# トークンは省略して自動生成ファイルを共有）
+cargo run -p tm-agent -- --listen 127.0.0.1:18788
 
 # 2 つ目のブラウザ版シェル（trunk serve の --port で Trunk.toml の既定 8091 を上書き）
 cd web && trunk serve --port 8092

@@ -10,16 +10,18 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
   未接続・終了・失敗・アイドル時は `GET /api/v1/snapshot?limit=500` の定期取得へ
   フォールバック（DOM proof の `sse=active|fallback` で確認）
 - 更新間隔はツールバーの **0.5s / 1s / 2s / 5s プリセット**で切り替えられます。
-  選択値は `localStorage` の `gpui-task-manager.settings` に保存され、起動時に復元されます。
-  適用中の値は DOM proof の `interval=<ミリ秒>` フィールド（`interval=500` / `1000` /
-  `2000` / `5000`）で確認できます（トークンやホスト名は含まれません）。
+  AC ・ウィンドウ表示時の下限は 0.5s なので 0.5s プリセットも実効します
+  （未変更の既定は 1s）。選択値は `localStorage` の `gpui-task-manager.settings` に
+  保存され、起動時に復元されます。適用中の値は DOM proof の `interval=<ミリ秒>`
+  フィールド（`interval=500` / `1000` / `2000` / `5000`）で確認できます
+  （トークンやホスト名は含まれません）。
 
 実装・検証の詳細は `../notes/web-shell.md` を参照してください。
 
 ## 構成
 
 | パス | 内容 |
-|---|---|
+| --- | --- |
 | `src/lib.rs` | エントリ（`WebPlatform` 直接構築、フォントロード、ウィンドウ生成） |
 | `src/shell.rs` | 画面（ヘッダー / 概要 / 表 / 詳細 / ステータスバー）、入力、データ経路 |
 | `src/settings.rs` | `localStorage` の読み書き（更新間隔プリセット・テーマ、スキーマ互換・破損時隔離） |
@@ -79,14 +81,16 @@ URL クエリが無ければデモモードです。`tm-core` の決定論的デ
 ```bash
 cd .
 cargo build -p tm-agent
-# トークンは環境変数で渡す（--token は非推奨: /proc/<pid>/cmdline から読まれ得る）
-TM_AGENT_TOKEN=test ./target/debug/tm-agent --listen 127.0.0.1:18787 --redact
+# トークンは省略して自動生成（0600 ファイル、場所は stderr で案内、再起動でも再利用）。
+# --token は非推奨（/proc/<pid>/cmdline から読まれ得る）。既定の待受ポートは 8787。
+./target/debug/tm-agent --redact
+token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
 ```
 
-ブラウザで次を開きます（トークンは **URL フラグメント**）:
+ブラウザで次を開きます（トークンは案内されたファイルの内容を **URL フラグメント** に指定）:
 
 ```text
-http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test
+http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=<トークン>
 ```
 
 接続仕様:
@@ -132,7 +136,7 @@ http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test
 ## 画面
 
 | 領域 | 内容 |
-|---|---|
+| --- | --- |
 | ヘッダー | アプリ名、ホスト名、接続モード（デモ / ライブ）、読み取り専用バッジ |
 | 概要 | CPU（全体 % / per-core バー / 履歴 / Load）、メモリ（% / バー / スワップ / 履歴）、ネットワーク（rx/tx レート / 履歴）、システム（ホスト / 稼働時間 / プロセス数 / ディスク）、各メトリクスのトレンドバッジ（上昇 / 下降 / 横ばい / 不明を文字と色で表示）、温度ゲージ（値と `max` / `crit` しきい値、状態「正常 / 注意 / 危険」をテキストで表示） |
 | ツールバー | 検索ボックス（キーボード入力）、現在のソート、表示件数、更新間隔プリセット（0.5s / 1s / 2s / 5s、選択値は `localStorage` に保存・起動時に復元）、CSV / JSON エクスポートボタン（伏せ字化済みスナップショットをファイルへダウンロード） |
@@ -172,15 +176,18 @@ python3 cdp_verify_web.py --url http://127.0.0.1:8091/ \
   --out ../../notes/assets --evidence-out ../verification \
   --prefix web-shell --label demo
 
-# 6) ライブモードの検証（tm-agent を 18787 で起動してから）
+# トークンは自動生成ファイルから読む（値をコードへ埋め込まない）
+token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
+
+# 6) ライブモードの検証（tm-agent を既定 8787 で起動してから）
 python3 cdp_verify_web.py \
-  --url 'http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test' \
+  --url "http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=$(cat "${token_file}")" \
   --out ../../notes/assets --evidence-out ../verification \
   --prefix web-shell --label live
 
 # 7) エージェント停止時の検証（デモへフォールバックしないこと）
 python3 cdp_verify_web.py \
-  --url 'http://127.0.0.1:8091/?agent=http://127.0.0.1:18787#token=test' \
+  --url "http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=$(cat "${token_file}")" \
   --out ../../notes/assets --evidence-out ../verification \
   --prefix web-shell --label live-error --expect-agent-error
 ```

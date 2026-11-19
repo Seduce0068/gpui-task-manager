@@ -220,6 +220,30 @@ const DEMO_PROCESSES: &[DemoProcess] = &[
         status: ProcessStatus::Sleeping,
         threads: 6,
     },
+    // R2-DEMO: the built-in "高 CPU" preset keeps rows at or above 50 %. Add
+    // two deterministic rows above that threshold. `base_cpu` is the minimum
+    // value of the jittered CPU reading, so they stay above 50 % on every tick
+    // (including tick 0 and u64::MAX) and the preset is never empty in demo mode.
+    DemoProcess {
+        pid: 2500,
+        name: "ffmpeg",
+        command: "/usr/bin/ffmpeg -i recording.mkv -c:v libx264 out.mp4",
+        user: "user",
+        base_cpu: 72.5,
+        base_memory: 512_000_000,
+        status: ProcessStatus::Running,
+        threads: 8,
+    },
+    DemoProcess {
+        pid: 2600,
+        name: "rust-analyzer",
+        command: "<home>/.cargo/bin/rust-analyzer",
+        user: "user",
+        base_cpu: 55.0,
+        base_memory: 298_000_000,
+        status: ProcessStatus::Running,
+        threads: 12,
+    },
     DemoProcess {
         pid: 4242,
         name: "gpui-task-manager",
@@ -433,8 +457,10 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
     ];
 
     // Deterministic demo power/cgroup data (R1-I10..I12). A full battery on AC
-    // keeps the interactive 1 s cadence, so the demo tick and every CDP timing
-    // constant stay unchanged; two static groups exercise the grouping display.
+    // selects the interactive plan, whose floor is now 0.5 s so the advertised
+    // 0.5 s preset is effective. The default configured 1 s is still honoured,
+    // so the demo tick and every CDP timing constant stay unchanged; two static
+    // groups exercise the grouping display.
     let power = PowerSnapshot {
         source: PowerSource::Ac,
         batteries: vec![BatterySnapshot {
@@ -676,6 +702,30 @@ mod tests {
     }
 
     #[test]
+    fn demo_exposes_high_cpu_rows_for_the_builtin_preset() {
+        // Mirrors tm_viewmodel::PRESET_HIGH_CPU_PERCENT (50.0). tm-core must not
+        // depend on the view-model crate, so the threshold is repeated here.
+        const HIGH_CPU_PERCENT: f32 = 50.0;
+        for tick in [0, 1, 7, 42, u64::MAX] {
+            let snapshot = demo_snapshot(tick);
+            let high_cpu = snapshot
+                .processes
+                .iter()
+                .filter(|process| process.cpu_percent >= HIGH_CPU_PERCENT)
+                .count();
+            assert!(
+                (1..=2).contains(&high_cpu),
+                "tick {tick}: expected 1-2 high-CPU demo rows, got {high_cpu}"
+            );
+        }
+        // CPU-descending sort (the default view) must surface those rows first.
+        let mut by_cpu = demo_snapshot(0).processes.clone();
+        by_cpu.sort_by(|left, right| right.cpu_percent.total_cmp(&left.cpu_percent));
+        assert!(by_cpu[0].cpu_percent >= HIGH_CPU_PERCENT);
+        assert!(by_cpu[1].cpu_percent >= HIGH_CPU_PERCENT);
+    }
+
+    #[test]
     fn demo_snapshot_is_deterministic() {
         assert_eq!(demo_snapshot(7), demo_snapshot(7));
         assert_ne!(demo_snapshot(7), demo_snapshot(8));
@@ -697,6 +747,13 @@ mod tests {
             recommended_sampling_plan(&snapshot.power, WindowVisibility::Visible)
         );
         assert_eq!(snapshot.sampling.interval_ms, INTERACTIVE_INTERVAL_MS);
+        // The 0.5 s preset must survive the interactive floor (R2-DEMO).
+        assert_eq!(
+            snapshot
+                .sampling
+                .effective_interval(std::time::Duration::from_millis(500)),
+            std::time::Duration::from_millis(500)
+        );
         assert_eq!(snapshot.cgroups.len(), 2);
         for group in &snapshot.cgroups {
             assert!(!group.members.is_empty());
