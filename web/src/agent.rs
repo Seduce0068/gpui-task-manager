@@ -91,14 +91,29 @@ pub const FORBIDDEN_GUIDANCE: &str = "別ホスト／別オリジンからのア
 ///
 /// It is a static string with no token, endpoint, hostname or agent-supplied
 /// text, so it can flow into the status bar, the `aria-live` mirror and the DOM
-/// proof unchanged. The token itself is never echoed — the user re-enters it by
-/// pasting the URL the restarted agent printed.
-pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。エージェント再起動後に表示された新しい URL の #token= をアドレスバーへ貼り付けて更新してください";
+/// proof unchanged. The token itself is never echoed. The agent reuses its token
+/// file on restart (no new URL is printed), so the user is directed to that
+/// file's contents instead of hunting for a "new" token (R2-AUTHMSG).
+pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。トークンファイル（既定は XDG state 配下）の内容を #token= に貼り付けてください。あるいは --token-file を指定して再起動してください。再起動ではトークンは変わりません";
 
 /// Fixed guidance for a transport failure. The underlying error detail is
 /// written to `console` after redaction; only this summary reaches the UI.
 const CONNECT_ERROR: &str =
     "接続に失敗しました（エージェントが起動しているか、URL とトークンを確認してください）";
+
+/// Fixed guidance for a transient failure (`429` / other `5xx` / timeout).
+///
+/// The sampler already retries on its next tick, so the only useful next action
+/// concerns a *persistent* failure. Static text keeps the DOM proof redaction-
+/// safe: no status code, body or agent-supplied string is interpolated (R2-AUTHMSG).
+const TRANSIENT_RETRY_GUIDANCE: &str =
+    "自動で再試行します。解消しない場合はエージェントを再起動してください";
+
+/// Fixed reason for `503`. The agent returns it when its concurrent-connection
+/// limit is reached (`MAX_CONNECTIONS` / `MAX_STREAMS` on the agent side), which
+/// is exactly the `body.message` cause. Kept static instead of echoing the body:
+/// the error path reads no body, so no request-derived text can reach the UI.
+const SERVICE_UNAVAILABLE_GUIDANCE: &str = "エージェントの同時接続数が上限に達しました。自動で再試行します。解消しない場合はエージェントを再起動してください";
 
 /// Fixed guidance for a non-loopback endpoint.
 const INVALID_ENDPOINT_ERROR: &str = "エージェントの接続先は loopback の http URL のみ許可されます";
@@ -145,6 +160,17 @@ impl fmt::Display for FetchError {
         match self {
             Self::Auth => f.write_str(RECONNECT_GUIDANCE),
             Self::Forbidden => f.write_str(FORBIDDEN_GUIDANCE),
+            // 503 has a known, user-actionable cause (too many simultaneous
+            // connections). Other 5xx and 429 are transient too; plain 4xx keeps
+            // the terse form because retrying cannot fix a bad request.
+            Self::Http(503) => f.write_str(SERVICE_UNAVAILABLE_GUIDANCE),
+            Self::Http(429) => write!(
+                f,
+                "エージェントが HTTP 429 を返しました。{TRANSIENT_RETRY_GUIDANCE}"
+            ),
+            Self::Http(code) if (500..=599).contains(code) => {
+                write!(f, "エージェントが HTTP {code} を返しました。{TRANSIENT_RETRY_GUIDANCE}")
+            }
             Self::Http(code) => write!(f, "エージェントが HTTP {code} を返しました"),
             Self::Timeout => f.write_str(&fetch_timeout_error()),
             Self::Busy => f.write_str(FETCH_BUSY_ERROR),
@@ -159,12 +185,11 @@ impl fmt::Display for FetchError {
             }
             Self::Connect => f.write_str(CONNECT_ERROR),
             Self::InvalidEndpoint => f.write_str(INVALID_ENDPOINT_ERROR),
-            Self::SchemaVersion { agent, web } => {
-                write!(
-                    f,
-                    "スキーマバージョンが新しすぎます (agent={agent}, web={web})"
-                )
-            }
+            // Internal field names and the numeric versions stay in `console`
+            // (see `check_schema_version`); this text is version-neutral.
+            Self::SchemaVersion { .. } => f.write_str(
+                "エージェントとアプリのバージョンが一致しません。両方を同じバージョンに更新してください",
+            ),
         }
     }
 }
@@ -637,7 +662,7 @@ where
 /// contract) and identical on every failure path.
 fn fetch_timeout_error() -> String {
     format!(
-        "エージェントからの取得がタイムアウトしました（{}秒）",
+        "エージェントからの取得がタイムアウトしました（{}秒）。{TRANSIENT_RETRY_GUIDANCE}",
         FETCH_TIMEOUT.as_secs()
     )
 }
@@ -650,6 +675,13 @@ fn check_schema_version(version: u32) -> Result<(), FetchError> {
     if version <= WIRE_SCHEMA_VERSION {
         Ok(())
     } else {
+        // The numbers are diagnostics, not user guidance: keep them in `console`
+        // so the status bar and the `aria-live` mirror show only the actionable,
+        // version-neutral message from `FetchError::SchemaVersion` (R2-AUTHMSG).
+        log::warn!(
+            "エージェントとアプリのバージョン不一致: agent={version}, web={}",
+            WIRE_SCHEMA_VERSION
+        );
         Err(FetchError::SchemaVersion {
             agent: version,
             web: WIRE_SCHEMA_VERSION,
@@ -671,7 +703,7 @@ pub const STREAM_PATH: &str = "/api/v1/stream";
 /// `key=value;` DOM proof without changing its grammar.
 const ONBOARDING_STEPS: &[&str] = &[
     "1. ローカルで tm-agent を起動します（トークンは --token-file 推奨）。",
-    "2. 表示された 127.0.0.1 の URL をコピーします。#token= の値は秘密です。",
+    "2. 表示された 127.0.0.1 の URL に、トークンファイル（既定は XDG state 配下）の内容を #token= として付けてください。",
     "3. このページの URL に ?agent=<エンドポイント> と #token=<トークン> を付けて再読込します。",
     "4. 接続後は自動更新されます。行を右クリックすると行メニューが開きます。",
 ];
@@ -957,8 +989,11 @@ mod tests {
             }
         );
         let text = error.to_string();
-        assert!(text.contains("スキーマバージョン"));
-        assert!(text.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
+        assert!(text.contains("バージョンが一致しません"));
+        assert!(text.contains("同じバージョンに更新してください"));
+        // Internal variable names and numbers are console-only, never UI text.
+        assert!(!text.contains("agent="));
+        assert!(!text.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
     }
 
     #[test]
@@ -1046,6 +1081,40 @@ mod tests {
     }
 
     #[test]
+    fn transient_errors_explain_retry_and_next_action() {
+        // 503 names the real cause (the agent's concurrent-connection cap) and
+        // promises the automatic retry the sampler actually performs.
+        let busy = status_error(503).to_string();
+        assert!(busy.contains("同時接続数が上限に達しました"), "{busy}");
+        assert!(busy.contains("自動で再試行します"), "{busy}");
+        assert!(busy.contains("再起動してください"), "{busy}");
+
+        // Other transient statuses / the deadline behave the same way.
+        for transient in [status_error(429), status_error(500), status_error(502)] {
+            let text = transient.to_string();
+            assert!(text.contains("自動で再試行します"), "{text}");
+            assert!(text.contains("再起動してください"), "{text}");
+        }
+        let timeout = FetchError::Timeout.to_string();
+        assert!(timeout.contains("自動で再試行します"), "{timeout}");
+        assert!(timeout.contains("タイムアウト"), "{timeout}");
+
+        // A plain client error stays terse: retrying cannot fix a bad request.
+        let bad = status_error(400).to_string();
+        assert!(!bad.contains("自動で再試行します"), "{bad}");
+
+        // None of the transient guidance triggers the token re-entry flow.
+        for error in [
+            status_error(429),
+            status_error(503),
+            status_error(500),
+            FetchError::Timeout,
+        ] {
+            assert!(!requires_reconnect(&error), "{error}");
+        }
+    }
+
+    #[test]
     fn forbidden_guidance_is_distinct_and_never_requests_reconnect() {
         assert!(
             FORBIDDEN_GUIDANCE.contains("別ホスト／別オリジンからのアクセスはサポートしていません")
@@ -1068,9 +1137,15 @@ mod tests {
 
     #[test]
     fn reconnect_guidance_is_actionable_and_redaction_safe() {
-        // The guidance tells the user *what* to re-enter and *where*.
+        // The guidance tells the user *what* to re-enter and *where*: the token
+        // file is reused on restart, so no "new URL" is promised (R2-AUTHMSG).
         assert!(RECONNECT_GUIDANCE.contains("#token="));
-        assert!(RECONNECT_GUIDANCE.contains("アドレスバー"));
+        assert!(RECONNECT_GUIDANCE.contains("トークンファイル"));
+        assert!(RECONNECT_GUIDANCE.contains("XDG state"));
+        assert!(RECONNECT_GUIDANCE.contains("--token-file"));
+        assert!(RECONNECT_GUIDANCE.contains("貼り付けて"));
+        assert!(RECONNECT_GUIDANCE.contains("再起動ではトークンは変わりません"));
+        assert!(!RECONNECT_GUIDANCE.contains("新しい URL"));
         // Fixed text: no `;` / newline that could corrupt the DOM proof, and
         // redacting it with any token leaves it byte-for-byte identical.
         assert!(!RECONNECT_GUIDANCE.contains(';'));
@@ -1131,7 +1206,8 @@ mod tests {
             "http://127.0.0.1:18787",
             Some("old-token".into()),
         )));
-        // A restarted agent prints a fresh token in the same URL fragment.
+        // A pasted token (read from the reused token file) replaces the cached
+        // config; a plain restart would keep the same token (R2-AUTHMSG).
         assert!(shared.replace(AgentConfig::new(
             "http://127.0.0.1:18787",
             Some("new-token".into()),
@@ -1477,7 +1553,7 @@ mod tests {
         assert!(
             parse_sse_event_frame(&frame)
                 .expect_err("future schema must be rejected")
-                .contains("スキーマバージョン")
+                .contains("バージョンが一致しません")
         );
     }
 

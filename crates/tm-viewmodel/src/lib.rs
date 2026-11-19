@@ -461,6 +461,14 @@ impl StatusMessage {
         }
     }
 
+    fn persistent_info(text: impl Into<String>) -> Self {
+        Self {
+            text: format!("{STATUS_PREFIX_INFO} {}", text.into()),
+            is_error: false,
+            persistent: true,
+        }
+    }
+
     fn persistent_error(text: impl Into<String>) -> Self {
         Self {
             text: format!("{STATUS_PREFIX_ERROR} {}", text.into()),
@@ -1031,8 +1039,31 @@ impl Dashboard {
     /// Sets a persistent status message (startup/configuration notices).
     ///
     /// Unlike transient messages, it is not cleared by a successful sample.
+    /// Existing callers keep the error tone; informational notices should use
+    /// [`Self::set_persistent_info`] or [`Self::set_persistent_status_with_tone`].
     pub fn set_persistent_status(&mut self, text: impl Into<String>) {
-        self.status = Some(StatusMessage::persistent_error(text));
+        self.set_persistent_status_with_tone(text, true);
+    }
+
+    /// Sets a persistent informational status (`is_error = false`).
+    ///
+    /// Used for neutral guidance such as the browser demo-mode hint. It keeps
+    /// the `[情報]` prefix and the persistent flag, so a successful sample does
+    /// not clear it while assistive technology never announces it as an error.
+    pub fn set_persistent_info(&mut self, text: impl Into<String>) {
+        self.status = Some(StatusMessage::persistent_info(text));
+    }
+
+    /// Sets a persistent status with an explicit severity (V2-HELP).
+    ///
+    /// `is_error = true` is the legacy `set_persistent_status` behaviour;
+    /// `false` produces the same persistent message with the info prefix.
+    pub fn set_persistent_status_with_tone(&mut self, text: impl Into<String>, is_error: bool) {
+        self.status = Some(if is_error {
+            StatusMessage::persistent_error(text)
+        } else {
+            StatusMessage::persistent_info(text)
+        });
     }
 
     /// Clears the current status only when it is transient (R3-U05).
@@ -1419,6 +1450,36 @@ mod tests {
     }
 
     #[test]
+    fn persistent_info_is_info_toned_and_survives_ingest() {
+        let mut dashboard = dashboard();
+        dashboard.set_persistent_info("デモ表示中。実データ接続はヘルプ F1 を参照");
+        let expected = dashboard.status().cloned().expect("persistent info");
+        assert!(!expected.is_error);
+        assert!(expected.persistent);
+        assert!(
+            expected.text.starts_with(STATUS_PREFIX_INFO),
+            "{}",
+            expected.text
+        );
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.status(), Some(&expected));
+
+        // The tone-taking entry point must agree with the dedicated helper and
+        // leave the legacy error-tone callers untouched.
+        dashboard.set_persistent_status_with_tone("無線の案内", false);
+        assert_eq!(
+            dashboard.status().map(|status| status.is_error),
+            Some(false)
+        );
+        dashboard.set_persistent_status("起動時の警告");
+        assert_eq!(dashboard.status().map(|status| status.is_error), Some(true));
+        assert_eq!(
+            dashboard.status().map(|status| status.persistent),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn prefixed_transient_status_is_cleared_by_ingest_but_persistent_is_not() {
         let mut dashboard = dashboard();
         dashboard.set_status("一時的なお知らせ", true);
@@ -1657,7 +1718,8 @@ mod tests {
         let spec = dashboard.sort_spec();
         assert_eq!(spec.key, SortKey::VirtualMemory);
         assert_eq!(spec.direction, SortDirection::Descending);
-        assert_eq!(spec.direction.arrow(), "▼");
+        // IBM Plex に無い ▲/▼ の tofu 回避で ↑/↓ に統一済み（R4-VISUAL）。
+        assert_eq!(spec.direction.arrow(), "↓");
         assert_eq!(spec.key.label(), "仮想メモリ");
         let snapshot = dashboard.snapshot().expect("snapshot");
         let values: Vec<u64> = dashboard

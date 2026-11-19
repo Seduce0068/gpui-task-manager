@@ -1476,14 +1476,10 @@ impl TaskManagerApp {
         let mut headers = Vec::new();
         for (index, (label, key, width)) in columns.iter().enumerate() {
             let active = sort.key == *key;
-            let text = if active {
-                format!("{label}{}", sort.direction.arrow())
-            } else {
-                (*label).to_string()
-            };
+            let text = sort_header_text(label, active, sort.direction);
             let key = *key;
             // AccessKit role/name for the column header. The browser shell
-            // exposes the same `ColumnHeader` role; a bare ▲/▼ arrow carries no
+            // exposes the same `ColumnHeader` role; a bare ↑/↓ arrow carries no
             // text, so the direction is spelled out in Japanese in aria_label.
             let mut cell = div()
                 .id(("header", index))
@@ -2650,7 +2646,7 @@ fn status_color(status: ProcessStatus) -> u32 {
 // DOM (and no DOM proof), only the real AccessKit tree. The synthetic polite
 // child in `status_bar()` is the native equivalent of that announcement.
 
-/// Japanese direction name for a sortable header (▲/▼ is a glyph, not text).
+/// Japanese direction name for a sortable header (↑/↓ is a glyph, not text).
 fn a11y_sort_direction(direction: SortDirection) -> &'static str {
     match direction {
         SortDirection::Ascending => "昇順",
@@ -2673,6 +2669,20 @@ fn a11y_filter_hint(composing_active: bool, editing: bool) -> &'static str {
         "入力可"
     } else {
         "クリックで入力"
+    }
+}
+
+/// Visible text of a sortable column header.
+///
+/// The active header carries the direction glyph (↑ / ↓). It must change with
+/// the sort direction so the two states differ on screen even before the row
+/// order is compared; the arrow is drawn from `SortDirection::arrow()` in both
+/// shells.
+fn sort_header_text(label: &str, active: bool, direction: SortDirection) -> String {
+    if active {
+        format!("{label}{}", direction.arrow())
+    } else {
+        label.to_string()
     }
 }
 
@@ -2937,8 +2947,8 @@ mod tests {
         a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
         apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, key_action,
         power_summary_text, report_save_result, resolve_probe_retry, signal_enabled,
-        sort_header_label, truncate_label, usage_severity, BackendInit, DialogButton, KeyAction,
-        ProbeRetry,
+        sort_header_label, sort_header_text, truncate_label, usage_severity, BackendInit,
+        DialogButton, KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -3261,6 +3271,21 @@ mod tests {
         assert_eq!(
             sort_header_label("名前", false, SortDirection::Ascending),
             "名前 列で並び替え"
+        );
+    }
+
+    #[test]
+    fn sort_header_visible_text_changes_with_direction() {
+        // Tofu regression: ▲/▼ used to be missing from IBM Plex, so both
+        // directions rendered as the same box. The visible header must differ.
+        let asc = sort_header_text("CPU", true, SortDirection::Ascending);
+        let desc = sort_header_text("CPU", true, SortDirection::Descending);
+        assert_eq!(asc, "CPU↑");
+        assert_eq!(desc, "CPU↓");
+        assert_ne!(asc, desc);
+        assert_eq!(
+            sort_header_text("CPU", false, SortDirection::Ascending),
+            "CPU"
         );
     }
 

@@ -22,7 +22,7 @@ use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    KeyDownEvent, MouseButton, Pixels, Render, ScrollStrategy, Stateful, Task,
+    KeyDownEvent, Modifiers, MouseButton, Pixels, Render, ScrollStrategy, Stateful, Task,
     TextInputConfiguration, UTF16Selection, UniformListScrollHandle, Window, canvas, div,
     prelude::*, px, rgb, uniform_list,
 };
@@ -48,7 +48,7 @@ use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, filter_preset_chip, h_flex, kv,
     process_sparkline, process_sparkline_value_text, section_title, sparkline, temperature_gauge,
-    temperature_severity, trend_badge, usage_severity, v_flex,
+    temperature_severity, trend_badge, usage_severity, usage_value_text, v_flex,
 };
 
 const FONT_SANS: &str = "IBM Plex Sans";
@@ -94,14 +94,60 @@ const FILTER_PRESETS_GROUP_ID: &str = "filter-presets";
 const READONLY_PILL_ARIA: &str = "ブラウザ版ではプロセスを操作できません";
 const READONLY_DETAIL_TEXT: &str =
     "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は提供しません。";
-
-/// `?agent=` 未指定の初回起動でデモモードを明示するための固定通知（R3-S05）。
+/// `Effect::Signal` と Ctrl+K で共用する読み取り専用通知（V3-KEYS）。
 ///
-/// `Dashboard::set_persistent_status` へ渡すため、トークン・ホスト名・
-/// エージェント応答を一切含まない。`;` / 改行が無いので、将来この文言が
-/// DOM フックへ鏡像されても `key=value;` の区切りを壊さない。実データ接続では
-/// `tm-agent --redact` を使うよう案内するが、Web 側でも応答の redact は必須である。
+/// 既存の `handle_command` がシグナル要求に返す文言を定数化しただけなので、
+/// 既存の headless 検証・aria 文言はバイト単位で不変。DOM proof の
+/// `key=value;` 契約を壊さないよう `;` と改行は含まない。
+const READONLY_SIGNAL_NOTICE: &str =
+    "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は行いません。";
+/// F5（手動更新要求）を可視化する固定通知。`tick=` はサンプラーが増やすので、
+/// この通知は「要求した」ことだけを表し、サンプル件数を偽装しない。
+const MANUAL_REFRESH_NOTICE: &str = "今すぐ更新を要求しました";
+/// Space（一時停止相当）。Web サンプラーは一時停止を持たないため、
+/// 無反応にせず理由を status へ出す（V3-KEYS）。
+const PAUSE_UNSUPPORTED_NOTICE: &str = "ブラウザ版では更新の一時停止はできません";
+
+/// デモモードの詳細案内（R3-S05、V2-HELP でヘルプ側へ移動）。
+///
+/// 初回起動のステータスバーには短い [`DEMO_MODE_STATUS_NOTICE`] を出す。
+/// 実データ接続の手順はこの全文をヘルプ（F1）に表示するので、8787 の案内は
+/// 従来どおり残る。トークン・ホスト名・エージェント応答を一切含まない。
+/// `;` / 改行が無いので、将来この文言が DOM フックへ鏡像されても
+/// `key=value;` の区切りを壊さない。Web 側でも応答の redact は必須である。
 const DEMO_MODE_NOTICE: &str = "デモデータを表示しています。実データを見るには tm-agent を --redact 付きで起動し、URL に ?agent=http://127.0.0.1:8787#token=<トークン> を指定してください";
+
+/// ステータスバー用の短いデモ通知（V2-HELP）。
+///
+/// 詳細な接続手順はヘルプ（F1）側の [`DEMO_MODE_NOTICE`] に残し、常時見える
+/// ステータスバーは info 扱いの永続通知だけにする。';' / 改行 / トークンを
+/// 含まないので DOM proof の `key=value;` 契約も壊さない。
+const DEMO_MODE_STATUS_NOTICE: &str = "デモ表示中。実データ接続はヘルプ F1 を参照";
+
+/// ヘルプオーバーレイの見出し（ネイティブと同じ固定文言）。
+const HELP_TITLE: &str = "キーボード操作";
+
+/// ネイティブの `help_shortcuts()` と同等の一覧（V2-HELP）。
+///
+/// ブラウザ版は読み取り専用だが、ネイティブと同じ表を表示して操作方法の
+/// 認知をそろえる。利用できない行はオーバーレイ内の但し書きで明示する。
+const HELP_SHORTCUTS: &[(&str, &str)] = &[
+    ("↑ / ↓", "行の選択"),
+    ("PgUp / PgDn", "10 行移動"),
+    ("Home / End", "先頭 / 末尾"),
+    ("Space", "更新の一時停止・再開"),
+    ("Ctrl+F / Cmd+F", "絞り込み入力"),
+    ("Ctrl+K / Cmd+K", "選択プロセスの終了"),
+    ("F2", "詳細パネルの表示切替"),
+    ("F5", "今すぐ更新"),
+    ("F1", "このヘルプを開く / 閉じる"),
+    ("Enter", "確認ダイアログをキャンセル（安全側）"),
+    ("Ctrl/Cmd+Enter", "確認ダイアログでシグナルを実行"),
+    (
+        "Esc",
+        "ダイアログ/ヘルプを閉じる · 絞り込み解除（表示中は閉じる操作が優先）",
+    ),
+];
 
 /// ページ URL から接続設定を再読込したことを知らせる固定文言（R3-S04）。
 const RELOAD_NOTICE: &str = "接続設定を再読込しました。エージェントへ再接続しています…";
@@ -261,6 +307,13 @@ pub struct TaskManagerApp {
     /// 確定済み文字列だけを `dashboard` に反映する。GPUI の
     /// [`EntityInputHandler`] から届く UTF-16 の編集はすべてここを通る。
     filter_input: FilterInput,
+    /// 絞り込み欄が編集中か（IME の未確定文字列を含むセッション全体）。
+    ///
+    /// ネイティブの `TaskManagerApp::filter_editing` と同じ契約。true の間は
+    /// ナビゲーションキーとシェルショートカットを `on_key_down` で解決せず、
+    /// 隠し textarea の既定動作（キャレット移動・変換候補選択）へ渡す。
+    /// Ctrl+F で開始し、Enter / Esc で終了する。
+    filter_editing: bool,
     source: DataSource,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -300,6 +353,13 @@ pub struct TaskManagerApp {
     sse_last_snapshot_at: Option<Instant>,
     /// Earliest instant at which a failed stream may be retried.
     sse_retry_at: Option<Instant>,
+    /// F1 / ヘッダーのヘルプボタンで開くキーボード操作オーバーレイの状態。
+    show_help: bool,
+    /// ヘルプの「閉じる」ボタン用フォーカスハンドル。キーボードだけで
+    /// オーバーレイを開いて閉じられるようにする（V2-HELP）。
+    help_close_focus: FocusHandle,
+    /// 直前フレームのヘルプ表示状態。表示遷移のときだけフォーカスを移動する。
+    last_help_shown: bool,
 }
 
 impl TaskManagerApp {
@@ -329,9 +389,10 @@ impl TaskManagerApp {
                 let platform = probe.platform_info();
                 let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
                 // A missing `?agent=` used to drop straight into demo mode with
-                // no explanation. Keep the notice persistent so the first demo
-                // sample cannot clear it (R3-S05).
-                dashboard.set_persistent_status(DEMO_MODE_NOTICE);
+                // no explanation. Keep a short *info* notice persistent so the
+                // first demo sample cannot clear it (R3-S05, V2-HELP). The full
+                // connection guide lives in the F1 help overlay.
+                dashboard.set_persistent_info(DEMO_MODE_STATUS_NOTICE);
                 (dashboard, DataSource::Demo(probe))
             }
         };
@@ -339,6 +400,7 @@ impl TaskManagerApp {
         let mut app = Self {
             dashboard,
             filter_input: FilterInput::new(),
+            filter_editing: false,
             source,
             focus_handle,
             scroll_handle: UniformListScrollHandle::new(),
@@ -355,6 +417,9 @@ impl TaskManagerApp {
             sse_epoch: 0,
             sse_last_snapshot_at: None,
             sse_retry_at: None,
+            show_help: false,
+            help_close_focus: cx.focus_handle(),
+            last_help_shown: false,
         };
         app.restore_settings();
         app.spawn_sampler(cx);
@@ -819,10 +884,7 @@ impl TaskManagerApp {
             match effect {
                 // The sampling loop owns the cadence; a manual sample request is a no-op.
                 Effect::SampleNow => {}
-                Effect::Signal { .. } => self.dashboard.set_status(
-                    "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は行いません。",
-                    true,
-                ),
+                Effect::Signal { .. } => self.dashboard.set_status(READONLY_SIGNAL_NOTICE, true),
             }
         }
         if let Some(position) = self.dashboard.selected_visible_index() {
@@ -842,54 +904,146 @@ impl TaskManagerApp {
     /// ブラウザ側の隠し `<textarea>`（`gpui-pre-web` の IME ミラー）が DOM の
     /// `keydown` / `composition*` / `input` を受け取り、[`EntityInputHandler`]
     /// 経由で [`Self::replace_text_in_range`] などへ届く。ここで文字を足すと
-    /// 二重挿入になるので、この関数はナビゲーションと Esc だけを担当する。
+    /// 二重挿入になるので、この関数はナビゲーション・Esc・ヘルプの開閉だけを
+    /// 担当する（V2-HELP）。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        if keystroke.modifiers.control || keystroke.modifiers.alt || keystroke.modifiers.platform {
+        let key = event.keystroke.key.to_lowercase();
+        let modifiers = event.keystroke.modifiers;
+        // 修飾なしだけをヘルプ/シェルショートカットの対象にする。Ctrl/Cmd は
+        // 明示的に扱う（Ctrl+F / Ctrl+K）ため、ここで早リターンしない。
+        let unmodified = !modifiers.control
+            && !modifiers.platform
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.function;
+
+        // V2-HELP のヘルプオーバーレイが最優先。F1 はトグル、Esc は表示中だけ
+        // 閉じる（表示中の Esc が絞り込みを消さない）。修飾キー付きは IME /
+        // ショートカット手势としてオーバーレイへ渡さない。
+        if unmodified && let Some(next_shown) = help_overlay_key_state(self.show_help, &key) {
+            self.show_help = next_shown;
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
-        match keystroke.key.to_lowercase().as_str() {
-            // Esc: まず行メニューを閉じ、無ければ絞り込みを解除する
-            // （IME 変換中なら変換ごと破棄する）。
-            "escape" => {
-                if self.row_menu.take().is_some() {
-                    self.menu_proof = MenuProof::None;
-                    self.sync_proof_dom();
-                    cx.notify();
-                } else {
+        if self.show_help {
+            // ヘルプ表示中は Tab で「閉じる」へ戻し、他のキーは行操作や IME へ
+            // 渡さない（ネイティブの help 優先順位と同じ）。
+            if unmodified && key == "tab" {
+                self.help_close_focus.focus(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+
+        // 既存契約: 行メニューが開いていれば Esc はまずメニューを閉じる。
+        if unmodified && key == "escape" && self.row_menu.is_some() {
+            self.row_menu = None;
+            self.menu_proof = MenuProof::None;
+            self.sync_proof_dom();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
+        // V3-KEYS: 唯一の解決点。ネイティブの `key_action` と同じ契約で、
+        // 編集中はナビゲーションキーとシェルショートカットを一切解決しない。
+        // 戻り値 None のときは stop_propagation しないので、隠し textarea の
+        // 既定動作（キャレット移動・変換候補選択）がそのまま働く。
+        let editing_text = self.filter_editing || self.filter_input.is_composing();
+        let Some(action) = web_key_action(&key, modifiers, editing_text) else {
+            // Web 固有の例外: 編集中でない Enter も改行既定を止める（隠し
+            // textarea に改行が入ると filter へ混入するため）。編集中は上の
+            // resolver が CommitFilter を返すのでここには来ない。
+            if unmodified && key == "enter" {
+                cx.stop_propagation();
+            }
+            return;
+        };
+
+        match action {
+            WebKeyAction::CancelFilter => {
+                self.filter_editing = false;
+                self.clear_filter(window, cx);
+                cx.stop_propagation();
+            }
+            WebKeyAction::CommitFilter => {
+                self.end_filter_editing(window, cx);
+                cx.stop_propagation();
+            }
+            WebKeyAction::BeginFilter => {
+                self.begin_filter_editing(window, cx);
+                cx.stop_propagation();
+            }
+            WebKeyAction::ReadOnlyNotice => {
+                // Ctrl+K: シグナル要求と同じ読み取り専用通知を出す（V3-KEYS）。
+                self.dashboard.set_status(READONLY_SIGNAL_NOTICE, true);
+                self.sync_proof_dom();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            WebKeyAction::SelectRelative(delta) => {
+                self.handle_command(Command::SelectRelative(delta), cx);
+                cx.stop_propagation();
+            }
+            WebKeyAction::TogglePaused => {
+                // Web サンプラーに一時停止は無い。無反応より固定通知を出す。
+                self.dashboard.set_status(PAUSE_UNSUPPORTED_NOTICE, false);
+                self.sync_proof_dom();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            WebKeyAction::ToggleDetails => {
+                self.handle_command(Command::ToggleDetails, cx);
+                cx.stop_propagation();
+            }
+            WebKeyAction::Refresh => {
+                // Tick 相当。サンプラーが周期を管理するのでデータ取得は no-op。
+                // 要求したことを status に残し、DOM proof の status ミラーから
+                // 確認できるようにする（tick= は実サンプルだけが増やす）。
+                self.handle_command(Command::Tick, cx);
+                self.dashboard.set_status(MANUAL_REFRESH_NOTICE, false);
+                self.sync_proof_dom();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            WebKeyAction::ShowHelp => {
+                // 通常は V2 の help_overlay_key_state が先に F1 を消費する。
+                // ここは修飾キー因素でオーバーレイへ届かなかった場合の保険。
+                self.show_help = true;
+                cx.notify();
+                cx.stop_propagation();
+            }
+            WebKeyAction::ClearFilter => {
+                if self.dashboard.filter().is_active() {
                     self.clear_filter(window, cx);
                 }
                 cx.stop_propagation();
             }
-            // Enter: IME の確定はブラウザ側が行う。一覧を閉じるモーダルは無いので
-            // ここでは改行の既定動作だけを止める。
-            "enter" => cx.stop_propagation(),
-            "up" => {
-                self.handle_command(Command::SelectRelative(-1), cx);
-                cx.stop_propagation();
-            }
-            "down" => {
-                self.handle_command(Command::SelectRelative(1), cx);
-                cx.stop_propagation();
-            }
-            "pageup" => {
-                self.handle_command(Command::SelectRelative(-10), cx);
-                cx.stop_propagation();
-            }
-            "pagedown" => {
-                self.handle_command(Command::SelectRelative(10), cx);
-                cx.stop_propagation();
-            }
-            "home" => {
-                self.handle_command(Command::SelectRelative(-1_000_000), cx);
-                cx.stop_propagation();
-            }
-            "end" => {
-                self.handle_command(Command::SelectRelative(1_000_000), cx);
-                cx.stop_propagation();
-            }
-            _ => {}
         }
+    }
+
+    /// 絞り込み編集を開始する（Ctrl+F）。ネイティブの
+    /// `begin_filter_editing` と同じく確定文字列を入力欄へ引き継ぐ。
+    fn begin_filter_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.filter_editing {
+            self.filter_input.clear();
+            let current = self.dashboard.filter_text().to_string();
+            if !current.is_empty() {
+                self.filter_input.replace_text(None, &current);
+            }
+            self.filter_editing = true;
+        }
+        self.focus_handle.focus(window, cx);
+        self.notify_ime_mirror(window);
+        cx.notify();
+    }
+
+    /// 絞り込み編集を終了する（Enter）。確定文字列は Dashboard に残す。
+    fn end_filter_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter_editing = false;
+        let outcome = self.filter_input.unmark();
+        self.apply_input_outcome(outcome, window, cx);
     }
 
     /// IME ミラー（ブラウザ側の隠し textarea）へ編集・選択の変化を通知する。
@@ -943,6 +1097,127 @@ impl TaskManagerApp {
             self.row_menu = None;
             self.menu_proof = MenuProof::None;
         }
+    }
+
+    /// F1 / ヘッダーのヘルプボタンで開くキーボード操作オーバーレイ（V2-HELP）。
+    ///
+    /// 絶対配置のフルスクリーン層なので既存レイアウト座標は変わらない。
+    /// Esc / F1 / 「閉じる」ボタンのいずれでも閉じられ、開いた瞬間は
+    /// 「閉じる」へフォーカスが移るためキーボードだけで操作を完結できる。
+    fn help_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.show_help {
+            return None;
+        }
+        let rows: Vec<Div> = HELP_SHORTCUTS
+            .iter()
+            .map(|(keys, description)| {
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(rgb(palette().surface_hi))
+                            .text_xs()
+                            .text_color(rgb(palette().text))
+                            .child(*keys),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(palette().subtext))
+                            .child(*description),
+                    )
+            })
+            .collect();
+        let live = matches!(&self.source, DataSource::Live(_));
+        Some(
+            div()
+                .id("help-overlay")
+                .role(Role::Dialog)
+                .aria_label(HELP_TITLE)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x000000A6))
+                .occlude()
+                .child(
+                    v_flex()
+                        .id("help-panel")
+                        .w(px(560.0))
+                        .p_4()
+                        .gap_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(palette().surface))
+                        .bg(rgb(palette().mantle))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child(HELP_TITLE),
+                                )
+                                .child(
+                                    div()
+                                        .id("help-close")
+                                        .role(Role::Button)
+                                        .aria_label("ヘルプを閉じる")
+                                        .px_3()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .rounded_md()
+                                        .bg(rgb(palette().surface_hi))
+                                        .text_xs()
+                                        .text_color(rgb(palette().text))
+                                        .hover(|style| style.bg(rgb(palette().surface)))
+                                        .on_click(cx.listener(|this, _event, window, cx| {
+                                            this.show_help = false;
+                                            this.focus_handle.focus(window, cx);
+                                            cx.notify();
+                                        }))
+                                        .track_focus(&self.help_close_focus)
+                                        .child("閉じる"),
+                                ),
+                        )
+                        .children(rows)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child("ブラウザ版は読み取り専用です。プロセス操作と確認ダイアログの行はネイティブ版の操作一覧です。"),
+                        )
+                        .children((!live).then(|| {
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(rgb(palette().yellow))
+                                        .child("実データに接続する"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child(DEMO_MODE_NOTICE),
+                                )
+                        }))
+                        .into_any_element(),
+                )
+                .into_any_element(),
+        )
     }
 
     /// 行コンテキストメニュー。絶対配置のため既存レイアウト座標を変更しない。
@@ -1175,6 +1450,30 @@ impl TaskManagerApp {
                         )
                     }))
                     .child(
+                        // ヘルプボタンはテーマ切り替えの左に置く。右端の座標を
+                        // CDP 検証で決め打ちしているテーマボタンを動かさないため。
+                        div()
+                            .id("open-help-web")
+                            .role(Role::Button)
+                            .aria_label("ヘルプを開く（F1、Esc で閉じる）")
+                            .w(px(56.0))
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(palette().surface))
+                            .bg(rgb(palette().surface_hi))
+                            .text_color(rgb(palette().text))
+                            .hover(|style| style.bg(rgb(palette().surface)))
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.show_help = true;
+                                this.focus_handle.focus(window, cx);
+                                cx.notify();
+                            }))
+                            .child("ヘルプ"),
+                    )
+                    .child(
                         // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
                         // （CDP 検証スクリプトがこのボタンをクリックする）。
                         div()
@@ -1288,7 +1587,7 @@ impl TaskManagerApp {
                                 .text_xl()
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .text_color(rgb(usage_color(cpu_total)))
-                                .child(format::format_percent(cpu_total)),
+                                .child(usage_value_text(cpu_total)),
                         )
                         .child(
                             div()
@@ -1353,7 +1652,7 @@ impl TaskManagerApp {
                                 .text_xl()
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .text_color(rgb(usage_color(mem_percent)))
-                                .child(format::format_percent(mem_percent)),
+                                .child(usage_value_text(mem_percent)),
                         )
                         .child(
                             div()
@@ -1490,7 +1789,13 @@ impl TaskManagerApp {
             .gap_1()
             .child(kv("ホスト", hostname.clone()))
             .child(kv("稼働時間", format::format_duration(uptime)))
-            .child(kv("プロセス", format::format_count(process_count)));
+            // 重要指標なので小さい kv のままにせず、CPU/メモリの数値と同じ
+            // text_xl + BOLD へ昇格させる（色だけでなくサイズでも目立たせる）。
+            .child(
+                kv("プロセス", format::format_count(process_count))
+                    .text_xl()
+                    .font_weight(gpui::FontWeight::BOLD),
+            );
         if self.dashboard.platform_info().supports(Section::Disks) {
             for (index, (mount, percent)) in disks.into_iter().enumerate() {
                 system_body = system_body.child(
@@ -1701,8 +2006,9 @@ impl TaskManagerApp {
             }))
             .cursor_pointer()
             .on_click(cx.listener(|this, _event, window, cx| {
-                this.focus_handle.focus(window, cx);
-                cx.notify();
+                // クリックで編集モードへ入る（ネイティブの検索欄クリックと同じ）。
+                // これにより Ctrl+F を押さなくても編集中ガードが働く。
+                this.begin_filter_editing(window, cx);
             }))
             .child(
                 div()
@@ -2001,11 +2307,7 @@ impl TaskManagerApp {
     ) -> Stateful<Div> {
         let sort = self.dashboard.sort_spec();
         let active = sort.key == key;
-        let text = if active {
-            format!("{label} {}", sort.direction.arrow())
-        } else {
-            label.to_string()
-        };
+        let text = sort_header_text(label, active, sort.direction);
         div()
             .id(id)
             .role(Role::ColumnHeader)
@@ -2876,6 +3178,16 @@ impl EntityInputHandler for TaskManagerApp {
 
 impl Render for TaskManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // ヘルプの表示遷移のときだけフォーカスを移動する。キー・ボタンのどちらで
+        // 開いても同じ経路を通り、閉じたらルートへ戻って行操作を再開できる。
+        if self.show_help != self.last_help_shown {
+            if self.show_help {
+                self.help_close_focus.focus(window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+            self.last_help_shown = self.show_help;
+        }
         let focused = self.focus_handle.is_focused(window);
         let header = self.header(cx);
         let overview = self.overview();
@@ -2883,6 +3195,7 @@ impl Render for TaskManagerApp {
         let main_area = self.main_area(cx);
         let status_bar = self.status_bar();
         let row_menu = self.row_context_menu(cx);
+        let help = self.help_overlay(cx);
 
         // IME ミラー（隠し textarea）からの composition / input をこのビューへ
         // 届けるための登録。GPUI の作法では paint 中に `Window::handle_input` を
@@ -2925,6 +3238,7 @@ impl Render for TaskManagerApp {
             .child(main_area)
             .child(status_bar)
             .children(row_menu)
+            .children(help)
             .child(input_registration)
     }
 }
@@ -2937,6 +3251,94 @@ impl Render for TaskManagerApp {
 /// this helper only formats it and never embeds user-supplied text in an id.
 fn cgroup_group_text(label: &str, members: usize) -> String {
     format!("{label} — {members} 件")
+}
+
+/// Pure keyboard contract of the help overlay (V2-HELP).
+///
+/// `Some(next_state)` means the key belongs to the overlay: F1 toggles it and
+/// Esc closes it only while open, so a bare Esc still clears the filter when no
+/// overlay is visible. Keeping this decision pure lets the headless tests verify
+/// the toggle/close semantics without a GPUI `Window` or `Context`.
+fn help_overlay_key_state(show_help: bool, key: &str) -> Option<bool> {
+    match key.to_ascii_lowercase().as_str() {
+        "f1" => Some(!show_help),
+        "escape" if show_help => Some(false),
+        _ => None,
+    }
+}
+
+/// 1 キー入力の解決結果（V3-KEYS）。
+///
+/// ネイティブの [`app/src/app.rs::KeyAction`](../../app/src/app.rs) と同じ契約を
+/// Web 側にも持たせる。純粋関数にすることで、GPUI の Window / Context を
+/// 作らずに「編集中はナビゲーションが発火しない」ことを単体テストできる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebKeyAction {
+    /// 編集中の Esc: 絞り込みを解除して編集モードを抜ける。
+    CancelFilter,
+    /// 編集中の Enter: 確定して編集モードを抜ける（IME 確定はブラウザが行う）。
+    CommitFilter,
+    /// Ctrl/Cmd+F: 絞り込み入力へフォーカスする。
+    BeginFilter,
+    /// Ctrl/Cmd+K: 読み取り専用通知（`Effect::Signal` と同じ文言）。
+    ReadOnlyNotice,
+    /// 矢印 / Page / Home / End: 選択行をこの行数だけ動かす。
+    SelectRelative(i32),
+    /// Space: 一時停止相当（Web は未対応なので通知で代替）。
+    TogglePaused,
+    /// F2: 詳細パネルの表示切替。
+    ToggleDetails,
+    /// F5: 今すぐ更新（Tick 相当）。
+    Refresh,
+    /// F1: ヘルプを開く（実際のトグルは V2 の `help_overlay_key_state`）。
+    ShowHelp,
+    /// 編集中でない Esc: アクティブな絞り込みを解除する。
+    ClearFilter,
+}
+
+/// 変更文字列を GPUI 状態へ触らずにキーへ対応する操作を解決する（V3-KEYS）。
+///
+/// `editing_text` は `TaskManagerApp::filter_editing` と IME の未確定状態を
+/// OR した値。true の間は文字編集キー（Esc / Enter）だけを返し、矢印・
+/// Page・Home/End・Space・ショートカットは `_ => None` に落とす。`on_key_down`
+/// は None のとき `stop_propagation` しないので、隠し textarea の既定動作
+/// （キャレット移動 / 変換候補選択）がそのまま働く。これはネイティブの
+/// `key_action`（app/src/app.rs:2823-2835）と同一の契約である。
+fn web_key_action(key: &str, modifiers: Modifiers, editing_text: bool) -> Option<WebKeyAction> {
+    if editing_text {
+        // 修飾キー付きの編集操作（単語削除など）はプラットフォーム側へ委譲。
+        if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
+            return None;
+        }
+        return match key {
+            "escape" => Some(WebKeyAction::CancelFilter),
+            "enter" => Some(WebKeyAction::CommitFilter),
+            _ => None,
+        };
+    }
+
+    // Shift / Alt / Fn は IME 候補選択やテキスト選択の手势なのでショートカットに
+    // 変換しない。Ctrl と Cmd は同じ意味（R3-A03）。
+    if modifiers.alt || modifiers.shift || modifiers.function {
+        return None;
+    }
+    let primary = modifiers.control || modifiers.platform;
+    match (primary, key) {
+        (true, "f") => Some(WebKeyAction::BeginFilter),
+        (true, "k") => Some(WebKeyAction::ReadOnlyNotice),
+        (false, "up") => Some(WebKeyAction::SelectRelative(-1)),
+        (false, "down") => Some(WebKeyAction::SelectRelative(1)),
+        (false, "pageup") => Some(WebKeyAction::SelectRelative(-10)),
+        (false, "pagedown") => Some(WebKeyAction::SelectRelative(10)),
+        (false, "home") => Some(WebKeyAction::SelectRelative(-1_000_000)),
+        (false, "end") => Some(WebKeyAction::SelectRelative(1_000_000)),
+        (false, "space") => Some(WebKeyAction::TogglePaused),
+        (false, "f2") => Some(WebKeyAction::ToggleDetails),
+        (false, "f5") => Some(WebKeyAction::Refresh),
+        (false, "f1") => Some(WebKeyAction::ShowHelp),
+        (false, "escape") => Some(WebKeyAction::ClearFilter),
+        _ => None,
+    }
 }
 
 /// Accessible name for one process row.
@@ -2997,11 +3399,24 @@ fn a11y_usage_label(title: &str, percent: f32) -> String {
     )
 }
 
-/// Japanese direction name for sort headers (the ▲/▼ glyph alone is not text).
+/// Japanese direction name for sort headers (the ↑/↓ glyph alone is not text).
 fn a11y_sort_direction(direction: SortDirection) -> &'static str {
     match direction {
         SortDirection::Ascending => "昇順",
         SortDirection::Descending => "降順",
+    }
+}
+
+/// Visible text of a sortable column header.
+///
+/// Kept in step with the native shell: the active header carries the shared
+/// `SortDirection::arrow()` glyph, so ascending and descending never render
+/// identically (the old ▲/▼ pair was tofu in IBM Plex).
+fn sort_header_text(label: &str, active: bool, direction: SortDirection) -> String {
+    if active {
+        format!("{label} {}", direction.arrow())
+    } else {
+        label.to_string()
     }
 }
 
@@ -3534,12 +3949,32 @@ mod tests {
         assert!(a11y_usage_label("CPU 使用率", 90.0).contains("高"));
         assert!(a11y_usage_label("CPU 使用率", 70.0).contains("中"));
         assert!(a11y_usage_label("CPU 使用率", 10.0).contains("低"));
+        // The overview cards draw the same word next to the number, mirroring
+        // the temperature gauge instead of relying on colour alone.
+        assert_eq!(usage_value_text(90.0), "90.0% 高");
+        assert_eq!(usage_value_text(70.0), "70.0% 中");
+        assert_eq!(usage_value_text(10.0), "10.0% 低");
     }
 
     #[test]
     fn sort_direction_has_a_textual_name() {
         assert_eq!(a11y_sort_direction(SortDirection::Ascending), "昇順");
         assert_eq!(a11y_sort_direction(SortDirection::Descending), "降順");
+    }
+
+    #[test]
+    fn sort_header_visible_text_changes_with_direction() {
+        // Tofu regression: ▲/▼ were missing from IBM Plex, making the asc/desc
+        // screenshots byte-identical. Both shells must show distinct glyphs.
+        let asc = sort_header_text("CPU", true, SortDirection::Ascending);
+        let desc = sort_header_text("CPU", true, SortDirection::Descending);
+        assert_eq!(asc, "CPU ↑");
+        assert_eq!(desc, "CPU ↓");
+        assert_ne!(asc, desc);
+        assert_eq!(
+            sort_header_text("CPU", false, SortDirection::Ascending),
+            "CPU"
+        );
     }
 
     #[test]
@@ -3792,6 +4227,77 @@ mod tests {
         assert!(!RELOAD_NOTICE.contains(';'));
         assert!(!RELOAD_NOTICE.contains('\n'));
         assert!(RELOAD_NOTICE.contains("再読込"));
+    }
+
+    #[test]
+    fn demo_status_notice_is_persistent_info_not_error() {
+        // デモ通知はエラー扱いにしない。詳細（8787 案内）はヘルプ側に残す。
+        let mut dashboard = Dashboard::new(PlatformInfo::native("Linux"), DEFAULT_REFRESH_INTERVAL);
+        dashboard.set_persistent_info(DEMO_MODE_STATUS_NOTICE);
+        let status = dashboard.status().expect("demo status notice");
+        assert!(
+            !status.is_error,
+            "demo mode is guidance, not a failure: {:?}",
+            status
+        );
+        assert!(
+            status.persistent,
+            "demo notice must survive the first sample"
+        );
+        assert!(
+            status.text.starts_with(tm_viewmodel::STATUS_PREFIX_INFO),
+            "{}",
+            status.text
+        );
+        assert!(status.text.ends_with(DEMO_MODE_STATUS_NOTICE));
+        assert!(DEMO_MODE_STATUS_NOTICE.contains("F1"));
+        assert!(!DEMO_MODE_STATUS_NOTICE.contains(';'));
+        assert!(!DEMO_MODE_STATUS_NOTICE.contains('\n'));
+        assert!(DEMO_MODE_NOTICE.contains("127.0.0.1:8787"));
+    }
+
+    #[test]
+    fn f1_toggles_help_and_escape_closes_it() {
+        let mut shown = false;
+        // F1 opens, another F1 closes (case-insensitive like `on_key_down`).
+        shown = help_overlay_key_state(shown, "f1").expect("F1 opens help");
+        assert!(shown);
+        shown = help_overlay_key_state(shown, "F1").expect("F1 closes help");
+        assert!(!shown);
+
+        // F1 reopens; Esc closes only while the overlay is visible.
+        shown = help_overlay_key_state(shown, "f1").expect("F1 reopens help");
+        assert!(shown);
+        shown = help_overlay_key_state(shown, "Escape").expect("Esc closes help");
+        assert!(!shown);
+        assert_eq!(
+            help_overlay_key_state(false, "escape"),
+            None,
+            "Esc with no overlay must still reach the filter"
+        );
+        assert_eq!(
+            help_overlay_key_state(true, "arrowdown"),
+            None,
+            "navigation keys must not change the overlay"
+        );
+    }
+
+    #[test]
+    fn help_shortcuts_cover_f1_escape_and_native_rows() {
+        assert_eq!(HELP_SHORTCUTS.len(), 12);
+        let keys: Vec<_> = HELP_SHORTCUTS.iter().map(|(key, _)| *key).collect();
+        assert!(keys.contains(&"F1"));
+        assert!(keys.contains(&"Esc"));
+        let f1 = HELP_SHORTCUTS
+            .iter()
+            .find(|(key, _)| *key == "F1")
+            .expect("F1 row");
+        assert_eq!(f1.1, "このヘルプを開く / 閉じる");
+        let esc = HELP_SHORTCUTS
+            .iter()
+            .find(|(key, _)| *key == "Esc")
+            .expect("Esc row");
+        assert!(esc.1.contains("ヘルプを閉じる"));
     }
 
     #[test]
@@ -4550,5 +5056,182 @@ mod tests {
         // Both an older and a newer (defensive) epoch count as a stale stream.
         assert!(!sse_frame_is_current(shell_epoch - 1, shell_epoch));
         assert!(!sse_frame_is_current(shell_epoch + 1, shell_epoch));
+    }
+
+    // ------------------------------------------------------ V3-KEYS 配線
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
+    }
+
+    fn cmd() -> Modifiers {
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        }
+    }
+
+    /// デモスナップショットを取り込み、先頭 2 行の ProcessKey を返す。
+    fn dashboard_with_two_visible_rows() -> (Dashboard, tm_core::ProcessKey, tm_core::ProcessKey) {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        let snapshot = DemoProbe::new().sample().expect("demo snapshot");
+        assert!(snapshot.processes.len() >= 2, "demo fixture is too small");
+        dashboard.ingest(snapshot);
+        let rows: Vec<_> = dashboard.visible_rows().collect();
+        assert!(rows.len() >= 2, "dashboard must show at least two rows");
+        let snapshot = dashboard.snapshot().expect("ingested snapshot");
+        let first = snapshot.processes[rows[0].index].key;
+        let second = snapshot.processes[rows[1].index].key;
+        (dashboard, first, second)
+    }
+
+    #[test]
+    fn editing_home_never_changes_selected_pid() {
+        let (mut dashboard, first, second) = dashboard_with_two_visible_rows();
+        dashboard.apply(Command::Select(Some(second)));
+        let before = dashboard.selected_key();
+        assert_eq!(before, Some(second));
+        assert_ne!(before, Some(first));
+
+        // 編集中は resolver が None を返す → SelectRelative を送らない。
+        // on_key_down は None のとき stop_propagation しないので、隠し
+        // textarea のキャレット移動だけが起こる（native と同じ契約）。
+        assert_eq!(web_key_action("home", Modifiers::default(), true), None);
+        assert_eq!(dashboard.selected_key(), before);
+
+        // 同じ Home が編集中でなければ先頭行へ動くことを確認し、
+        // 「ガードが reason で選択が止まっている」ことを証明する。
+        let action = web_key_action("home", Modifiers::default(), false);
+        assert_eq!(action, Some(WebKeyAction::SelectRelative(-1_000_000)));
+        if let Some(WebKeyAction::SelectRelative(delta)) = action {
+            dashboard.apply(Command::SelectRelative(delta));
+        }
+        assert_eq!(dashboard.selected_key(), Some(first));
+    }
+
+    #[test]
+    fn navigation_and_shortcuts_are_suppressed_while_editing() {
+        // キャレット移動 / IME 候補選択と衝突するキーはすべて委譲する。
+        for key in [
+            "up", "down", "pageup", "pagedown", "home", "end", "space", "f1", "f2", "f5",
+        ] {
+            assert_eq!(
+                web_key_action(key, Modifiers::default(), true),
+                None,
+                "{key} must not fire while the filter is being edited"
+            );
+        }
+        for modifiers in [ctrl(), cmd()] {
+            for key in ["f", "k", "home", "f2", "f5"] {
+                assert_eq!(
+                    web_key_action(key, modifiers, true),
+                    None,
+                    "modified shortcut must not fire while editing: {key}"
+                );
+            }
+        }
+        // 文字編集キーだけは編集中も解決する（残りはブラウザの IME へ）。
+        assert_eq!(
+            web_key_action("escape", Modifiers::default(), true),
+            Some(WebKeyAction::CancelFilter)
+        );
+        assert_eq!(
+            web_key_action("enter", Modifiers::default(), true),
+            Some(WebKeyAction::CommitFilter)
+        );
+        assert_eq!(web_key_action("a", Modifiers::default(), true), None);
+    }
+
+    #[test]
+    fn f2_f5_ctrl_k_are_reflected_in_dashboard_state_and_status() {
+        let plain = Modifiers::default();
+
+        // F2 → 詳細トグル。DOM proof の a11y/ステータス経由で観測可能な状態。
+        assert_eq!(
+            web_key_action("f2", plain, false),
+            Some(WebKeyAction::ToggleDetails)
+        );
+        let (mut dashboard, _, _) = dashboard_with_two_visible_rows();
+        let before = dashboard.details_visible();
+        dashboard.apply(Command::ToggleDetails);
+        assert_ne!(dashboard.details_visible(), before);
+
+        // F5 → Tick 相当。Web はサンプラーが周期を管理するので実サンプルは
+        // 増やさず、要求があったことを固定 status に残す（DOM の a11y ミラー
+        // が同じ文言を読み上げる）。tick= は実サンプルだけが増やす。
+        assert_eq!(
+            web_key_action("f5", plain, false),
+            Some(WebKeyAction::Refresh)
+        );
+        assert_eq!(dashboard.apply(Command::Tick), vec![Effect::SampleNow]);
+        assert!(MANUAL_REFRESH_NOTICE.contains("更新"));
+        assert!(!MANUAL_REFRESH_NOTICE.contains(';'));
+        dashboard.set_status(MANUAL_REFRESH_NOTICE, false);
+        assert!(
+            dashboard
+                .status()
+                .is_some_and(|status| status.text.contains(MANUAL_REFRESH_NOTICE)),
+            "F5 の通知が status に載ること"
+        );
+
+        // Ctrl+K → Effect::Signal と同じ読み取り専用通知。
+        for modifiers in [ctrl(), cmd()] {
+            assert_eq!(
+                web_key_action("k", modifiers, false),
+                Some(WebKeyAction::ReadOnlyNotice)
+            );
+        }
+        assert_eq!(
+            READONLY_SIGNAL_NOTICE,
+            "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は行いません。"
+        );
+        assert!(!READONLY_SIGNAL_NOTICE.contains(';'));
+        assert!(!READONLY_SIGNAL_NOTICE.contains('\n'));
+        dashboard.set_status(READONLY_SIGNAL_NOTICE, true);
+        assert!(
+            dashboard
+                .status()
+                .is_some_and(|status| status.text.contains(READONLY_SIGNAL_NOTICE)),
+            "Ctrl+K の読み取り専用通知が status に載ること"
+        );
+        assert!(dashboard.status().is_some_and(|status| status.is_error));
+    }
+
+    #[test]
+    fn ctrl_f_and_plain_navigation_keep_native_parity() {
+        for modifiers in [ctrl(), cmd()] {
+            assert_eq!(
+                web_key_action("f", modifiers, false),
+                Some(WebKeyAction::BeginFilter)
+            );
+        }
+        let expected = [
+            ("up", WebKeyAction::SelectRelative(-1)),
+            ("down", WebKeyAction::SelectRelative(1)),
+            ("pageup", WebKeyAction::SelectRelative(-10)),
+            ("pagedown", WebKeyAction::SelectRelative(10)),
+            ("home", WebKeyAction::SelectRelative(-1_000_000)),
+            ("end", WebKeyAction::SelectRelative(1_000_000)),
+            ("space", WebKeyAction::TogglePaused),
+            ("f2", WebKeyAction::ToggleDetails),
+            ("f5", WebKeyAction::Refresh),
+            ("f1", WebKeyAction::ShowHelp),
+            ("escape", WebKeyAction::ClearFilter),
+        ];
+        for (key, action) in expected {
+            assert_eq!(
+                web_key_action(key, Modifiers::default(), false),
+                Some(action),
+                "{key}"
+            );
+        }
+        // F1 の実際のトグルは V2 の純粋ヘルパーが担当（二重処理しない）。
+        assert_eq!(help_overlay_key_state(false, "f1"), Some(true));
+        assert_eq!(help_overlay_key_state(true, "f1"), Some(false));
+        assert_eq!(help_overlay_key_state(true, "escape"), Some(false));
+        assert_eq!(help_overlay_key_state(false, "escape"), None);
     }
 }

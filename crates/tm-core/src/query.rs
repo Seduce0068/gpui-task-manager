@@ -79,11 +79,16 @@ impl SortDirection {
         }
     }
 
-    /// Arrow glyph for headers.
+    /// Direction glyph for headers.
+    ///
+    /// U+2191/U+2193 are used instead of ▲/▼ (U+25B2/U+25BC): the latter are
+    /// missing from the bundled IBM Plex face and render as tofu, which made
+    /// ascending and descending screenshots byte-identical even though the
+    /// state differed (R4-VISUAL / todo 2026-11-19).
     pub const fn arrow(self) -> &'static str {
         match self {
-            Self::Ascending => "▲",
-            Self::Descending => "▼",
+            Self::Ascending => "↑",
+            Self::Descending => "↓",
         }
     }
 }
@@ -1548,8 +1553,14 @@ mod tests {
             assert_eq!(key.default_direction(), direction);
             assert_eq!(SortSpec::new(key).direction, direction);
         }
-        assert_eq!(SortDirection::Ascending.arrow(), "▲");
-        assert_eq!(SortDirection::Descending.arrow(), "▼");
+        assert_eq!(SortDirection::Ascending.arrow(), "↑");
+        assert_eq!(SortDirection::Descending.arrow(), "↓");
+        // The two glyphs must render differently: a shared tofu box made the
+        // asc/desc screenshots identical despite the underlying sort changing.
+        assert_ne!(
+            SortDirection::Ascending.arrow(),
+            SortDirection::Descending.arrow()
+        );
         assert_eq!(
             SortDirection::Ascending.flipped(),
             SortDirection::Descending
