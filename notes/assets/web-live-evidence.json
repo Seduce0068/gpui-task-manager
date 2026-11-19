@@ -1,0 +1,128 @@
+{
+  "schema": "web-live-runtime-proof/v1",
+  "generated_at": "2026-11-19T20:17:42+09:00",
+  "target": {
+    "agent": "loopback-agent",
+    "static_server": "loopback-static-server",
+    "browser": "headless-chrome-cdp"
+  },
+  "build": {
+    "command": "cargo build --locked -p tm-agent",
+    "exit_code": 0,
+    "warning_count": 2
+  },
+  "web_dist": {
+    "reused": true,
+    "reason": "dist artifacts newer than all web source files"
+  },
+  "token_handling": {
+    "source": "0600 file in a temporary directory",
+    "file_mode": "600",
+    "value_logged": false,
+    "value_in_evidence": false,
+    "passed_via_browser_command_line": false,
+    "url_shape": "?agent=<loopback-agent>;#token=<redacted>"
+  },
+  "phase_live": {
+    "sse_active_seen": true,
+    "sse_active_last": true,
+    "mode_live_all": true,
+    "rows_positive": true,
+    "max_rows": 28,
+    "first_tick": 0,
+    "last_tick": 2,
+    "tick_advanced": true,
+    "stream_endpoint_seen": true,
+    "network_requests": 8,
+    "token_in_network_url": false,
+    "console_count": 7,
+    "console_panic_mentions": 0,
+    "console_refcell_mentions": 0,
+    "console_token_mentions": 0,
+    "exception_count": 0,
+    "raw_text_token_mentions": 0,
+    "samples": [
+      {
+        "elapsed_s": 1.11,
+        "mode": "live",
+        "sse": "fallback",
+        "tick": "0",
+        "rows": "0",
+        "total": "0",
+        "live_error": "0"
+      },
+      {
+        "elapsed_s": 1.86,
+        "mode": "live",
+        "sse": "active",
+        "tick": "2",
+        "rows": "28",
+        "total": "28",
+        "live_error": "0"
+      },
+      {
+        "elapsed_s": 2.36,
+        "mode": "live",
+        "sse": "active",
+        "tick": "2",
+        "rows": "28",
+        "total": "28",
+        "live_error": "0"
+      }
+    ]
+  },
+  "phase_post_agent_sigterm": {
+    "agent_stopped": true,
+    "fallback_seen": true,
+    "sse_last": "fallback",
+    "mode_live_all": true,
+    "mode_demo_ever": false,
+    "rows_last": "28",
+    "rows_positive_after_first": true,
+    "console_count": 8,
+    "console_panic_mentions": 0,
+    "console_refcell_mentions": 0,
+    "console_token_mentions": 0,
+    "exception_count": 0,
+    "samples": [
+      {
+        "elapsed_s": 0.0,
+        "mode": "live",
+        "sse": "fallback",
+        "tick": "23",
+        "rows": "28",
+        "live_error": "0",
+        "stale": "0"
+      },
+      {
+        "elapsed_s": 0.8,
+        "mode": "live",
+        "sse": "fallback",
+        "tick": "23",
+        "rows": "28",
+        "live_error": "1",
+        "stale": "1"
+      }
+    ]
+  },
+  "cleanup": {
+    "agent": "stopped",
+    "static_server": "stopped",
+    "browser": "stopped",
+    "leftover_processes": 0,
+    "ports_free": true,
+    "temporary_directory_removed": true
+  },
+  "verdict": {
+    "runtime_proof": "passed",
+    "sse_active_confirmed": true,
+    "snapshot_tick_progressed": true,
+    "no_demo_fallback_after_agent_stop": true,
+    "secret_exposure_detected": false
+  },
+  "constraints": [
+    "demo agent data is synthetic; native probe not exercised",
+    "SSE active derived from DOM proof and request URL observation",
+    "reconnect after SSE_RECONNECT_DELAY exceeded the 15-second observation window"
+  ]
+}
