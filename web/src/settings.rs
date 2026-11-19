@@ -160,8 +160,8 @@ fn corrupt_backup_key(nanos: u128) -> String {
 /// distinct. `0` is a safe fallback when the clock is unavailable.
 #[cfg(target_family = "wasm")]
 fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0)
 }

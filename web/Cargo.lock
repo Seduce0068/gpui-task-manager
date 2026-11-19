@@ -4526,6 +4526,7 @@ dependencies = [
  "tm-viewmodel",
  "wasm-bindgen",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
