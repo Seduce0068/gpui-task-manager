@@ -17,8 +17,14 @@
 | [serde](https://serde.rs) / [serde_json](https://github.com/serde-rs/json) | Apache-2.0 OR MIT | JSON シリアライズ |
 | [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) | Apache-2.0 OR MIT | wasm バインディング（web シェル） |
 | [web-sys](https://github.com/rustwasm/wasm-bindgen) / [js-sys](https://github.com/rustwasm/wasm-bindgen) | Apache-2.0 OR MIT | ブラウザ API（web シェル） |
-| [console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook) | Apache-2.0 OR MIT | ブラウザコンソールへの panic 出力 |
+| [web-time](https://github.com/daxpedda/web-time) 1.1.0 | MIT OR Apache-2.0 | wasm32 のブラウザ互換時刻（web シェル） |
 | [anyhow](https://github.com/dtolnay/anyhow) / [futures](https://github.com/rust-lang/futures-rs) / [log](https://github.com/rust-lang/log) | Apache-2.0 OR MIT | web シェルのエラー処理・非同期・ログ |
+
+## 推移依存（gpui-pre-web / gpui-pre-platform 経由）
+
+| ソフトウェア | ライセンス | 用途 |
+| --- | --- | --- |
+| [console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook) | Apache-2.0 OR MIT | ブラウザコンソールへの panic 出力 |
 
 ## バンドル済みアセット
 
