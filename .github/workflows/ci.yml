@@ -118,23 +118,22 @@ jobs:
           cargo check --locked --target wasm32-unknown-unknown -p tm-core -p tm-viewmodel
           cargo check --locked --target wasm32-unknown-unknown --manifest-path web/Cargo.toml
 
-  # Cargo.toml / web/Cargo.toml で宣言した rust-version = "1.92" を固定検証する。
+  # Cargo.toml / web/Cargo.toml で宣言した rust-version = "1.95" を固定検証する。
   # 共通ワークフロー rust-gates.yml に MSRV 入力が無いため、リポジトリ側で実行。
-  # NOTE: 現状 sysinfo 0.40.3（tm-platform 経由）が rust-version 1.95 を要求し、
-  # gpui-pre-util も不安定機能 `slice_as_array` を使うため、workspace 全体と
-  # web wasm は 1.92 でビルドできない（CI で確認済み）。
-  # 依存側が解消されるまで MSRV 互換の pure crate のみを検証する。
-  # 解消後は `cargo +1.92 check --workspace --locked` へ拡張すること。
-  msrv-1-92:
-    name: MSRV 1.92 check
+  # sysinfo 0.40.3（tm-platform 経由）が rust-version 1.95 を要求し、gpui-pre-util
+  # も不安定機能 `slice_as_array` を使うため、MSRV を 1.95 へ引き上げた。
+  # 以前の 1.92 では workspace 全体をビルドできず portable crate に限定していたが、
+  # 要件が解消されたため workspace 全体を検証する。
+  msrv-1-95:
+    name: MSRV 1.95 check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: "1.92"
-      - name: Check portable crates with MSRV
-        run: cargo +1.92 check --locked -p tm-core -p tm-viewmodel
+          toolchain: "1.95"
+      - name: Check workspace with MSRV
+        run: cargo +1.95 check --workspace --locked
 
   # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
   # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と
@@ -228,7 +227,7 @@ jobs:
   release-linux:
     name: release artifacts (linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -261,7 +260,7 @@ jobs:
   web-dist:
     name: web dist artifact
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -290,7 +289,7 @@ jobs:
   sbom:
     name: sbom (cyclonedx)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -3,8 +3,9 @@
 name = "tm-web"
 version = "0.1.0"
 edition = "2024"
-# MSRV はルート workspace と同じ 1.92（ci.yml の msrv-1-92 ジョブで検証）。
-rust-version = "1.92"
+# MSRV はルート workspace と同じ 1.95（ci.yml の msrv-1-95 ジョブで検証）。
+# sysinfo 0.40.3 が rustc 1.95 を要求するため、1.95 へ引き上げた。
+rust-version = "1.95"
 publish = false
 # cargo-deny: workspace 外の独立 crate でもライセンスを明示する。
 license = "AGPL-3.0-or-later"

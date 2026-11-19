@@ -36,7 +36,7 @@ status: verified
 | wasm check | tm-core / tm-viewmodel / web / poc-wasm の 4 ターゲット成功 |
 | `trunk build --release` | 成功（wasm 7,642,794 B / gzip 3,044,134 B、2026-11-17 最終計測、以降再ビルド未実施） |
 | 依存監査 | `cargo audit`（脆弱性 0・既知 8 件のみ）、`cargo deny`（全カテゴリ ok）、`cargo vet`（root 804 / web 560 exempted）、`cargo machete`（未使用 0 件） |
-| CI | 現行定義は 10 ジョブ（gates / wasm / msrv-1-92 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認）。旧記録の「全 8 ジョブ success」は定義変更前のもので、10 ジョブの再実行は未確認 |
+| CI | 現行定義は 10 ジョブ（gates / wasm / msrv-1-95 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認）。旧記録の「全 8 ジョブ success」は定義変更前のもので、10 ジョブの再実行は未確認 |
 | CDP ブラウザ検証 | 設定・デモ・IME（32/32）すべて pass |
 | シェル静的検証 | 4 本すべて `bash -n` / `shellcheck` / `shfmt -d -i 2` 成功 |
 | SBOM 生成 | `generate-sbom.sh` で 6 件の CycloneDX 1.3 JSON を生成・jq 検証（2026-11-17） |

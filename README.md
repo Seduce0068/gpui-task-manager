@@ -11,7 +11,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 ![ブラウザ版（GPUI Web / wasm、ライブデータ、--redact 適用）](notes/assets/web-shell-08-final-live.png)
 
 - 第一ターゲット: **Kubuntu 2026.04 / KDE Plasma 6 / Wayland**（実機検証）
-- スタック: Rust 1.92+ / `gpui-kit =0.9.1`（`gpui-pre 0.3.12`）/ `sysinfo =0.40.3` / `rustix =1.1.6`
+- スタック: Rust 1.95+ / `gpui-kit =0.9.1`（`gpui-pre 0.3.12`）/ `sysinfo =0.40.3` / `rustix =1.1.6`
 - ライセンス: **AGPL-3.0-or-later**（第三者表示は [NOTICE.md](NOTICE.md)、以前の Apache-2.0 本文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
 
 ## GitHub
@@ -19,7 +19,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（**public**）
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。Linux の gates は共通の
   `Seduce0068/workflows@v1` に委譲（fmt → check → test → clippy → cargo audit → cargo vet）。
-  追加で wasm / msrv-1-92 / cdp-verify / cargo-deny / native-windows /
+  追加で wasm / msrv-1-95 / cdp-verify / cargo-deny / native-windows /
   native-macos / release-linux / web-dist / sbom を実行（Linux 系ジョブは
   再現性のため `ubuntu-24.04` に固定、成果物は `actions/upload-artifact@v7`）。SBOM は
   [`scripts/generate-sbom.sh`](scripts/generate-sbom.sh)（CycloneDX JSON、
@@ -125,8 +125,8 @@ ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正
 
 ```bash
 cargo run -p tm-agent -- --once --demo      # 1 スナップショットを JSON で出力
-# 常用時はトークンを自動生成（値はログに出力しない）するか、
-# --token-file または TM_AGENT_TOKEN で渡す
+# 常用時はトークンを自動生成（0600 ファイルに保存し場所を stderr で案内、
+# 値はログに出力しない）するか、--token-file または TM_AGENT_TOKEN で渡す
 TM_AGENT_TOKEN=test cargo run -p tm-agent -- --listen 127.0.0.1:18787
 curl -s -H 'Authorization: Bearer test' \
   'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | jq .
@@ -135,7 +135,11 @@ curl -s -H 'Authorization: Bearer test' \
 エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
 CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:port]`）のみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
-を使ってください。トークンを省略すると自動生成されますが、その値はログに出力されません。
+を使ってください。トークンを省略すると自動生成され、
+`$XDG_STATE_HOME/tm-agent/token`（未設定なら `~/.local/state/tm-agent/token`）に 0600 で保存して、
+その場所だけを stderr で案内します。値はログ・stdout に出力されません。
+再起動時は同じファイルを再利用するため、ブラウザが保持したトークンもそのまま使えます。
+接続時は案内されたファイルの内容を読み取り、URL フラグメントや `--token-file` に指定してください。
 
 ### wasm / ブラウザ
 
@@ -289,7 +293,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 日本語 IME（ネイティブ） | `EntityInputHandler` + 共有 `FilterInput`。`TM_DEBUG_IME=1` で変換中→確定を確認（[画像](notes/assets/native-ime-01-composing.png)）。実 IME は未検証 |
 | Windows cross-check | `cargo check --target x86_64-pc-windows-msvc --workspace`（app/GPUI 含む）成功。CI `native-windows` で実機相当検証 |
 | macOS cross-check | `tm-core` / `tm-viewmodel` / `tm-platform` / `tm-agent` の macOS ターゲット check 成功。app は CI `native-macos` で検証 |
-| CI | 10 ジョブ（gates / wasm / msrv-1-92 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認） |
+| CI | 10 ジョブ（gates / wasm / msrv-1-95 / cdp-verify / native-windows / native-macos / cargo-deny / release-linux / web-dist / sbom、2026-11-19 定義再確認） |
 | 設定の永続化（ネイティブ） | 保存（0600・原子的）と復元を実機確認（[画像](notes/assets/settings-restore.png)、`TM_DEBUG_SETTINGS=1`） |
 | 設定の永続化（ブラウザ） | 列クリックで保存、再読込で復元を CDP で確認（`web/verification/web-settings-evidence.json`） |
 | ライトテーマ（ブラウザ） | 状態フック `theme=dark` が既定、`theme=light` が復元され、切替ボタンで Dark ↔ Light と保存値が連動することを CDP で確認（[画像](notes/assets/web-shell-light-theme.png)、詳細は [notes/verification.md](notes/verification.md)） |

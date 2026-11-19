@@ -19,9 +19,12 @@ sysinfo = { version = "=0.40.3", default-features = false, features = [
     "user",
 ] }
 
-# rustix は POSIX シグナル送信（process::kill_process）にだけ使う Unix 専用 API。
+# rustix は POSIX シグナル送信（process::kill_process）と、R2X-D5B の
+# f_bfree ベース used 値取得（fs::statvfs、safe API）に使う Unix 専用 API。
 # Windows では sysinfo の Process::kill_with（taskkill /F）で代用するため、
 # 依存自体を Unix ターゲットに限定して Windows ビルドに持ち込まない。
 [target.'cfg(unix)'.dependencies]
 # RUSTSEC-2026-0486 の修正版に完全固定する。
-rustix = { version = "=1.1.6", features = ["process"] }
+# fs feature は statvfs 用。新規クレートではなく既存 rustix の feature 追加のみ
+# （unsafe FFI を自前で書かずに f_bfree を読むため）。
+rustix = { version = "=1.1.6", features = ["process", "fs"] }

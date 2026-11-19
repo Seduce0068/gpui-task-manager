@@ -85,7 +85,7 @@ status: current
 - [x] schema version の前方/後方互換（R2X-D3）— 設定の opaque version 保持と
       wire の旧版受け入れを実装。
 - [x] R2X-D5 ディスク使用率を checked 算術の derived 値へ修正。
-- [ ] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —（メモリではなく disk の statvfs タスク。sysinfo 0.40.3 に API が無く新規依存または unsafe FFI が必要。AGENTS §15 で unsafe 禁止のため設計判断待ち — BB-FBFREE）
+- [x] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —（メモリではなく disk の statvfs タスク。sysinfo 0.40.3 に API が無く新規依存または unsafe FFI が必要。AGENTS §15 で unsafe 禁止のため設計判断待ち — BB-FBFREE）（既存 rustix の fs feature で safe statvfs を採用、新規依存・unsafe なし — M3-DISK）
       sysinfo 0.40.x に API が無く、新規依存または FFI の判断が必要。
 - [x] Windows taskkill 意味論と PID 保護（R2X-P5〜P8）— エラー分類、Users 更新、
       capability の実収集反映を追加。
@@ -231,7 +231,7 @@ status: current
 
 ### 残課題（swarm-coding ラウンド 3 で判明）
 
-- [ ] MSRV 1.92 を宣言しているが `sysinfo 0.40.3` が rustc 1.95 を要求し、（sysinfo 0.40.3 が 1.95、gpui-pre-util が slice_as_array を要求。依存変更または MSRV 引き上げの設計判断待ち — AF-CI）
+- [x] MSRV 1.92 を宣言しているが `sysinfo 0.40.3` が rustc 1.95 を要求し、（sysinfo 0.40.3 が 1.95、gpui-pre-util が slice_as_array を要求。依存変更または MSRV 引き上げの設計判断待ち — AF-CI）（MSRV を 1.95 へ引き上げ、workspace 全体を検証する msrv-1-95 ジョブへ変更 — M2-CI）
       workspace 全体の `cargo +1.92 check` が Cargo に拒否される。CI の msrv-1-92
       ジョブは tm-core / tm-viewmodel にスコープ限定済み。sysinfo を 1.92 対応版へ
       変更するか MSRV を 1.95 へ引き上げる設計判断が必要（af-ci）。
@@ -281,11 +281,11 @@ status: current
 
 ### 要判断（設計・外部依存）
 
-- [ ] トークン自動生成時の受け渡し経路: 値をログに出さない現状は security 上正しいが、
+- [x] トークン自動生成時の受け渡し経路: 値をログに出さない現状は security 上正しいが、（XDG state 配下へ 0600 保存しパスのみ案内、値は非出力 — M1-TOKEN）
       既定起動ではブラウザ接続が完了しない（README の #token= 案内と矛盾）。
       0600 ファイル保存＋パス案内、またはトークン源未指定時に起動拒否、等の判断が必要。
       根拠 e5-vu。
-- [ ] 全成果物ジョブの needs に wasm / native-windows / native-macos / msrv-1-92 を追加
+- [x] 全成果物ジョブの needs に wasm / native-windows / native-macos / msrv-1-92 を追加（gates, deny, wasm, native-windows, native-macos, msrv-1-95 を指定 — M2-CI）
       （現状は [gates, deny] のみで、他プラットフォーム失敗時に成果物が残る）。
       branch protection 側で代替する選択もあり。根拠 e4-dp。
 - [x] ツール版（cargo-vet / machete / markdownlint / gitleaks / trunk 等）の

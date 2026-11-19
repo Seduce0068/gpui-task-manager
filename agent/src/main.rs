@@ -88,6 +88,14 @@ const TOKEN_ARGV_WARNING: &str = concat!(
     "TM_AGENT_TOKEN は /proc/<pid>/environ に残存し得ます。"
 );
 
+/// Sub-directory under `$XDG_STATE_HOME` (or `$HOME/.local/state`) that holds
+/// the auto-generated token. It lives under the user's home, outside the
+/// repository tree, so the credential can never be committed to the public
+/// source repository.
+const AUTO_TOKEN_DIR_NAME: &str = "tm-agent";
+/// Leaf name of the auto-generated token file.
+const AUTO_TOKEN_FILE_NAME: &str = "token";
+
 /// Minimum severity for structured events, set once from `--log-level`.
 ///
 /// `0` = error, `1` = warn, `2` = info. `debug` and `trace` map to `2` because
@@ -284,12 +292,12 @@ fn run() -> Result<(), AgentError> {
         (None, None) => match std::env::var("TM_AGENT_TOKEN") {
             Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
             _ => {
-                let token = auth::generate_token()
+                let (token, path) = resolve_auto_token()
                     .map_err(|message| AgentError::new(ExitCategory::Auth, message))?;
-                // Never log the generated token: stderr is routinely captured
-                // in CI output and support bundles. Operators who need to know
-                // the credential pass --token-file or TM_AGENT_TOKEN instead.
-                eprintln!("tm-agent: 認証トークンを自動生成しました（値はログに出力しません）");
+                // Only the path is announced; the value is never written to
+                // stderr (which is routinely captured in CI output and support
+                // bundles). Users read the 0600 file out of band to connect.
+                eprintln!("{}", generated_token_message(&path));
                 token
             }
         },
@@ -392,6 +400,126 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
         ));
     }
     Ok(token.to_string())
+}
+
+/// Returns the persistent directory used for an auto-generated token.
+///
+/// Uses `$XDG_STATE_HOME/tm-agent` when set, otherwise
+/// `$HOME/.local/state/tm-agent`. The XDG **state** directory (rather than the
+/// runtime directory) is deliberate: it survives a reboot, so a restarted agent
+/// can reuse the same token and a browser that cached it in `localStorage`
+/// keeps working. The path stays under the user's home, outside the repository.
+fn auto_token_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return Ok(std::path::PathBuf::from(state_home).join(AUTO_TOKEN_DIR_NAME));
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "自動生成トークンの保存先を決めるために HOME または XDG_STATE_HOME が必要です"
+                .to_string()
+        })?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join(AUTO_TOKEN_DIR_NAME))
+}
+
+/// Writes a freshly generated token with owner-only permissions.
+///
+/// `OpenOptionsExt::mode(0o600)` avoids a window in which a newly created file
+/// is readable by the group or by other users; `set_permissions` additionally
+/// repairs a pre-existing file that had looser permissions. This matches the
+/// `0o044` guard enforced by [`read_token_file`] for an explicit `--token-file`.
+fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|err| {
+        format!(
+            "トークンファイルを作成できません ({}): {err}",
+            token_file_name(path)
+        )
+    })?;
+    file.write_all(token.as_bytes()).map_err(|err| {
+        format!(
+            "トークンファイルに書き込めません ({}): {err}",
+            token_file_name(path)
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+            format!(
+                "トークンファイルの権限を設定できません ({}): {err}",
+                token_file_name(path)
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolves the auto-generated token under an explicit directory.
+///
+/// Takes the directory as a parameter so the persistence behaviour can be
+/// tested without mutating process-wide environment variables (tests run in
+/// parallel). A valid existing token is reused: regenerating on every start
+/// would silently invalidate the credential the browser keeps in
+/// `localStorage`. [`read_token_file`] applies the same `0o044` guard as an
+/// explicit `--token-file`, so an unsafe/unreadable file is discarded and a
+/// fresh 0600 token is written instead.
+///
+/// The file is intentionally **not** deleted on exit/SIGINT. Persisting it is
+/// what makes the reuse above possible; the credential is 0600 inside a 0700
+/// directory under the user's home, so leaving it behind is the safer and more
+/// convenient choice for a loopback-only agent.
+fn resolve_auto_token_in(dir: &std::path::Path) -> Result<(String, std::path::PathBuf), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("トークン保存ディレクトリを作成できません: {err}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("トークン保存ディレクトリの権限を設定できません: {err}"))?;
+    }
+    let path = dir.join(AUTO_TOKEN_FILE_NAME);
+
+    if path.exists() {
+        if let Ok(token) = read_token_file(&path) {
+            return Ok((token, path));
+        }
+    }
+
+    let token = auth::generate_token()?;
+    write_token_file(&path, &token)?;
+    Ok((token, path))
+}
+
+/// Resolves the auto-generated token in the XDG state directory.
+fn resolve_auto_token() -> Result<(String, std::path::PathBuf), String> {
+    resolve_auto_token_in(&auto_token_dir()?)
+}
+
+/// Operator guidance for an auto-generated token.
+///
+/// Takes only the token file path, never the token value: the credential must
+/// not reach stderr. The user reads the 0600 file out of band and supplies its
+/// contents to the browser; the agent only announces where to find it.
+fn generated_token_message(path: &std::path::Path) -> String {
+    format!(
+        concat!(
+            "tm-agent: 認証トークンを自動生成し、{} に 0600 で保存しました（値はログに出力しません）。",
+            "再起動時は同じファイルを再利用します。接続時は内容を読み取り --token-file に指定してください。"
+        ),
+        path.display()
+    )
 }
 
 /// Builds the probe selected by the command line.
@@ -1860,6 +1988,81 @@ mod tests {
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn auto_token_is_saved_0600_reused_and_guidance_hides_value() {
+        let dir = std::env::temp_dir().join(format!("tm-agent-auto-reuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (token, path) = resolve_auto_token_in(&dir).expect("first resolve");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(AUTO_TOKEN_FILE_NAME)
+        );
+        assert_eq!(path.parent(), Some(dir.as_path()));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let file_mode = std::fs::metadata(&path)
+                .expect("token metadata")
+                .permissions()
+                .mode();
+            assert_eq!(file_mode & 0o777, 0o600, "generated token must be 0600");
+            let dir_mode = std::fs::metadata(&dir)
+                .expect("dir metadata")
+                .permissions()
+                .mode();
+            assert_eq!(dir_mode & 0o777, 0o700, "state dir must be 0700");
+        }
+        // The persisted value round-trips through the reader used by --token-file.
+        assert_eq!(
+            read_token_file(&path).expect("read back").as_str(),
+            token.as_str()
+        );
+
+        // A restart reuses the credential; regenerating would invalidate the
+        // token the browser cached in localStorage.
+        let (again, _) = resolve_auto_token_in(&dir).expect("second resolve");
+        assert_eq!(again.as_str(), token.as_str());
+
+        // Guidance names the file path but never the value itself.
+        let message = generated_token_message(&path);
+        assert!(
+            message.contains(path.to_string_lossy().as_ref()),
+            "guidance must include the token file path: {message}"
+        );
+        assert!(
+            !message.contains(token.as_str()),
+            "token value leaked: {message}"
+        );
+        assert!(message.contains("0600"), "{message}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn auto_token_replaces_a_loose_permission_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("tm-agent-auto-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join(AUTO_TOKEN_FILE_NAME);
+        let exposed = "known-to-other-users";
+        std::fs::write(&path, exposed).expect("write loose token");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("set 0644");
+
+        let (token, _) = resolve_auto_token_in(&dir).expect("resolve must repair the file");
+        assert_ne!(token.as_str(), exposed, "loose file must not be trusted");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "repaired token must be 0600");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
