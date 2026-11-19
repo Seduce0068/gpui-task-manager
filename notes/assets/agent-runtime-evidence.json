@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "artifact": "notes/assets/agent-runtime-evidence.json",
+  "generated_at": "2026-11-19T19:53:11+09:00",
+  "subject": {
+    "binary": "tm-agent 0.1.0",
+    "build_command": "cargo build --locked -p tm-agent",
+    "build_exit_code": 0,
+    "run_flags": [
+      "--token-file <0600-token-file>",
+      "--listen 127.0.0.1:18901",
+      "--demo",
+      "--redact"
+    ],
+    "secret_handling": "トークンは実行時に生成して mktemp(0600) ファイルへ書き込み、値は出力せず SHA-256 先頭 12 文字のみ記録した（初回実行: 5753b4dbe85c）"
+  },
+  "checks": [
+    {
+      "id": "healthz",
+      "request": "GET http://127.0.0.1:18901/healthz",
+      "expected": { "status": 200 },
+      "observed": {
+        "status": 200,
+        "body": { "ok": true, "schema_version": 1 }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "metrics",
+      "request": "GET http://127.0.0.1:18901/metrics",
+      "expected": {
+        "status": 200,
+        "contains": ["tm_agent_responses_total", "tm_agent_stream_sessions"]
+      },
+      "observed": {
+        "status": 200,
+        "content_type": "text/plain; version=0.0.4; charset=utf-8",
+        "contains_both_metrics": true,
+        "sample_lines": [
+          "tm_agent_responses_total{class=\"2xx\"} 2",
+          "tm_agent_responses_total{class=\"4xx\"} 0",
+          "tm_agent_stream_sessions 0"
+        ]
+      },
+      "result": "pass"
+    },
+    {
+      "id": "snapshot-unauthenticated",
+      "request": "GET http://127.0.0.1:18901/api/v1/snapshot?limit=5",
+      "expected": { "status": 401, "code": "unauthorized" },
+      "observed": {
+        "status": 401,
+        "body_code": "unauthorized",
+        "www_authenticate": "Bearer"
+      },
+      "result": "pass"
+    },
+    {
+      "id": "snapshot-authenticated-redacted",
+      "request": "GET http://127.0.0.1:18901/api/v1/snapshot?limit=5 (Authorization: Bearer)",
+      "expected": { "status": 200, "total_process_count_present": true, "redacted": true },
+      "observed": {
+        "status": 200,
+        "schema_version": 1,
+        "total_process_count": 28,
+        "returned_processes": 5,
+        "hostname": "host",
+        "distinct_process_user_values": ["user"],
+        "top_level_keys": ["schema_version", "snapshot", "total_process_count"],
+        "token_value_in_body": false,
+        "home_path_in_body": false,
+        "os_user_in_body": false,
+        "os_hostname_in_body": false
+      },
+      "result": "pass"
+    },
+    {
+      "id": "snapshot-method-not-allowed",
+      "request": "POST http://127.0.0.1:18901/api/v1/snapshot",
+      "expected": { "status": 405, "allow": "GET, OPTIONS" },
+      "observed": {
+        "status": 405,
+        "allow": "GET, OPTIONS",
+        "body_code": "method_not_allowed"
+      },
+      "result": "pass"
+    },
+    {
+      "id": "stream-preflight",
+      "request": "OPTIONS http://127.0.0.1:18901/api/v1/stream (Origin: http://127.0.0.1:8091)",
+      "expected": { "status": 204, "cors_headers": true },
+      "observed": {
+        "status": 204,
+        "body_bytes": 0,
+        "headers_found": [
+          "Access-Control-Allow-Origin: http://127.0.0.1:8091",
+          "Access-Control-Allow-Methods: GET, OPTIONS",
+          "Access-Control-Allow-Headers: Authorization, Content-Type",
+          "Access-Control-Max-Age: 600",
+          "Vary: Origin"
+        ]
+      },
+      "result": "pass"
+    },
+    {
+      "id": "stream-sse",
+      "request": "GET http://127.0.0.1:18901/api/v1/stream (Authorization: Bearer, client timeout 3s)",
+      "expected": { "status": 200, "content_type_prefix": "text/event-stream" },
+      "observed": {
+        "status": 200,
+        "content_type": "text/event-stream; charset=utf-8",
+        "event_frames": 3,
+        "data_frames": 3,
+        "event_names": ["snapshot"],
+        "client_terminated_by_timeout": true,
+        "token_value_in_body": false
+      },
+      "result": "pass"
+    },
+    {
+      "id": "host-header-rejection",
+      "request": "GET http://127.0.0.1:18901/healthz (Host: evil.example)",
+      "expected": { "status": 403, "code": "forbidden" },
+      "observed": {
+        "status": 403,
+        "body_code": "forbidden"
+      },
+      "result": "pass"
+    }
+  ],
+  "server_log": {
+    "agent_listening_events": 1,
+    "auth_denied_events": 1,
+    "token_value_in_stderr": false
+  },
+  "cleanup": {
+    "port_before_start": "free",
+    "agent_process_terminated": true,
+    "port_after_cleanup": "free",
+    "verification": "curl による /healthz への接続が失敗（ポート空き）を確認（2 実行とも同一結果）"
+  },
+  "limitations": [
+    "--demo は合成データのため、ネイティブ /proc プローブはこの実行では検証していない",
+    "シグナルハンドラによる graceful shutdown は実装されておらず、停止は SIGTERM で実施した",
+    "ブラウザ側の CORS 動作は確認せず、レスポンスヘッダのみを確認した",
+    "ストリームは 1 秒間隔のため 3 秒 timeout では 3 フレームを受信した（要求の 1〜2 フレームを上回る）"
+  ]
+}
