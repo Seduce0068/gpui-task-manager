@@ -6,11 +6,15 @@
 //! # Security posture
 //!
 //! - binds to a loopback address only (validated before `bind`),
-//! - every snapshot request must present a bearer token (header or query),
+//! - every snapshot request must present a bearer token (header only; a token
+//!   in the query string is deliberately rejected),
 //! - the API is **read-only**: there is no endpoint that signals a process,
 //! - one request per connection, 1 s read / 5 s write timeouts, 8 KiB request head,
 //! - connections are handled concurrently (up to 8) so an idle peer cannot stall
 //!   the whole agent,
+//! - `/api/v1/stream` streams snapshots as server-sent events on a long-lived
+//!   connection, with its own two-slot cap so streaming clients cannot starve
+//!   ordinary snapshot polls (R1-I14),
 //! - CORS is limited to `http://127.0.0.1:<port>` / `http://localhost:<port>`.
 //!
 //! `--demo` serves deterministic data for UI development; `--once` prints one
@@ -23,7 +27,7 @@ mod auth;
 mod http;
 mod telemetry;
 
-use std::io;
+use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -43,6 +47,8 @@ use telemetry::{AgentError, ExitCategory, Level, Metrics, RequestTrace};
 const HEALTH_PATH: &str = "/healthz";
 /// Snapshot endpoint (bearer token required).
 const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
+/// Long-lived SSE endpoint (bearer token required, read-only like `/api/v1/snapshot`).
+const STREAM_PATH: &str = "/api/v1/stream";
 /// Metrics endpoint (no authentication; counters/gauges only, no machine data).
 const METRICS_PATH: &str = "/metrics";
 
@@ -65,6 +71,15 @@ const MAX_PROCESS_LIMIT: usize = 2000;
 /// of waiting behind idle peers; the agent is loopback-only, but an unbounded
 /// thread-per-connection server would still be a local resource exhaustion vector.
 const MAX_CONNECTIONS: usize = 8;
+
+/// Concurrent long-lived SSE streams. Deliberately much smaller than
+/// [`MAX_CONNECTIONS`]: a stream holds its slot until the browser disconnects,
+/// so letting streams use all eight slots would make ordinary snapshot polls
+/// fail with 503 (R1-I14).
+const MAX_STREAMS: usize = 2;
+
+/// Delay between two `snapshot` events on [`STREAM_PATH`].
+const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// How long the accept loop waits for in-flight connection workers once it
 /// stops accepting. A worker can hold a 1 s read timeout plus a ~250 ms probe
@@ -585,6 +600,8 @@ struct SharedState {
     /// `false` until the first real-probe snapshot has consumed a warm-up
     /// sample. Demo data starts ready (its ticks are deterministic).
     warmed_up: AtomicBool,
+    /// Live SSE streams, capped separately from [`MAX_CONNECTIONS`].
+    streams: AtomicUsize,
     /// Request counters/gauges exposed read-only at [`METRICS_PATH`].
     metrics: Arc<Metrics>,
 }
@@ -597,6 +614,7 @@ impl SharedState {
             redact,
             active: AtomicUsize::new(0),
             warmed_up: AtomicBool::new(!needs_warmup),
+            streams: AtomicUsize::new(0),
             metrics: Arc::new(Metrics::new()),
         }
     }
@@ -786,10 +804,12 @@ fn spawn_connection(
             // `_slot` is moved into the worker so the counter is released when the
             // worker exits — or unwinds after a panic — never on the accept thread.
             let _slot = _slot;
-            let result = handle_connection(&mut stream, &worker_state.metrics, |request| {
+            let result = handle_connection_with_stream(&mut stream, &worker_state, |request| {
                 // Only snapshot requests need the probe. Acquiring it for
-                // /healthz and /metrics would make liveness wait for a slow
-                // sample (including the 250 ms warm-up sleep) — R40 audit.
+                // /healthz, /metrics and the SSE path would make liveness wait
+                // for a slow sample (including the 250 ms warm-up sleep) — R40 audit.
+                // The SSE path samples the shared probe inside its own loop and
+                // never invokes this closure.
                 let needs_probe = request.path == SNAPSHOT_PATH;
                 let mut guard = if needs_probe {
                     // Rust の Mutex はパニックで poison する可能性があるが、
@@ -841,23 +861,18 @@ fn spawn_connection(
     Ok(())
 }
 
-/// Handles exactly one HTTP request on `stream`.
+/// Reads one request head and answers parse failures.
 ///
-/// The caller supplies `route` so the shared probe is locked only after a
-/// complete request head has been read. Every request gets a [`RequestTrace`]:
-/// its `Drop` implementation guarantees even an early error return is recorded
-/// in the structured log and metrics.
-fn handle_connection(
+/// Returns `None` both for an empty connection and for a parse error whose
+/// response has already been written. This is shared by the ordinary request
+/// path and the SSE path so both keep the exact 400/408/431 contract.
+fn read_request_head(
     stream: &mut TcpStream,
     metrics: &Metrics,
-    mut route: impl FnMut(&http::Request) -> http::Response,
-) -> io::Result<()> {
-    stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
-    stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
-
-    let request = match http::read_request(stream) {
-        Ok(Some(request)) => request,
-        Ok(None) => return Ok(()),
+) -> io::Result<Option<http::Request>> {
+    match http::read_request(stream) {
+        Ok(Some(request)) => Ok(Some(request)),
+        Ok(None) => Ok(None),
         Err(parse_error) => {
             let (status, reason, code, message) = match parse_error {
                 http::ParseError::TooLarge => (
@@ -882,10 +897,60 @@ fn handle_connection(
             let mut trace = RequestTrace::begin_unknown(metrics);
             trace.finish(status);
             let response = http::Response::json(status, reason, error_body(code, message));
-            return http::write_response(stream, &response);
+            http::write_response(stream, &response)?;
+            Ok(None)
         }
-    };
+    }
+}
 
+/// Handles exactly one ordinary HTTP request on `stream`.
+///
+/// Retained for the socket regression tests; production connections enter
+/// through [`handle_connection_with_stream`] so they can select the SSE path.
+/// The caller supplies `route` so the shared probe is locked only after a
+/// complete request head has been read. Every request gets a [`RequestTrace`]:
+/// its `Drop` implementation guarantees even an early error return is recorded
+/// in the structured log and metrics.
+#[cfg(test)]
+fn handle_connection(
+    stream: &mut TcpStream,
+    metrics: &Metrics,
+    route: impl FnMut(&http::Request) -> http::Response,
+) -> io::Result<()> {
+    stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
+    let Some(request) = read_request_head(stream, metrics)? else {
+        return Ok(());
+    };
+    handle_request(stream, &request, metrics, route)
+}
+
+/// Dispatches a parsed request. SSE requests take the long-lived path; all
+/// other paths keep the original single-response behaviour byte for byte.
+fn handle_connection_with_stream(
+    stream: &mut TcpStream,
+    state: &SharedState,
+    route: impl FnMut(&http::Request) -> http::Response,
+) -> io::Result<()> {
+    stream.set_read_timeout(Some(http::READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(http::WRITE_TIMEOUT))?;
+    let Some(request) = read_request_head(stream, &state.metrics)? else {
+        return Ok(());
+    };
+    if request.path == STREAM_PATH {
+        handle_stream_connection(stream, &request, state)
+    } else {
+        handle_request(stream, &request, &state.metrics, route)
+    }
+}
+
+/// Writes one ordinary response after the shared Host/CORS checks.
+fn handle_request(
+    stream: &mut TcpStream,
+    request: &http::Request,
+    metrics: &Metrics,
+    mut route: impl FnMut(&http::Request) -> http::Response,
+) -> io::Result<()> {
     // Only `path` is traced. The raw target (with `?token=...`) and the
     // Authorization header must never reach a log line.
     let mut trace = RequestTrace::begin(metrics, &request.method, &request.path);
@@ -916,7 +981,7 @@ fn handle_connection(
         }
     }
 
-    let mut response = route(&request);
+    let mut response = route(request);
     trace.finish(response.status);
     if let Some(origin) = allowed_origin {
         http::add_cors_headers(&mut response, origin);
@@ -973,6 +1038,270 @@ fn route(
             "Not Found",
             error_body(ErrorCode::NotFound, "エンドポイントが見つかりません"),
         ),
+    }
+}
+
+/// RAII release for a [`STREAM_PATH`] slot.
+///
+/// A stream holds its slot until the browser disconnects (or the write fails),
+/// so the decrement must also happen on every early error path.
+struct StreamSlot<'a>(&'a SharedState);
+
+impl Drop for StreamSlot<'_> {
+    fn drop(&mut self) {
+        self.0.streams.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Reserves one of the [`MAX_STREAMS`] long-lived slots, if any is free.
+fn try_acquire_stream_slot(streams: &AtomicUsize) -> bool {
+    // `fetch_update` is deprecated and `try_update` needs Rust 1.95 while this
+    // workspace declares MSRV 1.92, so use the long-stable CAS form instead.
+    let mut current = streams.load(Ordering::Acquire);
+    loop {
+        if current >= MAX_STREAMS {
+            return false;
+        }
+        match streams.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+/// Writes the SSE response head. There is deliberately no `Content-Length`:
+/// the body is a sequence of events ended only by a client disconnect.
+///
+/// `origin` has already passed [`http::is_allowed_origin`], so it cannot carry
+/// CR/LF into the header block.
+fn write_sse_head<W: io::Write>(stream: &mut W, origin: Option<&str>) -> io::Result<()> {
+    let mut head = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/event-stream; charset=utf-8\r\n",
+        "Cache-Control: no-store\r\n",
+        "Connection: keep-alive\r\n",
+        "X-Content-Type-Options: nosniff\r\n",
+    )
+    .to_string();
+    if let Some(origin) = origin {
+        head.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\n"));
+        head.push_str("Vary: Origin\r\n");
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes())?;
+    stream.flush()
+}
+
+/// Formats one SSE frame. `data` comes from compact `serde_json` output, which
+/// escapes embedded newlines, so it cannot break out of the `data:` line.
+fn sse_event(event: &str, data: &str) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
+}
+
+/// Serves [`STREAM_PATH`]: authenticated, read-only snapshots as SSE.
+///
+/// This path never reads a request body and keeps no probe lock between events,
+/// so an open browser tab cannot stall ordinary `/api/v1/snapshot` polls.
+/// A write failure is treated as a normal client disconnect.
+fn handle_stream_connection(
+    stream: &mut TcpStream,
+    request: &http::Request,
+    state: &SharedState,
+) -> io::Result<()> {
+    let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
+    let origin = request.header("origin").map(str::to_string);
+    let allowed_origin = origin
+        .as_deref()
+        .filter(|origin| http::is_allowed_origin(origin));
+
+    // Same defence in depth as the ordinary request path.
+    if let Some(host) = request.header("host") {
+        if !http::is_allowed_host(host) {
+            let mut response = http::Response::json(
+                403,
+                "Forbidden",
+                error_body(
+                    ErrorCode::Forbidden,
+                    "Host ヘッダがループバックではありません",
+                ),
+            );
+            if let Some(origin) = allowed_origin {
+                http::add_cors_headers(&mut response, origin);
+            }
+            trace.finish(response.status);
+            return http::write_response(stream, &response);
+        }
+    }
+
+    let Some(supplied) = auth::request_token(request) else {
+        emit(
+            Level::Warn,
+            "auth.denied",
+            json!({ "reason": "missing_token", "path": request.path }),
+        );
+        let mut response = unauthorized_response();
+        if let Some(origin) = allowed_origin {
+            http::add_cors_headers(&mut response, origin);
+        }
+        trace.finish(response.status);
+        return http::write_response(stream, &response);
+    };
+    if !auth::constant_time_eq(&state.token, &supplied) {
+        emit(
+            Level::Warn,
+            "auth.denied",
+            json!({ "reason": "invalid_token", "path": request.path }),
+        );
+        let mut response = unauthorized_response();
+        if let Some(origin) = allowed_origin {
+            http::add_cors_headers(&mut response, origin);
+        }
+        trace.finish(response.status);
+        return http::write_response(stream, &response);
+    }
+
+    if !try_acquire_stream_slot(&state.streams) {
+        let mut response = http::Response::json(
+            503,
+            "Service Unavailable",
+            error_body(ErrorCode::Busy, "ストリーミング接続数が上限に達しました"),
+        );
+        if let Some(origin) = allowed_origin {
+            http::add_cors_headers(&mut response, origin);
+        }
+        trace.finish(response.status);
+        return http::write_response(stream, &response);
+    }
+    let _stream_slot = StreamSlot(state);
+    trace.finish(200);
+    write_sse_head(stream, allowed_origin)?;
+
+    // No request body is expected; disable the read deadline so the socket
+    // stays idle while events are pushed. The write deadline still bounds each
+    // individual `write_all` below.
+    stream.set_read_timeout(None)?;
+    loop {
+        let warmed = if state.warmed_up.load(Ordering::Acquire) {
+            true
+        } else {
+            let mut guard = match state.probe.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
+                    emit(
+                        Level::Warn,
+                        "probe.mutex_poisoned",
+                        json!({ "recovered": true }),
+                    );
+                    err.into_inner()
+                }
+            };
+            match guard.sample() {
+                Ok(_) => {
+                    std::thread::sleep(WARMUP_INTERVAL);
+                    state.warmed_up.store(true, Ordering::Release);
+                    true
+                }
+                Err(err) => {
+                    // Only the classified label reaches stderr; the free-form
+                    // probe detail can embed internal paths or host names.
+                    eprintln!(
+                        "tm-agent: ウォームアップサンプルに失敗しました ({})",
+                        probe_error_label(&err)
+                    );
+                    emit(
+                        Level::Error,
+                        "probe.sample_failed",
+                        json!({ "phase": "warmup" }),
+                    );
+                    false
+                }
+            }
+        };
+        if !warmed {
+            let frame = sse_event(
+                "error",
+                "{\"error\":\"スナップショットを取得できませんでした\"}",
+            );
+            if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
+                return Ok(());
+            }
+            std::thread::sleep(STREAM_INTERVAL);
+            continue;
+        }
+
+        let sample = {
+            let mut guard = match state.probe.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    // Same poison recovery contract as the ordinary path: never
+                    // fail open silently.
+                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
+                    emit(
+                        Level::Warn,
+                        "probe.mutex_poisoned",
+                        json!({ "recovered": true }),
+                    );
+                    err.into_inner()
+                }
+            };
+            guard.sample()
+        };
+        let frame = match sample {
+            Ok(mut snapshot) => {
+                if state.redact {
+                    redact_snapshot(&mut snapshot, &state.token);
+                } else {
+                    // The native probe copies this process's argv into the
+                    // snapshot; a non-redacted stream must not carry --token
+                    // either (same contract as the HTTP/--once paths).
+                    scrub_argv_token(&mut snapshot, &state.token);
+                }
+                let total = apply_process_limit(&mut snapshot, DEFAULT_PROCESS_LIMIT);
+                let envelope = SnapshotEnvelope {
+                    schema_version: tm_core::WIRE_SCHEMA_VERSION,
+                    total_process_count: total,
+                    snapshot: &snapshot,
+                };
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => sse_event("snapshot", &json),
+                    Err(err) => {
+                        eprintln!("tm-agent: SSE JSON への変換に失敗: {err}");
+                        emit(
+                            Level::Error,
+                            "response.serialize_failed",
+                            json!({ "path": STREAM_PATH }),
+                        );
+                        sse_event("error", "{\"error\":\"JSON への変換に失敗しました\"}")
+                    }
+                }
+            }
+            Err(err) => {
+                // No free-form probe detail in logs or stream frames.
+                eprintln!(
+                    "tm-agent: スナップショット取得に失敗しました ({})",
+                    probe_error_label(&err)
+                );
+                emit(
+                    Level::Error,
+                    "probe.sample_failed",
+                    json!({ "phase": "stream" }),
+                );
+                sse_event(
+                    "error",
+                    "{\"error\":\"スナップショットを取得できませんでした\"}",
+                )
+            }
+        };
+        if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
+            return Ok(());
+        }
+        std::thread::sleep(STREAM_INTERVAL);
     }
 }
 
@@ -2248,7 +2577,10 @@ mod tests {
             "GET /api/v1/snapshot?limit=abc HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n",
         ] {
             let response = request(raw, &state);
-            assert!(!response.starts_with("HTTP/1.1 200"), "unexpected: {response}");
+            assert!(
+                !response.starts_with("HTTP/1.1 200"),
+                "unexpected: {response}"
+            );
         }
         assert_eq!(calls.load(Ordering::Acquire), 0);
 
@@ -2648,5 +2980,105 @@ mod tests {
                 timed_out: false,
             }
         );
+    }
+
+    // ------------------------------------------------------------- R1-I14 SSE
+
+    /// Routes requests through the real dispatcher, including [`STREAM_PATH`].
+    fn spawn_demo_server_with_stream(connections: usize) -> (SocketAddr, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let state = Arc::new(SharedState::new(
+                Box::new(DemoProbe::new()),
+                TEST_TOKEN,
+                false,
+                false,
+            ));
+            for _ in 0..connections {
+                let (mut stream, _) = listener.accept().expect("accept");
+                handle_connection_with_stream(&mut stream, &state, |request| {
+                    let mut guard = state.probe.lock().unwrap_or_else(|err| err.into_inner());
+                    route(
+                        request,
+                        Some(guard.as_mut()),
+                        &state.token,
+                        state.redact,
+                        &state.warmed_up,
+                        &state.metrics,
+                        &state.active,
+                    )
+                })
+                .expect("handle connection");
+            }
+        });
+        (address, handle)
+    }
+
+    #[test]
+    fn sse_event_frame_has_exactly_one_data_line() {
+        let frame = sse_event("snapshot", r#"{"command":"a\nb"}"#);
+        assert_eq!(frame, "event: snapshot\ndata: {\"command\":\"a\\nb\"}\n\n");
+        assert_eq!(frame.matches("\ndata: ").count(), 1);
+        assert!(frame.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn sse_head_is_streaming_and_carries_allowed_cors_origin() {
+        let mut head = Vec::new();
+        write_sse_head(&mut head, Some("http://127.0.0.1:5173")).expect("write head");
+        let text = String::from_utf8(head).expect("head is utf-8");
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("Content-Type: text/event-stream"));
+        // A streaming response must not advertise a finite body length.
+        assert!(!text.to_ascii_lowercase().contains("content-length"));
+        assert!(text.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
+        assert!(text.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn stream_slots_are_bounded_and_released_on_drop() {
+        let state = SharedState::new(Box::new(DemoProbe::new()), TEST_TOKEN, false, false);
+        let slots: Vec<StreamSlot<'_>> = (0..MAX_STREAMS)
+            .map(|_| {
+                assert!(try_acquire_stream_slot(&state.streams));
+                StreamSlot(&state)
+            })
+            .collect();
+        assert_eq!(state.streams.load(Ordering::Acquire), MAX_STREAMS);
+        assert!(
+            !try_acquire_stream_slot(&state.streams),
+            "streams must not consume the ordinary snapshot connection slots"
+        );
+        drop(slots);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
+        assert!(try_acquire_stream_slot(&state.streams));
+    }
+
+    #[test]
+    fn stream_requires_a_bearer_header_and_does_not_shadow_snapshot() {
+        let (address, handle) = spawn_demo_server_with_stream(3);
+        let snapshot = send_request(
+            address,
+            "GET /api/v1/snapshot?limit=3 HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(snapshot.starts_with("HTTP/1.1 200 OK"), "{snapshot}");
+        assert_eq!(parse_body(&snapshot)["schema_version"], 1);
+
+        let missing = send_request(
+            address,
+            "GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
+        );
+        assert!(missing.starts_with("HTTP/1.1 401"), "{missing}");
+        assert!(missing.contains("WWW-Authenticate: Bearer"));
+        assert!(missing.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173"));
+
+        // The query-token form stays rejected on the new endpoint too.
+        let query_token = send_request(
+            address,
+            "GET /api/v1/stream?token=test-token HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        );
+        assert!(query_token.starts_with("HTTP/1.1 401"), "{query_token}");
+        handle.join().expect("demo stream server thread");
     }
 }

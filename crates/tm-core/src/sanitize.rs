@@ -11,7 +11,7 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// Maximum number of characters kept from a command line.
 pub const MAX_COMMAND_CHARS: usize = 240;
 
-use crate::model::SystemSnapshot;
+use crate::model::{SystemSnapshot, CGROUP_LABEL_MAX_CHARS};
 
 /// Sanitises every display string in a snapshot in place.
 ///
@@ -44,6 +44,15 @@ pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
     }
     for component in &mut snapshot.components {
         component.label = sanitize_display(&component.label, MAX_NAME_CHARS);
+    }
+    // Battery names and cgroup labels are OS/agent-provided text too. The probe
+    // already sanitises them, but an agent wire payload is a separate trust
+    // boundary: re-sanitise defensively here (R1-I10 / R1-I12).
+    for battery in &mut snapshot.power.batteries {
+        battery.name = sanitize_display(&battery.name, MAX_NAME_CHARS);
+    }
+    for group in &mut snapshot.cgroups {
+        group.label = sanitize_display(&group.label, CGROUP_LABEL_MAX_CHARS);
     }
 }
 
@@ -513,6 +522,36 @@ mod tests {
             &snapshot.network.interfaces[0].name,
             &snapshot.disks[0].mount_point,
             &snapshot.components[0].label,
+        ] {
+            assert!(!value.contains('\u{1b}'), "ANSI survived: {value:?}");
+            assert!(!value.contains('\u{202e}'), "bidi survived: {value:?}");
+            assert!(!value.contains('\n'), "newline survived: {value:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_snapshot_covers_power_and_cgroup_text() {
+        use crate::model::{BatterySnapshot, CgroupGroup, PowerSnapshot};
+
+        let dirty = "e\u{1b}[31mvil\u{202e}\nname";
+        let mut snapshot = SystemSnapshot {
+            power: PowerSnapshot {
+                batteries: vec![BatterySnapshot {
+                    name: dirty.to_string(),
+                    ..BatterySnapshot::default()
+                }],
+                ..PowerSnapshot::default()
+            },
+            cgroups: vec![CgroupGroup {
+                label: dirty.to_string(),
+                members: vec![],
+            }],
+            ..SystemSnapshot::default()
+        };
+        sanitize_snapshot(&mut snapshot);
+        for value in [
+            &snapshot.power.batteries[0].name,
+            &snapshot.cgroups[0].label,
         ] {
             assert!(!value.contains('\u{1b}'), "ANSI survived: {value:?}");
             assert!(!value.contains('\u{202e}'), "bidi survived: {value:?}");

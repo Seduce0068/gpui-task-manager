@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::theme::*;
-use tm_viewmodel::{TrendDelta, TrendDirection};
+use tm_viewmodel::{FilterPreset, TrendDelta, TrendDirection};
 
 /// A horizontal flex container (mirrors the native shell's `h_flex`).
 pub fn h_flex() -> Div {
@@ -86,6 +86,68 @@ pub fn sparkline(values: &[f32], max: f32, color: u32, height: f32) -> Div {
         .children(bars)
 }
 
+// --------------------------------------------------- selected process sparkline (R1-I08)
+//
+// The overview sparklines are scaled to fixed 0..100 (or network) ranges. A
+// single process has no meaningful fixed full scale — CPU can exceed 100 % on a
+// multicore machine — so these helpers derive the scale from the retained
+// samples and keep the newest reading in text for assistive technology.
+
+/// Full scale for a process sparkline: the observed peak, with a small floor so
+/// an all-zero series still has a visible baseline.
+pub fn process_sparkline_max(values: &[f32]) -> f32 {
+    let peak = values
+        .iter()
+        .copied()
+        .fold(0.0_f32, |peak, value| peak.max(value));
+    if peak.is_finite() { peak.max(1.0) } else { 1.0 }
+}
+
+/// Visible text for the newest CPU sample of a process series.
+pub fn process_sparkline_value_text(values: &[f32]) -> String {
+    match values.last().copied() {
+        Some(value) if value.is_finite() => format!("{value:.1}%"),
+        _ => "—".to_string(),
+    }
+}
+
+/// Accessible name (`aria-label` equivalent) for a process CPU sparkline.
+///
+/// The process name, latest value and sample count are spelled out so the chart
+/// is understandable without colour perception or a screen-space reading.
+pub fn process_sparkline_a11y_label(process: &str, values: &[f32]) -> String {
+    if values.is_empty() {
+        return format!("{process} の CPU 使用率の推移、データなし");
+    }
+    format!(
+        "{process} の CPU 使用率の推移、最新 {value}、{count} サンプル",
+        value = process_sparkline_value_text(values),
+        count = values.len()
+    )
+}
+
+/// A sparkline for the selected process with a stable ElementId and AccessKit name.
+///
+/// `id` must be unique within a frame — pass a constant such as
+/// `process-cpu-sparkline`. The underlying [`sparkline`] and the existing
+/// overview DOM hooks / aria identities are left untouched; this is an extra
+/// wrapper for the details panel that `shell.rs` will mount.
+pub fn process_sparkline(
+    id: impl Into<ElementId>,
+    process: impl Into<SharedString>,
+    values: &[f32],
+    color: u32,
+    height: f32,
+) -> Stateful<Div> {
+    let process: SharedString = process.into();
+    let label = process_sparkline_a11y_label(&process, values);
+    let max = process_sparkline_max(values);
+    sparkline(values, max, color, height)
+        .id(id)
+        .role(Role::Image)
+        .aria_label(label)
+}
+
 /// A small rounded status label.
 pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
     div()
@@ -146,6 +208,55 @@ pub fn accessible_pill(
         .id(id)
         .role(Role::Label)
         .aria_label(label)
+}
+
+// ------------------------------------------------------------ filter preset chip (R1-I06)
+//
+// Presets are built-in, in-memory shortcuts from the view-model (ADR-012 keeps
+// filters out of persisted settings). The chip is purely presentational: the
+// shell attaches the click handler and decides where the row is mounted.
+
+/// Visible text for a filter preset chip; the active marker is textual, not colour-only.
+pub fn filter_preset_text(preset: &FilterPreset, active: bool) -> String {
+    if active {
+        format!("✓ {}", preset.label)
+    } else {
+        preset.label.to_string()
+    }
+}
+
+/// Accessible name (`aria-label` equivalent) for a filter preset chip.
+pub fn filter_preset_a11y_label(preset: &FilterPreset, active: bool) -> String {
+    if active {
+        format!("フィルタプリセット {} を適用中", preset.label)
+    } else {
+        format!("フィルタプリセット {} を適用", preset.label)
+    }
+}
+
+/// A preset chip with a stable ElementId and AccessKit name.
+///
+/// `id` must be unique within a frame; pass `(id, index)` when building the
+/// preset row. Reuses [`accessible_pill`], so no existing DOM hook / aria
+/// contract changes.
+pub fn filter_preset_chip(
+    id: impl Into<ElementId>,
+    preset: &FilterPreset,
+    active: bool,
+) -> Stateful<Div> {
+    let palette = palette();
+    let (fg, bg) = if active {
+        (palette.base, palette.blue)
+    } else {
+        (palette.subtext, palette.surface)
+    };
+    accessible_pill(
+        id,
+        filter_preset_text(preset, active),
+        fg,
+        bg,
+        filter_preset_a11y_label(preset, active),
+    )
 }
 
 /// A utilisation bar with a numeric accessible value and a textual name.
@@ -409,7 +520,7 @@ pub fn trend_badge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tm_viewmodel::{TrendUnit, trend_delta};
+    use tm_viewmodel::{FilterPresetId, TrendUnit, filter_preset, trend_delta};
 
     #[test]
     fn usage_severity_has_the_same_thresholds_as_usage_color() {
@@ -550,5 +661,53 @@ mod tests {
         assert!(label.starts_with("ネットワーク の推移"), "{label}");
         assert!(label.contains("下降"), "{label}");
         assert!(label.contains("-1.5 MiB/s"), "{label}");
+    }
+
+    #[test]
+    fn process_sparkline_max_follows_the_peak_with_a_zero_floor() {
+        assert_eq!(process_sparkline_max(&[]), 1.0);
+        assert_eq!(process_sparkline_max(&[0.0, 0.0]), 1.0);
+        assert_eq!(process_sparkline_max(&[0.0, 12.5, 3.0]), 12.5);
+        // A NaN reading from a probe must never become a zero-height chart.
+        assert_eq!(process_sparkline_max(&[f32::NAN]), 1.0);
+    }
+
+    #[test]
+    fn process_sparkline_value_text_spells_out_latest_and_missing() {
+        assert_eq!(process_sparkline_value_text(&[1.0, 12.34]), "12.3%");
+        assert_eq!(process_sparkline_value_text(&[]), "—");
+        assert_eq!(process_sparkline_value_text(&[f32::NAN]), "—");
+    }
+
+    #[test]
+    fn process_sparkline_a11y_label_carries_process_value_and_count() {
+        let label = process_sparkline_a11y_label("firefox", &[1.0, 12.34]);
+        assert!(label.starts_with("firefox の CPU 使用率の推移"), "{label}");
+        assert!(label.contains("12.3%"), "{label}");
+        assert!(label.contains("2 サンプル"), "{label}");
+        let empty = process_sparkline_a11y_label("firefox", &[]);
+        assert!(empty.contains("データなし"), "{empty}");
+    }
+
+    #[test]
+    fn filter_preset_chip_text_and_label_mark_active_state_without_colour() {
+        let preset = filter_preset(FilterPresetId::HighCpu);
+        let active = filter_preset_text(preset, true);
+        assert!(active.contains('✓'), "{active}");
+        assert!(active.contains("高 CPU"), "{active}");
+        assert_eq!(filter_preset_text(preset, false), "高 CPU");
+        let label = filter_preset_a11y_label(preset, true);
+        assert!(label.contains("適用中"), "{label}");
+        assert!(label.contains("高 CPU"), "{label}");
+    }
+
+    #[test]
+    fn existing_widget_helpers_keep_their_accessible_wording() {
+        // Regression guard: adding the new widgets must not disturb the strings
+        // relied on by already-wired overview/trend widgets and their DOM hooks.
+        let delta = trend_delta(Some(40.0), Some(42.5), 0.0, TrendUnit::PercentPoints);
+        assert_eq!(trend_badge_text(&delta), "↑ +2.5pt 上昇");
+        assert_eq!(trend_a11y_label("CPU", &delta), "CPU の推移 上昇 +2.5pt");
+        assert_eq!(usage_severity(85.0), "高");
     }
 }

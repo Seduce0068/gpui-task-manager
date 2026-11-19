@@ -22,30 +22,32 @@ use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    KeyDownEvent, Pixels, Render, ScrollStrategy, Stateful, TextInputConfiguration, UTF16Selection,
-    UniformListScrollHandle, Window, canvas, div, prelude::*, px, rgb, uniform_list,
+    KeyDownEvent, MouseButton, Pixels, Render, ScrollStrategy, Stateful, TextInputConfiguration,
+    UTF16Selection, UniformListScrollHandle, Window, canvas, div, prelude::*, px, rgb,
+    uniform_list,
 };
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv, snapshot_to_json};
 use tm_core::format;
 use tm_core::port::Section;
 use tm_core::{
-    PlatformInfo, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
+    PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, SortDirection, SortKey, SystemProbe,
     SystemSnapshot,
 };
 use tm_viewmodel::{
-    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FilterInput,
-    MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
+    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FILTER_PRESETS, FilterInput,
+    FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
 };
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use crate::agent::{AgentClient, AgentConfig, FetchError};
+use crate::agent::{AgentClient, AgentConfig, FetchError, onboarding_steps};
 use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
 use crate::theme::*;
 use crate::widgets::{
-    accessible_metric_bar, accessible_pill, card, h_flex, kv, section_title, sparkline,
-    temperature_gauge, temperature_severity, trend_badge, usage_severity, v_flex,
+    accessible_metric_bar, accessible_pill, card, filter_preset_chip, h_flex, kv,
+    process_sparkline, process_sparkline_value_text, section_title, sparkline, temperature_gauge,
+    temperature_severity, trend_badge, usage_severity, v_flex,
 };
 
 const FONT_SANS: &str = "IBM Plex Sans";
@@ -71,11 +73,20 @@ const COL_USER: f32 = 96.0;
 const COL_STATUS: f32 = 74.0;
 const COL_THREADS: f32 = 64.0;
 const DETAILS_WIDTH: f32 = 320.0;
+/// 絞り込み欄の固定幅。CDP 検証のフォールバック座標（ROOT_PAD + 170）が
+/// この中に収まる前提なので、プリセット行を追加しても変更しない。
+const FILTER_BOX_WIDTH: f32 = 340.0;
 
 /// Screen-reader-only status node mirrored into the DOM on wasm. The canvas
 /// itself carries no semantics, so this is the browser-side `aria-live`
 /// counterpart of the AccessKit status node in `status_bar()`.
 const A11Y_LIVE_DOM_ID: &str = "tm-web-a11y-live";
+
+/// 詳細パネルの選択プロセス CPU スパークラインの ElementId。`process_sparkline`
+/// はフレーム内で一意な id を要求するため、固定値をここで共有する。
+const PROCESS_CPU_SPARKLINE_ID: &str = "process-cpu-sparkline";
+/// ツールバー中央のプリセット行（AccessibilityKit の Group 名も固定）。
+const FILTER_PRESETS_GROUP_ID: &str = "filter-presets";
 
 /// 既存の読み取り専用マーカーに使われている固定文言。headless 検証と aria の
 /// 回帰を避けるため、`supports_process_control` の判定を追加しても変更しない。
@@ -152,6 +163,40 @@ impl ExportFormat {
     }
 }
 
+/// Fixed value written to the DOM proof's `menu=` field (R1-I19).
+///
+/// Never carries a process name, command, hostname or agent token, so adding
+/// this field cannot break the redaction contract or the `key=value;` grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuProof {
+    None,
+    Open,
+    Select,
+    CopyPid,
+}
+
+impl MenuProof {
+    fn proof_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Open => "open",
+            Self::Select => "select",
+            Self::CopyPid => "copy_pid",
+        }
+    }
+}
+
+/// State of the row context menu.
+///
+/// Only the numeric process identity is kept. Any text shown in the menu is
+/// either fixed UI copy or the PID itself; agent-supplied strings are never
+/// stored here or mirrored into the DOM proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowMenu {
+    key: ProcessKey,
+    index: usize,
+}
+
 /// How the shell gets its data.
 enum DataSource {
     /// Deterministic synthetic data generated in the browser (`tm-core`).
@@ -187,6 +232,10 @@ pub struct TaskManagerApp {
     /// 直近のエクスポート形式。DOM フックの `export=` フィールドにのみ使い、
     /// スナップショット本文やトークンは保持しない。
     last_export: Option<ExportFormat>,
+    /// 行コンテキストメニューの状態（R1-I19）。PID と行番号だけを保持する。
+    row_menu: Option<RowMenu>,
+    /// 直近のメニュー操作。DOM フックの `menu=` にのみ使う固定値。
+    menu_proof: MenuProof,
 }
 
 impl TaskManagerApp {
@@ -235,6 +284,8 @@ impl TaskManagerApp {
             stale: false,
             ticks: 0,
             last_export: None,
+            row_menu: None,
+            menu_proof: MenuProof::None,
         };
         app.restore_settings();
         app.spawn_sampler(cx);
@@ -291,12 +342,14 @@ impl TaskManagerApp {
                 }
                 // Read *after* the sample so the newest applied interval (preset
                 // click or persisted settings) decides the next wait. Never
-                // freeze the cadence at startup.
-                let interval =
-                    match this.update(cx, |app, _| sampler_wait(app.dashboard.interval())) {
-                        Ok(interval) => interval,
-                        Err(_) => break,
-                    };
+                // freeze the cadence at startup. `effective_interval` also
+                // applies the adaptive power plan as a floor (R1-I11).
+                let interval = match this.update(cx, |app, _| {
+                    sampler_wait(app.dashboard.effective_interval())
+                }) {
+                    Ok(interval) => interval,
+                    Err(_) => break,
+                };
                 cx.background_executor().timer(interval).await;
             }
         })
@@ -500,6 +553,15 @@ impl TaskManagerApp {
 
     /// Applies a user intention and executes the effects the shell supports.
     fn handle_command(&mut self, command: Command, cx: &mut Context<Self>) {
+        // 行を選択したらコンテキストメニューを閉じる。右クリックで開いた直後は
+        // Select を発行しないので、開いた瞬間に閉じることはない（R1-I19）。
+        if matches!(&command, Command::Select(_)) {
+            self.row_menu = None;
+            if self.menu_proof == MenuProof::Open {
+                self.menu_proof = MenuProof::Select;
+            }
+            self.sync_proof_dom();
+        }
         // 表示設定の変更だけを永続化する（Tick や操作では書き込まない）。
         let persist = matches!(
             &command,
@@ -545,9 +607,16 @@ impl TaskManagerApp {
             return;
         }
         match keystroke.key.to_lowercase().as_str() {
-            // Esc: 絞り込みを解除する（IME 変換中なら変換ごと破棄する）。
+            // Esc: まず行メニューを閉じ、無ければ絞り込みを解除する
+            // （IME 変換中なら変換ごと破棄する）。
             "escape" => {
-                self.clear_filter(cx);
+                if self.row_menu.take().is_some() {
+                    self.menu_proof = MenuProof::None;
+                    self.sync_proof_dom();
+                    cx.notify();
+                } else {
+                    self.clear_filter(cx);
+                }
                 cx.stop_propagation();
             }
             // Enter: IME の確定はブラウザ側が行う。一覧を閉じるモーダルは無いので
@@ -585,6 +654,106 @@ impl TaskManagerApp {
     fn clear_filter(&mut self, cx: &mut Context<Self>) {
         self.filter_input.clear();
         self.handle_command(Command::ClearFilter, cx);
+    }
+
+    /// 組み込みフィルタプリセットを適用する（R1-I06）。
+    ///
+    /// すべてのプリセットは `filter.text` が空なので、IME ミラーの表示テキストも
+    /// 同時にクリアしないと「欄には前の検索語が残っているのに一覧はプリセット」
+    /// という不一致になる。`ClearFilter` と同じ手順を踏むこと。
+    fn apply_filter_preset(&mut self, id: FilterPresetId, cx: &mut Context<Self>) {
+        self.filter_input.clear();
+        self.handle_command(Command::ApplyFilterPreset(id), cx);
+    }
+
+    /// 行メニューを開く。PID と行番号以外の情報は保持しない（R1-I19）。
+    fn open_row_menu(&mut self, key: ProcessKey, index: usize, cx: &mut Context<Self>) {
+        self.row_menu = Some(RowMenu { key, index });
+        self.menu_proof = MenuProof::Open;
+        self.sync_proof_dom();
+        cx.notify();
+    }
+
+    /// 行コンテキストメニュー。絶対配置のため既存レイアウト座標を変更しない。
+    fn row_context_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.row_menu?;
+        let pid = menu.key.pid;
+        Some(
+            div()
+                .id("row-context-menu")
+                .role(Role::Menu)
+                .aria_label(format!("行 {} (PID {}) のメニュー", menu.index + 1, pid))
+                .absolute()
+                .top_0()
+                .left_0()
+                .mt(px(160.0))
+                .ml(px(20.0))
+                .w(px(220.0))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(palette().surface))
+                .bg(rgb(palette().mantle))
+                .child(self.menu_item(
+                    "menu-select",
+                    "行を選択",
+                    "行を選択".to_string(),
+                    move |this, cx| this.handle_command(Command::Select(Some(menu.key)), cx),
+                    cx,
+                ))
+                .child(self.menu_item(
+                    "menu-copy-pid",
+                    "PID をコピー",
+                    format!("PID {pid} をコピー"),
+                    move |this, cx| {
+                        this.row_menu = None;
+                        this.menu_proof = MenuProof::CopyPid;
+                        this.dashboard.set_status(row_menu_pid_status(pid), false);
+                        this.sync_proof_dom();
+                        cx.notify();
+                    },
+                    cx,
+                ))
+                .child(self.menu_item(
+                    "menu-close",
+                    "閉じる",
+                    "メニューを閉じる".to_string(),
+                    move |this, cx| {
+                        this.row_menu = None;
+                        this.menu_proof = MenuProof::None;
+                        this.sync_proof_dom();
+                        cx.notify();
+                    },
+                    cx,
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// One accessible menu item with a fixed label and no agent-supplied text.
+    fn menu_item(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        aria_label: String,
+        action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .role(Role::MenuItem)
+            .aria_label(aria_label)
+            .text_sm()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(palette().surface)))
+            .on_click(cx.listener(move |this, _event, _window, cx| action(this, cx)))
+            .child(label)
     }
 
     /// [`EntityInputHandler`] からの編集結果を表示と Dashboard に反映する。
@@ -1108,6 +1277,40 @@ impl TaskManagerApp {
 
     // --------------------------------------------------------------- toolbar
 
+    /// フィルタ行の中央に置くプリセットチップ列（R1-I06）。
+    ///
+    /// GPUI の要素 id は `(固定名, 添字)` でフレーム内一意にする。チップ自体は
+    /// `filter_preset_chip` が描画し、ここでは active 状態の判定とクリックの
+    /// `Command::ApplyFilterPreset` 発行だけを担当する。`flex_1 + min_w_0 +
+    /// overflow_hidden` で余白を吸収するため、左の検索欄（340 px）と右側の
+    /// ボタン群の座標は変わらず、CDP の TOOLBAR_CENTER_Y もそのまま使える。
+    fn filter_preset_chips(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let active = self.dashboard.active_filter_preset();
+        let chips: Vec<Stateful<Div>> = FILTER_PRESETS
+            .iter()
+            .enumerate()
+            .map(|(index, preset)| {
+                let id = preset.id;
+                filter_preset_chip(("filter-preset", index), preset, active == Some(id))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.apply_filter_preset(id, cx);
+                    }))
+            })
+            .collect();
+        h_flex()
+            .gap_1()
+            .flex_1()
+            .min_w_0()
+            .justify_center()
+            .overflow_hidden()
+            .id(FILTER_PRESETS_GROUP_ID)
+            .role(Role::Group)
+            .aria_label("フィルタプリセット")
+            .children(chips)
+    }
+
     fn toolbar(&self, focused: bool, cx: &mut Context<Self>) -> Div {
         // 表示は「確定前 + 変換中 + 確定後」の 3 分割。IME 変換中の文字列は
         // 青 + 下線で見せ、Dashboard の絞り込みにはまだ渡さない。
@@ -1203,7 +1406,7 @@ impl TaskManagerApp {
             .flex()
             .items_center()
             .gap_2()
-            .w(px(340.0))
+            .w(px(FILTER_BOX_WIDTH))
             .h(px(30.0))
             .px_3()
             .rounded_md()
@@ -1247,6 +1450,7 @@ impl TaskManagerApp {
             .h(px(TOOLBAR_HEIGHT))
             .flex_shrink_0()
             .child(filter_box)
+            .child(self.filter_preset_chips(cx))
             .child(
                 h_flex()
                     .gap_3()
@@ -1637,6 +1841,13 @@ impl TaskManagerApp {
                         this.handle_command(Command::Select(Some(key)), cx);
                     }
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.open_row_menu(key, index, cx);
+                    }),
+                )
                 .child(
                     div()
                         .w(px(COL_NAME))
@@ -1749,6 +1960,38 @@ impl TaskManagerApp {
                     .child("行をクリックすると詳細を表示します"),
             ),
         };
+        // 初回オンボーディングはデモモード（?agent= 未指定）のときだけ詳細
+        // パネル末尾に出す。固定文言のみで既存の DOM 座標・a11y は不変。
+        if matches!(&self.source, DataSource::Demo(_)) {
+            content = content.child(onboarding_card());
+        }
+        // cgroup グルーピングは読み取り専用。色ではなくラベルと件数で示し、
+        // 既存のセンサー / 詳細セクションの id と座標は変更しない（R1-I12）。
+        content = content.child(
+            section_title("cgroup グループ")
+                .id("details-cgroup-title")
+                .role(Role::Heading)
+                .aria_level(2),
+        );
+        let groups = self.dashboard.cgroup_groups();
+        if groups.is_empty() {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("cgroup 情報なし"),
+            );
+        } else {
+            for (index, group) in groups.iter().enumerate() {
+                content = content.child(
+                    div()
+                        .id(("details-cgroup-row", index))
+                        .text_xs()
+                        .text_color(rgb(palette().text))
+                        .child(cgroup_group_text(&group.label, group.members.len())),
+                );
+            }
+        }
         content = content.child(
             section_title("センサー / 温度")
                 .id("details-sensors-title")
@@ -1834,6 +2077,9 @@ impl TaskManagerApp {
             .parent_pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "—".to_string());
+        // 詳細パネルはこのプロセスが選択されているときだけ描画されるので、
+        // Dashboard の選択プロセス時系列をそのままスパークラインへ渡せる。
+        let cpu_values = self.dashboard.selected_cpu_values();
 
         v_flex()
             .gap_2()
@@ -1863,6 +2109,30 @@ impl TaskManagerApp {
             )
             .child(kv("ユーザー", user))
             .child(kv("CPU", format::format_cpu_percent(process.cpu_percent)))
+            .child(
+                section_title("CPU 推移")
+                    .id("details-cpu-history-title")
+                    .role(Role::Heading)
+                    .aria_level(2),
+            )
+            .child(process_sparkline(
+                PROCESS_CPU_SPARKLINE_ID,
+                process.name.clone(),
+                &cpu_values,
+                palette().blue,
+                28.0,
+            ))
+            .child(
+                div()
+                    .id("details-cpu-history-value")
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child(format!(
+                        "最新 {} / {} サンプル",
+                        process_sparkline_value_text(&cpu_values),
+                        cpu_values.len()
+                    )),
+            )
             .child(kv(
                 "メモリ (RSS)",
                 format::format_bytes(process.memory_bytes),
@@ -1941,6 +2211,18 @@ impl TaskManagerApp {
                 false,
             ),
         };
+        // Read-only power / sampling / cgroup summary (R1-I10..I12). It is
+        // appended after the existing fields so every CDP hook and the live
+        // region text stay unchanged.
+        let power_summary = match snapshot {
+            Some(snapshot) => format!(
+                "電源 {} / {} / cgroup {} グループ",
+                snapshot.power.source.label(),
+                snapshot.sampling.profile.label(),
+                snapshot.cgroups.len()
+            ),
+            None => "電源 —".to_string(),
+        };
         let show_stale = is_stale(matches!(&self.source, DataSource::Live(_)), self.stale);
         let live_text = a11y_live_text(self.dashboard.status(), show_stale);
         let announcement = live_text.clone();
@@ -1979,6 +2261,8 @@ impl TaskManagerApp {
                     .child(last_update)
                     .child(div().text_color(rgb(palette().dim)).child("|"))
                     .child(counts)
+                    .child(div().text_color(rgb(palette().dim)).child("|"))
+                    .child(power_summary)
                     .children(show_stale.then(|| {
                         div()
                             .text_color(rgb(palette().yellow))
@@ -2080,9 +2364,12 @@ impl TaskManagerApp {
             .map(|value| value as u32)
             .unwrap_or(0);
         let rows = self.dashboard.visible_count();
-        // Same helper as the sampler uses, so the reported value is exactly the
-        // cadence the next sample will wait for.
+        // `interval=` keeps the user-configured value byte-for-byte for the
+        // existing CDP hooks; the additive `sampling_ms=` reports the adaptive
+        // cadence the sampler actually waits for (R1-I11).
         let interval_ms = sampler_wait(self.dashboard.interval()).as_millis() as u64;
+        let effective_interval_ms =
+            sampler_wait(self.dashboard.effective_interval()).as_millis() as u64;
         let theme_label = match theme() {
             tm_viewmodel::Theme::Dark => "dark",
             tm_viewmodel::Theme::Light => "light",
@@ -2100,6 +2387,14 @@ impl TaskManagerApp {
         let proof = proof_with_interval(&proof, interval_ms);
         let proof = proof_with_export(&proof, self.last_export);
         let proof = proof_with_reconnect(&proof, self.reconnect_required);
+        let menu = if self.row_menu.is_some() {
+            MenuProof::Open
+        } else {
+            self.menu_proof
+        };
+        let proof = proof_with_menu(&proof, menu);
+        let proof = proof_with_preset(&proof, self.dashboard.active_filter_preset());
+        let proof = proof_with_sampling(&proof, self.dashboard.snapshot(), effective_interval_ms);
         // タブのタイトルは人間向けの固定文言＋データ源のみ。DOM 証跡の内部
         // フィールド（mode/tick/rows/filter/…）は `body[data-gpui-proof]` に
         // だけ書き、ここには一切露出させない。
@@ -2299,6 +2594,7 @@ impl Render for TaskManagerApp {
         let toolbar = self.toolbar(focused, cx);
         let main_area = self.main_area(cx);
         let status_bar = self.status_bar();
+        let row_menu = self.row_context_menu(cx);
 
         // IME ミラー（隠し textarea）からの composition / input をこのビューへ
         // 届けるための登録。GPUI の作法では paint 中に `Window::handle_input` を
@@ -2340,11 +2636,20 @@ impl Render for TaskManagerApp {
             .child(toolbar)
             .child(main_area)
             .child(status_bar)
+            .children(row_menu)
             .child(input_registration)
     }
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// Read-only cgroup grouping row: normalised label plus member count (R1-I12).
+///
+/// The label is already sanitised and redacted at the probe / agent boundaries;
+/// this helper only formats it and never embeds user-supplied text in an id.
+fn cgroup_group_text(label: &str, members: usize) -> String {
+    format!("{label} — {members} 件")
+}
 
 /// Accessible name for one process row.
 ///
@@ -2513,6 +2818,94 @@ fn document_title(live: bool) -> &'static str {
 /// transient follow-up failure must not hide the auth guidance (R49 audit).
 fn next_reconnect_required(current: bool, error: &FetchError) -> bool {
     current || crate::agent::requires_reconnect(error)
+}
+
+/// Appends the row-context-menu state to the DOM proof string.
+///
+/// Additive only: the value is one of four fixed identifiers (never a process
+/// name, command or token), so every pre-existing `key=value;` pair stays
+/// byte-for-byte identical and the headless-Chrome parser keeps working.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_menu(proof: &str, menu: MenuProof) -> String {
+    format!("{proof}menu={};", menu.proof_value())
+}
+
+/// Fixed ASCII identifier for a filter preset in the DOM proof.
+///
+/// The Japanese chip label is intentionally *not* mirrored: a fixed identifier
+/// keeps the `key=value;` grammar stable and can never carry user text, a
+/// hostname or the agent token. Match is exhaustive so a newly added preset
+/// forces this mapping to be updated.
+#[cfg(any(target_family = "wasm", test))]
+fn preset_proof_value(id: FilterPresetId) -> &'static str {
+    match id {
+        FilterPresetId::All => "all",
+        FilterPresetId::HighCpu => "high_cpu",
+        FilterPresetId::HighMemory => "high_memory",
+        FilterPresetId::LargeVirtualMemory => "large_virtual_memory",
+        FilterPresetId::Running => "running",
+    }
+}
+
+/// Appends the active filter preset to the DOM proof string.
+///
+/// Additive only: `none` or a fixed identifier from [`preset_proof_value`], so
+/// every pre-existing `key=value;` pair stays byte-for-byte identical.
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_preset(proof: &str, preset: Option<FilterPresetId>) -> String {
+    let value = preset.map(preset_proof_value).unwrap_or("none");
+    format!("{proof}preset={value};")
+}
+
+/// Appends the adaptive power / sampling / cgroup summary to the DOM proof.
+///
+/// Additive only: every value is a fixed ASCII identifier or a number, so no
+/// agent-derived text, host name or token can enter the proof. The pre-existing
+/// `key=value;` pairs remain byte-for-byte identical (R1-I10..I12).
+#[cfg(any(target_family = "wasm", test))]
+fn proof_with_sampling(
+    proof: &str,
+    snapshot: Option<&SystemSnapshot>,
+    effective_interval_ms: u64,
+) -> String {
+    let source = snapshot.map_or("none", |snapshot| snapshot.power.source.id());
+    let profile = snapshot.map_or("none", |snapshot| snapshot.sampling.profile.id());
+    let groups = snapshot.map_or(0, |snapshot| snapshot.cgroups.len());
+    format!(
+        "{proof}power={source};sampling={profile};sampling_ms={effective_interval_ms};cgroups={groups};"
+    )
+}
+
+/// Status announced after the row menu's PID action. No clipboard write is
+/// attempted in the browser (read-only shell); the numeric PID is the only
+/// agent-derived value and it cannot carry separators or control characters.
+fn row_menu_pid_status(pid: u32) -> String {
+    format!("PID {pid} を選択しました（ブラウザ版はクリップボードへ書き込みません）")
+}
+
+/// First-run connection checklist shown in demo mode (R1-I16).
+///
+/// The strings come from the redaction-safe constants in `crate::agent`; no
+/// hostname, token or agent text is ever interpolated here.
+fn onboarding_card() -> Stateful<Div> {
+    v_flex()
+        .id("onboarding-card")
+        .role(Role::Group)
+        .aria_label("初回接続ガイド")
+        .gap_1()
+        .child(
+            section_title("初回接続ガイド")
+                .id("onboarding-title")
+                .role(Role::Heading)
+                .aria_level(2),
+        )
+        .children(onboarding_steps().iter().enumerate().map(|(index, step)| {
+            div()
+                .id(("onboarding-step", index))
+                .text_xs()
+                .text_color(rgb(palette().subtext))
+                .child(*step)
+        }))
 }
 
 /// Identifiers handed to the pure exporters.
@@ -3163,5 +3556,235 @@ mod tests {
         assert!(capable.supports(Section::Network));
         assert!(capable.supports(Section::Disks));
         assert!(capable.supports(Section::ProcessControl));
+    }
+
+    // --------------------------------------------------------- R1-I16 / I19
+
+    #[test]
+    fn proof_with_menu_keeps_legacy_hook_bytes() {
+        let legacy = "mode=demo;tick=7;rows=3;theme=dark;";
+        for (menu, value) in [
+            (MenuProof::None, "none"),
+            (MenuProof::Open, "open"),
+            (MenuProof::Select, "select"),
+            (MenuProof::CopyPid, "copy_pid"),
+        ] {
+            let proof = proof_with_menu(legacy, menu);
+            assert_eq!(proof, format!("{legacy}menu={value};"));
+            assert!(proof.starts_with(legacy));
+            assert_eq!(proof.matches("menu=").count(), 1);
+        }
+    }
+
+    #[test]
+    fn row_menu_status_is_redaction_and_dom_safe() {
+        let status = row_menu_pid_status(4242);
+        assert!(status.contains("4242"));
+        // Numeric PID only: no path, separator, token or agent-supplied text.
+        assert!(!status.contains(';'));
+        assert!(!status.contains('\n'));
+        assert!(!status.contains('/'));
+        assert!(!status.contains("token"));
+    }
+
+    #[test]
+    fn onboarding_checklist_is_fixed_and_hook_safe() {
+        let steps = onboarding_steps();
+        assert_eq!(steps.len(), 4);
+        for step in steps {
+            assert!(!step.contains(';'), "{step}");
+            assert!(!step.contains('\n'), "{step}");
+            assert!(!step.contains("secret"), "{step}");
+        }
+    }
+
+    // ------------------------------------------------- R1-I06 / R1-I08 配線
+
+    #[test]
+    fn filter_preset_chip_row_keeps_cdp_geometry_and_legacy_hook_bytes() {
+        // プリセット行はツールバー中央の余白に追加するだけなので、CDP が
+        // クリック座標を再計算する定数と検索欄の幅は一切変わらない。
+        assert_eq!(TOOLBAR_HEIGHT, 36.0);
+        assert_eq!(ROOT_PAD, 12.0);
+        assert_eq!(OVERVIEW_HEIGHT, 260.0);
+        assert_eq!(FILTER_BOX_WIDTH, 340.0);
+        assert_eq!(DETAILS_WIDTH, 320.0);
+        assert_eq!(FILTER_PRESETS_GROUP_ID, "filter-presets");
+        assert_eq!(PROCESS_CPU_SPARKLINE_ID, "process-cpu-sparkline");
+        assert_ne!(PROCESS_CPU_SPARKLINE_ID, "cpu-sparkline");
+
+        // 既存フックの key=value; はバイト単位で不変（末尾追加のみ）。
+        let legacy = "mode=demo;tick=7;rows=3;theme=dark;";
+        let proof = proof_with_preset(&proof_with_menu(legacy, MenuProof::None), None);
+        assert!(proof.starts_with(legacy), "{proof}");
+        assert_eq!(
+            proof,
+            "mode=demo;tick=7;rows=3;theme=dark;menu=none;preset=none;"
+        );
+        assert_eq!(A11Y_LIVE_DOM_ID, "tm-web-a11y-live");
+    }
+
+    #[test]
+    fn filter_preset_wiring_covers_every_builtin_and_clears_the_text_filter() {
+        use crate::widgets::{filter_preset_a11y_label, filter_preset_text};
+
+        assert_eq!(FILTER_PRESETS.len(), 5);
+        let mut ids = std::collections::HashSet::new();
+        for preset in FILTER_PRESETS {
+            assert!(
+                ids.insert(preset.id),
+                "duplicate preset id: {:?}",
+                preset.id
+            );
+            assert_eq!(preset.label, preset.id.label());
+            // 全プリセットの filter.text が空なので、チップ押下時に IME ミラーの
+            // 表示テキストもクリアして不一致を作らない（apply_filter_preset）。
+            assert!(preset.filter.text.is_empty(), "{:?}", preset.id);
+            // active は色ではなく ✓ とアクセシブルなラベルで示す。
+            let active = filter_preset_text(preset, true);
+            assert!(active.contains('✓'), "{active}");
+            assert!(active.contains(preset.label), "{active}");
+            assert_eq!(filter_preset_text(preset, false), preset.label);
+            assert!(
+                filter_preset_a11y_label(preset, true).contains("適用中"),
+                "{preset:?}"
+            );
+        }
+
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        for preset in FILTER_PRESETS {
+            let effects = dashboard.apply(Command::ApplyFilterPreset(preset.id));
+            assert!(effects.is_empty(), "preset command must be effect-free");
+            assert_eq!(dashboard.active_filter_preset(), Some(preset.id));
+            assert_eq!(dashboard.filter_text(), "");
+        }
+        // 直接の文字入力は active 印を消す（チップの ✓ が残らない）。
+        dashboard.apply(Command::SetFilterText("firefox".to_string()));
+        assert_eq!(dashboard.active_filter_preset(), None);
+    }
+
+    #[test]
+    fn selected_cpu_sparkline_uses_dashboard_series_and_fixed_id() {
+        use crate::widgets::process_sparkline_a11y_label;
+
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        let mut probe = DemoProbe::new();
+        let first = probe.sample().expect("demo snapshot");
+        let key = first.processes[0].key;
+        let name = first.processes[0].name.clone();
+        dashboard.ingest(first);
+        dashboard.apply(Command::Select(Some(key)));
+        assert!(
+            dashboard.selected_cpu_values().is_empty(),
+            "選択変更で時系列はリセットされる"
+        );
+        dashboard.ingest(probe.sample().expect("demo snapshot"));
+        let values = dashboard.selected_cpu_values();
+        assert_eq!(values.len(), 1);
+        // 詳細パネルに渡すラベルにプロセス名・最新値・サンプル数が載ること。
+        let label = process_sparkline_a11y_label(&name, &values);
+        assert!(label.starts_with(&name), "{label}");
+        assert!(
+            label.contains(&process_sparkline_value_text(&values)),
+            "{label}"
+        );
+        assert!(label.contains("1 サンプル"), "{label}");
+    }
+
+    #[test]
+    fn dom_proof_preset_field_is_additive_and_token_free() {
+        let token = "super-secret-agent-token";
+        let legacy =
+            "mode=live;tick=5;rows=3;theme=dark;interval=2000;export=none;reconnect=0;menu=none;";
+        for (preset, value) in [
+            (None, "none"),
+            (Some(FilterPresetId::All), "all"),
+            (Some(FilterPresetId::HighCpu), "high_cpu"),
+            (Some(FilterPresetId::HighMemory), "high_memory"),
+            (
+                Some(FilterPresetId::LargeVirtualMemory),
+                "large_virtual_memory",
+            ),
+            (Some(FilterPresetId::Running), "running"),
+        ] {
+            let proof = proof_with_preset(legacy, preset);
+            assert!(proof.starts_with(legacy), "{proof}");
+            assert_eq!(proof, format!("{legacy}preset={value};"));
+            assert!(!proof.contains(token), "{proof}");
+            // 固定 ASCII 識別子のみ（日本語ラベルやユーザー入力は鏡像しない）。
+            assert!(!proof.contains(' '), "{proof}");
+            assert_eq!(proof.matches("preset=").count(), 1);
+        }
+    }
+
+    // ------------------------------------------ R1-I10 / R1-I11 / R1-I12 配線
+
+    #[test]
+    fn dom_proof_sampling_fields_are_additive_and_token_free() {
+        use tm_core::demo::demo_snapshot;
+
+        let token = "super-secret-agent-token";
+        let legacy = "mode=demo;tick=7;interval=2000;preset=none;";
+        let snapshot = demo_snapshot(0);
+        let proof = proof_with_sampling(legacy, Some(&snapshot), 2_500);
+        assert!(proof.starts_with(legacy), "{proof}");
+        assert_eq!(
+            proof,
+            "mode=demo;tick=7;interval=2000;preset=none;\
+             power=ac;sampling=interactive;sampling_ms=2500;cgroups=2;"
+        );
+        assert_eq!(
+            proof_with_sampling(legacy, None, 1_000),
+            format!("{legacy}power=none;sampling=none;sampling_ms=1000;cgroups=0;")
+        );
+        assert!(!proof.contains(token), "{proof}");
+        assert!(!proof.contains(' '), "{proof}");
+        assert_eq!(proof.matches("power=").count(), 1);
+        assert_eq!(proof.matches("sampling_ms=").count(), 1);
+    }
+
+    #[test]
+    fn legacy_wire_snapshot_without_new_fields_still_deserialises() {
+        // 既存エージェントが power/sampling/cgroups を送らない場合でも、
+        // serde(default) で安全に読め、サンプリングを遅くしないこと。
+        let original = tm_core::demo::demo_snapshot(0);
+        let mut value = serde_json::to_value(&original).expect("serialise");
+        let object = value.as_object_mut().expect("snapshot object");
+        for field in ["power", "sampling", "cgroups"] {
+            assert!(object.remove(field).is_some(), "fixture had {field}");
+        }
+        let restored: SystemSnapshot = serde_json::from_value(value).expect("legacy wire");
+        assert_eq!(restored.power.source.id(), "unknown");
+        assert!(restored.power.batteries.is_empty());
+        assert!(restored.cgroups.is_empty());
+        assert_eq!(restored.sampling.profile.id(), "interactive");
+        assert_eq!(restored.processes.len(), original.processes.len());
+        assert_eq!(restored.hostname, original.hostname);
+
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(restored);
+        assert_eq!(dashboard.effective_interval(), DEFAULT_REFRESH_INTERVAL);
+    }
+
+    #[test]
+    fn cgroup_grouping_is_displayed_from_the_dashboard_snapshot() {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        assert!(dashboard.cgroup_groups().is_empty());
+        dashboard.ingest(tm_core::demo::demo_snapshot(0));
+        let groups = dashboard.cgroup_groups();
+        assert_eq!(groups.len(), 2);
+        for group in groups {
+            let row = cgroup_group_text(&group.label, group.members.len());
+            assert!(row.contains(&group.label), "{row}");
+            assert!(
+                row.contains(&format!("{} 件", group.members.len())),
+                "{row}"
+            );
+            assert!(group.label.chars().all(|ch| !ch.is_control()));
+        }
+        assert_eq!(
+            cgroup_group_text("demo.slice/system.service", 3),
+            "demo.slice/system.service — 3 件"
+        );
     }
 }

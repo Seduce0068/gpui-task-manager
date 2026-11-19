@@ -38,9 +38,15 @@ pub mod sanitize;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
-    normalise_temperature, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot,
-    NetworkInterfaceSnapshot, NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus,
-    SystemSnapshot, Timestamp,
+    cgroup_label, group_by_cgroup, normalise_temperature, recommended_sampling_plan,
+    BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
+    MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
+    ProcessCgroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SamplingProfile,
+    SystemSnapshot, Timestamp, WindowVisibility,
+};
+pub use model::{
+    BACKGROUND_INTERVAL_MS, BATTERY_INTERVAL_MS, BATTERY_SAVER_INTERVAL_MS, CGROUP_LABEL_MAX_CHARS,
+    INTERACTIVE_INTERVAL_MS, LOW_BATTERY_PERCENT,
 };
 pub use port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 pub use query::{
