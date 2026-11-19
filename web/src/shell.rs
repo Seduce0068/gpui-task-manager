@@ -16,7 +16,7 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, Toggled};
@@ -40,6 +40,7 @@ use tm_viewmodel::{
 };
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::wasm_bindgen;
+use web_time::Instant;
 
 use crate::agent::{AgentClient, AgentConfig, FetchError, SnapshotEnvelope, onboarding_steps};
 use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
@@ -392,7 +393,7 @@ impl TaskManagerApp {
                     // polling suspended forever. Check before the retry so the
                     // cooldown scheduled by the watchdog is honoured on this
                     // same cycle instead of reconnecting immediately.
-                    if app.sse_watchdog_expired() {
+                    if matches!(app.stream_mode, StreamMode::Active) && app.sse_watchdog_expired() {
                         app.on_sse_idle_timeout();
                         cx.notify();
                     }

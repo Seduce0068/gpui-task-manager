@@ -47,6 +47,11 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 
+# wasm32-unknown-unknown では std::time::{Instant, SystemTime}::now() が
+# unsupported.rs で panic する。ブラウザ互換の web-time を使う
+# （gpui-pre の推移依存で既に Cargo.lock に存在するため新規ダウンロード不要）。
+web-time = "1.1.0"
+
 [profile.dev]
 debug = "line-tables-only"
 
