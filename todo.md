@@ -340,6 +340,37 @@ status: current
 - [x] `PlatformInfo` の能力フラグ契約 (`crates/tm-core/src/port.rs:43`) が
       native probe の実挙動と矛盾。ドキュメントを実装へ合わせる。根拠 k3-bugs。
 
+### 優先度: 中 — 新機能統合後レビュー 2026-11-19
+
+- [ ] SSE が method 検証／プリフライトをバイパス: `agent/src/main.rs:940` の
+      `STREAM_PATH` 分岐が route() を通らないため OPTIONS が 401、POST でも
+      ストリーム開始する。GET のみ＋OPTIONS preflight を追加。根拠 q1-sse。
+- [ ] Authorization 必須 SSE のクライアント認証経路を確定: EventSource は
+      カスタムヘッダ不可、fetch()+ReadableStream なら CORS preflight と
+      ACA-Credentials の設計が必要。根拠 q1-sse（設計判断）。
+- [ ] 新規 wire enum (PowerSource / BatteryState / SamplingProfile /
+      WindowVisibility) へ `serde(other)` を追加し、未知値でスナップショット
+      全体が失敗するのを防ぐ。根拠 q2-data。
+- [ ] redact 後に batteries/cgroups の再ソート・再グループ化: `crates/tm-core/src/redact.rs:232`
+      の事後置換でラベル衝突・順序違反が起きる。根拠 q2-data。
+- [ ] プリセット適用後に文字入力すると構造条件だけ残る:
+      `crates/tm-viewmodel/src/lib.rs:820` の SetFilterText が filter.text のみ
+      更新し高 CPU 条件が残る。根拠 q3-ui。
+- [ ] プリセットチップを Role::Button 化＋Tab/Enter のキーボード操作を追加
+      (`web/src/widgets.rs:242`, `web/src/shell.rs:604`)。根拠 q3-ui。
+- [ ] AC online 読み取り失敗を「バッテリー動作」と誤判定しない:
+      `crates/tm-platform/src/lib.rs:519` の unwrap_or(0) を区別。根拠 q2-data。
+- [ ] Esc/プリセットクリア時に IME 隠し textarea へ通知しミラーを同期
+      (`web/src/shell.rs:653,664`)。根拠 q3-ui。
+- [ ] SSE のグレースフルシャットダウン: 無期限 read timeout が 2s join を超過、
+      初回 warm-up が probe mutex 保持中に 250ms sleep。根拠 q1-sse。
+- [ ] SSE の Host 必須化、parse_sse_event_frame の event 重複拒否、
+      trace.finish(200) を write_sse_head 後に移動。根拠 q1-sse。
+- [ ] 行コンテキストメニューのキーボード操作と stale PID 検証
+      (`web/src/shell.rs:604,386`)。根拠 q3-ui。
+- [ ] DOM proof の filter/ime_field から '=' と改行を除去
+      (`web/src/shell.rs:2337`)。根拠 q3-ui。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
