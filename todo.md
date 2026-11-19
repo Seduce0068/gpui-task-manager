@@ -483,6 +483,16 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - CDP Runtime Proof: tick=3 / rows=28 / borrow|panic|unsupported 0 件
   （修正前 tick=0 / borrow error 2229 件）。
 
+### メモ — CI apt ミラー一時障害
+
+- 2026-11-19 の CI で Ubuntu ミラーが 503 を返し、gates / MSRV の
+  `apt-get` が失敗（コードとは無関係、再実行で解消）。
+- ci.yml の MSRV / release-linux ジョブへ `Acquire::Retries=5` と
+  `Acquire::http::Timeout=30` を追加済み。
+- gates ジョブは再利用ワークフロー `Seduce0068/workflows` の `apt_packages`
+  入力経由のため、リトライ強化は提供側リポジトリの変更が必要（未対応）。
+  AGENTS.md §5 に従い、まず提供側で対応を検討する。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
