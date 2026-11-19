@@ -8,7 +8,7 @@
 //! export paths from drifting. Reading the environment is deliberately left to
 //! the callers: `tm-core` stays free of I/O and works on `wasm32`.
 
-use crate::model::SystemSnapshot;
+use crate::model::{group_by_cgroup, ProcessCgroup, SystemSnapshot};
 
 /// The local identifiers to remove from a string.
 ///
@@ -235,6 +235,27 @@ pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers
     for group in &mut snapshot.cgroups {
         group.label = redact_text(&group.label, ids);
     }
+
+    // Redaction can rewrite two distinct names/labels into the same text (for
+    // example `host.slice/app.service` loses `slice.` when `redact_host_subdomains`
+    // consumes `host.`), and it can reorder names by replacing their leading
+    // identifier. Re-establish the probe's invariants on the *redacted* values
+    // so exported snapshots stay unique, sorted and deterministic (R2-DATA).
+    snapshot
+        .power
+        .batteries
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    let memberships = snapshot
+        .cgroups
+        .iter()
+        .flat_map(|group| {
+            group.members.iter().map(move |key| ProcessCgroup {
+                key: *key,
+                label: group.label.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    snapshot.cgroups = group_by_cgroup(&memberships);
 }
 
 #[cfg(test)]
@@ -364,6 +385,90 @@ mod tests {
             "{snapshot:?}"
         );
         assert_eq!(snapshot.power.batteries[0].capacity_percent, Some(42));
+    }
+
+    #[test]
+    fn redaction_restores_battery_order_and_cgroup_uniqueness() {
+        use crate::model::{BatterySnapshot, BatteryState, CgroupGroup, PowerSnapshot, ProcessKey};
+
+        let ids = RedactionIdentifiers {
+            home: "",
+            user: "alice",
+            hostname: "my-host",
+        };
+        // Before redaction the battery names are sorted ("alice-" < "my-host-").
+        // After replacement they are not ("user-" > "host-"), so the post-pass
+        // must re-sort instead of trusting the probe's original order.
+        // The two `host...` labels collide once `host.` has been consumed by
+        // `redact_host_subdomains`, so grouping must be rebuilt from the
+        // redacted labels to keep one group per label with deduplicated members.
+        let mut snapshot = SystemSnapshot {
+            power: PowerSnapshot {
+                source: crate::model::PowerSource::Battery,
+                batteries: vec![
+                    BatterySnapshot {
+                        name: "alice-AAA".into(),
+                        capacity_percent: Some(30),
+                        state: BatteryState::Charging,
+                    },
+                    BatterySnapshot {
+                        name: "my-host-BAT0".into(),
+                        capacity_percent: Some(70),
+                        state: BatteryState::Discharging,
+                    },
+                ],
+            },
+            cgroups: vec![
+                CgroupGroup {
+                    label: "host.slice/app.service".into(),
+                    members: vec![ProcessKey::new(200, 20), ProcessKey::new(100, 10)],
+                },
+                CgroupGroup {
+                    label: "host/app.service".into(),
+                    members: vec![ProcessKey::new(100, 10), ProcessKey::new(300, 30)],
+                },
+                CgroupGroup {
+                    label: "z.slice/app.service".into(),
+                    members: vec![ProcessKey::new(400, 40)],
+                },
+            ],
+            ..SystemSnapshot::default()
+        };
+
+        redact_snapshot(&mut snapshot, &ids);
+        let names: Vec<_> = snapshot
+            .power
+            .batteries
+            .iter()
+            .map(|battery| battery.name.as_str())
+            .collect();
+        assert_eq!(names, ["host-BAT0", "user-AAA"]);
+        assert_eq!(
+            snapshot.power.batteries[0].capacity_percent,
+            Some(70),
+            "the battery payload must follow its re-sorted name"
+        );
+
+        let labels: Vec<_> = snapshot
+            .cgroups
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect();
+        assert_eq!(labels, ["host/app.service", "z.slice/app.service"]);
+        assert_eq!(
+            snapshot.cgroups[0].members,
+            vec![
+                ProcessKey::new(100, 10),
+                ProcessKey::new(200, 20),
+                ProcessKey::new(300, 30),
+            ],
+            "colliding groups must merge with sorted, deduplicated members"
+        );
+
+        // Re-applying redaction (as the export path does) is still a no-op.
+        let before = format!("{:?}", snapshot.cgroups);
+        redact_snapshot(&mut snapshot, &ids);
+        assert_eq!(format!("{:?}", snapshot.cgroups), before);
     }
 
     #[test]

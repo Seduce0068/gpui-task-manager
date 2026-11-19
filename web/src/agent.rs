@@ -634,19 +634,29 @@ pub fn stream_url(endpoint: &str) -> String {
 /// Only compact JSON produced by `serde_json` is accepted. Error strings are
 /// fixed (no agent text is echoed), so a malformed or hostile stream cannot
 /// inject a token or control characters into the UI or the `aria-live` mirror.
+/// A frame carries at most one `event:` field and exactly one `data:` field:
+/// SSE allows a single event type per frame, and this probe emits one compact
+/// JSON line, so a second occurrence of either field is a parse error.
 pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, String> {
     const PARSE_ERROR: &str = "SSE データの解析に失敗しました";
 
     let mut event = None;
-    let mut data = String::new();
+    let mut data = None;
     for line in frame.lines() {
         if let Some(name) = line.strip_prefix("event:") {
+            if event.is_some() {
+                return Err(PARSE_ERROR.to_string());
+            }
             event = Some(name.trim_start());
         } else if let Some(value) = line.strip_prefix("data:") {
-            if !data.is_empty() {
-                data.push('\n');
+            if data.is_some() {
+                // Decision: keep the single-line data contract. SSE would allow
+                // joining several `data:` values with '\n', but the agent emits
+                // one compact JSON document per frame; accepting more would hide
+                // a second payload and weaken the no-echo/no-injection boundary.
+                return Err(PARSE_ERROR.to_string());
             }
-            data.push_str(value.strip_prefix(' ').unwrap_or(value));
+            data = Some(value.strip_prefix(' ').unwrap_or(value));
         }
     }
     match event {
@@ -654,11 +664,11 @@ pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, Str
         Some("error") => return Err("エージェントがエラーイベントを返しました".to_string()),
         _ => return Err("不明な SSE イベントを受信しました".to_string()),
     }
-    if data.is_empty() {
-        return Err(PARSE_ERROR.to_string());
-    }
+    let data = data
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| PARSE_ERROR.to_string())?;
     let envelope: SnapshotEnvelope =
-        serde_json::from_str(&data).map_err(|_| PARSE_ERROR.to_string())?;
+        serde_json::from_str(data).map_err(|_| PARSE_ERROR.to_string())?;
     check_schema_version(envelope.schema_version).map_err(|error| error.to_string())?;
     Ok(envelope)
 }
@@ -1217,5 +1227,39 @@ mod tests {
             .expect_err("malformed data must be rejected");
         assert_eq!(malformed, "SSE データの解析に失敗しました");
         assert!(!malformed.contains("oops"));
+    }
+
+    #[test]
+    fn sse_duplicate_event_lines_are_rejected() {
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": 1,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string();
+        for frame in [
+            format!("event: snapshot\nevent: snapshot\ndata: {json}\n\n"),
+            format!("event: snapshot\nevent: error\ndata: {json}\n\n"),
+            format!("data: {json}\nevent: snapshot\nevent: snapshot\n\n"),
+        ] {
+            let error =
+                parse_sse_event_frame(&frame).expect_err("duplicate event must be rejected");
+            assert_eq!(error, "SSE データの解析に失敗しました");
+            assert!(!error.contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn sse_duplicate_data_lines_are_rejected() {
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": 1,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string();
+        let frame = format!("event: snapshot\ndata: {json}\ndata: {{\"extra\":1}}\n\n");
+        let error = parse_sse_event_frame(&frame).expect_err("duplicate data must be rejected");
+        assert_eq!(error, "SSE データの解析に失敗しました");
+        assert!(!error.contains('{'));
     }
 }

@@ -818,6 +818,14 @@ impl Dashboard {
                 Vec::new()
             }
             Command::SetFilterText(text) => {
+                // A preset replaces the entire filter, including the structural
+                // fields. As soon as the user starts a free-text search the
+                // preset no longer applies, so drop those structural conditions
+                // too; otherwise the list stays invisibly narrowed by e.g. the
+                // High CPU threshold while only the text appears to be active.
+                if self.active_preset.is_some() {
+                    self.filter = Filter::default();
+                }
                 self.filter.text = text;
                 self.active_preset = None;
                 self.recompute_visible();
@@ -2594,6 +2602,44 @@ mod tests {
                 "{command:?} changed the filter directly"
             );
         }
+    }
+
+    #[test]
+    fn typing_after_a_preset_clears_its_structural_conditions() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let (total, firefox_index) = {
+            let snapshot = dashboard.snapshot().expect("snapshot");
+            let index = snapshot
+                .processes
+                .iter()
+                .position(|process| process.name == "firefox")
+                .expect("demo firefox process");
+            assert!(
+                normalise_percent(snapshot.processes[index].cpu_percent) < PRESET_HIGH_CPU_PERCENT,
+                "firefox must be a low-CPU process for this regression test"
+            );
+            (snapshot.processes.len(), index)
+        };
+
+        // The High CPU preset hides the low-CPU firefox row via a structural
+        // condition that is not shown in the text field.
+        dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::HighCpu));
+        assert_eq!(
+            dashboard.filter().min_cpu_percent,
+            Some(PRESET_HIGH_CPU_PERCENT)
+        );
+        assert!(dashboard.visible_count() < total);
+        assert!(!dashboard.visible_indices().contains(&firefox_index));
+
+        // Typing a text query must drop the preset's CPU threshold; otherwise
+        // "firefox" stays hidden by a condition the UI no longer advertises.
+        dashboard.apply(Command::SetFilterText("firefox".to_string()));
+        assert_eq!(dashboard.active_filter_preset(), None);
+        assert_eq!(dashboard.filter().min_cpu_percent, None);
+        assert_eq!(dashboard.filter().text, "firefox");
+        assert_eq!(dashboard.visible_count(), 1);
+        assert!(dashboard.visible_indices().contains(&firefox_index));
     }
 
     // -------------------------------------------- selected process series (R1-I08)

@@ -438,17 +438,23 @@ impl SystemSnapshot {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PowerSource {
+    /// The machine is running on external power.
+    Ac,
+    /// The machine is running on a battery.
+    Battery,
     /// The platform exposes no power-supply information.
     ///
     /// This is the honest default for desktops without a battery and for every
     /// non-Linux target of the pinned `sysinfo` version, which has no battery
     /// API. It must never be rendered as "charging".
+    ///
+    /// Unknown wire values from a newer agent degrade to this variant instead
+    /// of rejecting the whole snapshot (R42 wire audit, R2-DATA). serde requires
+    /// `serde(other)` on the last variant; unit enums are serialised by name, so
+    /// declaring the default last leaves the wire representation unchanged.
     #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
-    /// The machine is running on external power.
-    Ac,
-    /// The machine is running on a battery.
-    Battery,
 }
 
 impl PowerSource {
@@ -475,9 +481,6 @@ impl PowerSource {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BatteryState {
-    /// The platform did not report a usable state.
-    #[default]
-    Unknown,
     /// The battery is charging.
     Charging,
     /// The battery is discharging.
@@ -486,6 +489,14 @@ pub enum BatteryState {
     Full,
     /// The battery is present but is not charging (for example at a threshold).
     NotCharging,
+    /// The platform did not report a usable state.
+    ///
+    /// Unknown wire values degrade here rather than rejecting the snapshot
+    /// (R42 wire audit, R2-DATA); serde requires `serde(other)` on the last
+    /// variant. Serialisation is by variant name, so the wire format is stable.
+    #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 impl BatteryState {
@@ -572,26 +583,36 @@ impl PowerSnapshot {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WindowVisibility {
-    /// The window is on screen and the user is expected to read it.
-    #[default]
-    Visible,
     /// The window is minimised, on another workspace or otherwise hidden.
     Hidden,
+    /// The window is on screen and the user is expected to read it.
+    ///
+    /// Unknown wire values degrade here (R42 wire audit, R2-DATA). serde
+    /// requires `serde(other)` on the last variant; the wire spelling stays the
+    /// same because unit variants are serialised by name.
+    #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
+    Visible,
 }
 
 /// Which sampling policy produced a [`SamplingPlan`] (R1-I11).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SamplingProfile {
-    /// Normal interactive cadence (mains power, visible window).
-    #[default]
-    Interactive,
     /// Reduced cadence while running on battery.
     Battery,
     /// Slow cadence when the battery is low.
     BatterySaver,
     /// Slow cadence while the window is hidden.
     Background,
+    /// Normal interactive cadence (mains power, visible window).
+    ///
+    /// Unknown wire values degrade here rather than rejecting the snapshot
+    /// (R42 wire audit, R2-DATA). serde requires `serde(other)` on the last
+    /// variant; serialisation by name keeps the wire representation stable.
+    #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
+    Interactive,
 }
 
 impl SamplingProfile {
@@ -794,6 +815,60 @@ mod tests {
         assert_eq!(status, ProcessStatus::Unknown);
         let known: ProcessStatus = serde_json::from_str("\"Running\"").expect("known status");
         assert_eq!(known, ProcessStatus::Running);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn unknown_wire_enum_values_degrade_without_rejecting_the_snapshot() {
+        // R42 wire audit / R2-DATA: every unit wire enum must follow the
+        // ProcessStatus policy so a newer agent cannot invalidate a whole
+        // snapshot by adding one variant.
+        let mut snapshot = SystemSnapshot {
+            power: PowerSnapshot {
+                source: PowerSource::Battery,
+                batteries: vec![BatterySnapshot {
+                    name: "BAT0".into(),
+                    capacity_percent: Some(50),
+                    state: BatteryState::Discharging,
+                }],
+            },
+            sampling: SamplingPlan {
+                interval_ms: BATTERY_INTERVAL_MS,
+                profile: SamplingProfile::Battery,
+            },
+            ..SystemSnapshot::default()
+        };
+        snapshot.processes.push(ProcessSnapshot {
+            status: ProcessStatus::Running,
+            ..ProcessSnapshot::default()
+        });
+
+        // Patch the exact wire payload rather than hand-writing the envelope:
+        // this keeps the test in sync with the model's field set.
+        let mut wire = serde_json::to_value(&snapshot).expect("snapshot must serialise");
+        wire["power"]["source"] = serde_json::json!("FutureSource");
+        wire["power"]["batteries"][0]["state"] = serde_json::json!("FutureState");
+        wire["sampling"]["profile"] = serde_json::json!("FutureProfile");
+        wire["processes"][0]["status"] = serde_json::json!("FutureStatus");
+
+        let restored: SystemSnapshot = serde_json::from_value(wire)
+            .expect("unknown enum values must not reject the whole snapshot");
+        assert_eq!(restored.power.source, PowerSource::Unknown);
+        assert_eq!(restored.power.batteries[0].state, BatteryState::Unknown);
+        assert_eq!(restored.sampling.profile, SamplingProfile::Interactive);
+        assert_eq!(restored.processes[0].status, ProcessStatus::Unknown);
+        // Non-enum data in the same snapshot survives the degradation.
+        assert_eq!(restored.power.batteries[0].capacity_percent, Some(50));
+        assert_eq!(restored.sampling.interval_ms, BATTERY_INTERVAL_MS);
+
+        // WindowVisibility is shell-owned and not a snapshot field, so exercise
+        // its fallthrough directly.
+        let visibility: WindowVisibility = serde_json::from_str("\"FutureVisibility\"")
+            .expect("unknown visibility must not fail deserialisation");
+        assert_eq!(visibility, WindowVisibility::Visible);
+        // Known values still deserialise to their exact variants.
+        let known: SamplingProfile = serde_json::from_str("\"Background\"").expect("known profile");
+        assert_eq!(known, SamplingProfile::Background);
     }
 
     #[test]

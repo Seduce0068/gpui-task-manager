@@ -468,8 +468,11 @@ impl NativeProbe {
     /// directly with `std::fs` (read-only, no new dependency and no `unsafe`).
     /// On every other target the result is [`PowerSource::Unknown`] with no
     /// batteries: an honest "unavailable" instead of an invented AC/battery
-    /// claim. A probe failure (missing `/sys/class/power_supply`) is likewise
-    /// reported as unknown, never as an error that would abort sampling.
+    /// claim. A probe failure (missing `/sys/class/power_supply`, or an
+    /// unreadable/unparsable `online` attribute on a mains supply) is likewise
+    /// reported as [`PowerSource::Unknown`] unless a battery actually reports
+    /// `Discharging`: a failed `online` read must never be mistaken for
+    /// "mains offline" and therefore for battery operation (R2-S5).
     pub fn power_snapshot(&self) -> PowerSnapshot {
         platform_power_snapshot()
     }
@@ -504,6 +507,71 @@ impl NativeProbe {
     }
 }
 
+/// Result of probing the mains `online` sysfs attribute (R2-S5).
+///
+/// [`AcOnlineProbe::Unavailable`] is deliberately distinct from
+/// [`AcOnlineProbe::Offline`]: a failed read says nothing about the power
+/// source, while a readable `0` is real evidence that mains power is absent.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcOnlineProbe {
+    /// At least one mains supply reported a readable value greater than zero.
+    Online,
+    /// Every readable mains supply reported `0`, and none failed to read.
+    Offline,
+    /// No usable reading: no supply, no readable value, or at least one failed
+    /// read. Must not be treated as "mains offline".
+    Unavailable,
+}
+
+/// Aggregates one `online` reading per enumerated mains supply (R2-S5).
+///
+/// A positive reading is conclusive; a failure downgrades an otherwise all-zero
+/// result to [`AcOnlineProbe::Unavailable`] so a partial sysfs failure cannot be
+/// read as battery operation.
+#[cfg(any(target_os = "linux", test))]
+fn ac_online_from_readings(readings: impl IntoIterator<Item = Option<u64>>) -> AcOnlineProbe {
+    let mut positive = false;
+    let mut zero = false;
+    let mut unreadable = false;
+    for reading in readings {
+        match reading {
+            Some(value) if value > 0 => positive = true,
+            Some(_) => zero = true,
+            None => unreadable = true,
+        }
+    }
+    if positive {
+        AcOnlineProbe::Online
+    } else if zero && !unreadable {
+        AcOnlineProbe::Offline
+    } else {
+        AcOnlineProbe::Unavailable
+    }
+}
+
+/// Derives the aggregate power source from the mains probe and battery states.
+///
+/// A `Discharging` state is positive evidence of battery operation and is the
+/// only battery signal used when a mains read failed. `Charging`, `Full`,
+/// `NotCharging` and `Unknown` states never justify [`PowerSource::Battery`] on
+/// their own: with an unavailable mains read and no discharging battery the
+/// result is [`PowerSource::Unknown`] (R2-S5).
+#[cfg(any(target_os = "linux", test))]
+fn power_source_from_probes(ac: AcOnlineProbe, batteries: &[BatterySnapshot]) -> PowerSource {
+    let discharging = batteries
+        .iter()
+        .any(|battery| battery.state == BatteryState::Discharging);
+    if discharging {
+        return PowerSource::Battery;
+    }
+    match ac {
+        AcOnlineProbe::Online => PowerSource::Ac,
+        AcOnlineProbe::Offline if !batteries.is_empty() => PowerSource::Battery,
+        AcOnlineProbe::Offline | AcOnlineProbe::Unavailable => PowerSource::Unknown,
+    }
+}
+
 /// Reads the power supplies exposed by the Linux sysfs (R1-I10).
 #[cfg(target_os = "linux")]
 fn platform_power_snapshot() -> PowerSnapshot {
@@ -513,7 +581,7 @@ fn platform_power_snapshot() -> PowerSnapshot {
     };
 
     let mut batteries = Vec::new();
-    let mut ac_online = false;
+    let mut ac_readings = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(kind) = std::fs::read_to_string(path.join("type")) else {
@@ -537,23 +605,18 @@ fn platform_power_snapshot() -> PowerSnapshot {
                 });
             }
             "Mains" | "AC" => {
-                ac_online |= read_sysfs_u64(&path.join("online")).unwrap_or(0) > 0;
+                // Keep read success and failure separate: `None` means
+                // "indeterminate", not the numeric zero that used to be read
+                // as "mains offline" and hence as battery operation (R2-S5).
+                ac_readings.push(read_sysfs_u64(&path.join("online")));
             }
             _ => {}
         }
     }
     batteries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
 
-    let discharging = batteries
-        .iter()
-        .any(|battery| battery.state == BatteryState::Discharging);
-    let source = if discharging || (!ac_online && !batteries.is_empty()) {
-        PowerSource::Battery
-    } else if ac_online || !batteries.is_empty() {
-        PowerSource::Ac
-    } else {
-        PowerSource::Unknown
-    };
+    let ac_online = ac_online_from_readings(ac_readings);
+    let source = power_source_from_probes(ac_online, &batteries);
     PowerSnapshot { source, batteries }
 }
 
@@ -1902,6 +1965,79 @@ mod tests {
         ] {
             assert_eq!(battery_state_from_status(raw), expected, "{raw:?}");
         }
+    }
+
+    fn battery(name: &str, state: BatteryState) -> BatterySnapshot {
+        BatterySnapshot {
+            name: name.to_string(),
+            capacity_percent: Some(80),
+            state,
+        }
+    }
+
+    #[test]
+    fn ac_online_read_failure_is_distinguished_from_a_zero_reading() {
+        assert_eq!(
+            ac_online_from_readings([Some(1), None]),
+            AcOnlineProbe::Online
+        );
+        assert_eq!(
+            ac_online_from_readings([Some(0), None]),
+            AcOnlineProbe::Unavailable
+        );
+        assert_eq!(
+            ac_online_from_readings([None, Some(0)]),
+            AcOnlineProbe::Unavailable
+        );
+        assert_eq!(ac_online_from_readings([Some(0)]), AcOnlineProbe::Offline);
+        assert_eq!(ac_online_from_readings([]), AcOnlineProbe::Unavailable);
+    }
+
+    #[test]
+    fn unreadable_ac_online_never_claims_battery_operation() {
+        let batteries = vec![
+            battery("BAT0", BatteryState::Charging),
+            battery("BAT1", BatteryState::Full),
+            battery("BAT2", BatteryState::NotCharging),
+            battery("BAT3", BatteryState::Unknown),
+        ];
+        let source = power_source_from_probes(AcOnlineProbe::Unavailable, &batteries);
+        assert_eq!(source, PowerSource::Unknown);
+        let snapshot = PowerSnapshot { source, batteries };
+        assert!(!snapshot.on_battery());
+    }
+
+    #[test]
+    fn unreadable_ac_online_with_discharging_battery_reports_battery() {
+        let batteries = vec![
+            battery("BAT0", BatteryState::Charging),
+            battery("BAT1", BatteryState::Discharging),
+        ];
+        let source = power_source_from_probes(AcOnlineProbe::Unavailable, &batteries);
+        assert_eq!(source, PowerSource::Battery);
+        let snapshot = PowerSnapshot { source, batteries };
+        assert!(snapshot.on_battery());
+    }
+
+    #[test]
+    fn readable_ac_online_values_keep_the_existing_source_contract() {
+        let batteries = || vec![battery("BAT0", BatteryState::Charging)];
+        assert_eq!(
+            power_source_from_probes(AcOnlineProbe::Online, &batteries()),
+            PowerSource::Ac
+        );
+        assert_eq!(
+            power_source_from_probes(AcOnlineProbe::Offline, &batteries()),
+            PowerSource::Battery
+        );
+        assert_eq!(
+            power_source_from_probes(AcOnlineProbe::Offline, &[]),
+            PowerSource::Unknown
+        );
+        assert_eq!(
+            power_source_from_probes(AcOnlineProbe::Unavailable, &[]),
+            PowerSource::Unknown
+        );
     }
 
     #[test]
