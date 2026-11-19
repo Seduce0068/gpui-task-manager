@@ -4,8 +4,9 @@
 //! system directly:
 //!
 //! - [`sysinfo`] 0.40 collects CPU, memory, process, network and disk data.
-//! - `rustix` sends POSIX signals with its safe API on Unix, so the crate
-//!   stays free of `unsafe` code.
+//! - `rustix` sends POSIX signals with its safe API on Unix and reads the
+//!   filesystem's `f_bfree` counter through its safe `fs::statvfs` wrapper, so
+//!   the crate stays free of `unsafe` code.
 //!
 //! # Platform support
 //!
@@ -69,6 +70,7 @@
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -424,7 +426,14 @@ impl NativeProbe {
                     .filter(|disk| disk.total_space() > 0)
                     .map(|disk| {
                         let total = disk.total_space();
-                        let (available, used) = disk_usage_values(total, disk.available_space());
+                        let available_space = disk.available_space();
+                        // R2X-D5B: sysinfo は f_bavail ベースの available と
+                        // f_blocks ベースの total しか公開しないため、rustix の
+                        // safe statvfs API で f_bfree を読み、予約ブロックを
+                        // used に算入しない真の使用量を導出する（Unix のみ）。
+                        let true_used = fbfree_used_bytes(disk.mount_point());
+                        let (available, used) =
+                            disk_usage_values(total, available_space, true_used);
                         DiskUsageSnapshot {
                             mount_point: sanitize_display(
                                 &disk.mount_point().to_string_lossy(),
@@ -443,24 +452,73 @@ impl NativeProbe {
     }
 }
 
-/// Derives the `(available, used)` byte pair for one filesystem (R2X-D5).
+/// Reads the true, f_bfree-based used byte count for `mount_point` (R2X-D5B).
 ///
-/// Neither sysinfo 0.40.3 nor 0.40.4 exposes `Disk::used_space()`, and the
-/// pinned version only publishes `total_space()` and `available_space()`.
-/// Reading `statvfs.f_bfree` (which excludes filesystem-reserved blocks from
-/// `used`) would need a new dependency and `unsafe` FFI, so this is the
-/// closest equivalent derivable within the current dependency set. The
-/// existing contract is preserved: `available` is never reported above
-/// `total`, and `used` is the remainder.
+/// `sysinfo` 0.40.3 only reads `statvfs.f_bavail` and `f_blocks`, so its
+/// `available_space()` excludes filesystem-reserved blocks while its
+/// `total_space()` includes them; deriving `used = total - available` therefore
+/// counts reserved blocks as used and overstates utilisation. `rustix` exposes
+/// a **safe** `statvfs` wrapper with the `f_bfree` field, already a direct
+/// dependency (only the `fs` feature was added, no new crate and no `unsafe`),
+/// so the real used value `(f_blocks - f_bfree) * f_frsize` is available.
 ///
-/// `checked_sub` makes an anomalous `available > total` reading explicit:
-/// the filesystem is then reported as entirely free (`total`, `0`) rather
-/// than silently saturating inside the subtraction.
-fn disk_usage_values(total_space: u64, available_space: u64) -> (u64, u64) {
-    match total_space.checked_sub(available_space) {
-        Some(used) => (available_space, used),
-        None => (total_space, 0),
+/// Returns `None` when `statvfs` is unavailable (Windows has no POSIX statvfs)
+/// or the syscall fails, so the caller falls back to the legacy derivation.
+fn fbfree_used_bytes(mount_point: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let stat = rustix::fs::statvfs(mount_point).ok()?;
+        Some(used_from_statvfs_counters(
+            stat.f_blocks,
+            stat.f_bfree,
+            stat.f_frsize,
+        ))
     }
+    #[cfg(not(unix))]
+    {
+        let _ = mount_point;
+        None
+    }
+}
+
+/// Pure f_bfree used formula: `(f_blocks - f_bfree) * f_frsize` (R2X-D5B).
+///
+/// Both operations saturate: an inconsistent statvfs reading can never wrap.
+#[cfg(unix)]
+fn used_from_statvfs_counters(f_blocks: u64, f_bfree: u64, f_frsize: u64) -> u64 {
+    f_blocks.saturating_sub(f_bfree).saturating_mul(f_frsize)
+}
+
+/// Derives the `(available, used)` byte pair for one filesystem (R2X-D5/D5B).
+///
+/// `total_space` and `available_space` come from sysinfo (`f_blocks * f_frsize`
+/// and `f_bavail * f_frsize`); `available` is deliberately left on that
+/// f_bavail basis. `true_used`, when present, is the f_bfree-based byte count
+/// read via rustix's safe `statvfs` wrapper, which excludes reserved blocks.
+///
+/// Safety contract (preserved for redact/export/UI consumers):
+/// - `available <= total` and `used <= total`, so `used_percent()` stays in
+///   range and no arithmetic wraps.
+/// - `available + used <= total`. With reserved blocks the strict equality
+///   `available + used == total` no longer holds: the gap is exactly the
+///   filesystem-reserved space, which is neither used nor available to
+///   unprivileged users (`df` reports the same three distinct quantities).
+///   Equality is retained for the fallback path and for filesystems without
+///   reserved blocks.
+///
+/// `saturating_*` makes an anomalous `available > total` reading explicit: the
+/// filesystem is then reported as entirely free (`total`, `0`) rather than
+/// silently wrapping inside the subtraction.
+fn disk_usage_values(total_space: u64, available_space: u64, true_used: Option<u64>) -> (u64, u64) {
+    let available = available_space.min(total_space);
+    let free_remainder = total_space.saturating_sub(available);
+    let used = match true_used {
+        // Clamp to the non-reserved remainder as well: a statvfs read taken a
+        // moment apart from sysinfo's must never push `used` above that bound.
+        Some(bytes) => bytes.min(free_remainder),
+        None => free_remainder,
+    };
+    (available, used)
 }
 
 /// Orders disks for display: largest capacity first, then by mount point.
@@ -1313,23 +1371,23 @@ mod tests {
         assert_eq!(order, vec!["/a", "/m", "/z"]);
     }
 
-    /// R2X-D5 regression: with no `Disk::used_space()` in the pinned sysinfo,
-    /// the equivalent value must be derived from `total` and `available`
+    /// R2X-D5 regression: the fallback path (no f_bfree reading) must keep the
+    /// equivalent of `Disk::used_space()`, derived from `total` and `available`
     /// without wrapping, even at the u64 boundaries.
     #[test]
     fn disk_usage_values_match_the_used_space_equivalent() {
         let total = 1_099_511_627_776u64; // 1 TiB
         let available = 429_496_729_600u64; // 400 GiB
         assert_eq!(
-            disk_usage_values(total, available),
+            disk_usage_values(total, available, None),
             (available, total - available)
         );
 
-        assert_eq!(disk_usage_values(1_024, 0), (0, 1_024));
-        assert_eq!(disk_usage_values(1_024, 1_024), (1_024, 0));
-        assert_eq!(disk_usage_values(0, 0), (0, 0));
-        assert_eq!(disk_usage_values(u64::MAX, 0), (0, u64::MAX));
-        assert_eq!(disk_usage_values(u64::MAX, u64::MAX), (u64::MAX, 0));
+        assert_eq!(disk_usage_values(1_024, 0, None), (0, 1_024));
+        assert_eq!(disk_usage_values(1_024, 1_024, None), (1_024, 0));
+        assert_eq!(disk_usage_values(0, 0, None), (0, 0));
+        assert_eq!(disk_usage_values(u64::MAX, 0, None), (0, u64::MAX));
+        assert_eq!(disk_usage_values(u64::MAX, u64::MAX, None), (u64::MAX, 0));
     }
 
     /// R2X-D5 regression: an inconsistent collector reading must be clamped
@@ -1337,13 +1395,14 @@ mod tests {
     /// `saturating_sub` outcome while making the check explicit.
     #[test]
     fn disk_usage_values_clamp_available_above_total() {
-        assert_eq!(disk_usage_values(1_024, 1_025), (1_024, 0));
-        assert_eq!(disk_usage_values(100, u64::MAX), (100, 0));
-        assert_eq!(disk_usage_values(0, u64::MAX), (0, 0));
+        assert_eq!(disk_usage_values(1_024, 1_025, None), (1_024, 0));
+        assert_eq!(disk_usage_values(100, u64::MAX, None), (100, 0));
+        assert_eq!(disk_usage_values(0, u64::MAX, None), (0, 0));
     }
 
-    /// R2X-D5 regression: the three snapshot fields must stay consistent for
-    /// every input, so `used_percent()` can rely on `used <= total`.
+    /// R2X-D5 regression: on the fallback path the three snapshot fields keep
+    /// the strict `available + used == total` equality for every input, so
+    /// `used_percent()` can rely on `used <= total`.
     #[test]
     fn disk_usage_values_keep_the_total_contract() {
         for (total, reported) in [
@@ -1355,7 +1414,7 @@ mod tests {
             (u64::MAX, u64::MAX - 1),
             (u64::MAX, u64::MAX),
         ] {
-            let (available, used) = disk_usage_values(total, reported);
+            let (available, used) = disk_usage_values(total, reported, None);
             assert!(
                 available <= total,
                 "available above total for {total}/{reported}"
@@ -1369,22 +1428,133 @@ mod tests {
         }
     }
 
-    /// R2X-D5 regression: the derived values must survive the real sampling
-    /// path, not just the pure helper.
+    /// R2X-D5B regression: the pure formula uses `f_bfree`, not `f_bavail`, so
+    /// filesystem-reserved blocks are excluded from the `used` value.
+    #[cfg(unix)]
     #[test]
-    fn sampled_disks_keep_the_total_available_used_invariant() {
+    fn fbfree_used_formula_excludes_reserved_blocks() {
+        // f_blocks = 1000, f_bfree = 800, f_bavail = 600, f_frsize = 4096.
+        // 200 blocks are reserved: true used is 200 * 4096, not 400 * 4096.
+        let (f_blocks, f_bfree, f_bavail, frsize) = (1_000u64, 800u64, 600u64, 4_096u64);
+        let true_used = used_from_statvfs_counters(f_blocks, f_bfree, frsize);
+        assert_eq!(true_used, (f_blocks - f_bfree) * frsize);
+        assert_eq!(true_used, 819_200);
+        assert!(true_used < (f_blocks - f_bavail) * frsize);
+
+        // Saturating arithmetic at the boundaries: no wrap.
+        assert_eq!(used_from_statvfs_counters(0, 1, u64::MAX), 0);
+        assert_eq!(used_from_statvfs_counters(u64::MAX, 0, u64::MAX), u64::MAX);
+    }
+
+    /// R2X-D5B regression: a true f_bfree reading wins over the legacy
+    /// `total - available` derivation, while `available` stays f_bavail-based.
+    #[test]
+    fn disk_usage_values_prefers_fbfree_used() {
+        let total = 1_000u64;
+        let available = 600u64; // f_bavail * f_frsize
+        let true_used = 200u64; // (f_blocks - f_bfree) * f_frsize
+        assert_eq!(
+            disk_usage_values(total, available, Some(true_used)),
+            (available, true_used)
+        );
+        // The reserved-block gap is neither used nor available (as in `df`).
+        assert!(available + true_used < total);
+        // No f_bfree reading (Windows / statvfs failure) keeps the old result.
+        assert_eq!(
+            disk_usage_values(total, available, None),
+            (available, total - available)
+        );
+    }
+
+    /// R2X-D5B regression: an inconsistent statvfs read must never push used
+    /// above the non-reserved remainder, even at the u64 boundaries.
+    #[test]
+    fn disk_usage_values_clamps_fbfree_above_the_remainder() {
+        assert_eq!(disk_usage_values(1_000, 600, Some(1_000)), (600, 400));
+        assert_eq!(disk_usage_values(1_000, 600, Some(u64::MAX)), (600, 400));
+        assert_eq!(disk_usage_values(1_000, 1_001, Some(999)), (1_000, 0));
+        assert_eq!(
+            disk_usage_values(u64::MAX, u64::MAX, Some(u64::MAX)),
+            (u64::MAX, 0)
+        );
+    }
+
+    /// R2X-D5B regression: every input keeps the safety invariants that
+    /// `used_percent()`, redact and export rely on.
+    #[test]
+    fn disk_usage_values_fbfree_keeps_safety_bounds() {
+        for (total, available, true_used) in [
+            (0, 0, Some(0)),
+            (1, 0, Some(1)),
+            (1_000, 999, Some(1)),
+            (1_000, 1_001, Some(u64::MAX)),
+            (u64::MAX, 0, Some(u64::MAX)),
+            (u64::MAX, u64::MAX - 1, Some(1)),
+        ] {
+            let (reported_available, used) = disk_usage_values(total, available, true_used);
+            assert!(
+                reported_available <= total,
+                "available above total for {total}/{available}/{true_used:?}"
+            );
+            assert!(
+                used <= total,
+                "used above total for {total}/{available}/{true_used:?}"
+            );
+            assert!(
+                reported_available
+                    .checked_add(used)
+                    .is_some_and(|sum| sum <= total),
+                "available + used exceeded total for {total}/{available}/{true_used:?}"
+            );
+        }
+    }
+
+    /// R2X-D5B Runtime Proof: rustix's safe statvfs exposes `f_bfree`, and the
+    /// helper derives used from it. Reserved blocks (when present) are neither
+    /// used nor available, so the gap below `total - available` is observable.
+    #[cfg(unix)]
+    #[test]
+    fn statvfs_derived_used_excludes_reserved_blocks_on_the_host() {
+        let stat = rustix::fs::statvfs(Path::new("/")).expect("statvfs /");
+        let derived = used_from_statvfs_counters(stat.f_blocks, stat.f_bfree, stat.f_frsize);
+        let total = stat.f_blocks.saturating_mul(stat.f_frsize);
+        let available = stat.f_bavail.saturating_mul(stat.f_frsize);
+        assert!(derived <= total);
+        assert!(derived <= total.saturating_sub(available));
+        if stat.f_bfree > stat.f_bavail {
+            assert!(
+                derived < total.saturating_sub(available),
+                "reserved blocks must not be counted as used"
+            );
+        }
+        assert_eq!(fbfree_used_bytes(Path::new("/")), Some(derived));
+    }
+
+    /// R2X-D5B regression: the derived values must survive the real sampling
+    /// path. With reserved blocks the strict equality becomes an inequality:
+    /// `available + used <= total`, with the gap being reserved space.
+    #[test]
+    fn sampled_disks_keep_the_safe_available_used_contract() {
         let mut probe = NativeProbe::new().expect("native probe");
         let snapshot = probe.sample().expect("sample");
+        assert!(
+            !snapshot.disks.is_empty(),
+            "the host must expose at least one disk"
+        );
         for disk in &snapshot.disks {
             assert!(
                 disk.available_bytes <= disk.total_bytes,
                 "{} reported available above total",
                 disk.mount_point
             );
-            assert_eq!(
-                disk.used_bytes,
-                disk.total_bytes - disk.available_bytes,
-                "{} has an inconsistent used value",
+            assert!(
+                disk.used_bytes <= disk.total_bytes - disk.available_bytes,
+                "{} counted reserved blocks as used",
+                disk.mount_point
+            );
+            assert!(
+                disk.used_percent() <= 100.0,
+                "{} reported an out-of-range utilisation",
                 disk.mount_point
             );
         }

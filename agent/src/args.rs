@@ -57,8 +57,8 @@ pub const USAGE: &str = concat!(
     "  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)\n\n",
     "認証:\n",
     "  Authorization: Bearer <token>（クエリ文字列のトークンは拒否）\n",
-    "  トークン未指定時は起動時に生成しますが、値はログに出力しません。\n",
-    "  接続用トークンを制御するには --token-file または TM_AGENT_TOKEN を使ってください。\n",
+    "  トークン未指定時は起動時に生成し、0600 のファイルに保存して場所を stderr で案内します（値はログに出力しません）。\n",
+    "  再起動時は同じファイルを再利用します。明示的に制御するには --token-file または TM_AGENT_TOKEN を使ってください。\n",
     "  推奨順: --token-file（argv/environ を避けられる）> TM_AGENT_TOKEN（/proc/<pid>/environ に残存し得る）\n",
     "          > --token（/proc/<pid>/cmdline が既定で同一ホストの全ユーザーから読める）。\n",
     "  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。\n\n",
@@ -407,8 +407,11 @@ mod tests {
         // Both binaries print `<binary> <version>` as the first help line and
         // use the same section order and exit-code classification.
         assert!(USAGE.starts_with(concat!("tm-agent ", env!("CARGO_PKG_VERSION"))));
-        // An auto-generated token must never be advertised as stderr output.
+        // An auto-generated token must never be advertised as stderr output;
+        // only the location of its 0600 file is announced there.
         assert!(USAGE.contains("値はログに出力しません"));
+        assert!(USAGE.contains("0600 のファイルに保存して場所を stderr で案内します"));
+        assert!(USAGE.contains("再起動時は同じファイルを再利用します"));
         assert!(!USAGE.contains("stderr に 1 回だけ表示"));
         assert!(!USAGE.contains("argv は他プロセスから見える"));
         for fragment in [
