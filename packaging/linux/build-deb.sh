@@ -24,6 +24,24 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 package="gpui-task-manager"
 release="1"
+
+# Reproducible .deb: dpkg-deb (and the tar/gzip layers it drives) embed
+# timestamps, so pin SOURCE_DATE_EPOCH to make identical inputs byte-identical.
+# Precedence: an explicitly provided value always wins; otherwise derive the
+# last commit time when git is usable; otherwise use a fixed epoch so source
+# tarballs and git-less CI still build reproducibly.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  source_date_epoch=""
+  if command -v git >/dev/null 2>&1; then
+    source_date_epoch="$(git -C "${repo_root}" log -1 --format=%ct 2>/dev/null || true)"
+  fi
+  case "${source_date_epoch}" in
+  '' | *[!0-9]*) source_date_epoch="1700000000" ;;
+  esac
+  SOURCE_DATE_EPOCH="${source_date_epoch}"
+fi
+export SOURCE_DATE_EPOCH
+
 # SECURITY.md routes reports through GitHub Security Advisory only, so the
 # default carries no (fabricated) mail address. Distribution builds may set
 # DEB_MAINTAINER to a real maintainer and contact address.

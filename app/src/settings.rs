@@ -683,6 +683,12 @@ mod tests {
     use super::*;
     use tm_core::{SortDirection, SortKey, SortSpec};
 
+    // Tests that touch the process-wide PENDING_NOTICE / LAST_LOADED must not
+    // interleave: the test runner is parallel and these globals must not race.
+    // Keep a dedicated lock (not SAVE_LOCK) so a test holding it may still call
+    // functions that take SAVE_LOCK without deadlocking.
+    static NOTICE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn backup_candidate_never_returns_an_existing_path() {
         let stem = "/cfg/settings.json.corrupt-0000";
@@ -1040,6 +1046,7 @@ mod tests {
 
     #[test]
     fn save_rereads_the_destination_before_merging() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
         // A parallel instance writes a newer schema and extra fields after our
         // load. Saving must merge against that fresh value, not the stale raw
         // captured at load time (C2-SETTINGS).
@@ -1078,6 +1085,7 @@ mod tests {
 
     #[test]
     fn save_computes_max_version_against_the_latest_stored_value() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
         // The stale snapshot has a higher version than the destination now has.
         // `max(stored, current)` must use the freshly read `stored`, so the old
         // in-memory value is not resurrected (C2-SETTINGS).
@@ -1109,6 +1117,7 @@ mod tests {
     fn corrupt_load_notice_is_redacted_drained_and_cleared() {
         // All assertions about the process-wide notice live in one test: the
         // test runner is parallel and these globals must not race.
+        let _guard = lock(&NOTICE_TEST_LOCK);
         let path = temporary_path("notice");
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(&path, "{ not json").expect("write corrupt file");

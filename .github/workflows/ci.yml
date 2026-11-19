@@ -338,6 +338,28 @@ jobs:
           # gates の locked: true と同じロック整合性を wasm ビルドにも適用する。
           trunk build --release --locked
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
+      # R2 ビルド再現性ゲート。Trunk 0.22.x の modulepreload 順序は
+      # HashSet 由来で非決定的なので、Trunk.toml の post_build フックで
+      # パス順へ正規化している。ここで同一入力の 2 回ビルドを比較し、
+      # 正規化が効かなくなった回帰を公開前に検出する。
+      - name: Gate - deterministic dist (double build SHA256)
+        run: |
+          set -euo pipefail
+          cd web
+          hash_dist() {
+            # 内容と相対パスをまとめてハッシュし、順序はパス順に固定する。
+            find dist -type f -print0 | sort -z | xargs -0 -r sha256sum
+          }
+          hash_dist > /tmp/web-dist-sha256-first.txt
+          # 2 回目も 1 回目と同じ手順（ライセンスコピーを含む）でビルドする。
+          trunk build --release --locked
+          cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
+          hash_dist > /tmp/web-dist-sha256-second.txt
+          if ! diff -u /tmp/web-dist-sha256-first.txt /tmp/web-dist-sha256-second.txt; then
+            echo 'web-dist: two consecutive builds produced different output' >&2
+            exit 1
+          fi
+          echo 'web-dist: OK (two consecutive builds are byte-identical)'
       # 公開成果物（wasm / JS）の開示ゲート。release-linux と同じ方針で、
       # remap をすり抜ける内部 worktree パスを検知する。一致行は出力しない。
       - name: Gate - no development paths in web dist
