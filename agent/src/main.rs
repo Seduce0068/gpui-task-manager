@@ -1508,7 +1508,7 @@ fn handle_stream_connection(
         let warmed = if state.warmed_up.load(Ordering::Acquire) {
             true
         } else {
-            // Scope the guard: the 250 ms warm-up sleep below must not hold the
+            // Scope the guard: the 250 ms warm-up wait below must not hold the
             // probe mutex, or a streaming client would block ordinary samples.
             let sample = {
                 let mut guard = match state.probe.lock() {
@@ -1525,7 +1525,24 @@ fn handle_stream_connection(
                         err.into_inner()
                     }
                 };
-                guard.sample()
+                let sample = guard.sample();
+                // Claim completion *inside* the probe mutex, immediately after
+                // the discarded sample and before the inter-frame wait. The
+                // snapshot path checks this same flag while holding that mutex;
+                // storing only after the 250 ms wait used to leave a window in
+                // which a concurrent `/api/v1/snapshot` saw `false` and took a
+                // second discarded sample (warm-up consumed twice).
+                //
+                // A one-shot `Once`/CAS claim would also serialise both callers,
+                // but it needs extra shared state and, unlike this flag, cannot
+                // retry after a failed sample (the existing `Err` branch below
+                // leaves `warmed_up` false on purpose). Storing under the already
+                // held mutex keeps that retry contract and the "never sleep
+                // while holding the probe" rule unchanged.
+                if sample.is_ok() {
+                    state.warmed_up.store(true, Ordering::Release);
+                }
+                sample
             };
             match sample {
                 Ok(_) => {
@@ -1535,7 +1552,6 @@ fn handle_stream_connection(
                     ) {
                         return Ok(());
                     }
-                    state.warmed_up.store(true, Ordering::Release);
                     true
                 }
                 Err(err) => {
@@ -1703,10 +1719,13 @@ fn metrics_response(
     active: &AtomicUsize,
     streams: &AtomicUsize,
 ) -> http::Response {
-    let body = metrics.render_prometheus(
-        active.load(Ordering::Acquire),
-        streams.load(Ordering::Acquire),
-    );
+    // `spawn_connection` admits every connection — including this scrape — into
+    // `active` before routing, so subtract our own slot to report *other*
+    // connections only. `saturating_sub` keeps direct callers with a zero
+    // counter (e.g. unit tests) at the natural idle baseline of 0 instead of
+    // wrapping to `usize::MAX`.
+    let other_connections = active.load(Ordering::Acquire).saturating_sub(1);
+    let body = metrics.render_prometheus(other_connections, streams.load(Ordering::Acquire));
     let mut response = http::Response::json(200, "OK", body);
     response.content_type = "text/plain; version=0.0.4; charset=utf-8";
     response
@@ -3030,6 +3049,10 @@ mod tests {
     struct CountingProbe {
         inner: DemoProbe,
         calls: Arc<AtomicUsize>,
+        /// One-shot handshake for race tests: the first sample signals the test
+        /// and then waits for a release, so the competing request is scheduled
+        /// deterministically inside the warm-up window.
+        first_sample: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     }
 
     impl SystemProbe for CountingProbe {
@@ -3038,6 +3061,12 @@ mod tests {
         }
         fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
             self.calls.fetch_add(1, Ordering::AcqRel);
+            if let Some((signal, release)) = self.first_sample.take() {
+                let _ = signal.send(());
+                // Bounded so a failed assertion in the test cannot hang the
+                // worker (and therefore the whole suite) forever.
+                let _ = release.recv_timeout(TEST_JOIN_TIMEOUT);
+            }
             self.inner.sample()
         }
     }
@@ -3049,6 +3078,7 @@ mod tests {
             Box::new(CountingProbe {
                 inner: DemoProbe::new(),
                 calls: Arc::clone(&calls),
+                first_sample: None,
             }),
             TEST_TOKEN,
             false,
@@ -3107,6 +3137,7 @@ mod tests {
             Box::new(CountingProbe {
                 inner: DemoProbe::new(),
                 calls: Arc::clone(&calls),
+                first_sample: None,
             }),
             TEST_TOKEN,
             false,
@@ -3145,6 +3176,122 @@ mod tests {
 
         // One discarded warm-up sample plus one published sample per request.
         assert_eq!(calls.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn sse_and_snapshot_share_one_warmup_sample() {
+        // Reproduces the real-probe race: the SSE path takes the discarded
+        // sample under the probe mutex but used to publish `warmed_up` only
+        // after a 250 ms wait *outside* that mutex. A snapshot arriving in the
+        // window consumed a second discarded sample. The probe handshake below
+        // places the competing request deterministically inside that window.
+        const TEST_INTERVAL: Duration = Duration::from_millis(20);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (first_sample_tx, first_sample_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(CountingProbe {
+                inner: DemoProbe::new(),
+                calls: Arc::clone(&calls),
+                first_sample: Some((first_sample_tx, release_rx)),
+            }),
+            TEST_TOKEN,
+            false,
+            true, // simulate a real probe needing warm-up
+        ));
+
+        let server_state = Arc::clone(&state);
+        let server = std::thread::spawn(move || {
+            // The first connection is the long-lived SSE stream; a worker owns
+            // it so the second connection can be routed while the stream is
+            // still inside its warm-up wait.
+            let (mut sse_stream, _) = listener.accept().expect("accept sse");
+            let sse_state = Arc::clone(&server_state);
+            let sse_worker = std::thread::spawn(move || {
+                let request = http::read_request(&mut sse_stream)
+                    .expect("read sse request")
+                    .expect("sse request head");
+                handle_stream_connection(&mut sse_stream, &request, &sse_state, TEST_INTERVAL)
+                    .expect("handle stream connection");
+            });
+
+            let (mut snap_stream, _) = listener.accept().expect("accept snapshot");
+            handle_connection_with_stream(
+                &mut snap_stream,
+                &server_state,
+                |request, request_id, metrics| {
+                    let context = RequestContext {
+                        request_id,
+                        metrics,
+                        active: &server_state.active,
+                        streams: &server_state.streams,
+                    };
+                    let mut guard = server_state
+                        .probe
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    route(
+                        request,
+                        Some(guard.as_mut()),
+                        &server_state.token,
+                        server_state.redact,
+                        &server_state.warmed_up,
+                        &context,
+                    )
+                },
+            )
+            .expect("handle snapshot connection");
+            sse_worker.join().expect("sse worker");
+        });
+
+        let mut sse_client = TcpStream::connect(address).expect("connect sse");
+        sse_client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        sse_client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write sse request");
+        let mut reader = BufReader::new(sse_client);
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("sse head line");
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+
+        first_sample_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sse must take the discarded warm-up sample");
+        // Shut the stream down before releasing its probe sample. Both the old
+        // and new ordering then skip the SSE published sample, so the observed
+        // count isolates the discarded warm-up sample alone.
+        state.request_shutdown();
+        release_tx.send(()).expect("release first sample");
+
+        let snapshot = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(snapshot.starts_with("HTTP/1.1 200 OK"), "{snapshot}");
+
+        join_demo_server(server);
+        drop(reader);
+
+        // One discarded sample (SSE) plus one published sample (snapshot).
+        // A second discarded sample would make this 3.
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            2,
+            "warm-up must be consumed exactly once across SSE and snapshot"
+        );
     }
 
     #[test]
@@ -3318,6 +3465,7 @@ mod tests {
             body.contains("# TYPE tm_agent_active_connections gauge"),
             "{body}"
         );
+        assert!(body.contains("tm_agent_active_connections 0"), "{body}");
         assert!(
             body.contains("# TYPE tm_agent_stream_sessions gauge"),
             "{body}"
@@ -3330,6 +3478,40 @@ mod tests {
         assert!(
             !body.contains("kubuntu-demo"),
             "metrics must never expose machine data"
+        );
+    }
+
+    #[test]
+    fn metrics_excludes_the_scraping_connection_from_active_gauge() {
+        // `spawn_connection` admits every connection — including this scrape —
+        // into `active`. An idle agent must therefore still report 0, not 1.
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false, // demo data needs no warm-up
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let workers = JoinTracker::new();
+        let server = std::thread::spawn({
+            let state = Arc::clone(&state);
+            let workers = workers.clone();
+            move || accept_and_spawn(&listener, &state, &workers)
+        });
+
+        let metrics = send_request(address, "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        join_demo_server(server);
+        let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
+        assert!(!outcome.timed_out && outcome.panicked == 0, "{outcome:?}");
+        assert_eq!(outcome.joined, 1);
+        assert_eq!(state.active.load(Ordering::Acquire), 0);
+
+        assert!(metrics.starts_with("HTTP/1.1 200 OK"), "{metrics}");
+        let (_, body) = metrics.split_once("\r\n\r\n").expect("body separator");
+        assert!(
+            body.contains("tm_agent_active_connections 0"),
+            "the scrape must not count itself: {body}"
         );
     }
 

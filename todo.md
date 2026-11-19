@@ -652,6 +652,28 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   スロット 0 復帰、snapshot p95 1.3ms 以下・時間劣化なし、unknown=0。
   リーク経路なし（fa-stability）。
 
+### 優先度: 高 — マルチクライアント／負荷監査 2026-11-20
+
+- [x] 2タブ／2インスタンスで設定の既知フィールドが lost update。
+      merged_map が known fields を呼び出し側で全上書きするため、保存直前に
+      再読込しても version/未知フィールドしか守られない。差分マージまたは
+      revision CAS で片方の更新が消えないようにする（web/native 両方）。
+      根拠 ga-multitab。
+- [x] 他タブの保存が UI に反映されず表示と localStorage が乖離（storage
+      イベント未購読）。再読込でサイレントに戻るため誤認を招く。
+      STORAGE_KEY の storage イベントを購読し再ロード＋通知。根拠 ga-multitab。
+- [x] SSE と認証済み snapshot が並行すると warm-up サンプルが2回消費
+      （初回1回契約違反）。SSE 経路で discarded sample 成功直後に warmed_up
+      を store してから待つ。根拠 gb-stress。
+- [x] /metrics の active_connections が問い合わせ元自身を計上しアイドルでも
+      1 を返す。自己を除外するか 1 を基準と明記。根拠 gb-stress。
+
+### メモ — 仕様どおりで修正不要 2026-11-20
+
+- 3タブ目の SSE 503→fallback は MAX_STREAMS=2 の graceful degradation、
+  sse_epoch ガードは再接続後に古いフレームを正しく無視。9177 リクエストの
+  負荷でハング/クラッシュ/リーク/unknown=0 を確認（ga-multitab / gb-stress）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

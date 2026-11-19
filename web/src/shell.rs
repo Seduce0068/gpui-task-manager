@@ -45,7 +45,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_time::Instant;
 
 use crate::agent::{AgentClient, AgentConfig, FetchError, SnapshotEnvelope, onboarding_steps};
-use crate::settings::{INTERVAL_PRESETS_MS, interval_label};
+use crate::settings::{INTERVAL_PRESETS_MS, STORAGE_KEY, interval_label};
 use crate::theme::*;
 use crate::widgets::{
     accessible_metric_bar, accessible_pill, card, filter_preset_chip, h_flex, kv,
@@ -199,6 +199,11 @@ const STALE_ROW_MENU_NOTICE: &str = "行のプロセスが更新されたため�
 const SETTINGS_SAVE_ERROR_NOTICE: &str =
     "設定を保存できませんでした。ブラウザのストレージ設定（容量・権限）を確認してください";
 
+/// Fixed, redacted notice when another tab's settings save was mirrored into
+/// this view. No key, value, host name or agent token is included, and no `;` /
+/// newline that could corrupt the `key=value;` DOM proof grammar (HA-WEBMERGE).
+const SETTINGS_SYNC_NOTICE: &str = "別のタブで設定が変更されたため、表示を同期しました";
+
 /// Maps a settings save result to the status text shown to the user.
 ///
 /// Kept pure so the notification contract can be tested without a browser
@@ -208,6 +213,34 @@ fn settings_save_status(result: &Result<(), String>) -> Option<&'static str> {
         Ok(()) => None,
         Err(_) => Some(SETTINGS_SAVE_ERROR_NOTICE),
     }
+}
+
+/// Pure re-entry guard for the cross-tab settings reload task.
+///
+/// Storage events can arrive in bursts (another tab saving two fields in a
+/// row). A reload that is already in flight must not be started again from a
+/// second event, or the repeated `restore_settings()` would race with the UI's
+/// own `persist_settings()` and could re-trigger a save. Kept pure for tests.
+fn begin_settings_sync(in_flight: &mut bool) -> bool {
+    if *in_flight {
+        false
+    } else {
+        *in_flight = true;
+        true
+    }
+}
+
+/// Releases the guard installed by [`begin_settings_sync`].
+fn end_settings_sync(in_flight: &mut bool) {
+    *in_flight = false;
+}
+
+/// Whether the informational cross-tab notice may replace the current status.
+///
+/// A transient write replaces persistent notices (SECURITY.md §5), so an
+/// outstanding corrupt / save-failure notice must win over a sync message.
+fn should_announce_settings_sync(status: Option<&StatusMessage>) -> bool {
+    !status.is_some_and(|status| status.persistent)
 }
 
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
@@ -445,6 +478,7 @@ impl TaskManagerApp {
             dom_help_previous_focus: None,
         };
         app.restore_settings();
+        app.spawn_settings_storage_sync(cx);
         app.spawn_sampler(cx);
         // Live mode prefers SSE. Any failure flips back to the existing fetch
         // poll, so a monitor is never left without updates (R3-S01).
@@ -788,6 +822,60 @@ impl TaskManagerApp {
                 }
             }
         }
+    }
+
+    /// Subscribes to `localStorage` writes made by other tabs.
+    ///
+    /// A `storage` event is only delivered to *other* documents (the document
+    /// that wrote the value never receives one), and the JS bridge below also
+    /// checks `event.source === window` as an explicit source guard, so our own
+    /// `persist_settings()` cannot re-enter this path. The DOM callback sends a
+    /// unit message into a channel; a spawned GPUI task receives it and runs
+    /// [`Self::reload_settings_from_other_tab`] with a real `Context`, because a
+    /// DOM listener itself has no access to GPUI's app context.
+    ///
+    /// Native builds have no `localStorage`, so the whole subscription is a
+    /// no-op there while the pure guard helpers remain testable.
+    #[cfg(target_family = "wasm")]
+    fn spawn_settings_storage_sync(&self, cx: &mut Context<Self>) {
+        use futures::StreamExt;
+
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+        cx.spawn(async move |this, cx| {
+            let mut in_flight = false;
+            while rx.next().await.is_some() {
+                if !begin_settings_sync(&mut in_flight) {
+                    continue;
+                }
+                // `restore_settings` only reads storage and applies view
+                // commands; it never calls `save`, so there is no write-back
+                // loop even if several tabs save in quick succession.
+                let _ = this.update(cx, |app, cx| {
+                    app.reload_settings_from_other_tab(cx);
+                });
+                end_settings_sync(&mut in_flight);
+            }
+        })
+        .detach();
+        install_settings_storage_bridge(tx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn spawn_settings_storage_sync(&self, _cx: &mut Context<Self>) {}
+
+    /// Re-applies a remote settings save to the Dashboard, palette and DOM
+    /// proof. Uses the same load path as startup so `LAST_LOADED` (the diff
+    /// baseline for the next save) advances to the freshly written value too.
+    fn reload_settings_from_other_tab(&mut self, cx: &mut Context<Self>) {
+        self.restore_settings();
+        // A transient status write replaces persistent ones (SECURITY.md §5), so
+        // never erase an outstanding corrupt / save-failure notice with the
+        // purely informational sync message.
+        if should_announce_settings_sync(self.dashboard.status()) {
+            self.dashboard.set_status(SETTINGS_SYNC_NOTICE, false);
+        }
+        self.sync_proof_dom();
+        cx.notify();
     }
 
     /// 表示設定だけを `localStorage` に保存する。
@@ -3979,6 +4067,62 @@ fn ensure_help_dom_bridge() {
     );
 }
 
+/// Custom event name used to forward a filtered `storage` event into Rust.
+const SETTINGS_STORAGE_EVENT: &str = "tm-settings-storage-changed";
+
+/// Installs the `window` → Rust storage bridge once per page.
+///
+/// `web-sys` does not enable the `StorageEvent` feature in `web/Cargo.toml`, so
+/// the key/source filtering is done in a small inline JS shim (the same pattern
+/// already used for the help bridge). The shim forwards only a *signal* - no
+/// key, value or storage area ever crosses into Rust. Rust listens for that
+/// custom event with a generic `web_sys::Event` closure, which stays alive for
+/// the page lifetime because a DOM listener has no RAII owner here.
+///
+/// Source handling: per the storage spec a write never fires an event in the
+/// writing document, and `event.source === window` is an explicit second guard
+/// against an echoed/duplicated own save. A `clear()` from another tab has a
+/// null key and is treated as a change to our key as well.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen(inline_js = r#"
+let installed = false;
+export function tmInstallSettingsStorageBridge(storageKey, eventName) {
+  if (installed) return;
+  installed = true;
+  window.addEventListener('storage', (event) => {
+    if (event.key !== storageKey && event.key !== null) return;
+    if (event.storageArea !== window.localStorage) return;
+    if (event.source === window) return;
+    window.dispatchEvent(new CustomEvent(eventName));
+  });
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = "tmInstallSettingsStorageBridge")]
+    fn tm_install_settings_storage_bridge(storage_key: &str, event_name: &str);
+}
+
+#[cfg(target_family = "wasm")]
+fn install_settings_storage_bridge(tx: futures::channel::mpsc::UnboundedSender<()>) {
+    use wasm_bindgen::closure::Closure;
+
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+        let _ = tx.unbounded_send(());
+    });
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if window
+        .add_event_listener_with_callback(SETTINGS_STORAGE_EVENT, closure.as_ref().unchecked_ref())
+        .is_ok()
+    {
+        // The listener is installed for the lifetime of the page; dropping the
+        // closure here would invalidate the JS callback pointer.
+        std::mem::forget(closure);
+        tm_install_settings_storage_bridge(STORAGE_KEY, SETTINGS_STORAGE_EVENT);
+    }
+}
+
 /// Text shown in place of a capability-gated section (R5-I04).
 ///
 /// Fixed strings only: no user input or agent data, and no `;` / newline that
@@ -5081,6 +5225,64 @@ mod tests {
             false,
         );
         assert!(announced.contains("設定を保存できません"), "{announced}");
+    }
+
+    #[test]
+    fn cross_tab_reload_guard_rejects_reentry() {
+        // A burst of storage events must not start a second reload while the
+        // first one is still applying settings to the Dashboard.
+        let mut in_flight = false;
+        assert!(begin_settings_sync(&mut in_flight));
+        assert!(in_flight);
+        assert!(
+            !begin_settings_sync(&mut in_flight),
+            "re-entrant storage event must be ignored"
+        );
+        assert!(
+            !begin_settings_sync(&mut in_flight),
+            "every event until release must be ignored"
+        );
+        end_settings_sync(&mut in_flight);
+        assert!(!in_flight);
+        assert!(
+            begin_settings_sync(&mut in_flight),
+            "guard must be reusable"
+        );
+        end_settings_sync(&mut in_flight);
+    }
+
+    #[test]
+    fn settings_sync_notice_is_fixed_and_dom_safe() {
+        // The cross-tab notice follows the same redaction / DOM-proof contract
+        // as the existing save-failure notice (no key, value, `;` or newline).
+        assert!(SETTINGS_SYNC_NOTICE.contains("設定"));
+        assert!(!SETTINGS_SYNC_NOTICE.contains(';'));
+        assert!(!SETTINGS_SYNC_NOTICE.contains('\n'));
+        assert!(!SETTINGS_SYNC_NOTICE.contains(STORAGE_KEY));
+        let announced = a11y_live_text(
+            Some(&StatusMessage {
+                text: SETTINGS_SYNC_NOTICE.to_string(),
+                is_error: false,
+                persistent: false,
+            }),
+            false,
+        );
+        assert!(announced.contains("設定"), "{announced}");
+        assert_eq!(SETTINGS_STORAGE_EVENT, "tm-settings-storage-changed");
+
+        // The sync notice is informational: it may replace no/transient status
+        // but must never overwrite a persistent corrupt / save-failure notice.
+        assert!(should_announce_settings_sync(None));
+        assert!(should_announce_settings_sync(Some(&StatusMessage {
+            text: "今すぐ更新を要求しました".to_string(),
+            is_error: false,
+            persistent: false,
+        })));
+        assert!(!should_announce_settings_sync(Some(&StatusMessage {
+            text: "保存された設定を読み込めませんでした".to_string(),
+            is_error: true,
+            persistent: true,
+        })));
     }
 
     #[test]
