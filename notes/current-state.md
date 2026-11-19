@@ -28,7 +28,7 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **491 passed / 0 failed**（tm-core 170 / tm-viewmodel 79 / tm-platform 44 / tm-agent 100 / app 92、2026-11-19 実測） |
+| `cargo test --workspace` | **491 passed / 0 failed**（tm-core 170 / tm-viewmodel 79 / tm-platform 44 / tm-agent 104 / app 94、2026-11-19 実測） |
 | web ユニットテスト | **136 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-19 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
@@ -56,7 +56,7 @@ status: verified
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
   未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
   ゲートを追加（root / web とも）。
-- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（143 → 485、件数は変動するため README.md「検証状況」を参照）。
+- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（履歴: 143 → 485、現在値は 491。件数は変動するため README.md「検証状況」を参照）。
 
 ## 未解決・今後の候補
 
