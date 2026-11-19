@@ -66,11 +66,14 @@ pub fn redact_for_export(
 /// The first line is [`PROCESS_CSV_HEADER`]; each following line describes one
 /// process, in snapshot order. Text fields use RFC 4180 quoting (a field is
 /// quoted when it contains a comma, quote or line break, and embedded quotes
-/// are doubled) and lines end with `\n`. Text fields starting with `=`, `+`,
-/// `-`, `@`, tab or carriage return get a leading apostrophe so a spreadsheet
-/// cannot interpret an attacker-supplied command line as a formula. Leading
-/// newline, space, VT and FF are neutralised too (spreadsheet importers may
-/// skip them). Numeric fields are never neutralised this way.
+/// are doubled) and lines end with `\n`. Text fields starting with a formula
+/// character get a leading apostrophe so a spreadsheet cannot interpret an
+/// attacker-supplied command line as a formula. Besides the four ASCII starters
+/// (`=`, `+`, `-`, `@`) this includes their fullwidth / Unicode lookalikes
+/// (e.g. `＝`, `＋`, `－`, `＠`, `−`); see is_formula_starter. Leading
+/// newline, space, tab, carriage return, VT and FF are neutralised too
+/// (spreadsheet importers may skip them). Numeric fields are never neutralised
+/// this way.
 pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>) -> String {
     // A local caller has no wire envelope, so the published rows are the only
     // process count available.
@@ -585,16 +588,48 @@ fn csv_status(status: ProcessStatus) -> &'static str {
     status.id()
 }
 
+/// Returns `true` when `ch` can start a spreadsheet formula and must therefore
+/// be neutralised at the beginning of a CSV text field.
+///
+/// The four ASCII starters are the historical contract. A spreadsheet may
+/// however normalise fullwidth / compatibility characters back to ASCII before
+/// evaluating a cell, so a leading `＝` (U+FF1D) is just as dangerous as `=`
+/// (PC-CSVBOM). The list below covers the required fullwidth forms, the typographic
+/// minus sign and the other common lookalikes that fold to an ASCII starter.
+fn is_formula_starter(ch: char) -> bool {
+    matches!(
+        ch,
+        // Historical ASCII contract.
+        '=' | '+' | '-' | '@'
+        // Fullwidth forms required by PC-CSVBOM.
+        | '\u{ff1d}' // ＝ FULLWIDTH EQUALS SIGN
+        | '\u{ff0b}' // ＋ FULLWIDTH PLUS SIGN
+        | '\u{ff0d}' // － FULLWIDTH HYPHEN-MINUS
+        | '\u{ff20}' // ＠ FULLWIDTH COMMERCIAL AT
+        // Other lookalikes commonly folded to an ASCII starter by importers.
+        | '\u{2212}' // − MINUS SIGN
+        | '\u{fe63}' // ﹣ SMALL HYPHEN-MINUS
+        | '\u{fe66}' // ﹦ SMALL EQUALS SIGN
+        | '\u{fe62}' // ﹢ SMALL PLUS SIGN
+        | '\u{fe6b}' // ﹫ SMALL COMMERCIAL AT
+        | '\u{207a}' // ⁺ SUPERSCRIPT PLUS SIGN
+        | '\u{207b}' // ⁻ SUPERSCRIPT MINUS SIGN
+        | '\u{207c}' // ⁼ SUPERSCRIPT EQUALS SIGN
+        | '\u{208a}' // ₊ SUBSCRIPT PLUS SIGN
+        | '\u{208b}' // ₋ SUBSCRIPT MINUS SIGN
+        | '\u{208c}' // ₌ SUBSCRIPT EQUALS SIGN
+    )
+}
+
 fn csv_text(value: &str) -> String {
     // A leading newline/space (or VT/FF) can be ignored by spreadsheet
     // importers, exposing the next character as a formula. The apostrophe must
     // go *inside* the RFC 4180 quotes: placing it before the opening quote
     // makes parsers treat the field as unquoted, so commas/newlines split it
-    // and a later field can start with '=' (formula-injection bypass, R29).
-    let neutralise = matches!(
-        value.chars().next(),
-        Some('=' | '+' | '-' | '@' | '\t' | '\r' | '\n' | ' ' | '\u{0b}' | '\u{0c}')
-    );
+    // and a later field can start with a formula (injection bypass, R29).
+    let neutralise = value.chars().next().is_some_and(|ch| {
+        is_formula_starter(ch) || matches!(ch, '\t' | '\r' | '\n' | ' ' | '\u{0b}' | '\u{0c}')
+    });
     let quoted = value
         .as_bytes()
         .iter()
@@ -879,6 +914,66 @@ mod tests {
             let csv = snapshot_to_csv(&snapshot, &secret_ids());
             assert!(csv.ends_with("'=1+1\n"), "unexpected field: {csv:?}");
         }
+    }
+
+    #[test]
+    fn csv_neutralises_fullwidth_and_unicode_formula_lookalikes() {
+        // PC-CSVBOM: a leading fullwidth '＝' (or another Unicode lookalike) must
+        // receive the same apostrophe guard as ASCII '='. Check the pure helper
+        // first so every listed lookalike is pinned, then the public export path.
+        let starters = [
+            '\u{ff1d}', // ＝ FULLWIDTH EQUALS SIGN (required)
+            '\u{ff0b}', // ＋ FULLWIDTH PLUS SIGN (required)
+            '\u{ff0d}', // － FULLWIDTH HYPHEN-MINUS (required)
+            '\u{ff20}', // ＠ FULLWIDTH COMMERCIAL AT (required)
+            '\u{2212}', // − MINUS SIGN (required)
+            '\u{fe63}', // ﹣ SMALL HYPHEN-MINUS
+            '\u{fe66}', // ﹦ SMALL EQUALS SIGN
+            '\u{fe62}', // ﹢ SMALL PLUS SIGN
+            '\u{fe6b}', // ﹫ SMALL COMMERCIAL AT
+            '\u{207a}', // ⁺ SUPERSCRIPT PLUS SIGN
+            '\u{207b}', // ⁻ SUPERSCRIPT MINUS SIGN
+            '\u{207c}', // ⁼ SUPERSCRIPT EQUALS SIGN
+            '\u{208a}', // ₊ SUBSCRIPT PLUS SIGN
+            '\u{208b}', // ₋ SUBSCRIPT MINUS SIGN
+            '\u{208c}', // ₌ SUBSCRIPT EQUALS SIGN
+        ];
+        for &starter in &starters {
+            assert!(
+                is_formula_starter(starter),
+                "{starter:?} must be neutralised"
+            );
+            let field = csv_text(&format!("{starter}1+1"));
+            assert!(
+                field.starts_with('\''),
+                "{starter:?} did not get an apostrophe: {field:?}"
+            );
+        }
+        // Only a *leading* lookalike matters; an interior one is left intact.
+        assert_eq!(csv_text("a\u{ff1d}b"), "a\u{ff1d}b");
+        // The ASCII contract is unchanged.
+        for starter in ['=', '+', '-', '@'] {
+            assert!(csv_text(&format!("{starter}cmd")).starts_with('\''));
+        }
+
+        // Public path: a process name beginning with '＝' is exported with the
+        // apostrophe inside the field, without changing the 12-column layout or
+        // the RFC 4180 escaping of the other fields.
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.processes.push(crate::model::ProcessSnapshot {
+            name: "\u{ff1d}1+1".into(),
+            command: "a,b\"c".into(),
+            ..crate::model::ProcessSnapshot::default()
+        });
+        let csv = snapshot_to_csv(&snapshot, &secret_ids());
+        assert!(csv.contains("'\u{ff1d}1+1"), "{csv}");
+        let row = csv.lines().nth(1).expect("data row");
+        assert!(
+            row.contains("\"a,b\"\"c\""),
+            "RFC 4180 escaping broke: {row}"
+        );
+        // 12 columns + one embedded comma => 12 commas in the row.
+        assert_eq!(row.matches(',').count(), 12, "column contract broke: {row}");
     }
 
     #[test]

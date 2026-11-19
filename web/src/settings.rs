@@ -70,6 +70,26 @@ pub const CORRUPT_BACKUP_KEY_PREFIX: &str = "gpui-task-manager.settings.corrupt.
 /// pruned after a successful quarantine (H1-BACKUP).
 const CORRUPT_BACKUP_LIMIT: usize = 5;
 
+/// Largest stored settings value this build will parse (4 MiB, UTF-8 bytes).
+///
+/// Judgment (PC-CSVBOM): `localStorage` quotas are browser-dependent (commonly
+/// around 5 MiB per origin and shared by *all* keys), so a value near 4 MiB is
+/// not a legitimate preference document even if the browser still accepts it.
+/// Using the same cap as the native shell gives one consistent rule and keeps a
+/// corrupt/oversized item from consuming the origin quota and starving other
+/// keys. Over-limit values take the ordinary quarantine + redacted-notice path.
+/// `str::len` counts bytes, matching the native on-disk byte cap.
+const MAX_SETTINGS_BYTES: usize = 4 * 1024 * 1024;
+
+/// Removes one leading UTF-8 BOM (EF BB BF, decoded as U+FEFF) before parsing.
+///
+/// A BOM-prefixed settings value copied from a Windows file is otherwise valid
+/// JSON, but `serde_json` rejects the leading U+FEFF. Strip exactly one BOM so
+/// the value loads instead of being quarantined as corrupt (PC-CSVBOM).
+fn strip_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
+}
+
 /// Fixed, redacted text shown when a stored settings value is corrupt.
 ///
 /// The offending bytes are preserved under a key ending in
@@ -320,7 +340,10 @@ fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
 
 /// Parses a persisted JSON document, keeping its raw object for round-tripping.
 fn parse_document(raw: &str) -> Option<SettingsDocument> {
-    let mut value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if raw.len() > MAX_SETTINGS_BYTES {
+        return None;
+    }
+    let mut value: serde_json::Value = serde_json::from_str(strip_bom(raw)).ok()?;
     let object = value.as_object()?.clone();
     let stored_version = interpretable_version(object.get("version"));
 
@@ -437,7 +460,10 @@ fn merged_for_save_inner(
     baseline: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let raw = stored
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        // Ignore an oversized re-read value just like the load path does: it is
+        // not a usable merge base, so fall back to the in-memory baseline.
+        .filter(|text| text.len() <= MAX_SETTINGS_BYTES)
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(strip_bom(text)).ok())
         .and_then(|value| value.as_object().cloned())
         .or_else(|| baseline.cloned());
     merged_map_for_changes(settings, raw.as_ref(), baseline)
@@ -708,6 +734,47 @@ mod tests {
         assert_eq!(settings.interval_ms, 1_000);
         assert_eq!(settings.version, tm_viewmodel::SETTINGS_VERSION);
         assert!(settings.details_visible);
+    }
+
+    #[test]
+    fn bom_prefixed_settings_load_without_a_corrupt_notice() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+        let raw = "\u{feff}{\"version\":9,\"interval_ms\":1500,\"future_flag\":42}";
+        let document = parse_document(raw).expect("BOM-prefixed JSON must parse");
+        assert_eq!(document.settings.version, 9);
+        assert_eq!(document.settings.interval_ms, 1_500);
+        assert_eq!(
+            document.raw.get("future_flag"),
+            Some(&serde_json::json!(42))
+        );
+
+        let (settings, notice) = load_from_raw_with_notice(Some(raw));
+        assert_eq!(settings.interval_ms, 1_500);
+        assert_eq!(notice, None, "a BOM must not be treated as corruption");
+    }
+
+    #[test]
+    fn oversized_stored_value_is_treated_as_corrupt() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+        let raw = format!(
+            "{{\"version\":9,\"interval_ms\":1500,\"pad\":\"{}\"}}",
+            "x".repeat(MAX_SETTINGS_BYTES)
+        );
+        assert!(
+            parse_document(&raw).is_none(),
+            "oversized value must be rejected"
+        );
+        let (settings, notice) = load_from_raw_with_notice(Some(&raw));
+        assert_eq!(settings, Settings::default());
+        assert!(
+            notice.is_some(),
+            "oversized value must yield a corrupt notice"
+        );
+
+        // An oversized re-read value must not feed the save merge either.
+        let map = merged_for_save_inner(&Settings::default(), Some(&raw), None);
+        assert_ne!(map.get("version"), Some(&serde_json::json!(9)));
+        assert!(!map.contains_key("pad"));
     }
 
     #[test]

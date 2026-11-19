@@ -259,6 +259,30 @@ struct ErrorBody<'a> {
     error: &'a str,
 }
 
+/// Writes `content` to `writer`, discarding every I/O error.
+///
+/// Rust ignores `SIGPIPE` on Unix (`SIG_IGN` is installed at startup), so a
+/// downstream that closes early — e.g. `tm-agent --version | head -c 1` or
+/// `--demo --once | head -c 64` — turns the write into `BrokenPipe` instead of
+/// terminating the process. `println!` / `print!` unwrap that error and panic
+/// ("failed printing to stdout", exit 101), which is a false alarm for an
+/// ordinary shell pipeline. Restoring `SIGPIPE`'s default disposition would
+/// require `unsafe` FFI or a new `libc` dependency; AGENTS.md §15 forbids
+/// `unsafe`, and a dependency is unnecessary here. Ignoring the `write_all`
+/// result reproduces the desired Unix behaviour (quiet success) in safe Rust.
+fn write_ignoring_io_errors(writer: &mut impl Write, content: &str) {
+    let _ = writer.write_all(content.as_bytes());
+    let _ = writer.flush();
+}
+
+/// All terminal-facing output goes through a locked stdout that never panics
+/// on a closed pipe (`--version`, `--help`, `--once`).
+fn write_stdout(content: &str) {
+    let stdout = io::stdout();
+    let mut locked = stdout.lock();
+    write_ignoring_io_errors(&mut locked, content);
+}
+
 fn main() {
     match run() {
         Ok(()) => emit(
@@ -307,11 +331,11 @@ fn run() -> Result<(), AgentError> {
     LOG_THRESHOLD.store(threshold_rank(config.log_level), Ordering::Relaxed);
     if config.version {
         // Same one-line shape as `gpui-task-manager --version`; stdout only.
-        println!("tm-agent {}", env!("CARGO_PKG_VERSION"));
+        write_stdout(&format!("tm-agent {}\n", env!("CARGO_PKG_VERSION")));
         return Ok(());
     }
     if config.help {
-        print!("{}", args::USAGE);
+        write_stdout(args::USAGE);
         return Ok(());
     }
 
@@ -426,18 +450,31 @@ fn probe_error_label(error: &tm_core::ProbeError) -> &'static str {
 /// start an agent with an empty token. Errors name the file only, never its
 /// parent directories.
 fn read_token_file(path: &std::path::Path) -> Result<String, String> {
+    // symlink_metadata (not metadata) so the link itself is classified: a
+    // symlink pointing at a valid 0600 file must still be rejected. A FIFO at
+    // this path would block `read_to_string` forever waiting for a writer;
+    // devices, directories and symlinks are equally unsafe credential sources.
+    // The same metadata feeds the Unix mode check below, leaving no window for
+    // the file to be swapped between the type and permission checks.
+    let meta = std::fs::symlink_metadata(path).map_err(|err| {
+        format!(
+            "トークンファイルの属性を読めません ({}): {err}",
+            token_file_name(path)
+        )
+    })?;
+    if !meta.file_type().is_file() {
+        return Err(format!(
+            concat!(
+                "トークンファイルが通常ファイルではありません ({}): ",
+                "FIFO・デバイス・ディレクトリ・シンボリックリンクは使用できません"
+            ),
+            token_file_name(path)
+        ));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path)
-            .map_err(|err| {
-                format!(
-                    "トークンファイルの属性を読めません ({}): {err}",
-                    token_file_name(path)
-                )
-            })?
-            .permissions()
-            .mode();
+        let mode = meta.permissions().mode();
         // Any group/other bit is unsafe: read exposes the secret to other local
         // users, write lets them replace it, and execute keeps the same mode
         // visible in directory listings. Owner bits are the caller's choice.
@@ -465,6 +502,22 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
     Ok(token.to_string())
 }
 
+/// Refuse to persist a credential on a virtual filesystem.
+///
+/// Mirrors `app::settings::is_virtual_fs_root`: `/dev`, `/proc` and `/sys`
+/// cannot hold a durable private token (writes fail or land outside the
+/// user's home). Kept local so the agent crate stays independent of the app.
+fn is_virtual_fs_root(path: &std::path::Path) -> bool {
+    path.components()
+        .next()
+        .is_some_and(|first| matches!(first, std::path::Component::RootDir))
+        && path
+            .components()
+            .nth(1)
+            .and_then(|first| first.as_os_str().to_str())
+            .is_some_and(|top| matches!(top, "dev" | "proc" | "sys"))
+}
+
 /// Returns the persistent directory used for an auto-generated token.
 ///
 /// Uses `$XDG_STATE_HOME/tm-agent` when set, otherwise
@@ -473,19 +526,38 @@ fn read_token_file(path: &std::path::Path) -> Result<String, String> {
 /// can reuse the same token and a browser that cached it in `localStorage`
 /// keeps working. The path stays under the user's home, outside the repository.
 fn auto_token_dir() -> Result<std::path::PathBuf, String> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        return Ok(std::path::PathBuf::from(state_home).join(AUTO_TOKEN_DIR_NAME));
-    }
-    let home = std::env::var_os("HOME")
+    auto_token_dir_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+}
+
+/// Pure core of [`auto_token_dir`], separated so tests can feed relative or
+/// virtual paths without mutating process-wide environment variables (tests
+/// run in parallel).
+fn auto_token_dir_from(
+    state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf, String> {
+    // A relative XDG_STATE_HOME would resolve against $CWD — the repository
+    // during development — and write a credential into the source tree. Ignore
+    // it, exactly as config_dir() ignores a relative XDG_CONFIG_HOME, rather
+    // than failing startup: an unusable override still has the safe home-based
+    // default to fall back to, which keeps the agent usable.
+    if let Some(state_home) = state_home
         .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
+    {
+        return Ok(state_home.join(AUTO_TOKEN_DIR_NAME));
+    }
+
+    let home = home
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
         .ok_or_else(|| {
-            "自動生成トークンの保存先を決めるために HOME または XDG_STATE_HOME が必要です"
+            "自動生成トークンの保存先を決めるために、絶対パスの HOME または XDG_STATE_HOME が必要です"
                 .to_string()
         })?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".local")
-        .join("state")
-        .join(AUTO_TOKEN_DIR_NAME))
+    Ok(home.join(".local").join("state").join(AUTO_TOKEN_DIR_NAME))
 }
 
 /// Monotonic suffix for temporary auto-token files.
@@ -654,13 +726,19 @@ fn resolve_auto_token() -> Result<(String, std::path::PathBuf), String> {
 /// Takes only the token file path, never the token value: the credential must
 /// not reach stderr. The user reads the 0600 file out of band and supplies its
 /// contents to the browser; the agent only announces where to find it.
+///
+/// Only the leaf name is printed, with the same discipline as
+/// [`token_file_name`]: the XDG state directory usually sits under `$HOME`,
+/// and stderr is routinely captured in CI logs and support bundles. Operators
+/// still learn which file to pass to `--token-file` (also under `--redact`)
+/// without their home path being exposed.
 fn generated_token_message(path: &std::path::Path) -> String {
     format!(
         concat!(
             "tm-agent: 認証トークンを自動生成し、{} に 0600 で保存しました（値はログに出力しません）。",
             "再起動時は同じファイルを再利用します。接続時は内容を読み取り --token-file に指定してください。"
         ),
-        path.display()
+        token_file_name(path)
     )
 }
 
@@ -702,7 +780,7 @@ fn print_once(
     token: &str,
     demo: bool,
 ) -> Result<(), String> {
-    println!("{}", once_json(probe, redact, token, demo)?);
+    write_stdout(&format!("{}\n", once_json(probe, redact, token, demo)?));
     Ok(())
 }
 
@@ -1974,6 +2052,30 @@ mod tests {
 
     const TEST_TOKEN: &str = "test-token";
 
+    /// A stdout whose read end was closed (e.g. `| head -c 1`) always fails
+    /// with `BrokenPipe`; that used to make `println!` panic with exit 101.
+    #[test]
+    fn terminal_write_ignores_broken_pipe() {
+        struct BrokenPipe;
+        impl std::io::Write for BrokenPipe {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+        }
+        // Neither the write nor the flush may panic (a large payload would
+        // take several write_all calls against a failing writer).
+        write_ignoring_io_errors(&mut BrokenPipe, "tm-agent 0.1.0\n");
+        write_ignoring_io_errors(&mut BrokenPipe, &"x".repeat(1024 * 1024));
+
+        // The success path still delivers the bytes unchanged.
+        let mut sink = Vec::new();
+        write_ignoring_io_errors(&mut sink, "tm-agent 0.1.0\n");
+        assert_eq!(sink, b"tm-agent 0.1.0\n");
+    }
+
     /// Bounded join for demo-server threads: a stuck server must fail its test
     /// instead of hanging the whole suite (R2-X03).
     const TEST_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2627,6 +2729,31 @@ mod tests {
         assert_eq!(token_file_name(std::path::Path::new("/")), "(名前なし)");
     }
 
+    /// The auto-token startup line goes to stderr even with `--redact`, so it
+    /// must follow the same leaf-only rule as token error messages.
+    #[test]
+    fn generated_token_message_never_exposes_home_component() {
+        let path = std::path::Path::new("/home/alice/.local/state/tm-agent/token.txt");
+        let message = generated_token_message(path);
+        assert!(
+            message.contains("token.txt"),
+            "the leaf name must stay discoverable: {message}"
+        );
+        assert!(message.contains("0600"), "{message}");
+        for leaked in [
+            "/home",
+            "alice",
+            ".local",
+            "state/tm-agent",
+            path.to_string_lossy().as_ref(),
+        ] {
+            assert!(
+                !message.contains(leaked),
+                "absolute token path leaked ({leaked}): {message}"
+            );
+        }
+    }
+
     #[test]
     fn probe_error_label_never_echoes_the_detail() {
         for error in [
@@ -2749,6 +2876,73 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn token_file_rejects_fifo_before_opening_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("tm-agent-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("fifo-token");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo must be available on Unix");
+        assert!(status.success(), "mkfifo failed: {status}");
+
+        // No writer ever opens the FIFO. A plain read_to_string would block
+        // here forever; the symlink_metadata guard must reject it first.
+        let error = read_token_file(&path).expect_err("FIFO must be rejected");
+        assert!(error.contains("通常ファイルではありません"), "{error}");
+        assert!(error.contains("FIFO"), "{error}");
+        assert_token_error_is_leaf_only(&error, &path);
+
+        // A regular 0600 file in the same directory still works: the guard is
+        // about file type, not a blanket refusal of this whole directory.
+        let regular = dir.join("regular-token");
+        std::fs::write(&regular, "secret-token\n").expect("write token file");
+        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600))
+            .expect("set 0600");
+        assert_eq!(
+            read_token_file(&regular).expect("0600 regular file must still work"),
+            "secret-token"
+        );
+
+        let _ = std::fs::remove_file(&regular);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn token_file_rejects_directory_and_symlink() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("tm-agent-type-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let regular = dir.join("regular-token");
+        std::fs::write(&regular, "secret-token\n").expect("write token file");
+        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600))
+            .expect("set 0600");
+
+        let subdir = dir.join("directory-token");
+        std::fs::create_dir(&subdir).expect("create directory");
+        let error = read_token_file(&subdir).expect_err("directory must be rejected");
+        assert!(error.contains("通常ファイルではありません"), "{error}");
+        assert_token_error_is_leaf_only(&error, &subdir);
+
+        // symlink_metadata classifies the link itself, so a link to an
+        // otherwise valid 0600 file is still refused.
+        let link = dir.join("link-token");
+        std::os::unix::fs::symlink(&regular, &link).expect("create symlink");
+        let error = read_token_file(&link).expect_err("symlink must be rejected");
+        assert!(error.contains("通常ファイルではありません"), "{error}");
+        assert_token_error_is_leaf_only(&error, &link);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn token_file_io_errors_hide_parent_directories() {
         let dir = std::env::temp_dir().join(format!("tm-agent-io-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -2836,11 +3030,19 @@ mod tests {
         let (again, _) = resolve_auto_token_in(&dir).expect("second resolve");
         assert_eq!(again.as_str(), token.as_str());
 
-        // Guidance names the file path but never the value itself.
+        // Guidance names only the file (never its parent path or the value).
         let message = generated_token_message(&path);
         assert!(
-            message.contains(path.to_string_lossy().as_ref()),
-            "guidance must include the token file path: {message}"
+            message.contains(token_file_name(&path).as_ref()),
+            "guidance must name the token file: {message}"
+        );
+        assert!(
+            !message.contains(path.to_string_lossy().as_ref()),
+            "full token path leaked: {message}"
+        );
+        assert!(
+            !message.contains(dir.to_string_lossy().as_ref()),
+            "token directory leaked: {message}"
         );
         assert!(
             !message.contains(token.as_str()),
@@ -2849,6 +3051,79 @@ mod tests {
         assert!(message.contains("0600"), "{message}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_token_dir_rejects_relative_and_virtual_state_home() {
+        let home = std::path::PathBuf::from("/home/agent-user");
+        let default = home.join(".local").join("state").join(AUTO_TOKEN_DIR_NAME);
+
+        // A relative XDG_STATE_HOME (including ".") would resolve against $CWD,
+        // i.e. the repository during development. Ignore it like config_dir()
+        // ignores a relative XDG_CONFIG_HOME.
+        for relative in [".", "state", "../state", "./relative"] {
+            let dir = auto_token_dir_from(
+                Some(std::ffi::OsString::from(relative)),
+                Some(home.clone().into_os_string()),
+            )
+            .expect("must fall back to the home default");
+            assert_eq!(dir, default, "XDG_STATE_HOME={relative}");
+            assert!(dir.is_absolute());
+        }
+
+        // Virtual FS roots cannot hold a durable private token either.
+        for virtual_root in ["/dev", "/proc/self", "/sys/kernel"] {
+            let dir = auto_token_dir_from(
+                Some(std::ffi::OsString::from(virtual_root)),
+                Some(home.clone().into_os_string()),
+            )
+            .expect("must fall back to the home default");
+            assert_eq!(dir, default, "XDG_STATE_HOME={virtual_root}");
+        }
+
+        // An absolute, non-virtual override is still honoured.
+        let custom = std::path::PathBuf::from("/var/tmp/agent-state");
+        let dir = auto_token_dir_from(
+            Some(custom.clone().into_os_string()),
+            Some(home.clone().into_os_string()),
+        )
+        .expect("absolute state home must be accepted");
+        assert_eq!(dir, custom.join(AUTO_TOKEN_DIR_NAME));
+
+        // A relative HOME cannot produce a safe path either.
+        let error = auto_token_dir_from(None, Some(std::ffi::OsString::from("relative-home")))
+            .expect_err("relative HOME must fail");
+        assert!(error.contains("HOME"), "{error}");
+    }
+
+    #[test]
+    fn relative_xdg_state_home_never_creates_a_token_in_the_repository() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let home = std::env::temp_dir().join(format!("tm-agent-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+
+        let dir = auto_token_dir_from(
+            Some(std::ffi::OsString::from(".")),
+            Some(home.clone().into_os_string()),
+        )
+        .expect("fallback to home");
+        assert_eq!(
+            dir,
+            home.join(".local").join("state").join(AUTO_TOKEN_DIR_NAME)
+        );
+        assert!(
+            !dir.starts_with(&cwd),
+            "computed token dir must not be under CWD: {}",
+            dir.display()
+        );
+
+        // Exercise the real publish path with the computed directory.
+        let (token, path) = resolve_auto_token_in(&dir).expect("resolve token");
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert!(path.starts_with(&home), "token must be written under HOME");
+        assert_eq!(read_token_file(&path).expect("read back"), token);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
