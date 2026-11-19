@@ -118,9 +118,30 @@ status: current
 - [x] CDP クリック座標を DOM/セレクタ取得へ変更（R1S-ARCH-03/R1-OPS-11）— canvas
       rect 基準の相対座標とフォールバックを追加。
 - [x] PoC の `cdp_verify.py` に「証拠収集のみ」と明記（R1S-OPS-12）。
-- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）。確認手順と環境は notes/environment-verification.md に調査・記録済み（実機目視は未実施）。
+- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）。確認手順と環境は notes/environment-verification.md に調査・記録済み（実機目視は未実施）。 ユーザー確認手順（Kubuntu 上で実行）:
+
+```bash
+echo '=== 現在の出力と scale ==='
+kscreen-doctor -o | grep -E 'Output:|Scale:|Geometry:'
+echo '=== KScreen / DPI ==='
+gsettings get org.gnome.desktop.interface scaling-factor
+xrdb -query | grep -i dpi
+echo '=== ネイティブ app を scale 変更後に再起動し、文字の鮮明さ・カードの重なり・列幅を目視 ==='
+echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボケと DOM proof の vw/vh を確認 ==='
+```
+
+ 現環境は単一出力 HDMI-A-1 2560x1440 / scale 1 のため、DPR 混在構成の
+ 再現には 2 枚目のモニタ接続または KDE 表示設定の scale 変更が必要。
+
 - [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 435/90・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）（R1-G12, R1-G13）。調査内容は notes/environment-verification.md に記録。性能再測定は実環境・大規模データが必要で未実施。
-- [ ] 放置されたローカルブランチ／merged リモートブランチを整理する（R1-G14）。調査内容は notes/environment-verification.md に記録済み。削除は破壊的操作のためユーザー承認待ち（未実行）。
+- [ ] 放置されたローカルブランチ／merged リモートブランチを整理する（R1-G14）。調査内容は notes/environment-verification.md に記録済み。削除は破壊的操作のためユーザー承認待ち（未実行）。 削除候補と復元経路:
+- `fix/tm-agent-test-shutdown-race`: `origin/main` マージ済み、リモートに同一 SHA
+  (`dab7520`) が残るため `git branch -d fix/tm-agent-test-shutdown-race` は安全。
+- `backup/main-pre-integration` / `backup/round31-safe-pre-integration`: 統合前の
+  rollback 点。不要になった時点で `git branch -d <name>` を検討。
+- `master` / アーカイブ用ブランチ: `bc30c0b` は main の祖先ではなくリモートからも
+  到達不能（reflog のみ）。削除しないこと。
+いずれも削除は状態変更のため、ユーザー承認後に実行する。
 
 ### 優先度: 高 — Twitter 公開前チェック (swarm-project-review R6)
 

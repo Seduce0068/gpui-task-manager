@@ -5,7 +5,7 @@ description: HiDPI / スクリーンショット鮮度 / ローカルブラン�
 tags: [verification, environment, runtime-proof, task-manager]
 resource: gpui-task-manager
 generated: 2026-11-18T12:35:38+09:00
-verified: 2026-11-18T12:35:38+09:00
+verified: 2026-11-19T15:55:00+09:00
 status: verified
 ---
 
@@ -50,16 +50,30 @@ status: verified
 
 確認できた事実（`git branch --merged main` / `git branch -vv`）:
 
-- `main`: 作業中、`origin/main` に対して 1 コミット先行（未 push）。
-- `fix/tm-agent-test-shutdown-race`: `main` にマージ済み、upstream あり。
+2026-11-19 時点の実測（`git status --short --branch` / `git branch -vv`）:
+
+- base checkout の `main`: `origin/main` に対して **ahead 2 / behind 53**。
+  未 push の 2 コミット（10a8e16, 6eed24d）は古い分岐から生えており、
+  `6eed24d` は `origin/main` の祖先ではない。これらをそのまま push すると
+  公開済みの監査成果（redaction / gitleaks / CI ゲート等）が失われる。
+  新機能は隔離 worktree で cherry-pick 統合し、`integration/base-r1`
+  から `origin/main` へ fast-forward push 済み（2026-11-19）。
+- `fix/tm-agent-test-shutdown-race`: `origin/main` にマージ済み。リモート
+  ブランチが残存（`dab7520`）するため削除しても復元可能。
+- `backup/main-pre-integration` / `backup/round31-safe-pre-integration`:
+  統合前の rollback 点として作成したローカル ref。前者は 6eed24d、
+  後者は 4b5359c（`origin/main` の祖先）を指す。
 - `master` とアーカイブ用ブランチ: 同一コミット `bc30c0b` を指すが、
-  `main` にはマージされていない（古い系統）。
+  `main` にはマージされておらず、いかなるリモート ref からも到達不能。
+  復元は reflog（既定 90 日 / 到達不能 30 日）のみ。
 
 判断:
 
 - ブランチ削除は破壊的操作のため、ユーザー確認なしには実行しない。
-- マージ済みの `fix/tm-agent-test-shutdown-race` は削除候補だが、
-  upstream が存在するため復元は容易。
+- マージ済みの `fix/tm-agent-test-shutdown-race` は削除候補。リモートに
+  同一 SHA が残るため復元は容易だが、削除自体は状態変更のため委任外。
+- `backup/*` は rollback 点として意図的に保持中。不要になった時点で
+  ユーザー承認を得て削除する。
 - `master` / アーカイブ用ブランチは未マージの履歴を含む可能性があり、
   削除前に差分確認が必要。
 
