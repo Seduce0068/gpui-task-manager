@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::sanitize::sanitize_display;
+
 /// Stable identity of a process.
 ///
 /// A PID alone is not enough: the kernel reuses PIDs. Pairing the PID with the
@@ -387,6 +389,19 @@ pub struct SystemSnapshot {
     /// Hardware component temperatures, when the platform reports them.
     #[cfg_attr(feature = "serde", serde(default))]
     pub components: Vec<ComponentSnapshot>,
+    /// Aggregate power source and enumerated batteries (R1-I10).
+    ///
+    /// `serde(default)` keeps the wire compatible with agents that predate this
+    /// field: an older snapshot deserialises to an honest `Unknown` source with
+    /// no batteries, never to a fabricated AC/battery claim.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub power: PowerSnapshot,
+    /// Cadence recommendation selected for this sample (R1-I11).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sampling: SamplingPlan,
+    /// Processes grouped by normalised cgroup label (R1-I12).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cgroups: Vec<CgroupGroup>,
     /// PID of the application itself, used to protect it from being killed.
     pub self_pid: Option<u32>,
 }
@@ -409,6 +424,362 @@ impl SystemSnapshot {
     pub fn network_totals(&self) -> (u64, u64) {
         self.network.physical_totals()
     }
+}
+
+// --- R1-I10 / R1-I11 / R1-I12 -------------------------------------------------
+//
+// The three data families below are additive: `SystemSnapshot` gained `power`,
+// `sampling` and `cgroups` fields with `serde(default)`, so older wire snapshots
+// still deserialise. Every producer (native probe, demo probe), the redact /
+// sanitize passes and the JSON exporter register the new fields, and both shells
+// display them without changing any pre-existing wire, DOM or redact contract.
+
+/// Aggregate power source reported by the platform (R1-I10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PowerSource {
+    /// The platform exposes no power-supply information.
+    ///
+    /// This is the honest default for desktops without a battery and for every
+    /// non-Linux target of the pinned `sysinfo` version, which has no battery
+    /// API. It must never be rendered as "charging".
+    #[default]
+    Unknown,
+    /// The machine is running on external power.
+    Ac,
+    /// The machine is running on a battery.
+    Battery,
+}
+
+impl PowerSource {
+    /// Short Japanese label used by a status widget.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Ac => "AC 電源",
+            Self::Battery => "バッテリー",
+        }
+    }
+
+    /// Stable English identifier used in the wire protocol.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Ac => "ac",
+            Self::Battery => "battery",
+        }
+    }
+}
+
+/// Charge/discharge state of one battery (R1-I10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BatteryState {
+    /// The platform did not report a usable state.
+    #[default]
+    Unknown,
+    /// The battery is charging.
+    Charging,
+    /// The battery is discharging.
+    Discharging,
+    /// The battery is fully charged.
+    Full,
+    /// The battery is present but is not charging (for example at a threshold).
+    NotCharging,
+}
+
+impl BatteryState {
+    /// Short Japanese label used by a status widget.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Charging => "充電中",
+            Self::Discharging => "放電中",
+            Self::Full => "満充電",
+            Self::NotCharging => "充電停止",
+        }
+    }
+
+    /// Stable English identifier used in the wire protocol.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Charging => "charging",
+            Self::Discharging => "discharging",
+            Self::Full => "full",
+            Self::NotCharging => "not_charging",
+        }
+    }
+}
+
+/// One battery the platform could enumerate (R1-I10).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BatterySnapshot {
+    /// Sanitised, short battery name (for example `BAT0`).
+    ///
+    /// This value comes from the OS and must have passed through
+    /// [`crate::sanitize::sanitize_display`] at the probe boundary.
+    pub name: String,
+    /// State of charge in percent (`0..=100`), or `None` when unreported.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub capacity_percent: Option<u8>,
+    /// Reported charge/discharge state.
+    pub state: BatteryState,
+}
+
+/// Power state of the machine at one point in time (R1-I10).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PowerSnapshot {
+    /// Aggregate source derived from the enumerated supplies.
+    pub source: PowerSource,
+    /// Enumerated batteries, sorted by name. Empty when unsupported.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub batteries: Vec<BatterySnapshot>,
+}
+
+impl PowerSnapshot {
+    /// Whether the machine is currently drawing from a battery.
+    ///
+    /// Both the aggregate source and the individual battery states are checked:
+    /// a supply that reports `Discharging` must not be masked by a stale
+    /// aggregate value coming from an older sample.
+    pub fn on_battery(&self) -> bool {
+        self.source == PowerSource::Battery
+            || self
+                .batteries
+                .iter()
+                .any(|battery| battery.state == BatteryState::Discharging)
+    }
+
+    /// Lowest reported state of charge across all batteries.
+    ///
+    /// `None` when no battery reported a capacity: the sampling policy must not
+    /// treat missing data as an empty (and therefore low) battery.
+    pub fn min_capacity_percent(&self) -> Option<u8> {
+        self.batteries
+            .iter()
+            .filter_map(|battery| battery.capacity_percent)
+            .min()
+    }
+}
+
+/// Whether the application window is visible to the user (R1-I11).
+///
+/// The shell owns this value; it lives in the core so the sampling policy is a
+/// pure, platform-independent function that can be regression-tested.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum WindowVisibility {
+    /// The window is on screen and the user is expected to read it.
+    #[default]
+    Visible,
+    /// The window is minimised, on another workspace or otherwise hidden.
+    Hidden,
+}
+
+/// Which sampling policy produced a [`SamplingPlan`] (R1-I11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SamplingProfile {
+    /// Normal interactive cadence (mains power, visible window).
+    #[default]
+    Interactive,
+    /// Reduced cadence while running on battery.
+    Battery,
+    /// Slow cadence when the battery is low.
+    BatterySaver,
+    /// Slow cadence while the window is hidden.
+    Background,
+}
+
+impl SamplingProfile {
+    /// Short Japanese label used by a status widget.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Interactive => "通常",
+            Self::Battery => "バッテリー節約",
+            Self::BatterySaver => "低バッテリー",
+            Self::Background => "バックグラウンド",
+        }
+    }
+
+    /// Stable English identifier used in the wire protocol.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Battery => "battery",
+            Self::BatterySaver => "battery_saver",
+            Self::Background => "background",
+        }
+    }
+}
+
+/// Sampling interval in milliseconds used when the window is visible on mains power (R1-I11).
+pub const INTERACTIVE_INTERVAL_MS: u64 = 1_000;
+/// Sampling interval in milliseconds used while the window is hidden (R1-I11).
+pub const BACKGROUND_INTERVAL_MS: u64 = 5_000;
+/// Sampling interval in milliseconds used while running on battery (R1-I11).
+pub const BATTERY_INTERVAL_MS: u64 = 2_500;
+/// Sampling interval in milliseconds used when the battery is low (R1-I11).
+pub const BATTERY_SAVER_INTERVAL_MS: u64 = 5_000;
+/// State of charge at or below which the battery-saver profile is selected.
+pub const LOW_BATTERY_PERCENT: u8 = 20;
+
+/// The sampling interval chosen for the current power state and window visibility (R1-I11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SamplingPlan {
+    /// Recommended delay between two samples, in milliseconds.
+    pub interval_ms: u64,
+    /// Policy that selected `interval_ms`, for diagnostics and display.
+    pub profile: SamplingProfile,
+}
+
+impl SamplingPlan {
+    /// The recommended delay as a `Duration`.
+    pub fn duration(self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.interval_ms)
+    }
+
+    /// Applies this plan as a *floor* on a user-configured refresh interval.
+    ///
+    /// A fast interactive plan leaves the configured cadence untouched (the
+    /// default 1 s keeps its exact behaviour), while a battery / saver /
+    /// background plan slows a too-fast setting down to the recommended delay.
+    /// A deliberately slower user setting is always respected.
+    pub fn effective_interval(self, configured: std::time::Duration) -> std::time::Duration {
+        configured.max(self.duration())
+    }
+}
+
+/// Chooses a sampling interval from power state and window visibility (R1-I11).
+///
+/// The policy is deliberately total and side-effect free, so a shell can apply
+/// the same answer on every backend (native, demo or agent-backed):
+///
+/// 1. A hidden window always uses [`BACKGROUND_INTERVAL_MS`], whatever the power
+///    state. This is the headline behaviour of R1-I11 and takes precedence.
+/// 2. A visible window on battery uses [`BATTERY_INTERVAL_MS`], or
+///    [`BATTERY_SAVER_INTERVAL_MS`] when the lowest reported charge is at or
+///    below [`LOW_BATTERY_PERCENT`].
+/// 3. Everything else (including [`PowerSource::Unknown`]) uses the normal
+///    interactive cadence. Missing power data must never silently throttle the
+///    visible UI.
+pub fn recommended_sampling_plan(
+    power: &PowerSnapshot,
+    visibility: WindowVisibility,
+) -> SamplingPlan {
+    if visibility == WindowVisibility::Hidden {
+        return SamplingPlan {
+            interval_ms: BACKGROUND_INTERVAL_MS,
+            profile: SamplingProfile::Background,
+        };
+    }
+    if power.on_battery() {
+        if power
+            .min_capacity_percent()
+            .is_some_and(|percent| percent <= LOW_BATTERY_PERCENT)
+        {
+            return SamplingPlan {
+                interval_ms: BATTERY_SAVER_INTERVAL_MS,
+                profile: SamplingProfile::BatterySaver,
+            };
+        }
+        return SamplingPlan {
+            interval_ms: BATTERY_INTERVAL_MS,
+            profile: SamplingProfile::Battery,
+        };
+    }
+    SamplingPlan {
+        interval_ms: INTERACTIVE_INTERVAL_MS,
+        profile: SamplingProfile::Interactive,
+    }
+}
+
+/// Maximum number of characters kept from a cgroup label.
+pub const CGROUP_LABEL_MAX_CHARS: usize = 96;
+
+/// Normalises a raw cgroup path into a short, display-safe grouping label (R1-I12).
+///
+/// A `/proc/<pid>/cgroup` path can contain user names, container IDs and other
+/// host-specific identifiers. Only the last two non-empty path segments are
+/// kept (for example `app.slice/worker.service`), which is enough to group
+/// related processes without publishing the whole host path. The result is
+/// passed through [`crate::sanitize::sanitize_display`], so control characters,
+/// ANSI sequences and bidi controls never reach a widget. A missing or root
+/// path yields `"/"`.
+///
+/// Both a bare path (`/a.slice/b.service`) and a full `/proc` line
+/// (`0::/a.slice/b.service`) are accepted, so callers cannot accidentally
+/// publish the hierarchy prefix as a group label.
+pub fn cgroup_label(raw_path: &str) -> String {
+    let trimmed = raw_path.trim();
+    let path = if trimmed.starts_with('/') {
+        trimmed
+    } else {
+        // Drop the `hierarchy:controllers:` prefix of a raw /proc line.
+        trimmed.rsplit_once(':').map_or(trimmed, |(_, path)| path)
+    };
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let label = if segments.is_empty() {
+        "/".to_string()
+    } else {
+        let start = segments.len().saturating_sub(2);
+        segments[start..].join("/")
+    };
+    sanitize_display(&label, CGROUP_LABEL_MAX_CHARS)
+}
+
+/// Read-only cgroup membership of one sampled process (R1-I12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProcessCgroup {
+    /// Stable identity of the process (PID + start time).
+    pub key: ProcessKey,
+    /// Normalised, display-safe label from [`cgroup_label`].
+    pub label: String,
+}
+
+/// Processes that share one cgroup label (R1-I12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CgroupGroup {
+    /// Normalised label shared by every member.
+    pub label: String,
+    /// Member identities, sorted by PID and start time.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub members: Vec<ProcessKey>,
+}
+
+/// Groups cgroup memberships deterministically for read-only display (R1-I12).
+///
+/// Memberships with an empty label are ignored. Groups are ordered by label and
+/// their members by [`ProcessKey`], so the output is stable across samples even
+/// though the underlying `/proc` enumeration order is not.
+pub fn group_by_cgroup(memberships: &[ProcessCgroup]) -> Vec<CgroupGroup> {
+    let mut grouped = std::collections::BTreeMap::<String, Vec<ProcessKey>>::new();
+    for membership in memberships {
+        if membership.label.is_empty() {
+            continue;
+        }
+        grouped
+            .entry(membership.label.clone())
+            .or_default()
+            .push(membership.key);
+    }
+    grouped
+        .into_iter()
+        .map(|(label, mut members)| {
+            members.sort_unstable();
+            members.dedup();
+            CgroupGroup { label, members }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -575,5 +946,326 @@ mod tests {
         // The all-interface total still double-counts, which is why the
         // overview uses physical_totals().
         assert_eq!(network.totals(), (100_050_001_000, 20_020_002_000));
+    }
+
+    // --- R1-I10: power state -------------------------------------------------
+
+    #[test]
+    fn power_snapshot_default_never_claims_battery_data() {
+        let power = PowerSnapshot::default();
+        assert_eq!(power.source, PowerSource::Unknown);
+        assert!(!power.on_battery());
+        assert_eq!(power.min_capacity_percent(), None);
+        assert!(power.batteries.is_empty());
+    }
+
+    #[test]
+    fn discharging_battery_overrides_a_stale_aggregate_source() {
+        let power = PowerSnapshot {
+            source: PowerSource::Ac,
+            batteries: vec![BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: Some(55),
+                state: BatteryState::Discharging,
+            }],
+        };
+        assert!(
+            power.on_battery(),
+            "a discharging supply must win over a stale AC aggregate"
+        );
+        assert_eq!(power.min_capacity_percent(), Some(55));
+    }
+
+    #[test]
+    fn min_capacity_ignores_batteries_without_a_reading() {
+        let power = PowerSnapshot {
+            source: PowerSource::Battery,
+            batteries: vec![
+                BatterySnapshot {
+                    name: "BAT0".into(),
+                    capacity_percent: None,
+                    state: BatteryState::Unknown,
+                },
+                BatterySnapshot {
+                    name: "BAT1".into(),
+                    capacity_percent: Some(42),
+                    state: BatteryState::Charging,
+                },
+            ],
+        };
+        assert_eq!(power.min_capacity_percent(), Some(42));
+    }
+
+    // --- R1-I11: adaptive sampling -------------------------------------------
+
+    #[test]
+    fn hidden_window_always_uses_the_background_profile() {
+        let hidden_low_battery = PowerSnapshot {
+            source: PowerSource::Battery,
+            batteries: vec![BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: Some(5),
+                state: BatteryState::Discharging,
+            }],
+        };
+        let plan = recommended_sampling_plan(&hidden_low_battery, WindowVisibility::Hidden);
+        assert_eq!(
+            plan,
+            SamplingPlan {
+                interval_ms: BACKGROUND_INTERVAL_MS,
+                profile: SamplingProfile::Background,
+            }
+        );
+        assert_eq!(
+            plan.duration().as_millis(),
+            u128::from(BACKGROUND_INTERVAL_MS)
+        );
+    }
+
+    #[test]
+    fn visible_window_on_battery_uses_the_battery_profile() {
+        let power = PowerSnapshot {
+            source: PowerSource::Battery,
+            batteries: vec![BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: Some(50),
+                state: BatteryState::Discharging,
+            }],
+        };
+        assert_eq!(
+            recommended_sampling_plan(&power, WindowVisibility::Visible),
+            SamplingPlan {
+                interval_ms: BATTERY_INTERVAL_MS,
+                profile: SamplingProfile::Battery,
+            }
+        );
+    }
+
+    #[test]
+    fn low_battery_switches_to_the_saver_profile_at_the_threshold() {
+        for (percent, expected) in [
+            (LOW_BATTERY_PERCENT, SamplingProfile::BatterySaver),
+            (LOW_BATTERY_PERCENT - 1, SamplingProfile::BatterySaver),
+            (LOW_BATTERY_PERCENT + 1, SamplingProfile::Battery),
+        ] {
+            let power = PowerSnapshot {
+                source: PowerSource::Battery,
+                batteries: vec![BatterySnapshot {
+                    name: "BAT0".into(),
+                    capacity_percent: Some(percent),
+                    state: BatteryState::Discharging,
+                }],
+            };
+            let plan = recommended_sampling_plan(&power, WindowVisibility::Visible);
+            assert_eq!(plan.profile, expected, "percent {percent}");
+            assert_eq!(
+                plan.interval_ms,
+                if expected == SamplingProfile::BatterySaver {
+                    BATTERY_SAVER_INTERVAL_MS
+                } else {
+                    BATTERY_INTERVAL_MS
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_power_data_never_throttles_a_visible_window() {
+        for source in [PowerSource::Unknown, PowerSource::Ac] {
+            let power = PowerSnapshot {
+                source,
+                batteries: Vec::new(),
+            };
+            assert_eq!(
+                recommended_sampling_plan(&power, WindowVisibility::Visible),
+                SamplingPlan {
+                    interval_ms: INTERACTIVE_INTERVAL_MS,
+                    profile: SamplingProfile::Interactive,
+                }
+            );
+        }
+        // A battery with no capacity reading must not look like an empty one.
+        let unknown_capacity = PowerSnapshot {
+            source: PowerSource::Battery,
+            batteries: vec![BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: None,
+                state: BatteryState::Discharging,
+            }],
+        };
+        assert_eq!(
+            recommended_sampling_plan(&unknown_capacity, WindowVisibility::Visible).profile,
+            SamplingProfile::Battery
+        );
+    }
+
+    #[test]
+    fn power_and_sampling_labels_are_stable() {
+        for (value, label, id) in [
+            (PowerSource::Unknown, "不明", "unknown"),
+            (PowerSource::Ac, "AC 電源", "ac"),
+            (PowerSource::Battery, "バッテリー", "battery"),
+        ] {
+            assert_eq!(value.label(), label);
+            assert_eq!(value.id(), id);
+        }
+        for (value, label, id) in [
+            (BatteryState::Unknown, "不明", "unknown"),
+            (BatteryState::Charging, "充電中", "charging"),
+            (BatteryState::Discharging, "放電中", "discharging"),
+            (BatteryState::Full, "満充電", "full"),
+            (BatteryState::NotCharging, "充電停止", "not_charging"),
+        ] {
+            assert_eq!(value.label(), label);
+            assert_eq!(value.id(), id);
+        }
+        for (value, label, id) in [
+            (SamplingProfile::Interactive, "通常", "interactive"),
+            (SamplingProfile::Battery, "バッテリー節約", "battery"),
+            (
+                SamplingProfile::BatterySaver,
+                "低バッテリー",
+                "battery_saver",
+            ),
+            (
+                SamplingProfile::Background,
+                "バックグラウンド",
+                "background",
+            ),
+        ] {
+            assert_eq!(value.label(), label);
+            assert_eq!(value.id(), id);
+        }
+    }
+
+    // --- R1-I12: cgroup grouping ---------------------------------------------
+
+    #[test]
+    fn cgroup_label_drops_the_host_path_and_keeps_the_leaf_units() {
+        assert_eq!(
+            cgroup_label(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/worker.service"
+            ),
+            "app.slice/worker.service"
+        );
+        assert_eq!(
+            cgroup_label("1:name=systemd:/system.slice/docker-abc123.scope"),
+            "system.slice/docker-abc123.scope"
+        );
+        assert_eq!(cgroup_label("0::/"), "/");
+        assert_eq!(cgroup_label("   "), "/");
+    }
+
+    #[test]
+    fn cgroup_label_is_display_safe_and_bounded() {
+        let hostile = format!("0::/x.slice/{}\u{001b}[31mw.service", "A".repeat(500));
+        let label = cgroup_label(&hostile);
+        assert!(
+            !label.chars().any(char::is_control),
+            "control character leaked into a cgroup label: {label:?}"
+        );
+        assert!(!label.contains("[31m"), "ANSI payload leaked: {label:?}");
+        assert!(
+            label.chars().count() <= CGROUP_LABEL_MAX_CHARS + 1, // +1 for '…'
+            "label was not truncated: {} chars",
+            label.chars().count()
+        );
+    }
+
+    #[test]
+    fn cgroup_groups_are_sorted_and_members_deduplicated() {
+        let memberships = vec![
+            ProcessCgroup {
+                key: ProcessKey::new(200, 20),
+                label: "b.slice/app.service".into(),
+            },
+            ProcessCgroup {
+                key: ProcessKey::new(100, 10),
+                label: "a.slice/app.service".into(),
+            },
+            ProcessCgroup {
+                key: ProcessKey::new(100, 10),
+                label: "a.slice/app.service".into(),
+            },
+            ProcessCgroup {
+                key: ProcessKey::new(300, 30),
+                label: "b.slice/app.service".into(),
+            },
+        ];
+        let groups = group_by_cgroup(&memberships);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].label, "a.slice/app.service");
+        assert_eq!(groups[0].members, vec![ProcessKey::new(100, 10)]);
+        assert_eq!(groups[1].label, "b.slice/app.service");
+        assert_eq!(
+            groups[1].members,
+            vec![ProcessKey::new(200, 20), ProcessKey::new(300, 30)]
+        );
+    }
+
+    #[test]
+    fn cgroup_grouping_ignores_empty_labels() {
+        let groups = group_by_cgroup(&[ProcessCgroup {
+            key: ProcessKey::new(1, 0),
+            label: String::new(),
+        }]);
+        assert!(
+            groups.is_empty(),
+            "an unreadable cgroup must not create a group"
+        );
+    }
+
+    // --- R1-I10 / R1-I11 / R1-I12: snapshot integration -----------------------
+
+    #[test]
+    fn default_snapshot_carries_honest_power_and_empty_groups() {
+        let snapshot = SystemSnapshot::default();
+        assert_eq!(snapshot.power.source, PowerSource::Unknown);
+        assert!(snapshot.power.batteries.is_empty());
+        assert_eq!(
+            snapshot.sampling,
+            SamplingPlan::default(),
+            "a snapshot without power data must not throttle"
+        );
+        assert!(snapshot.cgroups.is_empty());
+    }
+
+    #[test]
+    fn sampling_plan_is_a_floor_not_an_accelerator() {
+        let configured = std::time::Duration::from_millis(1_000);
+        // Interactive: the existing 1 s cadence is byte-for-byte unchanged.
+        assert_eq!(
+            SamplingPlan {
+                interval_ms: INTERACTIVE_INTERVAL_MS,
+                profile: SamplingProfile::Interactive,
+            }
+            .effective_interval(configured),
+            configured
+        );
+        // Battery and background plans slow a too-fast setting down.
+        for (interval_ms, profile) in [
+            (BATTERY_INTERVAL_MS, SamplingProfile::Battery),
+            (BATTERY_SAVER_INTERVAL_MS, SamplingProfile::BatterySaver),
+            (BACKGROUND_INTERVAL_MS, SamplingProfile::Background),
+        ] {
+            assert_eq!(
+                SamplingPlan {
+                    interval_ms,
+                    profile,
+                }
+                .effective_interval(configured),
+                std::time::Duration::from_millis(interval_ms)
+            );
+        }
+        // A deliberately slower user setting is never sped up.
+        let slow = std::time::Duration::from_secs(10);
+        assert_eq!(
+            SamplingPlan {
+                interval_ms: BATTERY_INTERVAL_MS,
+                profile: SamplingProfile::Battery,
+            }
+            .effective_interval(slow),
+            slow
+        );
     }
 }

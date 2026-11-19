@@ -225,6 +225,16 @@ pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers
     for component in &mut snapshot.components {
         component.label = redact_text(&component.label, ids);
     }
+    // Battery names come from sysfs and cgroup labels are derived from /proc
+    // paths; both can embed a user name or host-specific identifier. Neither is
+    // used for classification, so they are redacted like any other display text
+    // (R1-I10 / R1-I12).
+    for battery in &mut snapshot.power.batteries {
+        battery.name = redact_text(&battery.name, ids);
+    }
+    for group in &mut snapshot.cgroups {
+        group.label = redact_text(&group.label, ids);
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +323,47 @@ mod tests {
             redact_text("https://host.tail1234.t… --id=tail1234abcd", &ids),
             "https://host… --id=tailnet"
         );
+    }
+
+    #[test]
+    fn redacts_battery_names_and_cgroup_labels() {
+        use crate::model::{BatterySnapshot, CgroupGroup};
+
+        let ids = RedactionIdentifiers {
+            home: "/home/alice",
+            user: "alice",
+            hostname: "my-host",
+        };
+        let mut snapshot = SystemSnapshot {
+            power: crate::model::PowerSnapshot {
+                source: crate::model::PowerSource::Battery,
+                batteries: vec![BatterySnapshot {
+                    name: "alice-my-host-BAT0".into(),
+                    capacity_percent: Some(42),
+                    state: crate::model::BatteryState::Discharging,
+                }],
+            },
+            cgroups: vec![CgroupGroup {
+                label: "/home/alice/my-host.slice/app.service".into(),
+                members: vec![crate::model::ProcessKey::new(7, 1)],
+            }],
+            ..SystemSnapshot::default()
+        };
+        // The same membership must not create a second group after redaction.
+        let before = snapshot.cgroups.len();
+        redact_snapshot(&mut snapshot, &ids);
+        assert_eq!(
+            snapshot.cgroups.len(),
+            before,
+            "grouping shape must be kept"
+        );
+        assert_eq!(snapshot.power.batteries[0].name, "user-host-BAT0");
+        assert!(!snapshot.cgroups[0].label.contains("alice"), "{snapshot:?}");
+        assert!(
+            !snapshot.cgroups[0].label.contains("my-host"),
+            "{snapshot:?}"
+        );
+        assert_eq!(snapshot.power.batteries[0].capacity_percent, Some(42));
     }
 
     #[test]

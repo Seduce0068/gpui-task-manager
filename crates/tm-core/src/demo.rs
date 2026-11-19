@@ -10,8 +10,10 @@
 //! byte-for-byte identical and can be asserted in tests.
 
 use crate::model::{
-    ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot, NetworkInterfaceSnapshot,
-    NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus, SystemSnapshot, Timestamp,
+    BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
+    MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
+    ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SamplingProfile, SystemSnapshot,
+    Timestamp, INTERACTIVE_INTERVAL_MS,
 };
 use crate::port::{ControlError, PlatformInfo, ProbeError, SystemProbe};
 
@@ -338,7 +340,7 @@ pub fn demo_process_key(pid: u32) -> Option<ProcessKey> {
 pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
     let jitter = |salt: u64| ((tick.wrapping_mul(31).wrapping_add(salt) % 100) as f32) / 100.0;
 
-    let mut processes = DEMO_PROCESSES
+    let mut processes: Vec<ProcessSnapshot> = DEMO_PROCESSES
         .iter()
         .enumerate()
         .map(|(index, demo)| {
@@ -430,6 +432,37 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
         },
     ];
 
+    // Deterministic demo power/cgroup data (R1-I10..I12). A full battery on AC
+    // keeps the interactive 1 s cadence, so the demo tick and every CDP timing
+    // constant stay unchanged; two static groups exercise the grouping display.
+    let power = PowerSnapshot {
+        source: PowerSource::Ac,
+        batteries: vec![BatterySnapshot {
+            name: "DEMO0".to_string(),
+            capacity_percent: Some(88),
+            state: BatteryState::Full,
+        }],
+    };
+    let cgroups = vec![
+        CgroupGroup {
+            label: "demo.slice/system.service".to_string(),
+            members: processes
+                .iter()
+                .take(3)
+                .map(|process| process.key)
+                .collect(),
+        },
+        CgroupGroup {
+            label: "demo.slice/user.service".to_string(),
+            members: processes
+                .iter()
+                .skip(3)
+                .take(4)
+                .map(|process| process.key)
+                .collect(),
+        },
+    ];
+
     SystemSnapshot {
         sampled_at: Timestamp::from_secs(DEMO_BASE_UNIX_SECS.saturating_add(tick)),
         sampled_elapsed: std::time::Duration::from_secs(1),
@@ -473,6 +506,12 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
             },
         ],
         components,
+        power,
+        sampling: SamplingPlan {
+            interval_ms: INTERACTIVE_INTERVAL_MS,
+            profile: SamplingProfile::Interactive,
+        },
+        cgroups,
         self_pid: Some(4_242),
     }
 }
@@ -640,6 +679,31 @@ mod tests {
     fn demo_snapshot_is_deterministic() {
         assert_eq!(demo_snapshot(7), demo_snapshot(7));
         assert_ne!(demo_snapshot(7), demo_snapshot(8));
+    }
+
+    #[test]
+    fn demo_snapshot_exposes_consistent_power_sampling_and_cgroups() {
+        use crate::model::{
+            recommended_sampling_plan, BatteryState, PowerSource, WindowVisibility,
+        };
+
+        let snapshot = demo_snapshot(0);
+        assert_eq!(snapshot.power.source, PowerSource::Ac);
+        assert_eq!(snapshot.power.batteries.len(), 1);
+        assert_eq!(snapshot.power.batteries[0].state, BatteryState::Full);
+        assert!(!snapshot.power.on_battery());
+        assert_eq!(
+            snapshot.sampling,
+            recommended_sampling_plan(&snapshot.power, WindowVisibility::Visible)
+        );
+        assert_eq!(snapshot.sampling.interval_ms, INTERACTIVE_INTERVAL_MS);
+        assert_eq!(snapshot.cgroups.len(), 2);
+        for group in &snapshot.cgroups {
+            assert!(!group.members.is_empty());
+            for key in &group.members {
+                assert!(snapshot.process(*key).is_some(), "group member must exist");
+            }
+        }
     }
 
     #[test]

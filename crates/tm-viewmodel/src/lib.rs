@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use tm_core::format;
 use tm_core::{
-    filter_and_sort, flatten_process_tree, Filter, MetricHistory, NetworkCounters, PlatformInfo,
-    ProcessKey, ProcessSnapshot, ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec,
-    SystemSnapshot, Timestamp,
+    filter_and_sort, flatten_process_tree, normalise_percent, Filter, MetricHistory,
+    NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
+    RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
@@ -177,6 +177,142 @@ pub fn trend_delta(
     TrendDelta { direction, amount }
 }
 
+// ---------------------------------------------------------- filter presets (R1-I06)
+//
+// ADR-012 deliberately keeps filters out of the persisted `Settings`: a filter
+// describes "the work right now", not a display preference, and restoring one
+// at startup would hide processes without explanation. These presets are therefore
+// built-in, in-memory values only. They are never written to disk and never
+// become part of the settings schema.
+
+/// CPU threshold used by the "高 CPU" preset, in percent.
+pub const PRESET_HIGH_CPU_PERCENT: f32 = 50.0;
+/// Resident-memory threshold used by the "高メモリ" preset (256 MiB).
+pub const PRESET_HIGH_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+/// Virtual-memory threshold used by the "大きな仮想メモリ" preset (1 GiB).
+pub const PRESET_LARGE_VIRTUAL_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Stable identity of a built-in filter preset (R1-I06).
+///
+/// A small `Copy` enum (rather than the [`Filter`] itself) keeps
+/// [`Command::ApplyFilterPreset`] cheap, `Eq` and safe to compare in tests.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum FilterPresetId {
+    /// No filtering at all.
+    All,
+    /// Processes using at least [`PRESET_HIGH_CPU_PERCENT`] CPU.
+    HighCpu,
+    /// Processes using at least [`PRESET_HIGH_MEMORY_BYTES`] resident memory.
+    HighMemory,
+    /// Processes with at least [`PRESET_LARGE_VIRTUAL_MEMORY_BYTES`] of address space.
+    LargeVirtualMemory,
+    /// Processes currently in the running state.
+    Running,
+}
+
+impl FilterPresetId {
+    /// Japanese label shown on the preset chip.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "すべて",
+            Self::HighCpu => "高 CPU",
+            Self::HighMemory => "高メモリ",
+            Self::LargeVirtualMemory => "大きな仮想メモリ",
+            Self::Running => "実行中",
+        }
+    }
+}
+
+/// A named, immutable filter shortcut shared by both shells (R1-I06).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilterPreset {
+    /// Stable identity of this preset.
+    pub id: FilterPresetId,
+    /// Japanese label shown to the user.
+    pub label: &'static str,
+    /// Filter applied when the preset is selected.
+    pub filter: Filter,
+}
+
+/// Built-in filter presets in display order (R1-I06).
+///
+/// The `All` entry is first so a UI can offer it as the "reset" choice. The
+/// thresholds are static on purpose: presets are in-memory shortcuts, not
+/// persisted or user-editable settings (ADR-012).
+pub static FILTER_PRESETS: &[FilterPreset] = &[
+    FilterPreset {
+        id: FilterPresetId::All,
+        label: FilterPresetId::All.label(),
+        filter: Filter {
+            text: String::new(),
+            user: None,
+            status: None,
+            min_cpu_percent: None,
+            min_memory_bytes: None,
+            min_virtual_memory_bytes: None,
+        },
+    },
+    FilterPreset {
+        id: FilterPresetId::HighCpu,
+        label: FilterPresetId::HighCpu.label(),
+        filter: Filter {
+            text: String::new(),
+            user: None,
+            status: None,
+            min_cpu_percent: Some(PRESET_HIGH_CPU_PERCENT),
+            min_memory_bytes: None,
+            min_virtual_memory_bytes: None,
+        },
+    },
+    FilterPreset {
+        id: FilterPresetId::HighMemory,
+        label: FilterPresetId::HighMemory.label(),
+        filter: Filter {
+            text: String::new(),
+            user: None,
+            status: None,
+            min_cpu_percent: None,
+            min_memory_bytes: Some(PRESET_HIGH_MEMORY_BYTES),
+            min_virtual_memory_bytes: None,
+        },
+    },
+    FilterPreset {
+        id: FilterPresetId::LargeVirtualMemory,
+        label: FilterPresetId::LargeVirtualMemory.label(),
+        filter: Filter {
+            text: String::new(),
+            user: None,
+            status: None,
+            min_cpu_percent: None,
+            min_memory_bytes: None,
+            min_virtual_memory_bytes: Some(PRESET_LARGE_VIRTUAL_MEMORY_BYTES),
+        },
+    },
+    FilterPreset {
+        id: FilterPresetId::Running,
+        label: FilterPresetId::Running.label(),
+        filter: Filter {
+            text: String::new(),
+            user: None,
+            status: Some(ProcessStatus::Running),
+            min_cpu_percent: None,
+            min_memory_bytes: None,
+            min_virtual_memory_bytes: None,
+        },
+    },
+];
+
+/// Looks up a built-in preset by identity.
+///
+/// Panics only for a value not listed in [`FILTER_PRESETS`], which is a
+/// programming error in the caller rather than a runtime condition.
+pub fn filter_preset(id: FilterPresetId) -> &'static FilterPreset {
+    FILTER_PRESETS
+        .iter()
+        .find(|preset| preset.id == id)
+        .expect("filter preset id must be listed in FILTER_PRESETS")
+}
+
 /// A user intention produced by the shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -190,6 +326,8 @@ pub enum Command {
     SetSortKey(SortKey),
     /// Set an exact sort spec (used when restoring persisted settings).
     SetSortSpec(SortSpec),
+    /// Apply a built-in named filter preset (R1-I06).
+    ApplyFilterPreset(FilterPresetId),
     /// Replace the free-text filter.
     SetFilterText(String),
     /// Clear every filter field.
@@ -241,6 +379,7 @@ impl Command {
                 | Self::SelectRelative(_)
                 | Self::SetSortKey(_)
                 | Self::SetSortSpec(_)
+                | Self::ApplyFilterPreset(_)
                 | Self::SetFilterText(_)
                 | Self::ClearFilter
                 | Self::SetMinVirtualMemoryBytes(_)
@@ -343,8 +482,17 @@ pub struct Dashboard {
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
+    active_preset: Option<FilterPresetId>,
     selected: Option<ProcessKey>,
     selection_hint: usize,
+    /// CPU history of the currently selected process (R1-I08).
+    ///
+    /// Only one series is retained: it is bounded by [`HISTORY_CAPACITY`], reset
+    /// whenever the selection changes, and never persisted. Swapping to another
+    /// process starts a fresh series rather than attributing old samples to it.
+    selected_cpu_history: RingBuffer<f32>,
+    /// Process identity the retained series belongs to.
+    selected_cpu_history_key: Option<ProcessKey>,
     details_visible: bool,
     paused: bool,
     interval: Duration,
@@ -371,8 +519,11 @@ impl Dashboard {
             history: MetricHistory::new(HISTORY_CAPACITY),
             sort: SortSpec::default(),
             filter: Filter::default(),
+            active_preset: None,
             selected: None,
             selection_hint: 0,
+            selected_cpu_history: RingBuffer::new(HISTORY_CAPACITY),
+            selected_cpu_history_key: None,
             details_visible: true,
             paused: false,
             interval: clamp_interval(interval),
@@ -414,9 +565,48 @@ impl Dashboard {
         &self.filter.text
     }
 
-    /// Current refresh interval.
+    /// Preset currently driving the filter, if any (R1-I06).
+    ///
+    /// Any direct filter edit clears this marker: the table must not claim a
+    /// preset is active after the user has changed one of its fields.
+    pub fn active_filter_preset(&self) -> Option<FilterPresetId> {
+        self.active_preset
+    }
+
+    /// Current user-configured refresh interval.
     pub fn interval(&self) -> Duration {
         self.interval
+    }
+
+    /// Interval the sampler should actually wait: the configured value raised
+    /// to the snapshot's adaptive floor, when one is available (R1-I11).
+    ///
+    /// Before the first snapshot (or with a legacy wire snapshot whose
+    /// `sampling` field defaults to zero) this is exactly `interval()`, so the
+    /// existing startup cadence is unchanged.
+    pub fn effective_interval(&self) -> Duration {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.sampling.effective_interval(self.interval))
+            .unwrap_or(self.interval)
+    }
+
+    /// Power state of the latest snapshot, if one has been ingested.
+    pub fn power(&self) -> Option<&tm_core::PowerSnapshot> {
+        self.snapshot.as_ref().map(|snapshot| &snapshot.power)
+    }
+
+    /// Adaptive sampling plan of the latest snapshot, if one has been ingested.
+    pub fn sampling_plan(&self) -> Option<tm_core::SamplingPlan> {
+        self.snapshot.as_ref().map(|snapshot| snapshot.sampling)
+    }
+
+    /// Read-only cgroup groups of the latest snapshot (R1-I12).
+    pub fn cgroup_groups(&self) -> &[tm_core::CgroupGroup] {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.cgroups.as_slice())
+            .unwrap_or_default()
     }
 
     /// Whether sampling is paused.
@@ -443,6 +633,21 @@ impl Dashboard {
     pub fn selected_process(&self) -> Option<&ProcessSnapshot> {
         let snapshot = self.snapshot.as_ref()?;
         snapshot.process(self.selected?)
+    }
+
+    /// CPU history of the selected process, oldest sample first (R1-I08).
+    ///
+    /// Values are normalised (non-finite and negative readings become zero) but
+    /// are not capped at 100: a multicore process may legitimately exceed it,
+    /// and the widget scales the sparkline to the observed maximum. The buffer
+    /// is empty until a process is selected and the first snapshot is ingested.
+    pub fn selected_cpu_history(&self) -> &RingBuffer<f32> {
+        &self.selected_cpu_history
+    }
+
+    /// Copies the selected process's CPU history into a vector for rendering.
+    pub fn selected_cpu_values(&self) -> Vec<f32> {
+        self.selected_cpu_history.to_vec()
     }
 
     /// Indices into `snapshot.processes` for the rows the table shows, in display order.
@@ -587,6 +792,7 @@ impl Dashboard {
                         .is_some_and(|snapshot| snapshot.process(*key).is_some())
                 });
                 self.sync_selection_hint();
+                self.sync_selected_cpu_history();
                 Vec::new()
             }
             Command::SelectRelative(delta) => {
@@ -603,18 +809,29 @@ impl Dashboard {
                 self.recompute_visible();
                 Vec::new()
             }
+            Command::ApplyFilterPreset(id) => {
+                // Clone the static preset: a preset is shared immutable data,
+                // the dashboard owns its own mutable filter.
+                self.filter = filter_preset(id).filter.clone();
+                self.active_preset = Some(id);
+                self.recompute_visible();
+                Vec::new()
+            }
             Command::SetFilterText(text) => {
                 self.filter.text = text;
+                self.active_preset = None;
                 self.recompute_visible();
                 Vec::new()
             }
             Command::ClearFilter => {
                 self.filter = Filter::default();
+                self.active_preset = None;
                 self.recompute_visible();
                 Vec::new()
             }
             Command::SetMinVirtualMemoryBytes(bytes) => {
                 self.filter.min_virtual_memory_bytes = bytes;
+                self.active_preset = None;
                 self.recompute_visible();
                 Vec::new()
             }
@@ -774,6 +991,19 @@ impl Dashboard {
         }
         self.ensure_selection_visible();
         self.sync_selection_hint();
+        // A disappeared selection may have fallen back to a different process;
+        // drop samples that belong to the previous identity before appending.
+        self.sync_selected_cpu_history();
+        if let Some(key) = self.selected {
+            let cpu = self
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.process(key))
+                .map(|process| normalise_percent(process.cpu_percent));
+            if let Some(cpu) = cpu {
+                self.selected_cpu_history.push(cpu);
+            }
+        }
     }
 
     /// Sets a transient status message (cleared on the next successful sample).
@@ -927,6 +1157,7 @@ impl Dashboard {
             self.selected = Some(snapshot.processes[self.visible[target]].key);
             self.selection_hint = target;
         }
+        self.sync_selected_cpu_history();
     }
 
     fn recompute_visible(&mut self) {
@@ -949,6 +1180,7 @@ impl Dashboard {
         }
         self.ensure_selection_visible();
         self.sync_selection_hint();
+        self.sync_selected_cpu_history();
     }
 
     /// Whether `candidate` is a descendant of `ancestor` via `parent_pid`.
@@ -1010,6 +1242,18 @@ impl Dashboard {
     fn sync_selection_hint(&mut self) {
         if let Some(position) = self.selected_visible_index() {
             self.selection_hint = position;
+        }
+    }
+
+    /// Drops the retained CPU series whenever the selection identity changes.
+    ///
+    /// Called from every path that can move the selection (explicit select,
+    /// relative move, filter/sort recompute and snapshot fallback) so samples
+    /// from process A are never shown as process B's history (R1-I08).
+    fn sync_selected_cpu_history(&mut self) {
+        if self.selected != self.selected_cpu_history_key {
+            self.selected_cpu_history.clear();
+            self.selected_cpu_history_key = self.selected;
         }
     }
 }
@@ -1230,6 +1474,54 @@ mod tests {
         assert_eq!(dashboard.interval(), MIN_REFRESH_INTERVAL);
         dashboard.apply(Command::SetInterval(Duration::from_secs(3_600)));
         assert_eq!(dashboard.interval(), MAX_REFRESH_INTERVAL);
+    }
+
+    #[test]
+    fn effective_interval_follows_the_snapshot_plan_without_changing_startup() {
+        use tm_core::{
+            BatterySnapshot, BatteryState, PowerSnapshot, PowerSource, SamplingPlan,
+            SamplingProfile, BATTERY_INTERVAL_MS, LOW_BATTERY_PERCENT,
+        };
+
+        let mut dashboard = dashboard();
+        // No snapshot yet: exactly the configured cadence.
+        assert_eq!(dashboard.effective_interval(), DEFAULT_REFRESH_INTERVAL);
+        assert!(dashboard.power().is_none());
+        assert!(dashboard.sampling_plan().is_none());
+        assert!(dashboard.cgroup_groups().is_empty());
+
+        // The demo snapshot is on AC and keeps the interactive 1 s cadence.
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.effective_interval(), DEFAULT_REFRESH_INTERVAL);
+        assert_eq!(dashboard.cgroup_groups().len(), 2);
+
+        // A battery plan raises a too-fast configured interval as a floor.
+        let mut battery = demo_snapshot(1);
+        battery.power = PowerSnapshot {
+            source: PowerSource::Battery,
+            batteries: vec![BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: Some(LOW_BATTERY_PERCENT + 10),
+                state: BatteryState::Discharging,
+            }],
+        };
+        battery.sampling =
+            tm_core::recommended_sampling_plan(&battery.power, tm_core::WindowVisibility::Visible);
+        dashboard.ingest(battery);
+        assert_eq!(
+            dashboard.sampling_plan(),
+            Some(SamplingPlan {
+                interval_ms: BATTERY_INTERVAL_MS,
+                profile: SamplingProfile::Battery,
+            })
+        );
+        assert_eq!(
+            dashboard.effective_interval(),
+            Duration::from_millis(BATTERY_INTERVAL_MS)
+        );
+        // A deliberately slower user setting is always respected.
+        dashboard.apply(Command::SetInterval(Duration::from_secs(10)));
+        assert_eq!(dashboard.effective_interval(), MAX_REFRESH_INTERVAL);
     }
 
     #[test]
@@ -1719,6 +2011,7 @@ mod tests {
             Command::SelectRelative(1),
             Command::SetSortKey(SortKey::Pid),
             Command::SetSortSpec(SortSpec::default()),
+            Command::ApplyFilterPreset(FilterPresetId::All),
             Command::SetFilterText("firefox".to_string()),
             Command::ClearFilter,
             Command::SetMinVirtualMemoryBytes(Some(1)),
@@ -2193,5 +2486,221 @@ mod tests {
             TrendUnit::BytesPerSecond,
         );
         assert_eq!(dashboard.network_trend(), expected_network);
+    }
+
+    // ------------------------------------------------------ filter presets (R1-I06)
+
+    #[test]
+    fn filter_presets_are_built_in_unique_and_labelled() {
+        assert_eq!(
+            FILTER_PRESETS.first().expect("presets").id,
+            FilterPresetId::All,
+            "the reset choice must come first"
+        );
+        let mut ids = HashSet::new();
+        for preset in FILTER_PRESETS {
+            assert!(
+                ids.insert(preset.id),
+                "duplicate preset id: {:?}",
+                preset.id
+            );
+            assert_eq!(preset.label, preset.id.label());
+            assert_eq!(filter_preset(preset.id), preset);
+        }
+        for id in [
+            FilterPresetId::All,
+            FilterPresetId::HighCpu,
+            FilterPresetId::HighMemory,
+            FilterPresetId::LargeVirtualMemory,
+            FilterPresetId::Running,
+        ] {
+            assert!(ids.contains(&id), "missing preset: {id:?}");
+        }
+        assert!(!filter_preset(FilterPresetId::All).filter.is_active());
+        assert_eq!(
+            filter_preset(FilterPresetId::HighCpu)
+                .filter
+                .min_cpu_percent,
+            Some(PRESET_HIGH_CPU_PERCENT)
+        );
+        assert_eq!(
+            filter_preset(FilterPresetId::HighMemory)
+                .filter
+                .min_memory_bytes,
+            Some(PRESET_HIGH_MEMORY_BYTES)
+        );
+        assert_eq!(
+            filter_preset(FilterPresetId::LargeVirtualMemory)
+                .filter
+                .min_virtual_memory_bytes,
+            Some(PRESET_LARGE_VIRTUAL_MEMORY_BYTES)
+        );
+        assert_eq!(
+            filter_preset(FilterPresetId::Running).filter.status,
+            Some(ProcessStatus::Running)
+        );
+    }
+
+    #[test]
+    fn applying_a_preset_filters_the_table_and_marks_it_active() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let all_count = dashboard.visible_count();
+        assert_eq!(dashboard.active_filter_preset(), None);
+
+        assert!(dashboard
+            .apply(Command::ApplyFilterPreset(FilterPresetId::HighCpu))
+            .is_empty());
+        assert_eq!(
+            dashboard.active_filter_preset(),
+            Some(FilterPresetId::HighCpu)
+        );
+        let expected = dashboard
+            .snapshot()
+            .expect("snapshot")
+            .processes
+            .iter()
+            .filter(|process| normalise_percent(process.cpu_percent) >= PRESET_HIGH_CPU_PERCENT)
+            .count();
+        assert_eq!(dashboard.visible_count(), expected);
+        assert!(expected < all_count, "demo data must contain low-CPU rows");
+
+        // Switching presets is a single effect-free command; "All" resets the
+        // filter while keeping the marker so the UI can highlight that chip.
+        dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::All));
+        assert_eq!(dashboard.visible_count(), all_count);
+        assert_eq!(dashboard.active_filter_preset(), Some(FilterPresetId::All));
+    }
+
+    #[test]
+    fn direct_filter_edits_clear_the_active_preset_marker() {
+        let commands = [
+            Command::SetFilterText("firefox".to_string()),
+            Command::ClearFilter,
+            Command::SetMinVirtualMemoryBytes(Some(1)),
+        ];
+        for command in commands {
+            let mut dashboard = dashboard();
+            ingest_ticks(&mut dashboard, 1);
+            dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::HighCpu));
+            assert_eq!(
+                dashboard.active_filter_preset(),
+                Some(FilterPresetId::HighCpu)
+            );
+            dashboard.apply(command.clone());
+            assert_eq!(
+                dashboard.active_filter_preset(),
+                None,
+                "{command:?} changed the filter directly"
+            );
+        }
+    }
+
+    // -------------------------------------------- selected process series (R1-I08)
+
+    #[test]
+    fn selected_cpu_history_tracks_only_the_selected_process() {
+        let mut dashboard = dashboard();
+        assert!(dashboard.selected_cpu_history().is_empty());
+        assert_eq!(
+            dashboard.selected_cpu_history().capacity(),
+            HISTORY_CAPACITY
+        );
+
+        dashboard.ingest(demo_snapshot(0));
+        let key = firefox_key();
+        dashboard.apply(Command::Select(Some(key)));
+        assert!(
+            dashboard.selected_cpu_history().is_empty(),
+            "a selection change starts a new series"
+        );
+
+        for tick in 1..=3 {
+            dashboard.ingest(demo_snapshot(tick));
+        }
+        let values = dashboard.selected_cpu_values();
+        assert_eq!(values.len(), 3);
+        for (offset, &value) in values.iter().enumerate() {
+            let expected = demo_snapshot(offset as u64 + 1)
+                .process(key)
+                .expect("firefox")
+                .cpu_percent;
+            assert_eq!(value, expected, "sample {offset}");
+        }
+        assert_eq!(
+            dashboard.selected_cpu_history().earliest().copied(),
+            Some(values[0])
+        );
+        assert_eq!(
+            dashboard.selected_cpu_history().latest().copied(),
+            Some(values[2])
+        );
+
+        let other = dashboard
+            .snapshot()
+            .expect("snapshot")
+            .processes
+            .iter()
+            .find(|process| process.key != key)
+            .expect("another process")
+            .key;
+        dashboard.apply(Command::Select(Some(other)));
+        assert!(
+            dashboard.selected_cpu_history().is_empty(),
+            "the previous process's samples must not be attributed to the new one"
+        );
+        dashboard.ingest(demo_snapshot(4));
+        assert_eq!(dashboard.selected_cpu_values().len(), 1);
+        let expected = demo_snapshot(4)
+            .process(other)
+            .expect("selected process")
+            .cpu_percent;
+        assert_eq!(dashboard.selected_cpu_values()[0], expected);
+    }
+
+    #[test]
+    fn cleared_and_replaced_selections_reset_the_cpu_series() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 3);
+        assert_eq!(dashboard.selected_cpu_values().len(), 3);
+
+        dashboard.apply(Command::Select(None));
+        assert!(dashboard.selected_cpu_history().is_empty());
+        dashboard.ingest(demo_snapshot(3));
+        assert!(
+            dashboard.selected_cpu_history().is_empty(),
+            "no series while nothing is selected"
+        );
+
+        let key = firefox_key();
+        dashboard.apply(Command::Select(Some(key)));
+        dashboard.ingest(demo_snapshot(4));
+        assert_eq!(dashboard.selected_cpu_values().len(), 1);
+
+        // A disappearing process triggers the row-position fallback; the new
+        // identity must not inherit the old process's samples.
+        let old_key = dashboard.selected_key().expect("selection");
+        let mut next = demo_snapshot(5);
+        next.processes.retain(|process| process.key != old_key);
+        dashboard.ingest(next);
+        assert_ne!(dashboard.selected_key(), Some(old_key));
+        assert_eq!(dashboard.selected_cpu_values().len(), 1);
+    }
+
+    #[test]
+    fn selected_cpu_history_is_bounded_and_paused_ingests_add_nothing() {
+        let mut dashboard = dashboard();
+        for tick in 0..(HISTORY_CAPACITY as u64 + 5) {
+            dashboard.ingest(demo_snapshot(tick));
+        }
+        assert_eq!(
+            dashboard.selected_cpu_history().len(),
+            HISTORY_CAPACITY,
+            "the series must not grow without bound"
+        );
+
+        dashboard.apply(Command::SetPaused(true));
+        dashboard.ingest(demo_snapshot(HISTORY_CAPACITY as u64 + 6));
+        assert_eq!(dashboard.selected_cpu_history().len(), HISTORY_CAPACITY);
     }
 }

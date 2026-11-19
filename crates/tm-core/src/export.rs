@@ -15,8 +15,13 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{ProcessStatus, SystemSnapshot};
-use crate::redact::{redact_snapshot, RedactionIdentifiers};
+use crate::model::{BatteryState, PowerSource, ProcessStatus, SamplingProfile, SystemSnapshot};
+// Union of both sides of the cherry-pick. The merged `redact_for_export`
+// delegates every field (including battery names and cgroup labels) to
+// `redact_snapshot`, which applies `redact_text` internally; the import is kept
+// for the documented primitive but has no direct call site here.
+#[allow(unused_imports)]
+use crate::redact::{redact_snapshot, redact_text, RedactionIdentifiers};
 
 /// Header row of the process CSV written by [`snapshot_to_csv`].
 ///
@@ -29,9 +34,11 @@ pub const PROCESS_CSV_HEADER: &str = "sampled_at_unix_millis,pid,start_time_secs
 /// This is the exact data the exporters convert. [`crate::redact::redact_snapshot`]
 /// is the single source of truth and now masks every identifier-bearing display
 /// string: host name, OS name, kernel version, process user/name/command, mount
-/// points, interface names and sensor labels. Re-applying it to a private clone
-/// is therefore enough, with no field-specific masking left here; the operation
-/// is idempotent if the caller already redacted its snapshot.
+/// points, interface names and sensor labels. It applies [`redact_text`] to each
+/// string field (including component labels, battery names and cgroup labels).
+/// Re-applying it to a private clone is therefore enough, with no field-specific
+/// masking left here; the operation is idempotent if the caller already redacted
+/// its snapshot.
 ///
 /// The input snapshot is never mutated and `ids` must be built from values
 /// captured **before** any redaction (see [`RedactionIdentifiers`]).
@@ -313,6 +320,62 @@ pub fn snapshot_to_json(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_
     });
     out.push_str(",\n");
 
+    // Additive wire fields (R1-I10 / R1-I11 / R1-I12). The keys and enum
+    // spellings mirror serde's representation of the model types, so a consumer
+    // can parse both the live endpoint and an exported file with one struct.
+    push_key(&mut out, 2, "power");
+    out.push_str("{\n");
+    push_key(&mut out, 3, "source");
+    push_json_string(&mut out, json_power_source(snap.power.source));
+    out.push_str(",\n");
+    push_key(&mut out, 3, "batteries");
+    push_json_object_array(&mut out, 3, snap.power.batteries.len(), |out, index| {
+        let battery = &snap.power.batteries[index];
+        push_key(out, 5, "name");
+        push_json_string(out, &battery.name);
+        out.push_str(",\n");
+        push_key(out, 5, "capacity_percent");
+        push_optional(out, battery.capacity_percent, push_display);
+        out.push_str(",\n");
+        push_key(out, 5, "state");
+        push_json_string(out, json_battery_state(battery.state));
+        out.push('\n');
+    });
+    out.push('\n');
+    push_indent(&mut out, 2);
+    out.push_str("},\n");
+
+    push_key(&mut out, 2, "sampling");
+    out.push_str("{\n");
+    push_key(&mut out, 3, "interval_ms");
+    push_display(&mut out, snap.sampling.interval_ms);
+    out.push_str(",\n");
+    push_key(&mut out, 3, "profile");
+    push_json_string(&mut out, json_sampling_profile(snap.sampling.profile));
+    out.push('\n');
+    push_indent(&mut out, 2);
+    out.push_str("},\n");
+
+    push_key(&mut out, 2, "cgroups");
+    push_json_object_array(&mut out, 2, snap.cgroups.len(), |out, index| {
+        let group = &snap.cgroups[index];
+        push_key(out, 4, "label");
+        push_json_string(out, &group.label);
+        out.push_str(",\n");
+        push_key(out, 4, "members");
+        push_json_object_array(out, 4, group.members.len(), |out, member_index| {
+            let key = &group.members[member_index];
+            push_key(out, 6, "pid");
+            push_display(out, key.pid);
+            out.push_str(",\n");
+            push_key(out, 6, "start_time_secs");
+            push_display(out, key.start_time_secs);
+            out.push('\n');
+        });
+        out.push('\n');
+    });
+    out.push_str(",\n");
+
     push_key(&mut out, 2, "self_pid");
     push_optional(&mut out, snap.self_pid, push_display);
     out.push('\n');
@@ -435,6 +498,36 @@ fn json_status(status: ProcessStatus) -> &'static str {
     }
 }
 
+/// Serde serialises unit enum variants by their Rust name on the wire.
+fn json_power_source(source: PowerSource) -> &'static str {
+    match source {
+        PowerSource::Unknown => "Unknown",
+        PowerSource::Ac => "Ac",
+        PowerSource::Battery => "Battery",
+    }
+}
+
+/// Serde serialises unit enum variants by their Rust name on the wire.
+fn json_battery_state(state: BatteryState) -> &'static str {
+    match state {
+        BatteryState::Unknown => "Unknown",
+        BatteryState::Charging => "Charging",
+        BatteryState::Discharging => "Discharging",
+        BatteryState::Full => "Full",
+        BatteryState::NotCharging => "NotCharging",
+    }
+}
+
+/// Serde serialises unit enum variants by their Rust name on the wire.
+fn json_sampling_profile(profile: SamplingProfile) -> &'static str {
+    match profile {
+        SamplingProfile::Interactive => "Interactive",
+        SamplingProfile::Battery => "Battery",
+        SamplingProfile::BatterySaver => "BatterySaver",
+        SamplingProfile::Background => "Background",
+    }
+}
+
 /// CSV uses the stable lowercase identifier instead of the serde variant name.
 fn csv_status(status: ProcessStatus) -> &'static str {
     status.id()
@@ -536,6 +629,22 @@ mod tests {
                 temperature_c: Some(42.0),
                 max_c: None,
                 critical_c: Some(100.0),
+            }],
+            power: crate::model::PowerSnapshot {
+                source: PowerSource::Battery,
+                batteries: vec![crate::model::BatterySnapshot {
+                    name: "alice-my-host-BAT0".into(),
+                    capacity_percent: Some(12),
+                    state: BatteryState::Discharging,
+                }],
+            },
+            sampling: crate::model::SamplingPlan {
+                interval_ms: 5_000,
+                profile: SamplingProfile::BatterySaver,
+            },
+            cgroups: vec![crate::model::CgroupGroup {
+                label: "/home/alice/my-host.slice/app.service".into(),
+                members: vec![ProcessKey::new(4242, 1_700_000_000)],
             }],
             self_pid: Some(4242),
             ..SystemSnapshot::default()
@@ -859,5 +968,49 @@ mod tests {
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");
+    }
+
+    #[test]
+    fn power_sampling_and_cgroups_are_registered_in_the_wire_export() {
+        let json = snapshot_to_json(&secret_snapshot(), &secret_ids());
+        assert_well_formed_json(&json);
+        for key in [
+            "\"power\"",
+            "\"source\": \"Battery\"",
+            "\"batteries\"",
+            "\"capacity_percent\": 12",
+            "\"state\": \"Discharging\"",
+            "\"sampling\"",
+            "\"interval_ms\": 5000",
+            "\"profile\": \"BatterySaver\"",
+            "\"cgroups\"",
+            "\"members\"",
+            "\"start_time_secs\": 1700000000",
+        ] {
+            assert!(
+                json.contains(key),
+                "missing additive wire key {key}: {json}"
+            );
+        }
+        // The stable lowercase identifiers are only used by CSV/status labels;
+        // the JSON envelope must keep serde's variant spelling.
+        assert!(!json.contains("\"source\": \"battery\""), "{json}");
+        assert!(!json.contains("\"profile\": \"battery_saver\""), "{json}");
+        // An empty snapshot still emits well-formed, parseable additive fields.
+        let empty = snapshot_to_json(&SystemSnapshot::default(), &secret_ids());
+        assert_well_formed_json(&empty);
+        assert!(empty.contains("\"batteries\": []"), "{empty}");
+        assert!(empty.contains("\"cgroups\": []"), "{empty}");
+        assert!(empty.contains("\"source\": \"Unknown\""), "{empty}");
+        assert!(empty.contains("\"profile\": \"Interactive\""), "{empty}");
+        // The process CSV is a fixed header + one row per process; additive
+        // snapshot fields must not change it.
+        assert_eq!(
+            snapshot_to_csv(&secret_snapshot(), &secret_ids())
+                .lines()
+                .next()
+                .expect("header"),
+            PROCESS_CSV_HEADER
+        );
     }
 }

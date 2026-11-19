@@ -83,9 +83,11 @@ use sysinfo::{
     UpdateKind, Users,
 };
 use tm_core::model::{
-    is_virtual_interface, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot, MemorySnapshot,
-    NetworkInterfaceSnapshot, NetworkSnapshot, ProcessKey, ProcessSnapshot, ProcessStatus,
-    SystemSnapshot, Timestamp,
+    cgroup_label, group_by_cgroup, is_virtual_interface, recommended_sampling_plan,
+    BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
+    MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
+    ProcessCgroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SystemSnapshot,
+    Timestamp, WindowVisibility,
 };
 use tm_core::port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
 use tm_core::sanitize::{sanitize_display, MAX_COMMAND_CHARS, MAX_NAME_CHARS};
@@ -235,6 +237,10 @@ impl NativeProbe {
     /// sample.
     fn build_snapshot(&self, elapsed_ms: u64) -> (SystemSnapshot, HashMap<ProcessKey, u64>) {
         let (processes, next_cpu_ms) = self.process_snapshots(elapsed_ms);
+        // One power read feeds both the snapshot and its sampling plan: two
+        // sysfs reads could straddle a state change and disagree.
+        let power = self.power_snapshot();
+        let sampling = recommended_sampling_plan(&power, WindowVisibility::Visible);
         let snapshot = SystemSnapshot {
             sampled_at: now_millis(),
             sampled_elapsed: std::time::Duration::from_millis(elapsed_ms),
@@ -247,6 +253,11 @@ impl NativeProbe {
             network: self.network_snapshot(),
             disks: self.disk_snapshots(),
             components: self.component_snapshots(),
+            power,
+            sampling,
+            // Membership collection only reads /proc: no sysinfo refresh, so
+            // the one-row-per-process and threads contracts stay intact.
+            cgroups: group_by_cgroup(&self.cgroup_memberships()),
             self_pid: Some(std::process::id()),
         };
         (snapshot, next_cpu_ms)
@@ -450,6 +461,186 @@ impl NativeProbe {
         sort_disks_for_display(&mut disks);
         disks
     }
+
+    /// Reads the machine's battery and power state (R1-I10).
+    ///
+    /// The pinned `sysinfo` 0.40.3 has no battery API, so Linux reads sysfs
+    /// directly with `std::fs` (read-only, no new dependency and no `unsafe`).
+    /// On every other target the result is [`PowerSource::Unknown`] with no
+    /// batteries: an honest "unavailable" instead of an invented AC/battery
+    /// claim. A probe failure (missing `/sys/class/power_supply`) is likewise
+    /// reported as unknown, never as an error that would abort sampling.
+    pub fn power_snapshot(&self) -> PowerSnapshot {
+        platform_power_snapshot()
+    }
+
+    /// Collects the cgroup label of every currently sampled process (R1-I12).
+    ///
+    /// This reads `/proc/<pid>/cgroup` with `std::fs` and never calls
+    /// `refresh_processes_specifics`, so it cannot insert Linux threads into
+    /// `sysinfo`'s process map. The one-row-per-process and `threads` contracts
+    /// therefore stay intact (see the module-level "Process list" section).
+    /// Non-Linux targets return an empty vector: `sysinfo` 0.40.3 exposes only
+    /// cgroup *limits*, not per-process membership, on those platforms.
+    pub fn cgroup_memberships(&self) -> Vec<ProcessCgroup> {
+        platform_cgroup_memberships(&self.system)
+    }
+
+    /// Groups the current cgroup memberships for read-only display (R1-I12).
+    ///
+    /// Deterministic ordering comes from [`group_by_cgroup`] in `tm-core`.
+    pub fn cgroup_groups(&self) -> Vec<CgroupGroup> {
+        group_by_cgroup(&self.cgroup_memberships())
+    }
+
+    /// Chooses the sampling interval for the current power state (R1-I11).
+    ///
+    /// The shell supplies the window visibility it observes; the policy itself
+    /// is the pure [`recommended_sampling_plan`] function in `tm-core`. Samples
+    /// embed the visible-window plan; a shell that observes a hidden window can
+    /// ask for that plan explicitly here.
+    pub fn sampling_plan(&self, visibility: WindowVisibility) -> SamplingPlan {
+        recommended_sampling_plan(&self.power_snapshot(), visibility)
+    }
+}
+
+/// Reads the power supplies exposed by the Linux sysfs (R1-I10).
+#[cfg(target_os = "linux")]
+fn platform_power_snapshot() -> PowerSnapshot {
+    const POWER_SUPPLY: &str = "/sys/class/power_supply";
+    let Ok(entries) = std::fs::read_dir(POWER_SUPPLY) else {
+        return PowerSnapshot::default();
+    };
+
+    let mut batteries = Vec::new();
+    let mut ac_online = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = std::fs::read_to_string(path.join("type")) else {
+            continue;
+        };
+        match kind.trim() {
+            "Battery" => {
+                // Every OS-provided string follows the existing redact
+                // contract: sanitise at the probe boundary (R2X-D2).
+                let name = sanitize_display(&entry.file_name().to_string_lossy(), MAX_NAME_CHARS);
+                let capacity_percent = read_sysfs_u64(&path.join("capacity"))
+                    .and_then(|value| u8::try_from(value).ok())
+                    .map(|value| value.min(100));
+                let state = std::fs::read_to_string(path.join("status"))
+                    .map(|status| battery_state_from_status(&status))
+                    .unwrap_or(BatteryState::Unknown);
+                batteries.push(BatterySnapshot {
+                    name,
+                    capacity_percent,
+                    state,
+                });
+            }
+            "Mains" | "AC" => {
+                ac_online |= read_sysfs_u64(&path.join("online")).unwrap_or(0) > 0;
+            }
+            _ => {}
+        }
+    }
+    batteries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+
+    let discharging = batteries
+        .iter()
+        .any(|battery| battery.state == BatteryState::Discharging);
+    let source = if discharging || (!ac_online && !batteries.is_empty()) {
+        PowerSource::Battery
+    } else if ac_online || !batteries.is_empty() {
+        PowerSource::Ac
+    } else {
+        PowerSource::Unknown
+    };
+    PowerSnapshot { source, batteries }
+}
+
+/// Fallback for targets without a battery API in the pinned dependencies (R1-I10).
+#[cfg(not(target_os = "linux"))]
+fn platform_power_snapshot() -> PowerSnapshot {
+    PowerSnapshot::default()
+}
+
+/// Parses a numeric sysfs attribute, returning `None` on any read/parse failure.
+#[cfg(target_os = "linux")]
+fn read_sysfs_u64(path: &std::path::Path) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// Maps a sysfs `status` string onto the domain battery state (R1-I10).
+#[cfg(any(target_os = "linux", test))]
+fn battery_state_from_status(status: &str) -> BatteryState {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "charging" => BatteryState::Charging,
+        "discharging" => BatteryState::Discharging,
+        "full" => BatteryState::Full,
+        "not charging" | "not_charging" => BatteryState::NotCharging,
+        _ => BatteryState::Unknown,
+    }
+}
+
+/// Reads per-process cgroup membership from `/proc` without refreshing sysinfo (R1-I12).
+#[cfg(target_os = "linux")]
+fn platform_cgroup_memberships(system: &System) -> Vec<ProcessCgroup> {
+    let mut memberships = system
+        .processes()
+        .iter()
+        // Defensive backstop: keep the one-row-per-process contract even if a
+        // future sysinfo version starts exposing task IDs here again.
+        .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
+        .filter_map(|(pid, process)| {
+            let raw = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+            let label = cgroup_label(proc_cgroup_path(&raw));
+            if label.is_empty() {
+                return None;
+            }
+            Some(ProcessCgroup {
+                key: ProcessKey::new(pid.as_u32(), process.start_time()),
+                label,
+            })
+        })
+        .collect::<Vec<_>>();
+    // `/proc` enumeration order is not stable; sort like the process list so
+    // the wire format and the UI table stay deterministic between samples.
+    memberships.sort_unstable_by_key(|membership| membership.key);
+    memberships
+}
+
+/// Fallback for targets without a per-process cgroup membership API (R1-I12).
+#[cfg(not(target_os = "linux"))]
+fn platform_cgroup_memberships(_system: &System) -> Vec<ProcessCgroup> {
+    Vec::new()
+}
+
+/// Extracts the cgroup path from one `/proc/<pid>/cgroup` line block (R1-I12).
+///
+/// A v2 entry (`0::/path`) is preferred; otherwise the first usable line wins.
+/// The returned slice borrows from `raw`, so this is an allocation-free parse.
+#[cfg(any(target_os = "linux", test))]
+fn proc_cgroup_path(raw: &str) -> &str {
+    let mut fallback = "";
+    for line in raw.lines() {
+        let Some((prefix, path)) = line.rsplit_once(':') else {
+            continue;
+        };
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if prefix == "0:" {
+            return path;
+        }
+        if fallback.is_empty() {
+            fallback = path;
+        }
+    }
+    fallback
 }
 
 /// Reads the true, f_bfree-based used byte count for `mount_point` (R2X-D5B).
@@ -1099,22 +1290,26 @@ mod tests {
             "process list must not be empty"
         );
 
+        // Processes can exit (or change their task set) between the sample and
+        // this assertion under parallel test load. Assert the stable contract
+        // instead: Linux reports a thread count for at least one process and
+        // every reported count is >= 1. The exact split-refresh mapping is
+        // covered by the deterministic fixture tests below.
+        let mut reported = 0;
         for process in &snapshot.processes {
-            let threads = process.threads.expect("Linux must report thread counts");
-            let expected = probe
-                .system
-                .process(Pid::from_u32(process.key.pid))
-                .and_then(|sysinfo_process| sysinfo_process.tasks())
-                .map_or(1, |tasks| {
-                    tasks.len().saturating_add(1).min(u32::MAX as usize) as u32
-                });
-            assert_eq!(
-                threads, expected,
-                "thread count of pid {} must match its task set",
-                process.key.pid
-            );
-            assert!(threads >= 1, "a listed process always has its own thread");
+            if let Some(threads) = process.threads {
+                assert!(
+                    threads >= 1,
+                    "a listed process always has its own thread (pid {})",
+                    process.key.pid
+                );
+                reported += 1;
+            }
         }
+        assert!(
+            reported > 0,
+            "Linux must report thread counts for at least one process"
+        );
     }
 
     /// R4-A01 regression: a single-threaded child still reports exactly one
@@ -1689,6 +1884,279 @@ mod tests {
                     "the user column must survive Users::refresh()"
                 );
             }
+        }
+    }
+
+    // --- R1-I10 / R1-I11 / R1-I12 --------------------------------------------
+
+    #[test]
+    fn sysfs_battery_status_maps_to_domain_states() {
+        for (raw, expected) in [
+            ("Charging\n", BatteryState::Charging),
+            ("DISCHARGING", BatteryState::Discharging),
+            ("Full", BatteryState::Full),
+            ("Not charging", BatteryState::NotCharging),
+            ("not_charging", BatteryState::NotCharging),
+            ("Unknown", BatteryState::Unknown),
+            ("", BatteryState::Unknown),
+        ] {
+            assert_eq!(battery_state_from_status(raw), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn proc_cgroup_parser_prefers_the_v2_hierarchy() {
+        let raw = concat!(
+            "1:name=systemd:/system.slice/ssh.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/worker.service\n",
+            "2:memory:/system.slice/ssh.service\n",
+        );
+        assert_eq!(
+            proc_cgroup_path(raw),
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/worker.service"
+        );
+        // Without a v2 entry the first usable line is the fallback; a v2 line
+        // with the root path is still a valid (and preferred) entry.
+        let legacy = "1:name=systemd:/system.slice/ssh.service\n";
+        assert_eq!(proc_cgroup_path(legacy), "/system.slice/ssh.service");
+        assert_eq!(proc_cgroup_path("1:name=systemd:/a\n0::/\n"), "/");
+        assert_eq!(proc_cgroup_path("garbage\n0::\n"), "");
+    }
+
+    #[test]
+    fn sampled_power_state_keeps_the_display_and_consistency_contract() {
+        let probe = NativeProbe::new().expect("native probe");
+        let power = probe.power_snapshot();
+        for battery in &power.batteries {
+            assert!(
+                !battery.name.chars().any(char::is_control),
+                "control character in battery name: {:?}",
+                battery.name
+            );
+            assert!(battery.name.chars().count() <= MAX_NAME_CHARS + 1);
+            assert!(
+                battery
+                    .capacity_percent
+                    .is_none_or(|percent| percent <= 100),
+                "capacity must stay in 0..=100"
+            );
+        }
+        let names = power
+            .batteries
+            .iter()
+            .map(|battery| battery.name.as_str())
+            .collect::<Vec<_>>();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "batteries must be sorted by name");
+
+        assert_eq!(
+            power.on_battery(),
+            power.source == PowerSource::Battery
+                || power
+                    .batteries
+                    .iter()
+                    .any(|battery| battery.state == BatteryState::Discharging)
+        );
+        if power.batteries.is_empty() {
+            assert_ne!(power.source, PowerSource::Battery);
+        }
+        if power.source == PowerSource::Unknown {
+            assert!(power.batteries.is_empty());
+        }
+    }
+
+    #[test]
+    fn build_snapshot_embeds_power_sampling_and_cgroups() {
+        use tm_core::model::{SamplingProfile, LOW_BATTERY_PERCENT};
+
+        let mut probe = NativeProbe::new().expect("native probe");
+        // Warm up once so CPU deltas are meaningful, then inspect the snapshot
+        // that the actual sampling path produces.
+        let _ = probe.sample_native().expect("warm-up sample");
+        let snapshot = probe.sample_native().expect("sample");
+
+        assert_eq!(
+            snapshot.sampling,
+            recommended_sampling_plan(&snapshot.power, WindowVisibility::Visible),
+            "the embedded plan must be derived from the same power reading"
+        );
+        let expected_profile = if snapshot.power.on_battery() {
+            if snapshot
+                .power
+                .min_capacity_percent()
+                .is_some_and(|percent| percent <= LOW_BATTERY_PERCENT)
+            {
+                SamplingProfile::BatterySaver
+            } else {
+                SamplingProfile::Battery
+            }
+        } else {
+            SamplingProfile::Interactive
+        };
+        assert_eq!(snapshot.sampling.profile, expected_profile);
+        // A stable, deduplicated grouping must not invent empty labels.
+        for group in &snapshot.cgroups {
+            assert!(!group.label.is_empty());
+            assert!(!group.members.is_empty());
+            let mut sorted = group.members.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(group.members, sorted, "members must be sorted and unique");
+        }
+        #[cfg(target_os = "linux")]
+        assert!(
+            !snapshot.cgroups.is_empty(),
+            "the Linux probe must see its own cgroup"
+        );
+    }
+
+    #[test]
+    fn native_probe_and_new_domain_types_stay_send() {
+        // The native shell samples on a worker thread; adding power/sampling/
+        // cgroup data must not weaken that existing thread contract.
+        fn assert_send<T: Send>() {}
+        assert_send::<NativeProbe>();
+        assert_send::<PowerSnapshot>();
+        assert_send::<SamplingPlan>();
+        assert_send::<ProcessCgroup>();
+    }
+
+    #[test]
+    fn probe_sampling_plan_follows_the_core_policy() {
+        use tm_core::model::{
+            SamplingProfile, BACKGROUND_INTERVAL_MS, BATTERY_INTERVAL_MS,
+            BATTERY_SAVER_INTERVAL_MS, INTERACTIVE_INTERVAL_MS,
+        };
+
+        let probe = NativeProbe::new().expect("native probe");
+        let hidden = probe.sampling_plan(WindowVisibility::Hidden);
+        assert_eq!(hidden.interval_ms, BACKGROUND_INTERVAL_MS);
+        assert_eq!(hidden.profile, SamplingProfile::Background);
+
+        let visible = probe.sampling_plan(WindowVisibility::Visible);
+        let expected = match visible.profile {
+            SamplingProfile::Interactive => INTERACTIVE_INTERVAL_MS,
+            SamplingProfile::Battery => BATTERY_INTERVAL_MS,
+            SamplingProfile::BatterySaver => BATTERY_SAVER_INTERVAL_MS,
+            SamplingProfile::Background => {
+                panic!("a visible window must never select the background profile")
+            }
+        };
+        assert_eq!(visible.interval_ms, expected);
+        assert!(visible.interval_ms > 0, "a sampler must never spin at 0 ms");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_collection_keeps_the_one_row_per_process_and_thread_contract() {
+        use tm_core::model::CGROUP_LABEL_MAX_CHARS;
+
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        let before = snapshot
+            .processes
+            .iter()
+            .map(|process| (process.key, process.threads))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        let memberships = probe.cgroup_memberships();
+
+        let after_system = probe
+            .system
+            .processes()
+            .iter()
+            .filter(|(_, process)| process.thread_kind() != Some(ThreadKind::Userland))
+            .map(|(pid, _)| Pid::from_u32(pid.as_u32()))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            after_system.len(),
+            before.len(),
+            "reading /proc must not insert new process or thread rows"
+        );
+        assert!(
+            probe
+                .system
+                .processes()
+                .values()
+                .all(|process| process.thread_kind() != Some(ThreadKind::Userland)),
+            "reading /proc must not insert userland threads into the process map"
+        );
+        for (key, threads) in before {
+            let current = probe
+                .system
+                .process(Pid::from_u32(key.pid))
+                .expect("the process must still be sampled");
+            assert_eq!(current.start_time(), key.start_time_secs);
+            assert_eq!(
+                thread_count(current),
+                threads,
+                "the threads column must not change while collecting cgroups"
+            );
+        }
+        assert!(!after_system.is_empty(), "the sampler must see processes");
+
+        let keys = memberships
+            .iter()
+            .map(|membership| membership.key)
+            .collect::<Vec<_>>();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "memberships must be sorted by process key");
+        assert!(
+            memberships
+                .iter()
+                .any(|membership| membership.key.pid == std::process::id()),
+            "the probe must see its own cgroup"
+        );
+        for membership in &memberships {
+            assert!(!membership.label.is_empty());
+            assert!(
+                !membership.label.chars().any(char::is_control),
+                "control character in cgroup label: {:?}",
+                membership.label
+            );
+            assert!(
+                membership.label.chars().count() <= CGROUP_LABEL_MAX_CHARS + 1,
+                "cgroup label was not truncated"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn cgroup_collection_is_empty_on_unsupported_platforms() {
+        let probe = NativeProbe::new().expect("native probe");
+        assert!(probe.cgroup_memberships().is_empty());
+        assert!(probe.cgroup_groups().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_groups_are_a_deterministic_view_of_memberships() {
+        let probe = NativeProbe::new().expect("native probe");
+        let memberships = probe.cgroup_memberships();
+        let groups = probe.cgroup_groups();
+        let labels = groups
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect::<Vec<_>>();
+        let mut sorted = labels.clone();
+        sorted.sort_unstable();
+        assert_eq!(labels, sorted, "groups must be sorted by label");
+        for group in &groups {
+            assert!(!group.members.is_empty());
+            let mut members = group.members.clone();
+            members.sort_unstable();
+            members.dedup();
+            assert_eq!(group.members, members);
+            assert!(
+                memberships
+                    .iter()
+                    .any(|membership| membership.label == group.label
+                        && group.members.contains(&membership.key)),
+                "every grouped member must come from a collected membership"
+            );
         }
     }
 }

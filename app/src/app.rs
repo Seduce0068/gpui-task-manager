@@ -36,6 +36,27 @@ const COL_STATUS: f32 = 78.0;
 const COL_THREADS: f32 = 64.0;
 const DETAILS_WIDTH: f32 = 320.0;
 
+/// Read-only power / sampling / cgroup summary for the status bar (R1-I10..I12).
+///
+/// All values come from the snapshot's fixed identifiers and labels, which were
+/// sanitised at the probe boundary; no host name or user text is added here.
+fn power_summary_text(snapshot: Option<&tm_core::SystemSnapshot>) -> String {
+    match snapshot {
+        Some(snapshot) => format!(
+            "電源 {} / {} / cgroup {} グループ",
+            snapshot.power.source.label(),
+            snapshot.sampling.profile.label(),
+            snapshot.cgroups.len()
+        ),
+        None => "電源 —".to_string(),
+    }
+}
+
+/// Read-only cgroup grouping row: normalised label plus member count (R1-I12).
+fn cgroup_group_text(label: &str, members: usize) -> String {
+    format!("{label} — {members} 件")
+}
+
 type SharedProbe = Arc<Mutex<Option<Box<dyn SystemProbe>>>>;
 
 /// Startup decision for the native shell (R3-S02B).
@@ -362,7 +383,10 @@ impl TaskManagerApp {
     fn start_timer(&self, cx: &mut Context<Self>) {
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| loop {
-            let interval = match this.update(cx, |this, _| this.dashboard.interval()) {
+            // Adaptive sampling may raise the configured cadence on battery or
+            // low power (R1-I11). Read it every cycle so the floor follows the
+            // newest ingested snapshot without restarting the timer.
+            let interval = match this.update(cx, |this, _| this.dashboard.effective_interval()) {
                 Ok(interval) => interval,
                 Err(_) => break,
             };
@@ -1967,6 +1991,27 @@ impl TaskManagerApp {
                 );
             }
         }
+        // cgroup グルーピングは読み取り専用。既存の詳細セクションを消さず、
+        // ラベルと件数だけを追加する（R1-I12）。
+        content = content.child(section_title("cgroup グループ"));
+        let groups = self.dashboard.cgroup_groups();
+        if groups.is_empty() {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("cgroup 情報なし"),
+            );
+        } else {
+            for group in groups {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(palette().text))
+                        .child(cgroup_group_text(&group.label, group.members.len())),
+                );
+            }
+        }
         content = content.child(section_title("センサー / 温度"));
         let components = self
             .dashboard
@@ -2074,7 +2119,9 @@ impl TaskManagerApp {
             .child(match summary.sampled_at {
                 Some(sampled_at) => format!("最終更新 {}", format_clock(sampled_at.as_secs())),
                 None => "最終更新 —".to_string(),
-            });
+            })
+            .child(div().text_color(rgb(palette().dim)).child("|"))
+            .child(power_summary_text(self.dashboard.snapshot()));
         let right = match status {
             Some(status) => div()
                 .text_xs()
@@ -2878,11 +2925,13 @@ mod tests {
     // were imported here.
     use super::{
         a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
-        apply_retry_status, dialog_command, help_shortcuts, key_action, report_save_result,
-        resolve_probe_retry, signal_enabled, sort_header_label, truncate_label, usage_severity,
-        BackendInit, DialogButton, KeyAction, ProbeRetry,
+        apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, key_action,
+        power_summary_text, report_save_result, resolve_probe_retry, signal_enabled,
+        sort_header_label, truncate_label, usage_severity, BackendInit, DialogButton, KeyAction,
+        ProbeRetry,
     };
     use gpui_kit::Modifiers;
+    use std::time::Duration;
     use tm_core::{PlatformInfo, ProcessStatus, Signal, SortDirection};
     use tm_viewmodel::{Command, Dashboard, StatusMessage, DEFAULT_REFRESH_INTERVAL};
 
@@ -3206,6 +3255,21 @@ mod tests {
     }
 
     #[test]
+    fn power_and_cgroup_display_text_is_read_only_and_bounded() {
+        assert_eq!(power_summary_text(None), "電源 —");
+        let demo = tm_core::demo::demo_snapshot(0);
+        let text = power_summary_text(Some(&demo));
+        assert!(text.contains("AC 電源"), "{text}");
+        assert!(text.contains("通常"), "{text}");
+        assert!(text.contains("cgroup 2 グループ"), "{text}");
+        assert!(!text.contains('\n'), "{text}");
+        assert_eq!(
+            cgroup_group_text("demo.slice/system.service", 3),
+            "demo.slice/system.service — 3 件"
+        );
+    }
+
+    #[test]
     fn filter_box_accessible_name_matches_browser_shell() {
         assert_eq!(a11y_filter_label(), "プロセスの絞り込み");
     }
@@ -3470,6 +3534,32 @@ mod tests {
         assert!(
             source.contains(concat!("this.", "retry_probe(cx);")),
             "retry button must rebuild the probe through the startup path"
+        );
+    }
+
+    #[test]
+    fn native_timer_floor_follows_the_snapshot_power_plan() {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        // No snapshot yet: startup cadence is unchanged.
+        assert_eq!(dashboard.effective_interval(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(tm_core::demo::demo_snapshot(0));
+        assert_eq!(dashboard.effective_interval(), DEFAULT_REFRESH_INTERVAL);
+
+        let mut battery = tm_core::demo::demo_snapshot(1);
+        battery.power = tm_core::PowerSnapshot {
+            source: tm_core::PowerSource::Battery,
+            batteries: vec![tm_core::BatterySnapshot {
+                name: "BAT0".into(),
+                capacity_percent: Some(80),
+                state: tm_core::BatteryState::Discharging,
+            }],
+        };
+        battery.sampling =
+            tm_core::recommended_sampling_plan(&battery.power, tm_core::WindowVisibility::Visible);
+        dashboard.ingest(battery);
+        assert_eq!(
+            dashboard.effective_interval(),
+            Duration::from_millis(tm_core::BATTERY_INTERVAL_MS)
         );
     }
 }

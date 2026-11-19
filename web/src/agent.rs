@@ -216,9 +216,9 @@ impl AgentConfig {
     }
 }
 
-/// Wire envelope returned by `/api/v1/snapshot`.
+/// Wire envelope returned by `/api/v1/snapshot` and by SSE `snapshot` events.
 #[derive(Debug, Deserialize)]
-struct SnapshotEnvelope {
+pub(crate) struct SnapshotEnvelope {
     schema_version: u32,
     total_process_count: usize,
     snapshot: SystemSnapshot,
@@ -600,6 +600,67 @@ fn check_schema_version(version: u32) -> Result<(), FetchError> {
 /// Builds the request URL. The token is **not** part of the URL.
 fn snapshot_url(endpoint: &str) -> String {
     format!("{endpoint}/api/v1/snapshot?limit={SNAPSHOT_LIMIT}")
+}
+
+/// Path of the agent's long-lived server-sent-events endpoint (R1-I14).
+pub const STREAM_PATH: &str = "/api/v1/stream";
+
+/// Fixed, redaction-safe first-run instructions shown by the browser shell
+/// (R1-I16). No token, hostname, endpoint or agent-supplied text appears here;
+/// the strings also avoid `;` and newlines so they could be mirrored into the
+/// `key=value;` DOM proof without changing its grammar.
+const ONBOARDING_STEPS: &[&str] = &[
+    "1. ローカルで tm-agent を起動します（トークンは --token-file 推奨）。",
+    "2. 表示された 127.0.0.1 の URL をコピーします。#token= の値は秘密です。",
+    "3. このページの URL に ?agent=<エンドポイント> と #token=<トークン> を付けて再読込します。",
+    "4. 接続後は自動更新されます。行を右クリックすると行メニューが開きます。",
+];
+
+/// Returns the fixed onboarding checklist for a first-time browser user.
+pub fn onboarding_steps() -> &'static [&'static str] {
+    ONBOARDING_STEPS
+}
+
+/// Builds the SSE URL for an already-normalised loopback endpoint.
+///
+/// The bearer token is still sent in the `Authorization` header, never in the
+/// URL or the query string; the agent rejects query tokens as well.
+pub fn stream_url(endpoint: &str) -> String {
+    format!("{endpoint}{STREAM_PATH}")
+}
+
+/// Parses one SSE `snapshot` frame from the agent.
+///
+/// Only compact JSON produced by `serde_json` is accepted. Error strings are
+/// fixed (no agent text is echoed), so a malformed or hostile stream cannot
+/// inject a token or control characters into the UI or the `aria-live` mirror.
+pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, String> {
+    const PARSE_ERROR: &str = "SSE データの解析に失敗しました";
+
+    let mut event = None;
+    let mut data = String::new();
+    for line in frame.lines() {
+        if let Some(name) = line.strip_prefix("event:") {
+            event = Some(name.trim_start());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+    match event {
+        Some("snapshot") => {}
+        Some("error") => return Err("エージェントがエラーイベントを返しました".to_string()),
+        _ => return Err("不明な SSE イベントを受信しました".to_string()),
+    }
+    if data.is_empty() {
+        return Err(PARSE_ERROR.to_string());
+    }
+    let envelope: SnapshotEnvelope =
+        serde_json::from_str(&data).map_err(|_| PARSE_ERROR.to_string())?;
+    check_schema_version(envelope.schema_version).map_err(|error| error.to_string())?;
+    Ok(envelope)
 }
 
 /// Removes the token from any diagnostic string.
@@ -1083,5 +1144,78 @@ mod tests {
                 "{text} must not set reconnect=1"
             );
         }
+    }
+
+    // ------------------------------------------------ R1-I14 / R1-I16 support
+
+    #[test]
+    fn onboarding_steps_are_fixed_redaction_and_hook_safe() {
+        let steps = onboarding_steps();
+        assert_eq!(steps.len(), 4);
+        for step in steps {
+            // No token/hostname is interpolated, and no proof-grammar-breaker.
+            assert!(!step.contains(';'), "{step}");
+            assert!(!step.contains('\n'), "{step}");
+            assert_eq!(
+                redact_token(step, Some("super-secret-token")).as_str(),
+                *step
+            );
+        }
+        assert!(steps.iter().any(|step| step.contains("?agent=")));
+        assert!(steps.iter().any(|step| step.contains("#token=")));
+        assert!(steps.iter().any(|step| step.contains("右クリック")));
+    }
+
+    #[test]
+    fn stream_url_has_no_token_and_uses_the_sse_path() {
+        let config = AgentConfig::new(
+            "  http://127.0.0.1:18787/ ",
+            Some("secret-agent-token".to_string()),
+        );
+        let url = stream_url(&config.endpoint);
+        assert_eq!(url, "http://127.0.0.1:18787/api/v1/stream");
+        assert!(!url.contains("secret"));
+        assert!(!url.contains("token="));
+    }
+
+    #[test]
+    fn sse_snapshot_frame_is_parsed_and_schema_checked() {
+        let snapshot = tm_core::demo::demo_snapshot(0);
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": 7,
+            "snapshot": snapshot,
+        })
+        .to_string();
+        let frame = format!("event: snapshot\ndata: {json}\n\n");
+        let parsed = parse_sse_event_frame(&frame).expect("parse frame");
+        assert_eq!(parsed.schema_version, WIRE_SCHEMA_VERSION);
+        assert_eq!(parsed.total_process_count, 7);
+
+        let future = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION + 1,
+            "total_process_count": 7,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string();
+        let frame = format!("event: snapshot\ndata: {future}\n\n");
+        assert!(
+            parse_sse_event_frame(&frame)
+                .expect_err("future schema must be rejected")
+                .contains("スキーマバージョン")
+        );
+    }
+
+    #[test]
+    fn sse_error_frames_never_echo_agent_text() {
+        let error = parse_sse_event_frame("event: error\ndata: {\"error\":\"SECRET-PATH\"}\n\n")
+            .expect_err("error event must not parse as a snapshot");
+        assert_eq!(error, "エージェントがエラーイベントを返しました");
+        assert!(!error.contains("SECRET"));
+
+        let malformed = parse_sse_event_frame("event: snapshot\ndata: {oops\n\n")
+            .expect_err("malformed data must be rejected");
+        assert_eq!(malformed, "SSE データの解析に失敗しました");
+        assert!(!malformed.contains("oops"));
     }
 }

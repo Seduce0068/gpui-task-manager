@@ -85,8 +85,10 @@ status: current
 - [x] schema version の前方/後方互換（R2X-D3）— 設定の opaque version 保持と
       wire の旧版受け入れを実装。
 - [x] R2X-D5 ディスク使用率を checked 算術の derived 値へ修正。
-- [x] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する —（メモリではなく disk の statvfs タスク。sysinfo 0.40.3 に API が無く新規依存または unsafe FFI が必要。AGENTS §15 で unsafe 禁止のため設計判断待ち — BB-FBFREE）（既存 rustix の fs feature で safe statvfs を採用、新規依存・unsafe なし — M3-DISK）
-      sysinfo 0.40.x に API が無く、新規依存または FFI の判断が必要。
+- [x] R2X-D5B 真の f_bfree ベース used 値（予約ブロック除外）を取得する — 既存 rustix の
+      fs feature で safe statvfs を採用し、新規依存・unsafe なしで実装済み（M3-DISK）。
+      sysinfo 0.40.x には f_bfree API が無く、旧 derived 妥協案（BB-FBFREE）を経て
+      f_bfree 実装へ決着。
 - [x] Windows taskkill 意味論と PID 保護（R2X-P5〜P8）— エラー分類、Users 更新、
       capability の実収集反映を追加。
 - [x] 重複ヘッダ拒否・Host 不一致・stale 表示（dcd9e9c / dde9bcd）。
@@ -97,6 +99,9 @@ status: current
 
 - [x] R1S-OPS-13 web supply-chain とドキュメントを baseline-unreviewed 方針へ統一
 
+- [x] R1-I06B プリセット / 選択プロセス スパークラインを Web UI へ配線（DOM proof は末尾追加のみ）
+- [x] R1-I10B 電源・サンプリング・cgroup を SystemSnapshot / 両 shell へ接続
+
 ### 優先度: 低
 
 - [x] 履歴トレンド差分バッジ（R5-I05）— 純粋ロジックと widget を追加し概要カードへ配線。※R5-I02 は却下済み。
@@ -104,20 +109,18 @@ status: current
       UI / CLI 配線は R1-I02-UI として分離。
 - [x] R1-I02-UI CSV/JSON エクスポートを CLI / Web の UI へ接続
       （0600 権限、既定 redact、DOM proof は加法変更）。
-- [ ] 名前付きフィルタプリセット、選択プロセスの時系列スパークライン
-      （R1-I06, R1-I08）。
-- [ ] バッテリー／電源状態、適応的サンプリング、cgroup グルーピング
-      （R1-I10, R1-I11, R1-I12）。
-- [ ] エージェントのストリーミング配信、ブラウザ初回オンボーディング、
-      行コンテキストメニュー（R1-I14, R1-I16, R1-I19）。
+- [x] フィルタプリセットと選択プロセス スパークライン（R1-I06/I08）— ロジックと
+      widget を追加。shell.rs への配線は R1-I06B として分離。
+- [x] 電源状態/適応サンプリング/cgroup データ（R1-I10〜I12）— core/platform に
+      型と probe を追加。SystemSnapshot への組込みは R1-I10B として分離。
+- [x] SSE 配信 / 初回オンボーディング / 行メニュー（R1-I14/I16/I19）— DOM proof は
+      末尾追加のみ、redact / a11y 契約を維持。
 - [x] CDP クリック座標を DOM/セレクタ取得へ変更（R1S-ARCH-03/R1-OPS-11）— canvas
       rect 基準の相対座標とフォールバックを追加。
 - [x] PoC の `cdp_verify.py` に「証拠収集のみ」と明記（R1S-OPS-12）。
-- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）
-- [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 400/88・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）
-      （R1-G12, R1-G13）。
-- [ ] 放置されたローカルブランチ／merged リモートブランチを整理する
-      （R1-G14）。
+- [ ] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）。確認手順と環境は notes/environment-verification.md に調査・記録済み（実機目視は未実施）。
+- [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 435/90・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）（R1-G12, R1-G13）。調査内容は notes/environment-verification.md に記録。性能再測定は実環境・大規模データが必要で未実施。
+- [ ] 放置されたローカルブランチ／merged リモートブランチを整理する（R1-G14）。調査内容は notes/environment-verification.md に記録済み。削除は破壊的操作のためユーザー承認待ち（未実行）。
 
 ### 優先度: 高 — Twitter 公開前チェック (swarm-project-review R6)
 

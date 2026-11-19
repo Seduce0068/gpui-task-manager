@@ -238,7 +238,7 @@ fn parse_log_level(value: &str) -> Result<LogLevel, String> {
             return Err(
                 "--log-level には error/warn/info/debug/trace のいずれかを指定してください"
                     .to_string(),
-            )
+            );
         }
     };
     Ok(level)
