@@ -1551,7 +1551,7 @@ mod tests {
 
     fn assert_wire_snapshot_is_clean(snapshot: &tm_core::SystemSnapshot) {
         assert_eq!(snapshot.hostname.as_deref(), Some("host"));
-        assert_eq!(snapshot.disks[0].mount_point, "/home/user/work");
+        assert_eq!(snapshot.disks[0].mount_point, "<home>/work");
         let process = &snapshot.processes[0];
         assert_eq!(process.user.as_deref(), Some("user"));
         assert_eq!(process.name, "user-worker");

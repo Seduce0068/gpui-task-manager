@@ -16,12 +16,13 @@
 #     将来 RUSTFLAGS を追加する場合は、同じ --remap-path-prefix を必ず含めること。
 #   - このファイルはリポジトリ直下に置くため、別 workspace の web/ にも適用される。
 #   - 置換先は固定の仮想パス /build とし、ホスト名 / アカウント名を残さない。
-#     具体的なプレフィックスを先に置き、一般的な /home/ はフォールバックとして
-#     最後に置く（rustc は先に一致したプレフィックスを使用する）。
+#     一般的な /home/ と /Users/ を先に置き、具体的なプレフィックスを後に置く
+#     （rustc は複数指定を順に適用するため、後の指定が優先される）。
 [build]
 rustflags = [
+  "--remap-path-prefix=/home/=/build/",
+  "--remap-path-prefix=/Users/=/build/",
   "--remap-path-prefix=/home/koppe=/build",
   "--remap-path-prefix=/home/runner=/build",
   "--remap-path-prefix=/Users/runner=/build",
-  "--remap-path-prefix=/home/=/build/",
 ]

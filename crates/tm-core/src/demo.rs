@@ -143,7 +143,7 @@ const DEMO_PROCESSES: &[DemoProcess] = &[
     DemoProcess {
         pid: 1100,
         name: "Xwayland",
-        command: "/usr/bin/Xwayland :1 -auth /home/user/.Xauthority -displayfd 3",
+        command: "/usr/bin/Xwayland :1 -auth <home>/.Xauthority -displayfd 3",
         user: "user",
         base_cpu: 1.4,
         base_memory: 167_772_160,
@@ -203,7 +203,7 @@ const DEMO_PROCESSES: &[DemoProcess] = &[
     DemoProcess {
         pid: 900,
         name: "rustc",
-        command: "/home/user/.rustup/toolchains/stable/bin/rustc --crate-name tm_core",
+        command: "<home>/.rustup/toolchains/stable/bin/rustc --crate-name tm_core",
         user: "user",
         base_cpu: 22.3,
         base_memory: 440_401_920,
@@ -213,7 +213,7 @@ const DEMO_PROCESSES: &[DemoProcess] = &[
     DemoProcess {
         pid: 901,
         name: "cargo",
-        command: "/home/user/.cargo/bin/cargo build --workspace",
+        command: "<home>/.cargo/bin/cargo build --workspace",
         user: "user",
         base_cpu: 1.2,
         base_memory: 99_614_720,
@@ -223,7 +223,7 @@ const DEMO_PROCESSES: &[DemoProcess] = &[
     DemoProcess {
         pid: 4242,
         name: "gpui-task-manager",
-        command: "/home/user/.../gpui-task-manager",
+        command: "<home>/.../gpui-task-manager",
         user: "user",
         base_cpu: 6.8,
         base_memory: 188_743_680,

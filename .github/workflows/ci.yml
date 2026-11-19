@@ -292,7 +292,7 @@ jobs:
           check dev-home-path '/home/'
           check account-identifier '(koppe|onoderakeita)'
           check noreply-email '[0-9]{6,}\+[A-Za-z0-9_-]+@users\.noreply\.github\.com'
-          check tailscale-domain '\.ts\.net'
+          check tailscale-domain 'tail[0-9A-Za-z_-]+\.ts\.net'
           echo 'binary-disclosure: OK (no development paths / account identifiers in release binary)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

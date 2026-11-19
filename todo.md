@@ -446,6 +446,16 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       (Cargo.toml:41, ci.yml:83)。成果物の開発パス混入を防止。根拠 y2-deb。
 - [x] release-linux / web-dist / sbom のビルドが --locked でない。根拠 y2-deb。
 
+### メモ — strings ゲート対応の経緯
+
+- release-linux の strings ゲート初回失敗は、remap-path-prefix のルール順序が
+  逆で `/build/koppe/.cargo/...` が残ったことと、redact のマスク先
+  `/home/user` がデモデータ・テスト期待値に混在していたことが原因。
+  一般的な `/home/` `/Users/` を先に、具体的プレフィックスを後に置き、
+  マスク先を `<home>` へ統一して全パターン 0 件を確認済み。
+  Tailnet ドメインのパターンは、redact 処理に必要なサフィックス定数自体を
+  誤検出しないよう、実ホスト名を伴う形式へ絞った。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

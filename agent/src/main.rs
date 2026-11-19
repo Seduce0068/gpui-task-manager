@@ -2593,7 +2593,7 @@ mod tests {
         assert!(!snapshot.processes[0].command.contains("my-host"));
         assert!(!snapshot.processes[0].command.contains("tail1234"));
         assert!(!snapshot.processes[0].command.contains(".ts.net"));
-        assert_eq!(snapshot.disks[0].mount_point, "/home/user/work/project");
+        assert_eq!(snapshot.disks[0].mount_point, "<home>/work/project");
         // Truncated commands (240 chars) can lose the `.ts.net` suffix.
         snapshot.processes[0].command =
             "app --url=https://host.tail1234.t… --id=tail1234abcd".to_string();
