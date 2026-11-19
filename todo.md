@@ -629,6 +629,29 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   opaque version、corrupt 6 連鎖（5件 prune）、保存失敗通知は実動で確認。
   修正項目は上記 3 件のみ（da-regress / db-migrate）。
 
+### 優先度: 低 — デッドコード／旧記述の整理 2026-11-20
+
+- [x] `sanitize_and_redact_wire_snapshot` を `redact_and_sanitize_wire_snapshot`
+      へ改名（実処理順 identify→redact→sanitize と名前を一致）。pub(crate)
+      のため外部互換リスクなし。根拠 fb-deadcode。
+- [x] export.rs の cherry-pick 痕跡: `redact_text` の unused import と
+      `#[allow(unused_imports)]` を削除し、doc リンクを完全パス化。根拠 fb-deadcode。
+- [ ] `snapshot_to_csv_with_total` の引数名 `_total_process_count` を
+      `_ignored_wire_total` 等へ改名し、CSV は envelope 総数非対応である旨を
+      API 名/doc で明示（JSON 版と挙動が異なるため誤用防止）。根拠 fb-deadcode。
+- [x] 修正済み項目の旧記述を削除: query.rs の `todo 2026-11-19` マーカー、
+      DESIGN.md の「フォーカス移動によるキーボード完結は将来の改善項目」。
+      根拠 fb-deadcode。
+- [x] `DemoProbe::with_tick` が未使用（doc は 'used by tests' だが呼び出し0件）。
+      公開ライブラリのため削除せず、doc を「テスト用の設定ヘルパ」と明記
+      （`#[cfg(test)]` は外部利用者から API を奪うため適用しない）。根拠 fb-deadcode。
+
+### メモ — 長時間安定性実測 2026-11-20
+
+- 30s＋60s の実測で VmRSS/Threads/fd に単調増加なし、SSE 235 回切断で
+  スロット 0 復帰、snapshot p95 1.3ms 以下・時間劣化なし、unknown=0。
+  リーク経路なし（fa-stability）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

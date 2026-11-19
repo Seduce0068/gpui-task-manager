@@ -264,7 +264,7 @@ impl SnapshotEnvelope {
     /// helper re-derives identifiers from the raw snapshot on entry and is
     /// idempotent, so no separate `OwnedIdentifiers` argument is required.
     pub(crate) fn into_response(mut self) -> SnapshotResponse {
-        crate::redaction::sanitize_and_redact_wire_snapshot(&mut self.snapshot);
+        crate::redaction::redact_and_sanitize_wire_snapshot(&mut self.snapshot);
         SnapshotResponse {
             snapshot: self.snapshot,
             total_process_count: self.total_process_count,

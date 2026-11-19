@@ -554,7 +554,12 @@ impl DemoProbe {
         Self::default()
     }
 
-    /// Creates a demo probe starting at an arbitrary tick (used by tests).
+    /// Creates a demo probe starting at an arbitrary tick.
+    ///
+    /// Test configuration helper for deterministic scenarios. There are no
+    /// in-tree call sites at present, but this is a public API of a library
+    /// crate, so it is deliberately kept available to downstream users instead
+    /// of being hidden behind `#[cfg(test)]`.
     pub fn with_tick(tick: u64) -> Self {
         Self { tick }
     }
