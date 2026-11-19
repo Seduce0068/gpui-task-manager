@@ -25,6 +25,11 @@ Web シェルが実 `tm-agent` に接続し、SSE ストリーム経由でスナ
 エージェント停止後は `sse=fallback` へ遷移するが `mode=live` は維持され、
 デモへはフォールバックしないことを確認した。トークン値は出力・記録していない。
 
+更新（2026-11-20）: デモデータ set の変更により現行デモ件数は 30 行となった
+（ka-recovery が実測確認）。本文の行数は現行デモ件数 30 行へ更新済みで、旧 28 行は
+更新前のデモデータ set による観測値である。30 行への増加はデモデータの変更による
+もので、回帰ではない。
+
 ## 検証環境
 
 - 実行日時: `2026-11-19T20:13:24+09:00` に `date` で確認、文書作成は
@@ -75,12 +80,12 @@ google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \
 | 相対時刻 | mode | sse | tick | rows | total | live_error |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1.11 秒 | live | fallback | 0 | 0 | 0 | 0 |
-| 1.86 秒 | live | active | 2 | 28 | 28 | 0 |
-| 2.36 秒 | live | active | 2 | 28 | 28 | 0 |
+| 1.86 秒 | live | active | 2 | 30 | 30 | 0 |
+| 2.36 秒 | live | active | 2 | 30 | 30 | 0 |
 
 - 接続確立直後は `sse=fallback` だが、最初のスナップショットフレームで
   `sse=active` へ遷移した（仕様どおり、購読開始だけでは active にならない）。
-- `tick` は 0 → 2 に進行し、`rows=28` / `total=28` を確認した。
+- `tick` は 0 → 2 に進行し、`rows=30` / `total=30` を確認した。
 - `Network.requestWillBeSent` で `/api/v1/stream` へのリクエストを確認し、
   `token=` を含む URL やトークン値を含む URL は 0 件だった（計 8 リクエスト）。
 - コンソール 7 件、JS 例外 0 件。panic / RefCell error / トークン値の
@@ -93,12 +98,12 @@ DOM proof を再ポーリングした。
 
 | 相対時刻 | mode | sse | tick | rows | live_error | stale |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.0 秒 | live | fallback | 23 | 28 | 0 | 0 |
-| 0.8 秒 | live | fallback | 23 | 28 | 1 | 1 |
+| 0.0 秒 | live | fallback | 23 | 30 | 0 | 0 |
+| 0.8 秒 | live | fallback | 23 | 30 | 1 | 1 |
 
 - `sse=fallback` への遷移を確認した。
 - `mode=live` は維持され、`mode=demo` は一度も観測されなかった。
-- rows は 28 のまま（直前のスナップショットを保持）、
+- rows は 30 のまま（直前のスナップショットを保持）、
   その後の定期取得失敗で `live_error=1` / `stale=1` になった。
 - 停止後のコンソール 8 件、JS 例外 0 件。panic / RefCell error /
   トークン値の言及はいずれも 0 件だった。
@@ -117,7 +122,7 @@ agent / 静的サーバ / Chrome の順に SIGTERM し、必要なら SIGKILL �
 | ビルド | 成功 | 終了コード 0（警告 2 件） | OK |
 | 起動モード | `mode=live` | 全サンプルで live | OK |
 | SSE transport | `sse=active` | 初回フレーム後に active | OK |
-| スナップショット更新 | tick 進行・rows>0 | 0 → 2、rows=28 | OK |
+| スナップショット更新 | tick 進行・rows>0 | 0 → 2、rows=30 | OK |
 | SSE エンドポイント | `/api/v1/stream` を使用 | リクエスト確認 | OK |
 | トークン露出 | URL・コンソール・証拠に無し | すべて 0 件 | OK |
 | エージェント停止後 | `sse=fallback` | 遷移を確認 | OK |

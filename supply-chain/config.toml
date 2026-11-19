@@ -970,7 +970,7 @@ version = "0.17.1"
 criteria = "baseline-unreviewed"
 
 [[exemptions.heapless]]
-version = "0.9.3"
+version = "0.9.4"
 criteria = "baseline-unreviewed"
 
 [[exemptions.heck]]

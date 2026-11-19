@@ -71,6 +71,11 @@ updates:
       - dependency-name: "gpui-component"
       - dependency-name: "gpui-base"
       - dependency-name: "gpui-kit-assets"
+      # Exact-version pins aligned with the root workspace (web/Cargo.lock pins
+      # rustix 1.1.6); keep automation from drifting sysinfo / rustix off the
+      # reviewed lock. Same full-pin policy as root (lines 42-45).
+      - dependency-name: "sysinfo"
+      - dependency-name: "rustix"
     commit-message:
       prefix: "chore(web-deps)"
 

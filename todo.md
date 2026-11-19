@@ -698,6 +698,28 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   ヒープは GC ノコギリでネット -830KB、console error 0、2 タブ同期も動作。
   修正項目なし（ia-webstab）。
 
+### 優先度: 高 — サプライチェーン監査 2026-11-20
+
+- [x] heapless 0.9.3 の unsound 脆弱性 9 件（RUSTSEC-2026-0574..0582、
+      use-after-free／データ競合等）が修正版 0.9.4 公開済みにもかかわらず
+      cargo-deny に検出されず cargo-audit も警告扱いで CI を通過。
+      root / web の Cargo.lock を 0.9.4 へ更新（gpui-pre は caret 制約で
+      ピン変更不要）。更新後 deny / vet / audit を再検証。根拠 kb-supply。
+- [x] deny.toml の advisory ignore 9 件の根拠先「DESIGN.md §14」に追跡記録が
+      存在しない（RUSTSEC ID の記載なし）。§14 へ ID / 理由 / レビュー日 /
+      expiry の表を追加。根拠 kb-supply。
+- [x] .github/dependabot.yml の web 更新定義に rustix / sysinfo の完全ピン
+      ignore が無く root と不整合。追加して揃える。根拠 kb-supply。
+- [x] 検証ノートの「28 行保持」期待値を現行デモ件数 30 行へ更新
+      （notes/web-live-runtime-verification.md 等）。回帰ではない。根拠 ka-recovery。
+
+### メモ — 回復シナリオ再検証 2026-11-20
+
+- 現行ソース再ビルド後、ライブ接続／SIGTERM fallback／同一トークン再起動
+  （5 秒クールダウン）／0644 権限拒否／corrupt 退避 -N＋5件 prune／
+  2 タブ差分マージの 6 シナリオすべて期待どおり。トークン露出・例外 0 件。
+  回帰なし（ka-recovery）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
