@@ -159,6 +159,13 @@ CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:
 再起動時は同じファイルを再利用するため、ブラウザが保持したトークンもそのまま使えます。
 接続時は案内されたファイルの内容を読み取り、URL フラグメントや `--token-file` に指定してください。
 
+HTTP エンドポイントは `/healthz`（ヘルスチェック）、`/api/v1/snapshot`（スナップショット、
+`?limit=N` で件数指定）、`/api/v1/stream`（SSE）、`/metrics`（Prometheus テキスト）の 4 つです。
+`/api/v1/stream` は `text/event-stream` で 1 秒間隔のスナップショットを長時間接続で流します。
+Bearer トークン必須、同時 2 接続まで、Host / Origin は loopback のみ、認証は
+`Authorization` ヘッダのみ（クエリトークン不可）です。ブラウザ版はライブ接続でこの
+SSE を優先利用し、接続に失敗するか終了した場合は従来のポーリングへフォールバックします。
+
 ### wasm / ブラウザ
 
 ```bash

@@ -12,6 +12,12 @@
 //! mirrors the agent's wire envelope (`schema_version`, `total_process_count`,
 //! `snapshot`) without adding a `serde_json` dependency (see ADR-009); the CSV
 //! output is one header row plus one row per process.
+//!
+//! The envelope's `total_process_count` means the number of processes on the
+//! whole machine **before** `?limit=N` truncated `snapshot.processes`. A caller
+//! that owns the wire envelope passes that value explicitly, so an export
+//! cannot silently shrink it to the number of published rows. A local probe has
+//! no envelope and passes `None`, keeping the historical row-count behaviour.
 
 use std::fmt::Write as _;
 
@@ -70,6 +76,23 @@ pub fn redact_for_export(
 /// newline, space, VT and FF are neutralised too (spreadsheet importers may
 /// skip them). Numeric fields are never neutralised this way.
 pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>) -> String {
+    // A local caller has no wire envelope, so the published rows are the only
+    // process count available.
+    snapshot_to_csv_with_total(snapshot, ids, None)
+}
+
+/// CSV variant of [`snapshot_to_csv`] that accepts the wire envelope's
+/// `total_process_count`.
+///
+/// The CSV deliberately keeps its fixed 12-column process-row contract: the
+/// envelope total describes the machine, not a row, so it is not emitted here
+/// and does not change the output. The parameter exists so a shell that owns a
+/// wire envelope can call both exporters through one uniform API.
+pub fn snapshot_to_csv_with_total(
+    snapshot: &SystemSnapshot,
+    ids: &RedactionIdentifiers<'_>,
+    _total_process_count: Option<u64>,
+) -> String {
     let snap = redact_for_export(snapshot, ids);
     let mut out = String::with_capacity(PROCESS_CSV_HEADER.len() + 1 + snap.processes.len() * 192);
     out.push_str(PROCESS_CSV_HEADER);
@@ -115,6 +138,22 @@ pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>
 /// endpoint and an exported file with the same struct. Non-finite `f32` values
 /// are replaced with `0.0` because JSON has no `NaN` / `Infinity` literals.
 pub fn snapshot_to_json(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>) -> String {
+    // Backward-compatible entry point: no envelope is available here, so the
+    // historical published-row fallback applies.
+    snapshot_to_json_with_total(snapshot, ids, None)
+}
+
+/// JSON variant of [`snapshot_to_json`] that preserves an explicit wire total.
+///
+/// `total_process_count` is the machine-wide count from the agent's wire
+/// envelope, captured before `?limit=N` truncated `snapshot.processes`. `Some`
+/// is written through verbatim; `None` (a local probe with no envelope) falls
+/// back to the number of published snapshot rows.
+pub fn snapshot_to_json_with_total(
+    snapshot: &SystemSnapshot,
+    ids: &RedactionIdentifiers<'_>,
+    total_process_count: Option<u64>,
+) -> String {
     let snap = redact_for_export(snapshot, ids);
     let mut out = String::with_capacity(2_048 + snap.processes.len() * 512);
 
@@ -123,7 +162,13 @@ pub fn snapshot_to_json(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_
     push_display(&mut out, crate::WIRE_SCHEMA_VERSION);
     out.push_str(",\n");
     push_key(&mut out, 1, "total_process_count");
-    push_display(&mut out, snap.processes.len());
+    // Wire semantics: the machine-wide process count *before* `?limit=N`
+    // truncation. Keep an explicitly supplied envelope value verbatim; only a
+    // local probe without an envelope falls back to the published row count.
+    match total_process_count {
+        Some(total) => push_display(&mut out, total),
+        None => push_display(&mut out, snap.processes.len()),
+    }
     out.push_str(",\n");
     push_key(&mut out, 1, "snapshot");
     out.push_str("{\n");
@@ -1072,5 +1117,62 @@ mod tests {
                 .expect("header"),
             PROCESS_CSV_HEADER
         );
+    }
+
+    #[test]
+    fn json_export_preserves_explicit_wire_total_and_falls_back_to_row_count() {
+        // `GET /api/v1/snapshot?limit=N` publishes 3 rows while the envelope's
+        // `total_process_count` still describes the whole machine (30).
+        let mut snapshot = SystemSnapshot::default();
+        for pid in [10, 20, 30] {
+            snapshot.processes.push(crate::model::ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                ..crate::model::ProcessSnapshot::default()
+            });
+        }
+        let ids = secret_ids();
+
+        let wire = snapshot_to_json_with_total(&snapshot, &ids, Some(30));
+        assert_well_formed_json(&wire);
+        let value: serde_json::Value = serde_json::from_str(&wire).expect("wire export is JSON");
+        assert_eq!(value["total_process_count"].as_u64(), Some(30), "{wire}");
+        assert_eq!(
+            value["snapshot"]["processes"]
+                .as_array()
+                .map(|rows| rows.len()),
+            Some(3),
+            "only published rows may appear inside `snapshot`"
+        );
+
+        // A CLI / local-probe export has no envelope: keep the row count.
+        let cli = snapshot_to_json_with_total(&snapshot, &ids, None);
+        let value: serde_json::Value = serde_json::from_str(&cli).expect("cli export is JSON");
+        assert_eq!(value["total_process_count"].as_u64(), Some(3), "{cli}");
+        assert_eq!(
+            snapshot_to_json(&snapshot, &ids),
+            cli,
+            "the 2-argument wrapper must remain backward compatible"
+        );
+    }
+
+    #[test]
+    fn csv_export_keeps_twelve_columns_with_an_explicit_wire_total() {
+        let mut snapshot = SystemSnapshot::default();
+        for pid in [10, 20, 30] {
+            snapshot.processes.push(crate::model::ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                ..crate::model::ProcessSnapshot::default()
+            });
+        }
+        let ids = secret_ids();
+        let with_total = snapshot_to_csv_with_total(&snapshot, &ids, Some(30));
+        let without_total = snapshot_to_csv(&snapshot, &ids);
+        assert_eq!(with_total, without_total, "CSV has no envelope field");
+        assert_eq!(PROCESS_CSV_HEADER.matches(',').count(), 11);
+        let lines: Vec<&str> = with_total.lines().collect();
+        assert_eq!(lines.len(), 4, "header + 3 rows: {with_total}");
+        for line in lines {
+            assert_eq!(line.matches(',').count(), 11, "12 columns: {line}");
+        }
     }
 }
