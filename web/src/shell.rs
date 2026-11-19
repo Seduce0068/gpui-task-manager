@@ -224,9 +224,11 @@ enum DataSource {
 /// value is fixed ASCII and can never carry a token or agent-derived text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StreamMode {
-    /// The `/api/v1/stream` subscription is pushing snapshots.
+    /// The `/api/v1/stream` subscription has delivered its first snapshot and
+    /// is pushing frames. Polling is suspended only from this point on.
     Active,
-    /// The stream ended or failed; the existing fetch poll keeps the view fresh.
+    /// The stream has not delivered a frame yet, ended, failed or went idle;
+    /// the existing fetch poll keeps the view fresh.
     Fallback,
 }
 
@@ -280,6 +282,11 @@ pub struct TaskManagerApp {
     /// Bumped on every subscription attempt so a stale task that unwinds late
     /// cannot overwrite the state of its replacement.
     sse_epoch: u64,
+    /// Timestamp of the most recent frame from the *current* subscription.
+    /// `None` until the first frame proves the HTTP stream is delivering; that
+    /// first frame is also the moment `stream_mode` becomes `Active`. The idle
+    /// watchdog measures from here, not from task spawn.
+    sse_last_snapshot_at: Option<Instant>,
     /// Earliest instant at which a failed stream may be retried.
     sse_retry_at: Option<Instant>,
 }
@@ -335,6 +342,7 @@ impl TaskManagerApp {
             stream_mode: StreamMode::Fallback,
             sse_task: None,
             sse_epoch: 0,
+            sse_last_snapshot_at: None,
             sse_retry_at: None,
         };
         app.restore_settings();
@@ -368,6 +376,14 @@ impl TaskManagerApp {
                 // `refresh_agent_config` reconnects it immediately.
                 let alive = this.update(cx, |app, cx| {
                     if app.refresh_agent_config(cx) {
+                        cx.notify();
+                    }
+                    // A stream that stopped delivering frames must not keep
+                    // polling suspended forever. Check before the retry so the
+                    // cooldown scheduled by the watchdog is honoured on this
+                    // same cycle instead of reconnecting immediately.
+                    if app.sse_watchdog_expired() {
+                        app.on_sse_idle_timeout();
                         cx.notify();
                     }
                     // A terminated stream is retried after its cooldown so a
@@ -465,6 +481,11 @@ impl TaskManagerApp {
     /// inside `agent.rs` independently stops a read already in flight. A stale
     /// task cannot overwrite the replacement's state because it carries the
     /// epoch captured when it was spawned.
+    ///
+    /// Subscribing alone does **not** mean the view is fresh: `stream_mode`
+    /// stays `Fallback` (polling continues) until the first frame arrives in
+    /// the callback below. Otherwise the sampler would suspend on a connection
+    /// that has not produced anything yet and the UI would freeze.
     fn start_sse_stream(&mut self, cx: &mut Context<Self>) {
         let DataSource::Live(client) = &self.source else {
             return;
@@ -473,7 +494,10 @@ impl TaskManagerApp {
         self.sse_task = None;
         self.sse_epoch = self.sse_epoch.wrapping_add(1);
         let epoch = self.sse_epoch;
-        self.stream_mode = StreamMode::Active;
+        // Connection established is only *proven* by the first frame, so keep
+        // polling until then and reset the watchdog baseline for this attempt.
+        self.stream_mode = stream_mode_while_connecting();
+        self.sse_last_snapshot_at = None;
         self.sse_retry_at = None;
 
         let task = cx.spawn(async move |this, cx| {
@@ -484,6 +508,18 @@ impl TaskManagerApp {
                 let this_for_snapshot = this.clone();
                 match client.subscribe_snapshot_stream(move |envelope: SnapshotEnvelope| {
                     let _ = this_for_snapshot.update(stream_cx, |app, cx| {
+                        // A frame from a superseded subscription is data from
+                        // the past. Ingesting it would overwrite the newer
+                        // state after a config change, retry or idle timeout.
+                        if !sse_frame_is_current(epoch, app.sse_epoch) {
+                            return;
+                        }
+                        // First frame received: the stream is genuinely
+                        // delivering, so suspending the poll is safe now.
+                        // `handle_live_result` rewrites the DOM proof with this
+                        // mode before returning (sse=active).
+                        app.stream_mode = StreamMode::Active;
+                        app.sse_last_snapshot_at = Some(Instant::now());
                         // Same ingest path as polling: redaction, ticks, stale
                         // and reconnect handling stay in exactly one place.
                         app.handle_live_result(Ok(envelope.into_response()));
@@ -515,11 +551,42 @@ impl TaskManagerApp {
     /// keeps receiving snapshots from the poll while the retry cooldown runs.
     fn on_sse_ended(&mut self, outcome: Result<(), FetchError>) {
         self.stream_mode = stream_mode_after_sse_end(&outcome);
+        self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
         match outcome {
             Ok(()) => self.dashboard.set_status(SSE_FALLBACK_NOTICE, false),
             Err(error) => self.handle_live_result(Err(error)),
         }
+        self.sync_proof_dom();
+    }
+
+    /// Whether the active stream has gone quiet long enough to force a fallback.
+    ///
+    /// Only a stream that actually delivered a first frame can be watched:
+    /// before that the shell stays in `Fallback` and the poll keeps running, so
+    /// there is nothing to recover from.
+    fn sse_watchdog_expired(&self) -> bool {
+        sse_idle_expired(
+            self.stream_mode,
+            self.sse_last_snapshot_at,
+            Instant::now(),
+            self.dashboard.effective_interval(),
+        )
+    }
+
+    /// Retracts a silent SSE stream and hands freshness back to the fetch poll.
+    ///
+    /// Dropping the task cancels the browser-side read, and bumping the epoch
+    /// makes any frame that still arrives from it a no-op in the callback. The
+    /// retry cooldown mirrors [`Self::on_sse_ended`] so a broken agent is not
+    /// reconnected on every sampler tick.
+    fn on_sse_idle_timeout(&mut self) {
+        self.sse_task = None;
+        self.sse_epoch = self.sse_epoch.wrapping_add(1);
+        self.stream_mode = StreamMode::Fallback;
+        self.sse_last_snapshot_at = None;
+        self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
+        self.dashboard.set_status(SSE_FALLBACK_NOTICE, false);
         self.sync_proof_dom();
     }
 
@@ -3093,6 +3160,53 @@ fn stream_mode_after_sse_end(_outcome: &Result<(), FetchError>) -> StreamMode {
     StreamMode::Fallback
 }
 
+/// Mode held while a subscription is being established.
+///
+/// A spawned task / accepted HTTP connection is not proof that frames will
+/// arrive, so polling must stay on until the first snapshot is delivered. Kept
+/// pure so the "no freeze before the first frame" contract can be unit tested.
+fn stream_mode_while_connecting() -> StreamMode {
+    StreamMode::Fallback
+}
+
+/// How long an active stream may stay silent before polling is resumed.
+///
+/// Design choice: three times the *applied* refresh interval. One missed frame
+/// is tolerated (the agent may be busy), two more still bound how long updates
+/// can stop. `effective_interval()` already carries the adaptive power floor,
+/// so a low-power plan cannot shorten the grace period below the cadence the
+/// sampler actually runs at. `sampler_wait` clamps before multiplying, keeping
+/// the window inside 750 ms .. 30 s.
+fn sse_idle_timeout(interval: Duration) -> Duration {
+    sampler_wait(interval).saturating_mul(3)
+}
+
+/// Pure idle-watchdog decision, testable without a GPUI entity.
+///
+/// `last_snapshot == None` can never count as idle: the stream only becomes
+/// `Active` on its first frame, and the timestamp is set in the same callback.
+/// `saturating_duration_since` keeps the comparison total even if the clock is
+/// observed slightly out of order.
+fn sse_idle_expired(
+    mode: StreamMode,
+    last_snapshot: Option<Instant>,
+    now: Instant,
+    interval: Duration,
+) -> bool {
+    mode == StreamMode::Active
+        && last_snapshot
+            .is_some_and(|at| now.saturating_duration_since(at) >= sse_idle_timeout(interval))
+}
+
+/// Whether a frame still belongs to the current subscription.
+///
+/// A config change, retry or idle timeout bumps `sse_epoch`; a late frame from
+/// the superseded stream must not overwrite the newer state. Kept pure so the
+/// guard contract is testable on the native host.
+fn sse_frame_is_current(frame_epoch: u64, shell_epoch: u64) -> bool {
+    frame_epoch == shell_epoch
+}
+
 /// Appends the SSE transport marker to the DOM proof.
 ///
 /// Additive only: a fixed `active` / `fallback` token as the final field, so
@@ -4164,5 +4278,83 @@ mod tests {
         // The fallback notice stays inside the DOM-proof grammar.
         assert!(!SSE_FALLBACK_NOTICE.contains(';'));
         assert!(!SSE_FALLBACK_NOTICE.contains('\n'));
+    }
+
+    #[test]
+    fn polling_stays_on_until_the_first_stream_frame_arrives() {
+        // Subscribing (or even receiving headers) must not suspend the poll:
+        // only a delivered frame flips the mode to Active in the callback.
+        assert_eq!(stream_mode_while_connecting(), StreamMode::Fallback);
+        assert_eq!(
+            proof_with_sse("mode=live;", stream_mode_while_connecting()),
+            "mode=live;sse=fallback;"
+        );
+    }
+
+    #[test]
+    fn sse_idle_timeout_is_three_times_the_applied_interval() {
+        assert_eq!(
+            sse_idle_timeout(DEFAULT_REFRESH_INTERVAL),
+            DEFAULT_REFRESH_INTERVAL.saturating_mul(3)
+        );
+        // Clamp before multiplying, matching the sampler's real cadence.
+        assert_eq!(
+            sse_idle_timeout(Duration::from_millis(1)),
+            MIN_REFRESH_INTERVAL.saturating_mul(3)
+        );
+        assert_eq!(
+            sse_idle_timeout(Duration::from_secs(3_600)),
+            MAX_REFRESH_INTERVAL.saturating_mul(3)
+        );
+    }
+
+    #[test]
+    fn sse_idle_watchdog_only_fires_for_an_active_silent_stream() {
+        let interval = DEFAULT_REFRESH_INTERVAL;
+        let timeout = sse_idle_timeout(interval);
+        let first_frame = Instant::now();
+
+        // Before the first frame there is nothing to watch (and polling is on).
+        assert!(!sse_idle_expired(
+            StreamMode::Fallback,
+            None,
+            first_frame + timeout * 4,
+            interval
+        ));
+        assert!(!sse_idle_expired(
+            StreamMode::Active,
+            None,
+            first_frame,
+            interval
+        ));
+        // Inside the grace window polling stays suspended.
+        assert!(!sse_idle_expired(
+            StreamMode::Active,
+            Some(first_frame),
+            first_frame + timeout - Duration::from_millis(1),
+            interval
+        ));
+        // At and beyond the deadline the poll must take over again.
+        assert!(sse_idle_expired(
+            StreamMode::Active,
+            Some(first_frame),
+            first_frame + timeout,
+            interval
+        ));
+        assert!(sse_idle_expired(
+            StreamMode::Active,
+            Some(first_frame),
+            first_frame + timeout * 2,
+            interval
+        ));
+    }
+
+    #[test]
+    fn stale_stream_frames_are_rejected_by_the_epoch_guard() {
+        let shell_epoch = 7;
+        assert!(sse_frame_is_current(shell_epoch, shell_epoch));
+        // Both an older and a newer (defensive) epoch count as a stale stream.
+        assert!(!sse_frame_is_current(shell_epoch - 1, shell_epoch));
+        assert!(!sse_frame_is_current(shell_epoch + 1, shell_epoch));
     }
 }

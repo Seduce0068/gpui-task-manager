@@ -371,6 +371,20 @@ status: current
 - [x] DOM proof の filter/ime_field から '=' と改行を除去
       (`web/src/shell.rs:2337`)。根拠 q3-ui。
 
+### 優先度: 中 — SSE クライアント差分レビュー 2026-11-19
+
+- [x] SSE 経由の SnapshotEnvelope が redact/sanitize をバイパス（high）:
+      `into_response()` で単一ゲート化、8MiB 境界を >= に統一、フレーム分割の
+      增量スキャン化。根拠 u1-sec / u2-state。
+- [x] stream_mode=Active が接続確立前に設定されポーリングが停止（medium）:
+      初フレームまで Fallback 維持、アイドル watchdog（間隔×3）、sse_epoch
+      ガードを on_snapshot にも適用。根拠 u2-state。
+- [x] ヘッダ到達後無送信ストリームのウォッチドッグ欠落（medium）。根拠 u1-sec。
+- [x] generation 変更が read().await 中にブロックされる（low）: ドキュメントを
+      実装に合わせ修正。セットアップ中の fetch detach は依存制約をコメント化。
+      根拠 u1-sec / u2-state。
+- [x] フレーム分割の O(n^2) 再走査（low）。根拠 u1-sec。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

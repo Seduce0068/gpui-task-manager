@@ -228,7 +228,15 @@ impl SnapshotEnvelope {
     /// Converts a validated wire frame into the public response the shell
     /// already uses for its polling path, so both sources share one ingest
     /// function (and therefore the same redaction / stale / reconnect logic).
-    pub(crate) fn into_response(self) -> SnapshotResponse {
+    ///
+    /// This is the **single** sanitise-and-redact gate for every wire source:
+    /// the polling reader and the SSE callback both funnel through it. Doing the
+    /// work here — instead of only in the reader — is what stops an SSE frame
+    /// from bypassing identifier masking or Cf/control-character stripping. The
+    /// helper re-derives identifiers from the raw snapshot on entry and is
+    /// idempotent, so no separate `OwnedIdentifiers` argument is required.
+    pub(crate) fn into_response(mut self) -> SnapshotResponse {
+        crate::redaction::sanitize_and_redact_wire_snapshot(&mut self.snapshot);
         SnapshotResponse {
             snapshot: self.snapshot,
             total_process_count: self.total_process_count,
@@ -496,17 +504,13 @@ impl AgentClient {
             FetchError::Parse(redact_token(&format!("{error:#}"), config.token.as_deref()))
         })?;
         check_schema_version(envelope.schema_version)?;
+        // `into_response` is the one sanitise-and-redact gate shared with SSE.
         // Never trust display strings from the wire: a malicious or corrupted
-        // agent could inject ANSI/control characters into the canvas (R2X-D1).
-        // The agent's `--redact` flag defaults to false, so the same boundary
-        // must also mask host / user / home / tailnet identifiers recovered from
-        // the snapshot itself before anything reaches the UI or an export.
-        let mut snapshot = envelope.snapshot;
-        crate::redaction::sanitize_and_redact_wire_snapshot(&mut snapshot);
-        Ok(SnapshotResponse {
-            snapshot,
-            total_process_count: envelope.total_process_count,
-        })
+        // agent could inject ANSI/control characters into the canvas (R2X-D1),
+        // and its `--redact` flag defaults to false, so host / user / home /
+        // tailnet identifiers must be masked here too. Do NOT duplicate the
+        // redaction call in this reader — that would split the boundary again.
+        Ok(envelope.into_response())
     }
 
     /// Subscribes to the agent's long-lived `GET /api/v1/stream` endpoint.
@@ -562,6 +566,15 @@ where
     }
 }
 
+/// Whether an accumulated body length has reached the hard cap.
+///
+/// Shared by the declared-length precheck, the abortable polling reader and the
+/// SSE accumulator so every wire path treats exactly `MAX_SNAPSHOT_BYTES` as
+/// over the limit (inclusive `>=` boundary, fixed by the shared test below).
+fn body_exceeds_cap(used: u64, limit: u64) -> bool {
+    used >= limit
+}
+
 /// Whether a declared `Content-Length` already proves the body is too large.
 ///
 /// Used before reading anything, so an oversized response never enters the
@@ -570,7 +583,7 @@ where
 fn content_length_exceeds_cap(declared: Option<&str>) -> bool {
     declared
         .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|len| len >= MAX_SNAPSHOT_BYTES)
+        .is_some_and(|len| body_exceeds_cap(len, MAX_SNAPSHOT_BYTES))
 }
 
 /// Reads `body` into `out`, stopping as soon as `aborted()` turns true or the
@@ -599,7 +612,7 @@ where
             return Err(FetchError::BodyAborted);
         }
         let used = out.len() as u64;
-        if used >= limit {
+        if body_exceeds_cap(used, limit) {
             return Err(FetchError::SizeLimit);
         }
         let want = (limit - used).min(BODY_READ_CHUNK as u64) as usize;
@@ -763,32 +776,33 @@ fn prepare_stream(
     })
 }
 
-/// Splits the first complete SSE frame off `buffer`.
+/// Length of the longest SSE frame delimiter (`\r\n\r\n`).
+const SSE_DELIMITER_MAX_LEN: usize = 4;
+
+/// Finds the first SSE frame delimiter at or after `from`.
 ///
-/// Returns `(frame_without_delimiter, bytes_consumed_including_delimiter)`.
-/// Both LF (`\n\n`, which the agent emits) and CRLF (`\r\n\r\n`) blank lines are
-/// accepted, and the earliest delimiter wins. A frame split across several
-/// reads simply stays in `buffer` until its delimiter arrives.
-fn take_sse_frame(buffer: &[u8]) -> Option<(&[u8], usize)> {
-    let lf = buffer
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|position| (position, 2));
-    let crlf = buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| (position, 4));
-    match (lf, crlf) {
-        (Some((lf_at, lf_len)), Some((crlf_at, crlf_len))) => {
-            if lf_at <= crlf_at {
-                Some((&buffer[..lf_at], lf_at + lf_len))
-            } else {
-                Some((&buffer[..crlf_at], crlf_at + crlf_len))
-            }
+/// Returns `(delimiter_start, delimiter_len)`. Both LF (`\n\n`, which the agent
+/// emits) and CRLF (`\r\n\r\n`) blank lines are accepted; the earliest start
+/// wins, matching the old "scan the whole buffer twice and pick the smaller
+/// position" behaviour. A frame split across several reads simply stays in the
+/// buffer until its delimiter arrives.
+///
+/// `from` is a *resume offset*: positions before it were already tested as
+/// delimiter starts during an earlier read. Scanning byte-by-byte from there —
+/// instead of re-running `windows(2)`/`windows(4)` over the whole growing buffer
+/// on every chunk — keeps a long, chunked frame at O(total bytes) rather than
+/// O(n^2) comparisons. The caller resumes `SSE_DELIMITER_MAX_LEN - 1` bytes back
+/// so a delimiter straddling a read boundary is still found.
+fn find_sse_delimiter(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
+    for at in from.min(buffer.len())..buffer.len() {
+        if buffer[at..].starts_with(b"\n\n") {
+            return Some((at, 2));
         }
-        (Some((at, len)), None) | (None, Some((at, len))) => Some((&buffer[..at], at + len)),
-        (None, None) => None,
+        if buffer[at..].starts_with(b"\r\n\r\n") {
+            return Some((at, SSE_DELIMITER_MAX_LEN));
+        }
     }
+    None
 }
 
 /// Drives one long-lived SSE subscription, calling `on_snapshot` per frame.
@@ -848,6 +862,10 @@ where
 
     let mut body = response.into_body();
     let mut pending = Vec::new();
+    // Resume offset into `pending`: positions before it were already tested as
+    // delimiter starts. Kept across reads so a frame spanning many chunks is
+    // scanned once instead of re-scanning the whole buffer every time.
+    let mut scan_from = 0usize;
     let mut scratch = [0u8; BODY_READ_CHUNK];
     loop {
         if aborted() {
@@ -866,20 +884,35 @@ where
             return Ok(());
         }
         pending.extend_from_slice(&scratch[..read]);
-        if pending.len() as u64 > MAX_SNAPSHOT_BYTES {
+        if body_exceeds_cap(pending.len() as u64, MAX_SNAPSHOT_BYTES) {
             return Err(FetchError::SizeLimit);
         }
-        while let Some((frame, consumed)) = take_sse_frame(&pending) {
+        // `pending` always begins with the first unconsumed byte (we drain all
+        // finished frames at the end of this read), so `frame_start` is 0 for
+        // the first frame and the end of the previous delimiter afterwards.
+        let mut frame_start = 0usize;
+        let mut cursor = scan_from;
+        while let Some((at, delimiter_len)) = find_sse_delimiter(&pending, cursor) {
+            if aborted() {
+                return Err(FetchError::BodyAborted);
+            }
+            let frame = &pending[frame_start..at];
             let text = std::str::from_utf8(frame)
                 .map_err(|_| FetchError::Parse("SSE データの解析に失敗しました".to_string()))?;
             let envelope = parse_sse_event_frame(text)
                 .map_err(|detail| FetchError::Parse(redact_token(&detail, token.as_deref())))?;
-            if aborted() {
-                return Err(FetchError::BodyAborted);
-            }
             on_snapshot(envelope);
-            pending.drain(..consumed);
+            frame_start = at + delimiter_len;
+            cursor = frame_start;
         }
+        // One drain per read instead of one per frame: many small frames in a
+        // single chunk no longer cause repeated O(remaining) memmoves.
+        if frame_start > 0 {
+            pending.drain(..frame_start);
+        }
+        // A delimiter may straddle the next read; recheck the last
+        // `SSE_DELIMITER_MAX_LEN - 1` bytes so no boundary is missed.
+        scan_from = pending.len().saturating_sub(SSE_DELIMITER_MAX_LEN - 1);
     }
 }
 
@@ -1233,6 +1266,28 @@ mod tests {
     }
 
     #[test]
+    fn every_wire_path_uses_the_same_inclusive_size_cap() {
+        // Single shared predicate: polling precheck, abortable reader and SSE
+        // accumulator all reject exactly at MAX_SNAPSHOT_BYTES (u1-sec fix).
+        assert!(!body_exceeds_cap(
+            MAX_SNAPSHOT_BYTES - 1,
+            MAX_SNAPSHOT_BYTES
+        ));
+        assert!(body_exceeds_cap(MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_BYTES));
+        assert!(body_exceeds_cap(MAX_SNAPSHOT_BYTES + 1, MAX_SNAPSHOT_BYTES));
+        assert!(content_length_exceeds_cap(Some(
+            &MAX_SNAPSHOT_BYTES.to_string()
+        )));
+        assert!(!content_length_exceeds_cap(Some(
+            &(MAX_SNAPSHOT_BYTES - 1).to_string()
+        )));
+        // The reader's existing boundary test uses the same helper, so an
+        // accidental `>` regression in either path changes this contract.
+        assert!(body_exceeds_cap(10, 10));
+        assert!(!body_exceeds_cap(9, 10));
+    }
+
+    #[test]
     fn body_reader_aborts_after_one_chunk_when_superseded() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1473,6 +1528,112 @@ mod tests {
         assert!(!error.contains('{'));
     }
 
+    /// An unredacted wire snapshot: real identifiers, a ZWSP *inside* the host
+    /// name (redaction must see it before sanitisation turns it into a space),
+    /// plus ANSI/Cf injection in the process text.
+    fn dirty_wire_snapshot() -> tm_core::SystemSnapshot {
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.hostname = Some("my\u{200b}host".into());
+        snapshot.processes = vec![tm_core::ProcessSnapshot {
+            key: tm_core::ProcessKey::new(4242, 1_700_000_000),
+            name: "alice-worker\u{200b}\u{1b}[2J".into(),
+            command: "alice --home /home/alice https://my\u{200b}host.tail1234.ts.net:8443 --id=tail1234abcd \u{1b}[31mRED\u{1b}[0m\u{200b}".into(),
+            user: Some("alice".into()),
+            status: tm_core::ProcessStatus::Running,
+            ..tm_core::ProcessSnapshot::default()
+        }];
+        snapshot.disks = vec![tm_core::DiskUsageSnapshot {
+            mount_point: "/home/alice/work".into(),
+            ..tm_core::DiskUsageSnapshot::default()
+        }];
+        snapshot
+    }
+
+    fn assert_wire_snapshot_is_clean(snapshot: &tm_core::SystemSnapshot) {
+        assert_eq!(snapshot.hostname.as_deref(), Some("host"));
+        assert_eq!(snapshot.disks[0].mount_point, "/home/user/work");
+        let process = &snapshot.processes[0];
+        assert_eq!(process.user.as_deref(), Some("user"));
+        assert_eq!(process.name, "user-worker");
+        for secret in ["alice", "my-host", "/home/alice", "tail1234", "ts.net"] {
+            assert!(
+                !process.command.contains(secret),
+                "command leaked {secret}: {}",
+                process.command
+            );
+            assert!(
+                !process.name.contains(secret),
+                "name leaked {secret}: {}",
+                process.name
+            );
+        }
+        for value in [process.command.as_str(), process.name.as_str()] {
+            assert!(!value.contains('\u{1b}'), "ANSI escape survived: {value:?}");
+            assert!(
+                !value.contains('\u{200b}'),
+                "Cf character survived: {value:?}"
+            );
+            assert!(
+                value.chars().all(|ch| !ch.is_control()),
+                "control character survived: {value:?}"
+            );
+        }
+        assert!(
+            process.command.contains("RED"),
+            "visible text should remain"
+        );
+    }
+
+    #[test]
+    fn sse_wire_envelope_is_redacted_by_the_shared_into_response_gate() {
+        // The shell's SSE callback calls `into_response` on every frame. An
+        // unredacted agent payload must be masked there, not just on polling.
+        let envelope = SnapshotEnvelope {
+            schema_version: WIRE_SCHEMA_VERSION,
+            total_process_count: 9,
+            snapshot: dirty_wire_snapshot(),
+        };
+        let response = envelope.into_response();
+        assert_eq!(response.total_process_count, 9);
+        assert_wire_snapshot_is_clean(&response.snapshot);
+    }
+
+    #[test]
+    fn sse_stream_frame_is_clean_after_the_shared_gate() {
+        // End-to-end: a raw SSE frame -> parse -> the same `into_response` gate
+        // the shell uses -> no hostname/user/home/tailnet id or control char.
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": 3,
+            "snapshot": dirty_wire_snapshot(),
+        })
+        .to_string();
+        let body = format!("event: snapshot\ndata: {json}\n\n").into_bytes();
+        let (params, _) = stream_params(
+            Some("secret-agent-token"),
+            body,
+            13,
+            200,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        futures::executor::block_on(drive_snapshot_stream(
+            params,
+            move |envelope| {
+                // Mirrors shell.rs: the callback converts via the single gate.
+                let response = envelope.into_response();
+                sink.lock().unwrap().push(response);
+            },
+            never_timeout(),
+        ))
+        .expect("a well-formed stream drains to EOF");
+        let responses = seen.lock().unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].total_process_count, 3);
+        assert_wire_snapshot_is_clean(&responses[0].snapshot);
+    }
+
     // ------------------------------------------------------ SSE stream support
 
     #[derive(Clone)]
@@ -1641,13 +1802,30 @@ mod tests {
         let frame = b"event: snapshot\ndata: 1";
         let mut buffer = frame.to_vec();
         buffer.extend_from_slice(b"\r\n\r\nrest");
-        let (body, consumed) = take_sse_frame(&buffer).expect("CRLF blank line ends a frame");
-        assert_eq!(body, frame);
-        assert_eq!(&buffer[consumed..], b"rest");
+        let (at, len) = find_sse_delimiter(&buffer, 0).expect("CRLF blank line ends a frame");
+        assert_eq!(&buffer[..at], frame);
+        assert_eq!(&buffer[at + len..], b"rest");
         assert!(
-            take_sse_frame(&frame[..5]).is_none(),
+            find_sse_delimiter(&frame[..5], 0).is_none(),
             "an unterminated frame must stay buffered"
         );
+    }
+
+    #[test]
+    fn sse_delimiter_search_resumes_across_a_read_boundary() {
+        let mut buffer = b"event: snapshot\ndata: 1\r\n\r".to_vec();
+        assert!(
+            find_sse_delimiter(&buffer, 0).is_none(),
+            "no complete delimiter yet"
+        );
+        // The caller saves this resume offset before the next chunk arrives.
+        let resume = buffer.len().saturating_sub(SSE_DELIMITER_MAX_LEN - 1);
+        buffer.push(b'\n'); // completes the `\r\n\r\n` delimiter
+        let (at, len) = find_sse_delimiter(&buffer, resume).expect("straddling CRLF is found");
+        assert_eq!(&buffer[at..at + len], b"\r\n\r\n");
+        assert_eq!(&buffer[..at], b"event: snapshot\ndata: 1");
+        // A resume offset past the delimiter never reports it a second time.
+        assert!(find_sse_delimiter(&buffer, at + len).is_none());
     }
 
     #[test]
