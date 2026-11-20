@@ -79,6 +79,15 @@ const MAX_CONNECTIONS: usize = 8;
 /// fail with 503 (R1-I14).
 const MAX_STREAMS: usize = 2;
 
+/// Numeric `Retry-After` (delta-seconds) sent with transient failures.
+///
+/// Five seconds gives a browser time to release an SSE slot (the RAII drop
+/// happens within one ~100 ms wait slice) and avoids a hot reconnect loop.
+/// [`http::set_retry_after`] clamps this to `http::MAX_RETRY_AFTER_SECS`, so the
+/// hint can never park the Web shell's poll even if a future caller raises it.
+/// The value is a fixed constant: no request-derived data reaches the header.
+const RETRY_AFTER_SECS: u64 = 5;
+
 /// Delay between two `snapshot` events on [`STREAM_PATH`].
 const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 
@@ -1245,10 +1254,11 @@ fn spawn_connection(
             error_body(ErrorCode::Busy, "同時接続数が上限に達しました"),
         );
         // This rejection happens before the request head is read, so there is
-        // no Origin to reflect (no Access-Control-Allow-Origin here). Still
-        // expose Retry-After so every CORS-capable 503 path shares the same
-        // header contract; a browser would otherwise never see the hint.
-        http::expose_retry_after(&mut response);
+        // no Origin to reflect (no Access-Control-Allow-Origin here). The
+        // helper attaches the numeric hint *and* its CORS exposure, so every
+        // 503 path shares the same contract and the browser's poll can honour
+        // the backoff instead of falling back to blind exponential retries.
+        http::set_retry_after(&mut response, RETRY_AFTER_SECS);
         // The 503 path is written synchronously on the accept thread, bounded
         // by WRITE_TIMEOUT (5 s). In practice the ~240-byte response fits in
         // the loopback send buffer and returns immediately; a peer stopping
@@ -1498,6 +1508,11 @@ fn handle_request(
 
     let mut response = route(request, trace.id(), metrics);
     trace.finish(response.status);
+    // Every 429/5xx leaving the ordinary path (including a probe failure's
+    // 500) gets the bounded hint. `set_retry_after` is a no-op for other
+    // statuses, so 200/403/404/405 stay byte-identical; it is also idempotent,
+    // so a call site with a specific value would keep its own hint.
+    http::set_retry_after(&mut response, RETRY_AFTER_SECS);
     add_cors_if_absent(&mut response, allowed_origin);
     http::write_response(stream, &response)
 }
@@ -1802,6 +1817,11 @@ where
             "Service Unavailable",
             error_body(ErrorCode::Busy, "ストリーミング接続数が上限に達しました"),
         );
+        // Same busy-hint contract as the MAX_CONNECTIONS 503: the numeric
+        // `Retry-After` is emitted even without an Origin, and its CORS
+        // exposure is added once (set_retry_after and add_cors_headers share
+        // the idempotent expose helper). ErrorCode/body/auth are untouched.
+        http::set_retry_after(&mut response, RETRY_AFTER_SECS);
         if let Some(origin) = allowed_origin {
             http::add_cors_headers(&mut response, origin);
         }
@@ -4300,11 +4320,21 @@ mod tests {
             response.starts_with("HTTP/1.1 503 Service Unavailable"),
             "{response}"
         );
-        // The pre-read 503 has no Origin to reflect, but it must still expose
-        // Retry-After so the header contract matches every other CORS path.
+        // The pre-read 503 has no Origin to reflect, but it must still carry
+        // the numeric hint and expose it, so the Web shell's `retry_after_secs`
+        // path fires even on this synchronous rejection path.
         assert!(
-            response.contains("Access-Control-Expose-Headers: Retry-After"),
+            response.contains("Retry-After: 5\r\n"),
+            "the 503 must carry a numeric Retry-After: {response}"
+        );
+        assert!(
+            response.contains("Access-Control-Expose-Headers: Retry-After\r\n"),
             "{response}"
+        );
+        assert_eq!(
+            response.matches("Access-Control-Expose-Headers:").count(),
+            1,
+            "the exposure header must appear exactly once: {response}"
         );
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
         // The 503 path is synchronous on the accept thread: it must not add a
@@ -4702,6 +4732,93 @@ mod tests {
         drop(slots);
         assert_eq!(state.streams.load(Ordering::Acquire), 0);
         assert!(try_acquire_stream_slot(&state.streams));
+    }
+
+    #[test]
+    fn exhausted_stream_slots_return_503_with_retry_after_and_exposure() {
+        // Real-socket proof for the second busy path: hold every SSE slot on
+        // the test thread, then drive a fully authenticated request through
+        // the real dispatcher on the worker thread. No auth/redact/ErrorCode/
+        // StreamSlot behaviour changes — only the two hint headers are new.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false,
+        ));
+        let held: Vec<StreamSlot<'_>> = (0..MAX_STREAMS)
+            .map(|_| {
+                assert!(try_acquire_stream_slot(&state.streams));
+                StreamSlot(&state)
+            })
+            .collect();
+        assert!(!try_acquire_stream_slot(&state.streams));
+
+        let worker_state = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            handle_connection_with_stream(
+                &mut stream,
+                &worker_state,
+                |request, request_id, metrics| {
+                    let context = RequestContext {
+                        request_id,
+                        metrics,
+                        active: &worker_state.active,
+                        streams: &worker_state.streams,
+                    };
+                    let mut guard = worker_state
+                        .probe
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    route(
+                        request,
+                        Some(guard.as_mut()),
+                        &worker_state.token,
+                        worker_state.redact,
+                        &worker_state.warmed_up,
+                        &context,
+                    )
+                },
+            )
+            .expect("handle connection");
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write request");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handle.join().expect("server worker");
+        drop(held);
+
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "{response}"
+        );
+        assert!(response.contains("Retry-After: 5\r\n"), "{response}");
+        assert!(
+            response.contains("Access-Control-Expose-Headers: Retry-After\r\n"),
+            "{response}"
+        );
+        assert_eq!(
+            response.matches("Access-Control-Expose-Headers:").count(),
+            1,
+            "the exposure header must appear exactly once: {response}"
+        );
+        assert!(
+            response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"),
+            "{response}"
+        );
+        assert!(!response.contains(TEST_TOKEN), "{response}");
     }
 
     #[test]

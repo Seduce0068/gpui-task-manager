@@ -1289,6 +1289,117 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       tm-platform:86-88 の既存 unused imports で失敗（low）するため別途判断。
       根拠 rb-winchk。
 
+### 優先度: 高 — swarm-project-review + todo-discovery 2026-11-21
+
+- [ ] Retry-After 実ヘッダが agent 側に存在せず、expose ヘッダのみ。
+      web の retry_after_secs/HttpRetryAfter/PollBackoff のヒント経路が
+      本番で発火せず指数バックオフのみになる。503 に数値 Retry-After を
+      設定し実ソケット経由のテストを追加。根拠 R2-TQ01 / R2-ER01。
+- [ ] cdp-verify が release-linux / web-dist / sbom の needs から漏れており、
+      CDP 検証スクリプトの回帰があっても成果物が公開されうる。needs へ
+      追加。根拠 R3-DP01 / R4-CI01。
+- [ ] web クレートの MSRV 宣言 (rust-version 1.95) が CI で検証されていない。
+      msrv-1-95 ジョブは workspace のみ。web の wasm check を 1.95 で追加
+      するか、宣言から検証済みの主張を削除。根拠 R1-CF01。
+- [ ] ワイヤ型/エラー契約 (SnapshotEnvelope, ErrorCode, 固定ガイダンス) が
+      agent と web で手作業複製され共有クレートが無い。tm-core に wire
+      モジュールを設け単一定義化。根拠 R1-AR01。
+- [ ] 設定永続化ポリシー (version互換/rawマージ/破損隔離/4MiB/BOM/保持5)
+      が app と web で再実装され契約が分離しうる。共有 policy へ抽出。
+      根拠 R1-AR01。
+
+### 優先度: 中 — swarm-project-review + todo-discovery 2026-11-21
+
+- [ ] エクスポート後の private_dir / Retry-After / CORS の実経路テストが
+      弱い（EEXIST 分岐・既存 leaf/ancestor 権限・stream 503 CORS・
+      連続 hint・5xx 境界）。根拠 R2-TQ01 / R5-TS01。
+- [ ] late サンプルで network_rates/history が (0,0) に上書きされる。
+      is_late ならレート更新と history.push をスキップ。根拠 R2-BV01。
+- [ ] 自動トークン read→remove→publish の TOCTOU で並行起動が別トークン
+      を持ち得る。adopt 直前の再読込または直列化。根拠 R2-BV01。
+- [ ] SSE 接続確定前のポールと SSE が同一 probe をサンプリングし、
+      sampled_elapsed 短縮でレート過大。接続元分離またはポールにも
+      世代ガード。根拠 R2-BV01。
+- [ ] SSE error イベントが Web 側で Parse エラー化してストリーム終了。
+      1 回の回復可能失敗で fallback＋5s クールダウンが発生。Frame::Error
+      等でスキップ継続。根拠 R2-ER01。
+- [ ] トークン公開の部分失敗で旧ファイルも新ファイルも失われる。
+      退避/復元または chmod 先試行。根拠 R2-ER01。
+- [ ] --log-level が RequestTrace を抑制できず、--log-level error でも
+      http.request.start/end が出力される。root cause: telemetry::emit が
+      直接呼ばれる。根拠 R4-OB01。
+- [ ] リクエストスコープのエラーイベント (probe.mutex_poisoned 等) に
+      request_id が付かず相関できない。根拠 R4-OB01。
+- [ ] 列ヘッダのソートがマウス専用（WCAG 2.1.1）。フォーカス＋
+      Enter/Space＋aria-sort。ネイティブ確認ダイアログの Dialog role 欠落。
+      根拠 R5-UX01。
+- [ ] ライトテーマの muted/dim/塗り背景が WCAG AA 4.5:1 未満。
+      コントラスト比の自動検証テスト追加。根拠 R5-UX01。
+- [ ] F5「今すぐ更新」が Web で実更新せず通知のみ。実 fetch または
+      文言を「要求のみ」に変更。根拠 R5-UX01。
+- [ ] web 行メニューが右クリック専用でキーボードから開けない（WCAG）。
+      Shift+F10/ContextMenu 対応。根拠 R5-UX01。
+- [ ] web-dist の licenses/crates/** が CI で常にスキップされ、DEB と
+      ライセンス同梱が非対称。共有スクリプト化または必須アサーション。
+      根拠 R4-CI01。
+- [ ] deny ジョブが -A advisory-not-detected で check.sh とフラグ不一致。
+      advisory DB 読み込みをアサート。根拠 R4-CI01。
+- [ ] gitleaks チェックサムがバイナリと同一オリジンで真正性検証に
+      なっていない。repo 内ピン留めまたは署名 attestation。根拠 R4-CI01。
+- [ ] XDG_CONFIG_HOME パステストが環境変数を設定せず名前だけ検証。
+      純粋関数へ切り出し各分岐を明示テスト。根拠 R5-TS01。
+- [ ] テスト件数 556/191 に対し README 内訳 176+91+44+132+111=554。
+      内訳を再計測して合計と揃え DESIGN マトリクスも更新。
+      根拠 R1-FG01 / R5-DC01。
+- [ ] loopback 許可範囲の記述が SECURITY/DESIGN で広い（127.0.0.1/[::1]
+      のみが正）。PID0 拒否の記述不整合。根拠 R1-FG01。
+- [ ] web/README のトークン保存場所案内が「stderr で案内」と矛盾。
+      XDG state パスを参照する表現へ。根拠 R4-VU01。
+- [ ] Windows トークン自動生成の例外が DESIGN/SECURITY/web/README に
+      欠落（README のみ記載）。root cause auth.rs:51。根拠 R5-DC01。
+- [ ] DEB README の AC サンプリング下限が 1s と記載（実装は 0.5s）。
+      README.deb.md:18 を修正。根拠 R5-DC01。
+
+### 優先度: 低 — swarm-project-review + todo-discovery 2026-11-21
+
+- [ ] tm-platform が workspace.dependencies に無く path/version 重複。
+      deny 重複 warn と CI コメント矛盾。all-features 監査が実ビルドと
+      異なる feature 集合。根拠 R1-CF01。
+- [ ] markdownlint 除外スコープが CI と check.sh で手動同期。
+      gitleaks --unshallow 失敗無視。npm markdownlint 推移依存固定なし。
+      dependabot gpui-stack グループがデッド設定。根拠 R1-CF01 / R3-DP01。
+- [ ] admit 失敗の固定 50ms リトライ、stderr BrokenPipe パニック、
+      Prometheus カウンタの同時スクレイプ不整合、容量拒否 503 の
+      メトリクス区別不可。根拠 R2-ER01 / R4-OB01。
+- [ ] DOM proof の短いトークン平文露出、XDG パスの '..' 迂回、
+      明示トークンの強度要件/レート制限なし、通常 snapshot の Host
+      欠落許容。根拠 R3-AU01。
+- [ ] sysinfo 0.31.4/0.40.3 重複、advisory ignore 根拠が lock 実態と
+      矛盾（pastey/web-time 代替あり）。根拠 R3-DP01。
+- [ ] テーマ切替ボタンの accessible name が状態を示さない、UI 文言の
+      i18n 層欠落、温度しきい値用語 (max/crit vs 上限/危険) 混在、
+      空状態案内がマウス前提。根拠 R5-UX01。
+- [ ] 実測ホスト CPU 上限アサートと 800ms health 上限がフレークしうる。
+      private_dir 非 Unix 分岐・native ui.rs テスト欠落。根拠 R5-TS01。
+- [ ] notes/index 未掲載ノート多数、physical-verification の private 記述、
+      Chrome 157/158 混在、ADR wasm サイズ要再測定、DESIGN 行番号 stale、
+      DESIGN にレビュー作業メモ残存、advisory ignore 8/9 分岐、
+      設定永続化リストの theme 欠落、HiDPI ノートの古い不具合記録。
+      根拠 R4-VU01 / R5-DC01。
+- [ ] workflow_dispatch が任意ブランチから成果物生成、外部ツール導入が
+     毎回ネットワーク依存でキャッシュなし。根拠 R4-CI01。
+- [ ] AX ミラー告知に対して CDP の AX 検証が warning 止まり
+      (PROMOTE_AX_TO_FAILURE=False)。昇格または注記。根拠 R4-VU01。
+
+### メモ — 却下 / speculative 2026-11-21
+
+- R3-IV01 は新規発見なし。Host 欠落の不整合は r3au01/r1fg01 の
+      confirmed 指摘として統合し、iv01 の「意図的」判定は採用しない。
+- シグナル可否を OS 表示文字列の部分一致から導出する設計（R1-AR01）
+      は実害が未知の speculative として記録。
+- 性能・スケール指摘（wasm 初回ロード計測未実施等）は測定根拠が無いため
+      medium 以下に留めた。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
