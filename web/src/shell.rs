@@ -254,6 +254,27 @@ fn sse_fallback_status(status: Option<&StatusMessage>) -> Option<&'static str> {
     should_announce_settings_sync(status).then_some(SSE_FALLBACK_NOTICE)
 }
 
+/// The complete, deliberately minimal effect an SSE endpoint failure may have.
+///
+/// A stream error says the *stream endpoint* broke, not that the snapshot poll
+/// is failing. The poll therefore remains the sole owner of `live_error` and
+/// `reconnect_required` (wa-netfail / WB-SSEERR2). This type has no field for
+/// either, so a broken stream cannot blink the DOM proof's `live_error=` marker
+/// while the poll keeps ticking. The only effect is an optional transient status
+/// notice, already gated by [`sse_fallback_status`] so an outstanding persistent
+/// corrupt / save-failure notice keeps priority (SECURITY.md §5).
+#[derive(Debug, PartialEq, Eq)]
+struct SseErrorEffect {
+    transient_status: Option<&'static str>,
+}
+
+/// Computes the SSE error effect without touching poll-owned fields.
+fn sse_error_effect(status: Option<&StatusMessage>) -> SseErrorEffect {
+    SseErrorEffect {
+        transient_status: sse_fallback_status(status),
+    }
+}
+
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
 /// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
 /// 書き出せるようにするため）。
@@ -689,9 +710,10 @@ impl TaskManagerApp {
 
     /// Returns the view to the existing fetch poll after a subscription ends.
     ///
-    /// A clean EOF gets a fixed, DOM-safe notice. A typed error goes through
-    /// [`Self::handle_sse_error`]: the `401` / `403` contract is preserved, but
-    /// a snapshot delivered by this stream is never re-labelled stale just
+    /// A clean EOF or a typed error both get a fixed, DOM-safe transient notice
+    /// via [`Self::handle_sse_error`] / [`sse_fallback_status`]. Neither writes
+    /// the poll-owned `live_error` / `reconnect_required` fields (WB-SSEERR2),
+    /// and a snapshot delivered by this stream is never re-labelled stale just
     /// because its endpoint failed afterwards (X2-STALE). Either way the user
     /// keeps receiving snapshots from the poll while the retry cooldown runs,
     /// and the `sse=` field is rewritten in the same callback.
@@ -710,17 +732,21 @@ impl TaskManagerApp {
         self.sync_proof_dom();
     }
 
-    /// Records an SSE endpoint error without touching the displayed snapshot.
+    /// Announces an SSE endpoint error without touching poll-owned state.
     ///
-    /// A BodyRead / Parse failure means the *stream endpoint* broke, not that
-    /// the last frame it delivered is old. Going through
-    /// `handle_live_result(Err(..))` would re-apply `stale_after_poll` to that
-    /// frame and show `stale=1` immediately after a successful frame (X2-STALE).
-    /// Only the error fields and the status bar change here; the retry cooldown
-    /// is set by [`Self::on_sse_ended`], and `stale`, `ticks`, the snapshot and
-    /// the row menu stay exactly as the last frame left them.
-    fn handle_sse_error(&mut self, error: FetchError) {
-        self.record_live_error(&error);
+    /// A BodyRead / Parse / HTTP failure means the *stream endpoint* broke, not
+    /// that the poll is failing. Writing `live_error` here used to blink the
+    /// DOM proof's `live_error=` flag for a second or two until the next healthy
+    /// poll cleared it (wa-netfail). Now only a transient status notice is
+    /// emitted through [`sse_error_effect`], so `live_error`,
+    /// `reconnect_required`, `stale`, `ticks`, the snapshot and the row menu stay
+    /// exactly as the poll left them (WB-SSEERR2 / X2-STALE). The retry cooldown
+    /// is set by [`Self::on_sse_ended`].
+    fn handle_sse_error(&mut self, _error: FetchError) {
+        let effect = sse_error_effect(self.dashboard.status());
+        if let Some(text) = effect.transient_status {
+            self.dashboard.set_status(text, false);
+        }
     }
 
     /// Whether the active stream has gone quiet long enough to force a fallback.
@@ -802,12 +828,14 @@ impl TaskManagerApp {
         self.sync_proof_dom();
     }
 
-    /// Writes the error-only fields shared by poll failures and SSE failures.
+    /// Writes the error-only fields for a **poll** failure.
     ///
-    /// The `401` / `403` decision lives in [`live_error_fields`] so both paths
-    /// behave identically, while freshness stays the caller's responsibility:
-    /// the poll path sets it in [`Self::handle_live_result`], the SSE endpoint
-    /// path deliberately leaves it alone (X2-STALE).
+    /// This is the only caller of [`live_error_fields`] that writes the DOM
+    /// proof's `live_error=` / `reconnect=` markers; the SSE endpoint path goes
+    /// through [`Self::handle_sse_error`] instead and never reaches here
+    /// (WB-SSEERR2). The `401` / `403` decision lives in [`live_error_fields`],
+    /// while freshness stays the caller's responsibility: the poll sets it in
+    /// [`Self::handle_live_result`].
     fn record_live_error(&mut self, error: &FetchError) {
         let (live_error, reconnect_required, status) =
             live_error_fields(self.live_error.as_deref(), self.reconnect_required, error);
@@ -5874,7 +5902,9 @@ mod tests {
                 status.contains("エージェントから取得できません"),
                 "{status}"
             );
-            // `handle_sse_error` writes only those fields, never `stale`.
+            // These are the fields the *poll* would write for the same error;
+            // the SSE path now writes none of them (WB-SSEERR2), and never
+            // touches `stale` in particular.
             assert!(
                 !stale_after_frame,
                 "{error:?}: stream snapshot stayed fresh"
@@ -5915,6 +5945,84 @@ mod tests {
             &FetchError::Forbidden,
         );
         assert!(reconnect_required);
+    }
+
+    #[test]
+    fn sse_error_only_emits_a_transient_status_not_live_error() {
+        // wa-netfail / WB-SSEERR2: a stream endpoint failing with 503 must not
+        // blink the DOM proof's `live_error=` marker while the poll is healthy.
+        // `SseErrorEffect` has no field for `live_error` / `reconnect_required`,
+        // so the stream path is structurally unable to write either.
+        let effect = sse_error_effect(None);
+        assert_eq!(
+            effect,
+            SseErrorEffect {
+                transient_status: Some(SSE_FALLBACK_NOTICE)
+            }
+        );
+        // The notice is informational/transient, never an error status write.
+        assert_eq!(effect.transient_status, Some(SSE_FALLBACK_NOTICE));
+        assert!(!SSE_FALLBACK_NOTICE.contains(';'));
+        assert!(!SSE_FALLBACK_NOTICE.contains('\n'));
+
+        // The stream still ends cleanly into the poll and `reconnect=` stays 0.
+        let mode = stream_mode_after_sse_end(&Err(FetchError::Http(503)));
+        assert_eq!(mode, StreamMode::Fallback);
+        let proof = proof_with_sse(
+            &proof_with_reconnect("mode=live;live_error=0;stale=0;tick=9;", false),
+            mode,
+        );
+        assert_eq!(
+            proof,
+            "mode=live;live_error=0;stale=0;tick=9;reconnect=0;sse=fallback;"
+        );
+        assert!(proof.contains("live_error=0;"), "{proof}");
+    }
+
+    #[test]
+    fn poll_5xx_still_sets_the_live_error_marker() {
+        // The poll is the sole owner of the DOM proof's `live_error=` marker:
+        // a real snapshot-fetch failure must still raise it (WB-SSEERR2).
+        for code in [500u16, 502, 503, 504] {
+            let error = FetchError::Http(code);
+            let (live_error, reconnect_required, status) = live_error_fields(None, false, &error);
+            assert!(live_error.is_some(), "{error:?}");
+            assert!(
+                !reconnect_required,
+                "5xx must not set reconnect=1: {error:?}"
+            );
+            assert!(
+                status.contains("エージェントから取得できません"),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn sse_error_never_overwrites_a_persistent_notice() {
+        // SECURITY.md §5: a corrupt / save-failure notice wins over the
+        // informational fallback emitted for an SSE error (non-regression).
+        let persistent = StatusMessage {
+            text: "設定ファイルが破損しています".to_string(),
+            is_error: true,
+            persistent: true,
+        };
+        assert_eq!(
+            sse_error_effect(Some(&persistent)),
+            SseErrorEffect {
+                transient_status: None
+            }
+        );
+        // A transient status, in contrast, may be replaced by the notice.
+        let transient = StatusMessage {
+            text: "接続設定を再読込しました".to_string(),
+            is_error: false,
+            persistent: false,
+        };
+        assert_eq!(
+            sse_error_effect(Some(&transient)).transient_status,
+            Some(SSE_FALLBACK_NOTICE)
+        );
     }
 
     #[test]

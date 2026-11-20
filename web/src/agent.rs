@@ -179,7 +179,11 @@ impl fmt::Display for FetchError {
             Self::Busy => f.write_str(FETCH_BUSY_ERROR),
             Self::BodyAborted => f.write_str(BODY_ABORTED_ERROR),
             Self::SizeLimit => f.write_str(SIZE_LIMIT_ERROR),
-            Self::BodyRead => f.write_str(BODY_READ_ERROR),
+            // A truncated / mismatched-Length body is a transient transport
+            // failure, not a bad request: like 5xx/timeout the sampler retries
+            // on its next tick, so surface the same guidance. The detail stays
+            // in `console`; only these two fixed strings reach the UI (redact-safe).
+            Self::BodyRead => write!(f, "{BODY_READ_ERROR}。{TRANSIENT_RETRY_GUIDANCE}"),
             Self::Parse(detail) => {
                 write!(f, "スナップショット JSON の解析に失敗しました: {detail}")
             }
@@ -1119,8 +1123,15 @@ mod tests {
         assert!(busy.contains("自動で再試行します"), "{busy}");
         assert!(busy.contains("再起動してください"), "{busy}");
 
-        // Other transient statuses / the deadline behave the same way.
-        for transient in [status_error(429), status_error(500), status_error(502)] {
+        // Other transient statuses / the deadline behave the same way. A body
+        // read that fails mid-stream (truncation / Length mismatch) is the same
+        // class of transient transport failure, so it must carry the guidance.
+        for transient in [
+            status_error(429),
+            status_error(500),
+            status_error(502),
+            FetchError::BodyRead,
+        ] {
             let text = transient.to_string();
             assert!(text.contains("自動で再試行します"), "{text}");
             assert!(text.contains("再起動してください"), "{text}");
@@ -1481,7 +1492,12 @@ mod tests {
         .expect_err("an IO error must be reported");
         assert_eq!(error, FetchError::BodyRead);
         let text = error.to_string();
-        assert_eq!(text, BODY_READ_ERROR);
+        // Fixed prefix is preserved, but a truncated/mismatched body now carries
+        // the same retry guidance as 5xx/timeout so the user knows to expect a
+        // retry instead of assuming a permanent failure.
+        assert!(text.starts_with(BODY_READ_ERROR), "{text}");
+        assert!(text.contains(TRANSIENT_RETRY_GUIDANCE), "{text}");
+        // Neither the token value nor any internal path/detail may leak.
         assert_eq!(redact_token(&text, Some("secret")), text);
         assert!(!text.contains("secret"));
     }
