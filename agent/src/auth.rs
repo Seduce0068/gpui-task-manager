@@ -8,32 +8,75 @@
 //! Tokens are compared in constant time so a local attacker cannot learn the
 //! secret byte by byte through timing.
 
-use std::fmt::Write as _;
-use std::fs::File;
-use std::io::Read;
-
 use crate::http::Request;
 
 /// Number of random bytes in a generated token.
+///
+/// Only Unix auto-generates a token (SC-WINTOKEN); other targets use an
+/// explicitly supplied credential, so this contract is Unix-only.
+#[cfg(unix)]
 pub const TOKEN_BYTES: usize = 32;
 
 /// Generates a fresh bearer token from the OS CSPRNG.
 ///
 /// There is deliberately no time/PID fallback: a locally predictable token
-/// would make the loopback "security boundary" meaningless. If `/dev/urandom`
+/// would make the loopback "security boundary" meaningless. If the OS CSPRNG
 /// cannot be read the agent fails to start rather than emitting a weak secret.
+///
+/// Platform branches (SC-WINTOKEN):
+/// - `unix`: unchanged direct `/dev/urandom` read (std only, no `unsafe`).
+/// - `windows`: `std` has no CSPRNG API. `getrandom` is present in `Cargo.lock`
+///   only as a *transitive* dependency of other crates; declaring it here would
+///   be a new dependency (out of scope for this round, AGENTS §2). Win32
+///   `BCryptGenRandom` would require `unsafe` FFI, forbidden by
+///   `#![forbid(unsafe_code)]` (AGENTS §15). Time/PID fallback is rejected
+///   above. Therefore Windows fails fast with a fixed message that asks for an
+///   explicit `--token` / `--token-file` / `TM_AGENT_TOKEN` instead of silently
+///   emitting a weak credential.
+/// - other targets: identical fixed error, identical rationale.
 pub fn generate_token() -> Result<String, String> {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    let mut device =
-        File::open("/dev/urandom").map_err(|err| format!("/dev/urandom を読めません: {err}"))?;
-    device
-        .read_exact(&mut bytes)
-        .map_err(|err| format!("/dev/urandom から読み取れません: {err}"))?;
-    Ok(hex_encode(&bytes))
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::io::Read;
+
+        let mut bytes = [0u8; TOKEN_BYTES];
+        let mut device = File::open("/dev/urandom")
+            .map_err(|err| format!("/dev/urandom を読めません: {err}"))?;
+        device
+            .read_exact(&mut bytes)
+            .map_err(|err| format!("/dev/urandom から読み取れません: {err}"))?;
+        Ok(hex_encode(&bytes))
+    }
+    #[cfg(windows)]
+    {
+        // Fixed, non-reflecting error: no token value, no path, no OS detail.
+        Err(concat!(
+            "Windows では --token 明示が必要です: ",
+            "安全な乱数源を新規依存・unsafe なしで取得できないため、",
+            "--token / --token-file / TM_AGENT_TOKEN のいずれかでトークンを指定してください。"
+        )
+        .to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(concat!(
+            "このプラットフォームではトークンの自動生成はサポートされていません: ",
+            "安全な乱数源を新規依存・unsafe なしで取得できないため、",
+            "--token / --token-file / TM_AGENT_TOKEN のいずれかでトークンを指定してください。"
+        )
+        .to_string())
+    }
 }
 
 /// Lower-case hex encoding (used for tokens only).
+///
+/// Only the Unix branch produces a token, so this helper is Unix-only too;
+/// keeping it cfg-gated avoids a dead-code warning on Windows (`-D warnings`).
+#[cfg(unix)]
 fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         // Writing to a `String` cannot fail.
@@ -80,7 +123,10 @@ mod tests {
     use super::*;
     use crate::http::parse_request;
 
+    // Auto-generation only exists on Unix (SC-WINTOKEN); the Windows branch
+    // is type-checked by native-windows `cargo check`, not exercised here.
     #[test]
+    #[cfg(unix)]
     fn generated_tokens_are_hex_and_unique() {
         let first = generate_token().expect("urandom");
         let second = generate_token().expect("urandom");
@@ -90,6 +136,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn generated_tokens_are_lower_case_hex() {
         // Tokens are compared byte-wise (constant_time_eq), so a producer that
         // emitted upper-case hex would silently break every presented token.

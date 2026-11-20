@@ -259,28 +259,45 @@ struct ErrorBody<'a> {
     error: &'a str,
 }
 
-/// Writes `content` to `writer`, discarding every I/O error.
+/// Fixed stderr warning for a terminal write failure.
+///
+/// Only a leaf name and a constant sentence are used: no internal path, token,
+/// account identifier or raw `io::Error` detail is ever included.
+const STDOUT_WRITE_FAILURE_WARNING: &str = "stdout への書込みに失敗しました";
+
+/// Writes `content` to `writer`, ignoring only a closed pipe.
 ///
 /// Rust ignores `SIGPIPE` on Unix (`SIG_IGN` is installed at startup), so a
 /// downstream that closes early — e.g. `tm-agent --version | head -c 1` or
-/// `--demo --once | head -c 64` — turns the write into `BrokenPipe` instead of
-/// terminating the process. `println!` / `print!` unwrap that error and panic
-/// ("failed printing to stdout", exit 101), which is a false alarm for an
-/// ordinary shell pipeline. Restoring `SIGPIPE`'s default disposition would
-/// require `unsafe` FFI or a new `libc` dependency; AGENTS.md §15 forbids
-/// `unsafe`, and a dependency is unnecessary here. Ignoring the `write_all`
-/// result reproduces the desired Unix behaviour (quiet success) in safe Rust.
-fn write_ignoring_io_errors(writer: &mut impl Write, content: &str) {
-    let _ = writer.write_all(content.as_bytes());
-    let _ = writer.flush();
+/// `--demo --once | head -c 64` — turns the write into `BrokenPipe` (the
+/// `ErrorKind` Rust maps `EPIPE` to) instead of terminating the process.
+/// `println!` / `print!` unwrap that error and panic ("failed printing to
+/// stdout", exit 101), which is a false alarm for an ordinary shell pipeline.
+/// Restoring `SIGPIPE`'s default disposition would require `unsafe` FFI or a
+/// new `libc` dependency; AGENTS.md §15 forbids `unsafe`, and a dependency is
+/// unnecessary here. Only `BrokenPipe` keeps the quiet-success behaviour: any
+/// other failure (e.g. `StorageFull` from `--once > /dev/full`) is returned so
+/// the CLI exits non-zero instead of silently discarding its output.
+fn write_stdout_ignoring_broken_pipe(writer: &mut impl Write, content: &str) -> io::Result<()> {
+    if let Err(error) = writer.write_all(content.as_bytes()) {
+        return match error.kind() {
+            io::ErrorKind::BrokenPipe => Ok(()),
+            _ => Err(error),
+        };
+    }
+    match writer.flush() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// All terminal-facing output goes through a locked stdout that never panics
 /// on a closed pipe (`--version`, `--help`, `--once`).
-fn write_stdout(content: &str) {
+fn write_stdout(content: &str) -> io::Result<()> {
     let stdout = io::stdout();
     let mut locked = stdout.lock();
-    write_ignoring_io_errors(&mut locked, content);
+    write_stdout_ignoring_broken_pipe(&mut locked, content)
 }
 
 fn main() {
@@ -326,16 +343,25 @@ fn run() -> Result<(), AgentError> {
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    run_with(arguments)
+}
+
+/// Body of [`run`] with argv injected, so exit-code contracts (including the
+/// `--once` token-source validation) can be tested without mutating
+/// process-wide state (SE-ONCETOKEN).
+fn run_with(arguments: Vec<String>) -> Result<(), AgentError> {
     let config =
         args::parse(arguments).map_err(|message| AgentError::new(ExitCategory::Usage, message))?;
     LOG_THRESHOLD.store(threshold_rank(config.log_level), Ordering::Relaxed);
     if config.version {
         // Same one-line shape as `gpui-task-manager --version`; stdout only.
-        write_stdout(&format!("tm-agent {}\n", env!("CARGO_PKG_VERSION")));
+        write_stdout(&format!("tm-agent {}\n", env!("CARGO_PKG_VERSION")))
+            .map_err(|_| AgentError::new(ExitCategory::Internal, STDOUT_WRITE_FAILURE_WARNING))?;
         return Ok(());
     }
     if config.help {
-        write_stdout(args::USAGE);
+        write_stdout(args::USAGE)
+            .map_err(|_| AgentError::new(ExitCategory::Internal, STDOUT_WRITE_FAILURE_WARNING))?;
         return Ok(());
     }
 
@@ -348,35 +374,31 @@ fn run() -> Result<(), AgentError> {
         eprintln!("tm-agent: {TOKEN_ARGV_WARNING}");
     }
 
+    // SE-ONCETOKEN: validate explicitly configured sources BEFORE the `--once`
+    // early return. One-shot runs used to skip `read_token_file` and the env
+    // source entirely, so an invalid `--token-file` exited 0 there while server
+    // mode exited 5. Decision (A): share the validation with server mode rather
+    // than declaring token flags unsupported for `--once`, because
+    // `--once --token` is already part of the argv-scrubbing contract and
+    // operators legitimately reuse the same token file for smoke tests.
+    let configured_token = resolve_configured_token(&config)?;
+
     if config.once {
-        return print_once(
-            probe.as_mut(),
-            config.redact,
-            config.token.as_deref().unwrap_or_default(),
-            config.demo,
-        )
-        .map_err(|message| AgentError::new(ExitCategory::Probe, message));
+        // A one-shot run has no listener to authenticate, so it deliberately
+        // does NOT auto-generate a persisted token: that would create a
+        // credential file as a side effect of printing a snapshot (explicitly
+        // unsupported in this mode). Explicit sources and TM_AGENT_TOKEN are
+        // still resolved above, so an invalid source now fails with the same
+        // exit code as server mode.
+        let token = configured_token.or_else(env_token).unwrap_or_default();
+        return print_once(probe.as_mut(), config.redact, &token, config.demo);
     }
 
-    let token = match (config.token, config.token_file.as_deref()) {
-        (Some(_), Some(_)) => {
-            return Err(AgentError::new(
-                ExitCategory::Usage,
-                "--token と --token-file は同時に指定できません",
-            ));
-        }
-        (Some(token), None) => {
-            // The argv warning was already emitted above (also for --once).
-            // `request_token` trims the presented value, so store the trimmed
-            // token for every source (the file path already does this).
-            token.trim().to_string()
-        }
-        (None, Some(path)) => {
-            read_token_file(path).map_err(|message| AgentError::new(ExitCategory::Auth, message))?
-        }
-        (None, None) => match std::env::var("TM_AGENT_TOKEN") {
-            Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
-            _ => {
+    let token = match configured_token {
+        Some(token) => token,
+        None => match env_token() {
+            Some(token) => token,
+            None => {
                 // Detect reuse before resolution so the log reflects whether
                 // a credential was generated or simply read back. This is
                 // guidance only; a concurrent starter between the check and
@@ -430,6 +452,42 @@ fn run() -> Result<(), AgentError> {
     // `serve` still returns `Result<(), String>`; `From<String>` maps it to
     // the historical Internal category / exit code 1.
     serve(&listener, probe, &token, config.redact, !config.demo).map_err(AgentError::from)
+}
+
+/// Validates and resolves a token source explicitly supplied via CLI flags.
+///
+/// Shared by server mode and `--once` (SE-ONCETOKEN) so a bad source — missing
+/// file, FIFO/symlink, loose permissions, empty contents — cannot be silently
+/// ignored by a one-shot run. Conflicting flags are already rejected by
+/// [`args::parse`]; the check is repeated here as a defensive second gate.
+fn resolve_configured_token(config: &args::Config) -> Result<Option<String>, AgentError> {
+    match (config.token.as_deref(), config.token_file.as_deref()) {
+        (Some(_), Some(_)) => Err(AgentError::new(
+            ExitCategory::Usage,
+            "--token と --token-file は同時に指定できません",
+        )),
+        (Some(token), None) => {
+            // `request_token` trims the presented value, so store the trimmed
+            // token for every source (the file path already does this).
+            Ok(Some(token.trim().to_string()))
+        }
+        (None, Some(path)) => read_token_file(path)
+            .map(Some)
+            .map_err(|message| AgentError::new(ExitCategory::Auth, message)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Resolves `TM_AGENT_TOKEN` with the server mode's trim/empty rule.
+///
+/// Also used by `--once` (SE-ONCETOKEN) so the environment source is not
+/// silently skipped there. An empty value counts as unset, matching the
+/// server-mode fallback to auto-generation.
+fn env_token() -> Option<String> {
+    std::env::var("TM_AGENT_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 /// Returns only the leaf name of a token file for operator messages.
@@ -530,20 +588,52 @@ fn is_virtual_fs_root(path: &std::path::Path) -> bool {
             .is_some_and(|top| matches!(top, "dev" | "proc" | "sys"))
 }
 
-/// Returns the persistent directory used for an auto-generated token.
+/// Returns the persistent directory used for an auto-generated token (non-Windows).
 ///
 /// Uses `$XDG_STATE_HOME/tm-agent` when set, otherwise
 /// `$HOME/.local/state/tm-agent`. The XDG **state** directory (rather than the
 /// runtime directory) is deliberate: it survives a reboot, so a restarted agent
 /// can reuse the same token and a browser that cached it in `localStorage`
 /// keeps working. The path stays under the user's home, outside the repository.
+/// This branch is byte-for-byte the previous Linux behaviour.
+#[cfg(not(windows))]
 fn auto_token_dir() -> Result<std::path::PathBuf, String> {
     auto_token_dir_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
 }
 
-/// Pure core of [`auto_token_dir`], separated so tests can feed relative or
-/// virtual paths without mutating process-wide environment variables (tests
-/// run in parallel).
+/// Windows counterpart of [`auto_token_dir`] (SC-WINTOKEN).
+///
+/// `%APPDATA%` already resolves to the per-user Roaming directory; `%USERPROFILE%`
+/// is the fallback for a stripped-down environment. XDG variables are not
+/// consulted on Windows.
+#[cfg(windows)]
+fn auto_token_dir() -> Result<std::path::PathBuf, String> {
+    auto_token_dir_windows_from(std::env::var_os("APPDATA"), std::env::var_os("USERPROFILE"))
+}
+
+/// Shared root validation for both platform path selectors.
+///
+/// A relative root would resolve against `$CWD` (the repository during
+/// development) and write a credential into the source tree; virtual FS roots
+/// cannot hold a durable private token. Extracting the predicate keeps the
+/// Unix and Windows selectors on exactly the same absolute-path / virtual-FS
+/// checks without changing either result.
+fn is_usable_state_root(path: &std::path::Path) -> bool {
+    path.is_absolute() && !is_virtual_fs_root(path)
+}
+
+fn usable_state_root(value: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| is_usable_state_root(path))
+}
+
+/// Pure core of the non-Windows [`auto_token_dir`], separated so tests can feed
+/// relative or virtual paths without mutating process-wide environment
+/// variables (tests run in parallel). Also compiled for Windows tests so the
+/// unchanged Unix contract stays pinned there without a production caller.
+#[cfg(any(not(windows), test))]
 fn auto_token_dir_from(
     state_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -553,23 +643,38 @@ fn auto_token_dir_from(
     // it, exactly as config_dir() ignores a relative XDG_CONFIG_HOME, rather
     // than failing startup: an unusable override still has the safe home-based
     // default to fall back to, which keeps the agent usable.
-    if let Some(state_home) = state_home
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
-    {
+    if let Some(state_home) = usable_state_root(state_home) {
         return Ok(state_home.join(AUTO_TOKEN_DIR_NAME));
     }
 
-    let home = home
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
-        .ok_or_else(|| {
-            "自動生成トークンの保存先を決めるために、絶対パスの HOME または XDG_STATE_HOME が必要です"
-                .to_string()
-        })?;
+    let home = usable_state_root(home).ok_or_else(|| {
+        "自動生成トークンの保存先を決めるために、絶対パスの HOME または XDG_STATE_HOME が必要です"
+            .to_string()
+    })?;
     Ok(home.join(".local").join("state").join(AUTO_TOKEN_DIR_NAME))
+}
+
+/// Pure core of the Windows [`auto_token_dir`] (SC-WINTOKEN).
+///
+/// Compiled on test hosts as well so the selection is unit-testable on Linux;
+/// the only production caller is gated by `cfg(windows)`. Absolute-path and
+/// virtual-FS checks are shared with the Unix selector via `usable_state_root`.
+#[cfg(any(windows, test))]
+fn auto_token_dir_windows_from(
+    appdata: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(appdata) = usable_state_root(appdata) {
+        return Ok(appdata.join(AUTO_TOKEN_DIR_NAME));
+    }
+    let userprofile = usable_state_root(userprofile).ok_or_else(|| {
+        "自動生成トークンの保存先を決めるために、絶対パスの APPDATA または USERPROFILE が必要です"
+            .to_string()
+    })?;
+    Ok(userprofile
+        .join("AppData")
+        .join("Roaming")
+        .join(AUTO_TOKEN_DIR_NAME))
 }
 
 /// Monotonic suffix for temporary auto-token files.
@@ -874,13 +979,20 @@ fn once_warmup_delay(demo: bool) -> Duration {
 }
 
 /// Implements `--once`: one snapshot as JSON on stdout, then exit.
+///
+/// A snapshot failure keeps its `Probe` category; a terminal write failure is
+/// classified as `Internal` so a lost `--once` sample can never look like a
+/// successful exit (e.g. `--once > /dev/full`).
 fn print_once(
     probe: &mut dyn SystemProbe,
     redact: bool,
     token: &str,
     demo: bool,
-) -> Result<(), String> {
-    write_stdout(&format!("{}\n", once_json(probe, redact, token, demo)?));
+) -> Result<(), AgentError> {
+    let rendered = once_json(probe, redact, token, demo)
+        .map_err(|message| AgentError::new(ExitCategory::Probe, message))?;
+    write_stdout(&format!("{rendered}\n"))
+        .map_err(|_| AgentError::new(ExitCategory::Internal, STDOUT_WRITE_FAILURE_WARNING))?;
     Ok(())
 }
 
@@ -2206,14 +2318,50 @@ mod tests {
             }
         }
         // Neither the write nor the flush may panic (a large payload would
-        // take several write_all calls against a failing writer).
-        write_ignoring_io_errors(&mut BrokenPipe, "tm-agent 0.1.0\n");
-        write_ignoring_io_errors(&mut BrokenPipe, &"x".repeat(1024 * 1024));
+        // take several write_all calls against a failing writer), and a closed
+        // pipe stays a quiet success.
+        assert!(write_stdout_ignoring_broken_pipe(&mut BrokenPipe, "tm-agent 0.1.0\n").is_ok());
+        assert!(
+            write_stdout_ignoring_broken_pipe(&mut BrokenPipe, &"x".repeat(1024 * 1024)).is_ok()
+        );
 
         // The success path still delivers the bytes unchanged.
         let mut sink = Vec::new();
-        write_ignoring_io_errors(&mut sink, "tm-agent 0.1.0\n");
+        assert!(write_stdout_ignoring_broken_pipe(&mut sink, "tm-agent 0.1.0\n").is_ok());
         assert_eq!(sink, b"tm-agent 0.1.0\n");
+    }
+
+    /// A non-EPIPE failure (e.g. `/dev/full` -> ENOSPC / `StorageFull`) must be
+    /// returned, otherwise `--once > /dev/full` would silently lose its output
+    /// and still exit 0.
+    #[test]
+    fn stdout_write_reports_non_broken_pipe_errors() {
+        struct StorageFull;
+        impl std::io::Write for StorageFull {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = write_stdout_ignoring_broken_pipe(&mut StorageFull, "tm-agent 0.1.0\n")
+            .expect_err("StorageFull must not be swallowed");
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+
+        // A flush-only failure must be reported too.
+        struct FlushStorageFull;
+        impl std::io::Write for FlushStorageFull {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+            }
+        }
+        let error = write_stdout_ignoring_broken_pipe(&mut FlushStorageFull, "x")
+            .expect_err("flush failure must not be swallowed");
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
     }
 
     /// Bounded join for demo-server threads: a stuck server must fail its test
@@ -3067,6 +3215,69 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// SE-ONCETOKEN: the exact regression case — a missing `--token-file` must
+    /// exit 5 in both modes instead of being silently ignored by `--once`.
+    /// The argv is injected into the real startup path, so this covers the
+    /// early return itself, not just the standalone validation helper.
+    #[test]
+    fn once_and_server_reject_the_same_invalid_token_source() {
+        let missing = std::env::temp_dir().join(format!(
+            "tm-agent-token-{}-once-missing",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&missing);
+        let path = missing.to_string_lossy().into_owned();
+        let once = run_with(vec![
+            "--demo".to_string(),
+            "--once".to_string(),
+            "--token-file".to_string(),
+            path.clone(),
+        ])
+        .expect_err("once must reject a missing token file");
+        let server = run_with(vec![
+            "--demo".to_string(),
+            "--token-file".to_string(),
+            path.clone(),
+        ])
+        .expect_err("server must reject a missing token file");
+        assert_eq!(once.category(), ExitCategory::Auth);
+        assert_eq!(server.category(), ExitCategory::Auth);
+        assert_eq!(once.code(), 5, "once must use the auth exit code");
+        assert_eq!(server.code(), once.code(), "both modes must agree");
+        for error in [&once, &server] {
+            assert!(
+                !error.message().contains(&path),
+                "the full token file path must not leak: {}",
+                error.message()
+            );
+        }
+    }
+
+    /// Valid sources keep the one-line JSON / exit 0 `--once` contract.
+    #[test]
+    fn once_with_a_valid_token_file_keeps_exit_zero() {
+        let path =
+            std::env::temp_dir().join(format!("tm-agent-token-{}-once-valid", std::process::id()));
+        std::fs::write(&path, "smoke-test-token\n").expect("write token file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("set 0600");
+        }
+        let result = run_with(vec![
+            "--demo".to_string(),
+            "--once".to_string(),
+            "--token-file".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            result.is_ok(),
+            "valid token file must keep exit 0: {result:?}"
+        );
+    }
+
     /// Asserts the token-file error contract: the leaf name may be shown to the
     /// operator, but no parent component (home path, mount point, temp dir) may
     /// appear anywhere in the message.
@@ -3314,6 +3525,63 @@ mod tests {
         let error = auto_token_dir_from(None, Some(std::ffi::OsString::from("relative-home")))
             .expect_err("relative HOME must fail");
         assert!(error.contains("HOME"), "{error}");
+    }
+
+    /// Pins the pure Windows path selector on this Linux host.
+    ///
+    /// Inputs are POSIX-shaped so `is_absolute()` is meaningful here; the
+    /// `cfg(windows)` caller itself is type-checked by native-windows CI
+    /// `cargo check`. No real profile path is read or emitted by this test.
+    #[test]
+    #[cfg(not(windows))]
+    fn auto_token_dir_windows_uses_appdata_then_userprofile() {
+        let profile = std::path::PathBuf::from("/home/agent-user");
+        let appdata = profile.join("AppData").join("Roaming");
+        let expected = appdata.join(AUTO_TOKEN_DIR_NAME);
+
+        let dir = auto_token_dir_windows_from(
+            Some(appdata.clone().into_os_string()),
+            Some(profile.clone().into_os_string()),
+        )
+        .expect("absolute APPDATA must win");
+        assert_eq!(dir, expected);
+
+        // Empty, relative and virtual APPDATA values are ignored, sharing the
+        // exact checks used by the XDG selector.
+        for bad in [
+            "",
+            "AppData/Roaming",
+            "../roaming",
+            "/dev",
+            "/proc/self",
+            "/sys/kernel",
+        ] {
+            let dir = auto_token_dir_windows_from(
+                Some(std::ffi::OsString::from(bad)),
+                Some(profile.clone().into_os_string()),
+            )
+            .expect("must fall back to USERPROFILE");
+            assert_eq!(dir, expected, "APPDATA={bad}");
+        }
+
+        // USERPROFILE fallback reconstructs its Roaming sub-directory.
+        let dir = auto_token_dir_windows_from(None, Some(profile.clone().into_os_string()))
+            .expect("USERPROFILE fallback");
+        assert_eq!(
+            dir,
+            profile
+                .join("AppData")
+                .join("Roaming")
+                .join(AUTO_TOKEN_DIR_NAME)
+        );
+
+        // No usable root yields an actionable error without echoing a path.
+        let error = auto_token_dir_windows_from(None, Some(std::ffi::OsString::from("relative")))
+            .expect_err("relative USERPROFILE must fail");
+        assert!(
+            error.contains("APPDATA") && error.contains("USERPROFILE"),
+            "{error}"
+        );
     }
 
     #[test]

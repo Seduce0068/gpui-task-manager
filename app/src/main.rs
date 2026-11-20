@@ -48,26 +48,48 @@ fn probe_sample_failure_message(error: &tm_core::ProbeError) -> String {
     format!("スナップショット取得に失敗 ({})", probe_error_label(error))
 }
 
-/// Writes `content` to `writer`, discarding every I/O error.
+/// Fixed stderr warning for a terminal write failure.
+///
+/// Only a constant sentence is used here; the caller prepends the leaf name.
+/// No internal path, token, account identifier or raw `io::Error` detail is
+/// ever included.
+const STDOUT_WRITE_FAILURE_WARNING: &str = "stdout への書込みに失敗しました";
+
+/// Writes `content` to `writer`, ignoring only a closed pipe.
 ///
 /// Rust ignores `SIGPIPE` on Unix, so a downstream that closes early — e.g.
 /// `gpui-task-manager --version | head -c 1` — makes the write return
-/// `BrokenPipe` instead of terminating the process. `println!` / `print!`
-/// unwrap that error and panic ("failed printing to stdout", exit 101), which
-/// is a false alarm for an ordinary shell pipeline. Restoring the default
-/// `SIGPIPE` disposition would need `unsafe` FFI or a new `libc` dependency;
-/// AGENTS.md §15 forbids `unsafe`, and a dependency is unnecessary. Ignoring
-/// the `write_all` result gives the same quiet-exit behaviour in safe Rust.
-fn write_ignoring_io_errors(writer: &mut impl std::io::Write, content: &str) {
-    let _ = writer.write_all(content.as_bytes());
-    let _ = writer.flush();
+/// `BrokenPipe` (the `ErrorKind` Rust maps `EPIPE` to) instead of terminating
+/// the process. `println!` / `print!` unwrap that error and panic ("failed
+/// printing to stdout", exit 101), which is a false alarm for an ordinary
+/// shell pipeline. Restoring the default `SIGPIPE` disposition would need
+/// `unsafe` FFI or a new `libc` dependency; AGENTS.md §15 forbids `unsafe`,
+/// and a dependency is unnecessary. Only `BrokenPipe` keeps the quiet-exit
+/// behaviour: any other failure (e.g. `StorageFull` from `--version >
+/// /dev/full`) is returned so the CLI exits non-zero instead of silently
+/// discarding its output.
+fn write_stdout_ignoring_broken_pipe(
+    writer: &mut impl std::io::Write,
+    content: &str,
+) -> std::io::Result<()> {
+    if let Err(error) = writer.write_all(content.as_bytes()) {
+        return match error.kind() {
+            std::io::ErrorKind::BrokenPipe => Ok(()),
+            _ => Err(error),
+        };
+    }
+    match writer.flush() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Terminal output for `--version` / `--help` (both exit before GPUI starts).
-fn write_stdout(content: &str) {
+fn write_stdout(content: &str) -> std::io::Result<()> {
     let stdout = std::io::stdout();
     let mut locked = stdout.lock();
-    write_ignoring_io_errors(&mut locked, content);
+    write_stdout_ignoring_broken_pipe(&mut locked, content)
 }
 
 fn main() {
@@ -79,11 +101,17 @@ fn main() {
     // (exit 2), never a version banner.
     let flags = match resolve_cli(&arguments) {
         CliAction::Version => {
-            write_stdout(&format!("{VERSION_LINE}\n"));
+            if write_stdout(&format!("{VERSION_LINE}\n")).is_err() {
+                eprintln!("gpui-task-manager: {STDOUT_WRITE_FAILURE_WARNING}");
+                std::process::exit(EXIT_INTERNAL);
+            }
             return;
         }
         CliAction::Help => {
-            write_stdout(&help_text());
+            if write_stdout(&help_text()).is_err() {
+                eprintln!("gpui-task-manager: {STDOUT_WRITE_FAILURE_WARNING}");
+                std::process::exit(EXIT_INTERNAL);
+            }
             return;
         }
         CliAction::UsageError(message) => {
@@ -630,12 +658,44 @@ mod tests {
                 Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
             }
         }
-        write_ignoring_io_errors(&mut BrokenPipe, VERSION_LINE);
-        write_ignoring_io_errors(&mut BrokenPipe, &help_text());
+        assert!(write_stdout_ignoring_broken_pipe(&mut BrokenPipe, VERSION_LINE).is_ok());
+        assert!(write_stdout_ignoring_broken_pipe(&mut BrokenPipe, &help_text()).is_ok());
 
         let mut sink = Vec::new();
-        write_ignoring_io_errors(&mut sink, VERSION_LINE);
+        assert!(write_stdout_ignoring_broken_pipe(&mut sink, VERSION_LINE).is_ok());
         assert_eq!(sink, VERSION_LINE.as_bytes());
+    }
+
+    /// A non-EPIPE failure (e.g. `/dev/full` -> ENOSPC / `StorageFull`) must be
+    /// returned so `--version` / `--help` cannot silently report success.
+    #[::core::prelude::v1::test]
+    fn stdout_write_reports_non_broken_pipe_errors() {
+        struct StorageFull;
+        impl std::io::Write for StorageFull {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = write_stdout_ignoring_broken_pipe(&mut StorageFull, VERSION_LINE)
+            .expect_err("StorageFull must not be swallowed");
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+
+        // A flush-only failure must be reported too.
+        struct FlushStorageFull;
+        impl std::io::Write for FlushStorageFull {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+            }
+        }
+        let error = write_stdout_ignoring_broken_pipe(&mut FlushStorageFull, "x")
+            .expect_err("flush failure must not be swallowed");
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
     }
 
     /// Exit status a real process would use for this argv: `Some(0)` for the
