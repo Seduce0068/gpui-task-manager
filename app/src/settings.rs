@@ -25,7 +25,9 @@
 //! "ours" and the object re-read from disk immediately before writing is
 //! "theirs". A field this instance did not edit keeps the value found on disk,
 //! so two instances editing *different* known fields no longer clobber each
-//! other. `version` still uses max() and unknown fields are still carried over
+//! other **when the writes are sequential**. Simultaneous writes are not
+//! serialized across processes (see below) and reduce to last-writer-wins.
+//! `version` still uses max() and unknown fields are still carried over
 //! verbatim.
 //!
 //! Locking scope: `std` has no `flock` equivalent, and a real cross-process

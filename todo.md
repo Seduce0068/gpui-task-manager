@@ -1001,6 +1001,17 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   corrupt 退避 20 回で最新 5 件・ディスク頭打ち、保存成功/失敗ともに
   一時ファイル 0。根拠 wb-lifecycle。
 
+### メモ — シグナル／並行保存監査 2026-11-20
+
+- SIGTERM で自作 sleep が終了、SIGSTOP→T／SIGCONT→R、stale start_time で
+  拒否（対象生存）を 2 回連続で実証。UI 経路も同一 control() に到達。
+  成功パス不具合 0 件（wa-signal）。
+- 実プロセス 3 並行＋一時ハーネス 4 プロセス並行保存 70 ケースで、ファイル
+  破損・0600 劣化・一時ファイル残存・panic すべて 0 件。逐次保存では異なる
+  4 フィールドがすべて保持されるが、同時保存は 40 ケース中 23 で last-writer-
+  wins により更新消失（設計判断どおり、flock 未提供）。app/src/settings.rs の
+  モジュール doc に「逐次ケースに限る」旨を明記（wb-concurrent）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
@@ -1017,3 +1028,16 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   重複登録していない。
 - 却下: R5-I02（`format_process_age` は利用済み）。R2-X02 は
   「妥当（潜在）」へ上書き、R2-F01 は Medium へ格下げ済み。
+- WB-CONCURRENT 監査メモ（2026-11-20）: 実
+  `gpui-task-manager --demo --redact` 3 プロセスを共有 XDG_CONFIG_HOME で
+  4 秒並行起動 → 全プロセス生存・stderr 0・settings.json 不変。一時 Rust
+  ハーネス（`app/src/settings.rs` を `#[path]` でそのまま使用）で 4 プロセス
+  並行保存を 70 ケース実施（barrier 40 / stagger 10 / same-field 20）。
+  全 70 ケースで serde parse 成功・権限 0600・一時ファイル 0・
+  corrupt 退避 0・保存失敗 0・panic/stderr 0。逐次（120ms ずらし）は
+  10/10 で 4 フィールドすべて残存（three-way merge 有効）。同時バリアでは
+  17/40 のみ 4 フィールド残存、23/40 で 1 つ以上の変更が last-writer-wins
+  で消失（例 barrier-2 で `tree_view` が false に戻る）。同一フィールド競合は
+  20/20 で単一値のみ残存（baseline と同値の 1000 は書き込まれない）。
+  `SAVE_LOCK` はプロセス内のみ・flock 無しという設計判断どおり破損は無く、
+  「異なるフィールドの並行編集も保持」は逐次ケースに限られる。/tmp cleanup 済み。
