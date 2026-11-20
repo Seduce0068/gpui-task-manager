@@ -5347,6 +5347,92 @@ mod tests {
             response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"),
             "{response}"
         );
+        assert!(
+            response.contains("Vary: Origin\r\n"),
+            "a reflected origin must be marked as varying: {response}"
+        );
+        assert!(!response.contains(TEST_TOKEN), "{response}");
+    }
+
+    #[test]
+    fn exhausted_stream_slots_503_omits_cors_for_foreign_origin() {
+        // Same real-socket busy path as the allowed-origin test above, but the
+        // Origin is foreign: the hint and its exposure stay, while ACAO and
+        // Vary must be absent so a browser cannot read or cache this response
+        // as cross-origin accessible. No token value appears on the wire.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false,
+        ));
+        let held: Vec<StreamSlot<'_>> = (0..MAX_STREAMS)
+            .map(|_| {
+                assert!(try_acquire_stream_slot(&state.streams));
+                StreamSlot(&state)
+            })
+            .collect();
+        assert!(!try_acquire_stream_slot(&state.streams));
+
+        let worker_state = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            handle_connection_with_stream(
+                &mut stream,
+                &worker_state,
+                |request, request_id, metrics| {
+                    let context = RequestContext {
+                        request_id,
+                        metrics,
+                        active: &worker_state.active,
+                        streams: &worker_state.streams,
+                    };
+                    let mut guard = worker_state
+                        .probe
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    route(
+                        request,
+                        Some(guard.as_mut()),
+                        &worker_state.token,
+                        worker_state.redact,
+                        &worker_state.warmed_up,
+                        &context,
+                    )
+                },
+            )
+            .expect("handle connection");
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write request");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handle.join().expect("server worker");
+        drop(held);
+
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "{response}"
+        );
+        assert!(response.contains("Retry-After: 5\r\n"), "{response}");
+        assert!(
+            !response.contains("Access-Control-Allow-Origin"),
+            "foreign origin must not receive ACAO: {response}"
+        );
+        assert!(
+            !response.contains("Vary: Origin"),
+            "foreign origin must not receive a reflected-origin Vary: {response}"
+        );
         assert!(!response.contains(TEST_TOKEN), "{response}");
     }
 

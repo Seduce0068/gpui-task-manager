@@ -44,7 +44,10 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_time::Instant;
 
-use crate::agent::{AgentClient, AgentConfig, FetchError, SnapshotEnvelope, onboarding_steps};
+use crate::agent::{
+    AgentClient, AgentConfig, FetchError, PollSuspendGuard, SnapshotEnvelope, SnapshotResponse,
+    onboarding_steps,
+};
 use crate::settings::{INTERVAL_PRESETS_MS, STORAGE_KEY, interval_label};
 use crate::theme::*;
 use crate::widgets::{
@@ -468,6 +471,13 @@ pub struct TaskManagerApp {
     /// connection settings change (the generation check inside `agent.rs` is
     /// the second line of defence for a read already in flight).
     sse_task: Option<Task<()>>,
+    /// Startup poll suspension held from `start_sse_stream` until the first
+    /// frame (or stream end). While it is alive, `fetch_snapshot_guarded`
+    /// issues no HTTP request, so a `Connecting(Fallback)` sampler cannot
+    /// double-sample the SSE probe (R2-BV01). The first frame calls
+    /// `confirm_sse()` before dropping it, which also invalidates a poll that
+    /// was already in flight; the error paths simply drop it to resume polling.
+    sse_poll_guard: Option<PollSuspendGuard>,
     /// Bumped on every subscription attempt so a stale task that unwinds late
     /// cannot overwrite the state of its replacement.
     sse_epoch: u64,
@@ -555,6 +565,7 @@ impl TaskManagerApp {
             menu_proof: MenuProof::None,
             stream_mode: StreamMode::Fallback,
             sse_task: None,
+            sse_poll_guard: None,
             sse_epoch: 0,
             sse_last_snapshot_at: None,
             sse_retry_at: None,
@@ -628,10 +639,17 @@ impl TaskManagerApp {
                 if !stream_active {
                     match &live {
                         Some(client) => {
-                            let result = client.fetch_snapshot().await;
+                            let result = client.fetch_snapshot_guarded().await;
                             let alive = this.update(cx, |app, cx| {
-                                app.handle_live_result(result);
-                                cx.notify();
+                                // `Ok(None)` means polling is suspended while
+                                // SSE is connecting, or the sample was
+                                // superseded by SSE confirmation. Skip it
+                                // silently: no `live_error`, no backoff, no
+                                // tick, no DOM proof rewrite and no notify
+                                // (R2-BV01).
+                                if app.ingest_guarded_poll(result) {
+                                    cx.notify();
+                                }
                             });
                             if alive.is_err() {
                                 break;
@@ -716,9 +734,12 @@ impl TaskManagerApp {
     /// epoch captured when it was spawned.
     ///
     /// Subscribing alone does **not** mean the view is fresh: `stream_mode`
-    /// stays `Fallback` (polling continues) until the first frame arrives in
-    /// the callback below. Otherwise the sampler would suspend on a connection
-    /// that has not produced anything yet and the UI would freeze.
+    /// stays `Fallback` until the first frame arrives in the callback below.
+    /// A [`PollSuspendGuard`] nevertheless holds poll *requests* during that
+    /// window so the sampler cannot issue a second probe against the same
+    /// endpoint; it is confirmed and dropped on the first frame, and simply
+    /// dropped on every failure path (setup timeout included), so a stream
+    /// that never delivers cannot suspend polling forever (R2-BV01).
     fn start_sse_stream(&mut self, cx: &mut Context<Self>) {
         let DataSource::Live(client) = &self.source else {
             return;
@@ -732,6 +753,10 @@ impl TaskManagerApp {
         self.stream_mode = stream_mode_while_connecting();
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = None;
+        // Hold poll requests from the moment the subscription starts. Storing
+        // the guard on the app also drops any guard left by a previous attempt
+        // (config change / retry), keeping exactly one suspension per client.
+        self.sse_poll_guard = Some(client.suspend_polls_while_connecting());
 
         let task = cx.spawn(async move |this, cx| {
             let outcome = {
@@ -748,7 +773,12 @@ impl TaskManagerApp {
                             return;
                         }
                         // First frame received: the stream is genuinely
-                        // delivering, so suspending the poll is safe now.
+                        // delivering, so confirm it and release the startup
+                        // suspension *before* flipping the mode. Confirming
+                        // bumps the poll generation, so a sample already in
+                        // flight is discarded instead of being ingested after
+                        // SSE becomes authoritative (R2-BV01).
+                        app.confirm_sse_and_resume_polls();
                         // `handle_live_result` rewrites the DOM proof with this
                         // mode before returning (sse=active).
                         app.stream_mode = StreamMode::Active;
@@ -788,6 +818,10 @@ impl TaskManagerApp {
     /// the user keeps receiving snapshots from the poll while the retry
     /// cooldown runs, and the `sse=` field is rewritten in the same callback.
     fn on_sse_ended(&mut self, outcome: Result<(), FetchError>) {
+        // A stream that never produced a frame still owns the startup guard.
+        // Release it unconditionally (also on a clean EOF) so the poll resumes
+        // immediately instead of being suspended until a retry replaces it.
+        self.sse_poll_guard = None;
         self.stream_mode = stream_mode_after_sse_end(&outcome);
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
@@ -855,6 +889,9 @@ impl TaskManagerApp {
     fn on_sse_idle_timeout(&mut self) {
         self.sse_task = None;
         self.sse_epoch = self.sse_epoch.wrapping_add(1);
+        // Defensive release: the first frame normally already dropped the
+        // guard, but no error path may leave polling suspended after a reset.
+        self.sse_poll_guard = None;
         self.stream_mode = StreamMode::Fallback;
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
@@ -888,6 +925,39 @@ impl TaskManagerApp {
         }
         self.revalidate_row_menu();
         self.sync_proof_dom();
+    }
+
+    /// Ingests one guarded poll result, returning whether anything changed.
+    ///
+    /// `Ok(None)` is `fetch_snapshot_guarded`'s "nothing to ingest" signal: the
+    /// poll was suspended for a connecting SSE stream, or an in-flight sample
+    /// lost to SSE confirmation. It must be a complete no-op so the connecting
+    /// window cannot advance `tick=`, write `live_error=`, stretch the backoff
+    /// or rewrite the DOM proof (R2-BV01). Every real sample/error keeps the
+    /// existing [`Self::handle_live_result`] path unchanged.
+    fn ingest_guarded_poll(
+        &mut self,
+        result: Result<Option<SnapshotResponse>, FetchError>,
+    ) -> bool {
+        let Some(result) = result.transpose() else {
+            return false;
+        };
+        self.handle_live_result(result);
+        true
+    }
+
+    /// Confirms SSE authority and releases the startup poll suspension.
+    ///
+    /// Called by the first-frame callback immediately before `stream_mode`
+    /// becomes `Active`. `confirm_sse()` bumps the poll generation first, so a
+    /// poll already in flight cannot land after SSE takes over; dropping the
+    /// guard then resumes polling for the next fallback. Idempotent: later
+    /// frames find no guard and do nothing (R2-BV01).
+    fn confirm_sse_and_resume_polls(&mut self) {
+        if let Some(guard) = self.sse_poll_guard.take() {
+            guard.confirm_sse();
+            drop(guard);
+        }
     }
 
     /// Ingests a live response, or surfaces the error without falling back to demo.
@@ -5057,6 +5127,7 @@ mod tests {
                 menu_proof: MenuProof::None,
                 stream_mode: StreamMode::Fallback,
                 sse_task: None,
+                sse_poll_guard: None,
                 sse_epoch: 0,
                 sse_last_snapshot_at: None,
                 sse_retry_at: None,
@@ -5098,6 +5169,98 @@ mod tests {
         outcome: Result<(), FetchError>,
     ) -> (bool, Option<String>, Option<String>, String) {
         run_sse_steps(move |app| app.on_sse_ended(outcome))
+    }
+
+    /// Observable state after a live-mode poll-guard transition.
+    #[derive(Debug)]
+    struct LiveGuardState {
+        guard_held: bool,
+        polls_suspended: bool,
+        generation: u64,
+        active: bool,
+        ticks: u64,
+        live_error: Option<String>,
+        reconnect: bool,
+        status: Option<String>,
+        proof: String,
+    }
+
+    /// Runs the production guard transitions on a live `TaskManagerApp`.
+    ///
+    /// The `AgentClient` is shared with the caller so the test can observe the
+    /// suspension directly. No sampler or SSE task is spawned and no HTTP
+    /// request is made: every assertion below is about local state only.
+    fn run_live_sse_steps<R>(
+        steps: impl FnOnce(&mut TaskManagerApp, Arc<AgentClient>) -> R + Send + 'static,
+    ) -> (LiveGuardState, R)
+    where
+        R: Send + 'static,
+    {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            gpui_platform::headless().run(move |cx: &mut gpui::App| {
+                let client = Arc::new(AgentClient::new(
+                    AgentConfig::new("http://127.0.0.1:18789", None),
+                    cx.http_client(),
+                    cx.background_executor().clone(),
+                ));
+                let observed = Arc::clone(&client);
+                let entity = cx.new(|test_cx| {
+                    let platform = PlatformInfo::native_read_only("Linux (エージェント経由)");
+                    let dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
+                    TaskManagerApp {
+                        dashboard,
+                        filter_input: FilterInput::new(),
+                        filter_editing: false,
+                        source: DataSource::Live(client),
+                        proof_token: None,
+                        focus_handle: test_cx.focus_handle(),
+                        sort_header_focus: std::array::from_fn(|_| test_cx.focus_handle()),
+                        row_menu_item_focus: test_cx.focus_handle(),
+                        scroll_handle: UniformListScrollHandle::new(),
+                        live_total: None,
+                        live_error: None,
+                        reconnect_required: false,
+                        stale: false,
+                        ticks: 0,
+                        last_export: None,
+                        row_menu: None,
+                        menu_proof: MenuProof::None,
+                        stream_mode: StreamMode::Fallback,
+                        sse_task: None,
+                        sse_poll_guard: None,
+                        sse_epoch: 0,
+                        sse_last_snapshot_at: None,
+                        sse_retry_at: None,
+                        poll_backoff: PollBackoff::default(),
+                        show_help: false,
+                        help_close_focus: test_cx.focus_handle(),
+                        last_help_shown: false,
+                    }
+                });
+                entity.update(cx, |app, _| {
+                    let produced = steps(app, Arc::clone(&observed));
+                    let _ = sender.send((
+                        LiveGuardState {
+                            guard_held: app.sse_poll_guard.is_some(),
+                            polls_suspended: observed.polls_suspended(),
+                            generation: observed.poll_generation().current(),
+                            active: app.stream_mode == StreamMode::Active,
+                            ticks: app.ticks,
+                            live_error: app.live_error.clone(),
+                            reconnect: app.reconnect_required,
+                            status: app.dashboard.status().map(|status| status.text.clone()),
+                            proof: app.proof_string(0, 0),
+                        },
+                        produced,
+                    ));
+                });
+                cx.quit();
+            });
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("headless callback must publish the live-guard snapshot")
     }
 
     #[test]
@@ -6591,13 +6754,133 @@ mod tests {
 
     #[test]
     fn polling_stays_on_until_the_first_stream_frame_arrives() {
-        // Subscribing (or even receiving headers) must not suspend the poll:
-        // only a delivered frame flips the mode to Active in the callback.
+        // The transport is not *proven* until a frame arrives, so the mode
+        // stays Fallback (sse=fallback) throughout Connecting. Request-level
+        // suppression during that window is handled by the poll guard below;
+        // this test keeps the DOM-proof contract unchanged.
         assert_eq!(stream_mode_while_connecting(), StreamMode::Fallback);
         assert_eq!(
             proof_with_sse("mode=live;", stream_mode_while_connecting()),
             "mode=live;sse=fallback;"
         );
+    }
+
+    #[test]
+    fn sse_connecting_suspends_polls_and_skips_the_sample_silently() {
+        let (state, (polled_none, ingested, before, after)) = run_live_sse_steps(|app, client| {
+            // Exactly the line `start_sse_stream` executes on subscribe.
+            app.sse_poll_guard = Some(client.suspend_polls_while_connecting());
+            let before = app.proof_string(0, 0);
+            // The guarded fetch returns before any await, so no `http.send`
+            // happens and no timer is needed while the guard is alive.
+            let polled = futures::executor::block_on(client.fetch_snapshot_guarded());
+            let polled_none = matches!(polled, Ok(None));
+            let ingested = app.ingest_guarded_poll(polled);
+            (polled_none, ingested, before, app.proof_string(0, 0))
+        });
+        assert!(polled_none, "a Connecting poll must not issue a request");
+        assert!(!ingested, "Ok(None) must be a silent skip");
+        assert_eq!(before, after, "a skipped tick must not rewrite the proof");
+        assert!(state.guard_held && state.polls_suspended);
+        assert!(!state.active, "no frame means no Active transport");
+        assert_eq!(state.ticks, 0);
+        assert!(state.live_error.is_none());
+    }
+
+    #[test]
+    fn sse_first_frame_confirms_and_resumes_polling() {
+        let (state, (before, resumed)) = run_live_sse_steps(|app, client| {
+            app.sse_poll_guard = Some(client.suspend_polls_while_connecting());
+            let before = client.poll_generation().current();
+            // The callback order: confirm + release, then Active, then ingest.
+            app.confirm_sse_and_resume_polls();
+            let resumed = !client.polls_suspended() && app.sse_poll_guard.is_none();
+            app.stream_mode = StreamMode::Active;
+            app.ingest_guarded_poll(Ok(Some(SnapshotResponse {
+                snapshot: tm_core::demo::demo_snapshot(0),
+                total_process_count: 3,
+            })));
+            (before, resumed)
+        });
+        assert_ne!(
+            state.generation, before,
+            "confirm must invalidate an in-flight poll"
+        );
+        assert!(resumed, "the first frame must release the suspension");
+        assert!(!state.guard_held && !state.polls_suspended);
+        assert!(state.active);
+        assert_eq!(state.ticks, 1, "a real frame is ingested exactly once");
+        assert!(
+            state.proof.contains("sse=active;"),
+            "{proof}",
+            proof = state.proof
+        );
+        assert!(state.live_error.is_none());
+    }
+
+    #[test]
+    fn sse_error_and_idle_timeout_release_the_guard() {
+        let (ended, ()) = run_live_sse_steps(|app, client| {
+            // A stream that never delivered still owns the startup guard.
+            app.sse_poll_guard = Some(client.suspend_polls_while_connecting());
+            app.on_sse_ended(Err(FetchError::BodyRead));
+        });
+        assert!(
+            !ended.guard_held && !ended.polls_suspended,
+            "error must resume polls"
+        );
+        assert!(ended.proof.contains("sse=fallback;"));
+        assert!(ended.live_error.is_none(), "WB-SSEERR2");
+
+        let (idle, ()) = run_live_sse_steps(|app, client| {
+            // Defensive path: an Active stream that goes idle must not leave a
+            // guard behind either.
+            app.sse_poll_guard = Some(client.suspend_polls_while_connecting());
+            app.stream_mode = StreamMode::Active;
+            app.on_sse_idle_timeout();
+        });
+        assert!(
+            !idle.guard_held && !idle.polls_suspended,
+            "idle reset must resume polls"
+        );
+        assert!(idle.proof.contains("sse=fallback;"));
+    }
+
+    #[test]
+    fn sse_error_with_a_held_guard_keeps_notification_priority() {
+        // SECURITY.md §5 / WB-SSEERR2 non-regression with the new guard in
+        // place: a persistent save/corrupt notice still wins over the SSE
+        // fallback, and neither `reconnect=` nor `live_error=` moves.
+        let persistent = StatusMessage {
+            text: "設定ファイルが破損しています".to_string(),
+            is_error: true,
+            persistent: true,
+        };
+        assert_eq!(
+            sse_error_effect(Some(&persistent), &FetchError::BodyRead),
+            SseErrorEffect {
+                transient_status: None,
+                reconnect_required: false,
+            }
+        );
+        let (state, ()) = run_live_sse_steps(|app, client| {
+            app.dashboard
+                .set_persistent_status("設定ファイルが破損しています");
+            app.sse_poll_guard = Some(client.suspend_polls_while_connecting());
+            app.on_sse_ended(Err(FetchError::BodyRead));
+        });
+        assert!(!state.guard_held && !state.polls_suspended);
+        assert!(
+            state
+                .status
+                .as_deref()
+                .is_some_and(|text| text.contains("設定ファイルが破損しています")),
+            "persistent notice must win: {status:?}",
+            status = state.status
+        );
+        assert!(!state.reconnect);
+        assert!(state.proof.contains("reconnect=0;"));
+        assert!(state.proof.contains("live_error=0;"));
     }
 
     #[test]
