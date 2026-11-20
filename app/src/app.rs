@@ -356,6 +356,18 @@ impl TaskManagerApp {
         self.debug_save_settings_once();
     }
 
+    /// Leaf-only label for the opt-in settings debug hook.
+    ///
+    /// The absolute config path contains the home directory and account name;
+    /// emitting it would bypass `--redact` when a user shares debug stderr.
+    fn config_file_label(path: Option<std::path::PathBuf>) -> String {
+        path.and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "<unknown>".to_string())
+    }
+
     /// デバッグ専用: 設定の保存経路を GUI 操作なしで確認するフック。
     /// `TM_DEBUG_SETTINGS=1` のときだけ動き、通常起動では無効。
     fn debug_save_settings_once(&self) {
@@ -371,14 +383,19 @@ impl TaskManagerApp {
             theme: crate::theme::theme(),
         };
         match crate::settings::save(&settings) {
-            Ok(()) => eprintln!(
-                "TM_DEBUG_SETTINGS: saved interval_ms={} key={:?} direction={:?} details={} path={:?}",
-                settings.interval_ms,
-                settings.sort.key,
-                settings.sort.direction,
-                settings.details_visible,
-                crate::settings::config_path()
-            ),
+            Ok(()) => {
+                // Opt-in debug hook: emit only the leaf file name, never the
+                // absolute path (which would disclose the home/account name).
+                let config_leaf = Self::config_file_label(crate::settings::config_path());
+                eprintln!(
+                    "TM_DEBUG_SETTINGS: saved interval_ms={} key={:?} direction={:?} details={} file={}",
+                    settings.interval_ms,
+                    settings.sort.key,
+                    settings.sort.direction,
+                    settings.details_visible,
+                    config_leaf
+                );
+            }
             Err(error) => eprintln!("TM_DEBUG_SETTINGS: save failed: {error}"),
         }
     }
@@ -3952,5 +3969,19 @@ mod tests {
             dashboard.effective_interval(),
             Duration::from_millis(tm_core::BATTERY_INTERVAL_MS)
         );
+    }
+    #[test]
+    fn settings_debug_hook_never_emits_the_absolute_config_path() {
+        let label = super::TaskManagerApp::config_file_label(Some(std::path::PathBuf::from(
+            "/home/alice/.config/gpui-task-manager/settings.json",
+        )));
+        assert_eq!(label, "settings.json");
+        assert!(!label.contains("home"));
+        assert!(!label.contains("alice"));
+        assert!(!label.contains('/'));
+
+        let none = super::TaskManagerApp::config_file_label(None);
+        assert_eq!(none, "<unknown>");
+        assert!(!none.contains('/'));
     }
 }

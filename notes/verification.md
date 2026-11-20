@@ -2373,7 +2373,7 @@ exit 1 を固定しており契約変更になるため）、`sync_all()` によ
 
 **見送り**: 第三者ライセンス同梱（probe-packaging 5b/5c、DEP-5 複数節と
 OFL ライセンス同行は法的判断を含む）、Depends のバージョン下限（設計判断）、
-TM_DEBUG_SETTINGS のフルパス（opt-in、要注意）、web localStorage の
+TM_DEBUG_SETTINGS のフルパス（opt-in、2026-11-20 に leaf 名のみへ修正済み）、web localStorage の
 エラー混同、gpui-task-manager の --help 早期ショートカット、bond0、diverge。
 
 - app 65 passed / workspace 371 passed / clippy / fmt / README lint 増分ゼロ。
