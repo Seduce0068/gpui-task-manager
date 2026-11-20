@@ -675,7 +675,7 @@ pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
 /// Atomically writes an already-serialized JSON document.
 fn save_raw_to(path: &Path, json: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        crate::private_dir::ensure_private_dir_chain(parent)?;
     }
     // PID + monotonic nonce: a recycled PID must not collide with a stale
     // temporary file left by an earlier process.

@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod private_dir;
 mod settings;
 mod theme;
 mod ui;
