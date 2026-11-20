@@ -586,11 +586,86 @@ static AUTO_TOKEN_TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const AUTO_TOKEN_CREATE_ATTEMPTS: usize = 4;
 
 /// Outcome of one atomic token publication attempt.
+#[derive(Debug)]
 enum TokenPublish {
     /// This caller's candidate is now the canonical token file.
     Published,
     /// Another caller published first; re-read the path to adopt its token.
     Conflict,
+}
+
+/// Why a hard-link publish failed.
+///
+/// Only [`HardLinkFailure::Conflict`] is a normal race outcome; the other two
+/// variants are terminal. Kept as a small data type so the decision can be
+/// unit-tested without mocking the filesystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HardLinkFailure {
+    /// The destination already exists: a concurrent starter won, so re-read
+    /// and adopt that value instead of overwriting it.
+    Conflict,
+    /// This filesystem cannot provide the atomic no-replace publish used here.
+    /// Ask the operator for an explicit token file rather than downgrading.
+    RequireExplicitTokenFile,
+    /// An unrelated I/O failure; surface it unchanged.
+    Fatal,
+}
+
+/// Fixed guidance for a state directory that cannot host an atomic publish.
+///
+/// Like [`generated_token_message`], this names neither the token value nor
+/// its parent path, so it is safe to emit on stderr (CI logs / support bundles).
+const AUTO_TOKEN_HARD_LINK_UNSUPPORTED: &str = concat!(
+    "自動トークンを安全に公開できません: 保存先ファイルシステムがハードリンクに非対応か、",
+    "ハードリンク作成の権限がありません。--token-file <0600 のトークンファイル> を明示するか、",
+    "ハードリンク対応ファイルシステム上のディレクトリを XDG_STATE_HOME に指定してください。"
+);
+
+/// Pure classification of a failed `hard_link` publish; performs no I/O.
+///
+/// `hard_link` is the std primitive that is *both* atomic and no-replace: it
+/// fails with `AlreadyExists` instead of clobbering a token another starter
+/// just published. `rename` is atomic too but unconditionally replaces the
+/// destination (confirmed by the std docs), so falling back to `rename` would
+/// let a later starter silently invalidate the first starter's credential.
+/// The "the preceding read failed" guard would be a TOCTOU check that cannot
+/// be made atomic with std alone: a no-replace rename needs
+/// `renameat2(RENAME_NOREPLACE)`/flagged `linkat`, i.e. libc FFI, a new
+/// dependency or `unsafe`, all forbidden here (AGENTS §2/§15). An explicit,
+/// actionable error is therefore safer than weakening the publish contract.
+///
+/// Error-kind mapping on Unix: EOPNOTSUPP/ENOSYS -> `Unsupported`,
+/// EPERM/EACCES -> `PermissionDenied`, EINVAL -> `InvalidInput`,
+/// EXDEV -> `CrossesDevices`. All mean this filesystem will never let us
+/// publish atomically, so they share the same guidance.
+fn classify_hard_link_failure(err: &std::io::Error) -> HardLinkFailure {
+    match err.kind() {
+        std::io::ErrorKind::AlreadyExists => HardLinkFailure::Conflict,
+        std::io::ErrorKind::Unsupported
+        | std::io::ErrorKind::PermissionDenied
+        | std::io::ErrorKind::InvalidInput
+        | std::io::ErrorKind::CrossesDevices => HardLinkFailure::RequireExplicitTokenFile,
+        _ => HardLinkFailure::Fatal,
+    }
+}
+
+/// Turns a classified failure into the publish result; pure so the exact
+/// operator-facing message can be asserted without a special filesystem.
+fn hard_link_failure_result(
+    failure: HardLinkFailure,
+    err: &std::io::Error,
+    path: &std::path::Path,
+) -> Result<TokenPublish, String> {
+    match failure {
+        HardLinkFailure::Conflict => Ok(TokenPublish::Conflict),
+        HardLinkFailure::RequireExplicitTokenFile => {
+            Err(AUTO_TOKEN_HARD_LINK_UNSUPPORTED.to_string())
+        }
+        HardLinkFailure::Fatal => Err(format!(
+            "トークンファイルを公開できません ({}): {err}",
+            token_file_name(path)
+        )),
+    }
 }
 
 /// Writes a candidate token to a private temp file, then publishes it at `path`
@@ -601,7 +676,9 @@ enum TokenPublish {
 /// half-written credential — the old `create().truncate()` sequence had that
 /// window. `hard_link` is atomic and fails with `AlreadyExists` if another
 /// starter published first; the caller then re-reads that value instead of
-/// overwriting it. Both the temp creation and the publish use no `unsafe`.
+/// overwriting it. On filesystems without hard-link support the caller gets
+/// explicit `--token-file` guidance instead of a raw OS error. Both the temp
+/// creation and the publish use no `unsafe`.
 fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublish, String> {
     use std::io::Write as _;
 
@@ -652,11 +729,7 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
 
     let outcome = match std::fs::hard_link(&temp, path) {
         Ok(()) => Ok(TokenPublish::Published),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(TokenPublish::Conflict),
-        Err(err) => Err(format!(
-            "トークンファイルを公開できません ({}): {err}",
-            token_file_name(path)
-        )),
+        Err(err) => hard_link_failure_result(classify_hard_link_failure(&err), &err, path),
     };
     let _ = std::fs::remove_file(&temp);
     outcome
@@ -3294,6 +3367,95 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "repaired token must be 0600");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hard_link_failure_classification_drives_the_publish_action() {
+        // AlreadyExists is the one benign race: the resolver loop re-reads and
+        // adopts the winner instead of overwriting it (contract unchanged).
+        assert_eq!(
+            classify_hard_link_failure(&std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
+            HardLinkFailure::Conflict
+        );
+
+        // Filesystems that cannot host hard links (exFAT/NTFS, some FUSE and
+        // network mounts) surface as these kinds. They must never fall back to
+        // rename: rename replaces an existing target, so a later starter could
+        // silently invalidate a token another starter already published.
+        for kind in [
+            std::io::ErrorKind::Unsupported,      // EOPNOTSUPP / ENOSYS
+            std::io::ErrorKind::PermissionDenied, // EPERM / EACCES
+            std::io::ErrorKind::InvalidInput,     // EINVAL
+            std::io::ErrorKind::CrossesDevices,   // EXDEV
+        ] {
+            assert_eq!(
+                classify_hard_link_failure(&std::io::Error::from(kind)),
+                HardLinkFailure::RequireExplicitTokenFile,
+                "{kind:?}"
+            );
+        }
+
+        // Everything else stays a raw failure, reported as before.
+        for err in [
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+            std::io::Error::from(std::io::ErrorKind::Interrupted),
+            std::io::Error::other("transient"),
+        ] {
+            assert_eq!(
+                classify_hard_link_failure(&err),
+                HardLinkFailure::Fatal,
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_hard_link_guidance_is_fixed_and_leaks_no_token_or_path() {
+        let dir = std::env::temp_dir().join(format!("tm-agent-guidance-{}", std::process::id()));
+        let path = dir.join(AUTO_TOKEN_FILE_NAME);
+        let token = "never-print-this-token-value";
+        let err = std::io::Error::from(std::io::ErrorKind::Unsupported);
+
+        let message = hard_link_failure_result(classify_hard_link_failure(&err), &err, &path)
+            .expect_err("unsupported filesystem must not publish by weakening the contract");
+        assert_eq!(message, AUTO_TOKEN_HARD_LINK_UNSUPPORTED);
+        assert!(message.contains("--token-file"), "{message}");
+        assert!(message.contains("0600"), "{message}");
+        assert!(!message.contains(token), "token value leaked: {message}");
+        assert!(
+            !message.contains(dir.to_string_lossy().as_ref()),
+            "parent path leaked: {message}"
+        );
+        assert!(
+            !message.contains(path.to_string_lossy().as_ref()),
+            "token path leaked: {message}"
+        );
+
+        // A benign race still maps to Conflict so AUTO_TOKEN_CREATE_ATTEMPTS
+        // keeps converging on a single published credential.
+        let conflict = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        let conflict_result =
+            hard_link_failure_result(classify_hard_link_failure(&conflict), &conflict, &path);
+        assert!(
+            matches!(conflict_result, Ok(TokenPublish::Conflict)),
+            "AlreadyExists must stay a conflict, not a failure"
+        );
+
+        // Unrelated failures keep naming only the leaf file name, never the
+        // parent path or the token value.
+        let fatal = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let fatal_message =
+            hard_link_failure_result(classify_hard_link_failure(&fatal), &fatal, &path)
+                .expect_err("fatal error must be reported");
+        assert!(
+            fatal_message.contains(token_file_name(&path).as_ref()),
+            "{fatal_message}"
+        );
+        assert!(
+            !fatal_message.contains(dir.to_string_lossy().as_ref()),
+            "parent path leaked: {fatal_message}"
+        );
+        assert!(!fatal_message.contains(token), "{fatal_message}");
     }
 
     #[test]
