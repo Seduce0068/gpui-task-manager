@@ -26,7 +26,7 @@ use tm_viewmodel::{
 
 use crate::settings::Settings;
 use crate::theme::*;
-use crate::ui::{action_button, card, kv, metric_bar, pill, section_title, sparkline};
+use crate::ui::{accessible_metric_bar, action_button, card, kv, pill, section_title, sparkline};
 
 const COL_CPU: f32 = 76.0;
 const COL_MEMORY: f32 = 96.0;
@@ -1032,7 +1032,12 @@ impl TaskManagerApp {
         )
         .h(px(200.0))
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        // The big number is colour-coded; name the gauge in AccessKit so AT-SPI
+        // exposes a reader-meaningful group with the same severity in text.
+        .id("overview-cpu")
+        .role(Role::Group)
+        .aria_label(a11y_usage_label("CPU 使用率", summary.cpu_total));
 
         let memory_card = card(
             "メモリ",
@@ -1072,9 +1077,11 @@ impl TaskManagerApp {
                                 }),
                         ),
                 )
-                .child(metric_bar(
+                .child(accessible_metric_bar(
+                    "memory-usage-bar",
                     summary.mem_percent,
                     usage_color(summary.mem_percent),
+                    a11y_usage_label("メモリ使用率", summary.mem_percent),
                 ))
                 .child(
                     h_flex()
@@ -1087,7 +1094,12 @@ impl TaskManagerApp {
                             summary.swap_total,
                         )),
                 )
-                .child(metric_bar(summary.swap_percent, palette().peach))
+                .child(accessible_metric_bar(
+                    "swap-usage-bar",
+                    summary.swap_percent,
+                    palette().peach,
+                    a11y_usage_label("スワップ使用率", summary.swap_percent),
+                ))
                 .child(sparkline(
                     &summary.mem_history,
                     100.0,
@@ -1108,7 +1120,10 @@ impl TaskManagerApp {
         )
         .h(px(200.0))
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        .id("overview-memory")
+        .role(Role::Group)
+        .aria_label(a11y_usage_label("メモリ使用率", summary.mem_percent));
 
         let network_card = card(
             "ネットワーク",
@@ -1165,12 +1180,20 @@ impl TaskManagerApp {
         )
         .h(px(200.0))
         .flex_1()
-        .min_w_0();
+        .min_w_0()
+        .id("overview-network")
+        .role(Role::Group)
+        .aria_label(format!(
+            "ネットワーク、受信 {}、送信 {}",
+            format::format_rate(summary.rx_rate),
+            format::format_rate(summary.tx_rate)
+        ));
 
         let disk_rows: Vec<Div> = summary
             .disks
             .iter()
-            .map(|disk| {
+            .enumerate()
+            .map(|(index, disk)| {
                 v_flex()
                     .gap_1()
                     .child(
@@ -1181,7 +1204,12 @@ impl TaskManagerApp {
                             .child(disk.mount.clone())
                             .child(format!("{:.0}%", disk.percent)),
                     )
-                    .child(metric_bar(disk.percent, usage_color(disk.percent)))
+                    .child(accessible_metric_bar(
+                        ("disk-usage-bar", index),
+                        disk.percent,
+                        usage_color(disk.percent),
+                        a11y_usage_label(&format!("ディスク {} 使用率", disk.mount), disk.percent),
+                    ))
             })
             .collect();
 
@@ -1199,7 +1227,7 @@ impl TaskManagerApp {
         if components.is_empty() {
             system_body = system_body.child(kv("温度", "センサーなし".to_string()));
         } else {
-            for component in components.iter().take(3) {
+            for (index, component) in components.iter().take(3).enumerate() {
                 let label = if component.label.is_empty() {
                     "センサー".to_string()
                 } else {
@@ -1218,14 +1246,35 @@ impl TaskManagerApp {
                     (Some(t), None, None) => format!("{t:.0}°C"),
                     _ => "—".to_string(),
                 };
-                system_body = system_body.child(kv(&label, value));
+                // The temperature state is otherwise colour-only; expose the
+                // value and 正常/注意/危険/不明 wording in the AccessKit name.
+                let aria_label = a11y_temperature_label(
+                    &label,
+                    &value,
+                    component.temperature_c,
+                    component.max_c,
+                    component.critical_c,
+                );
+                system_body = system_body.child(
+                    kv(&label, value)
+                        .id(("temperature-gauge", index))
+                        .role(Role::Group)
+                        .aria_label(aria_label),
+                );
             }
         }
 
         let system_card = card("システム", palette().green, system_body)
             .h(px(200.0))
             .flex_1()
-            .min_w_0();
+            .min_w_0()
+            .id("overview-system")
+            .role(Role::Group)
+            .aria_label(format!(
+                "システム概要、ホスト {}、プロセス {} 件",
+                self.display(&summary.hostname),
+                summary.process_count
+            ));
 
         h_flex().gap_3().px_4().py_3().items_start().children(vec![
             cpu_card,
@@ -2022,7 +2071,7 @@ impl TaskManagerApp {
                     .child("センサーなし"),
             );
         } else {
-            for component in components {
+            for (index, component) in components.iter().enumerate() {
                 let mut value = component
                     .temperature_c
                     .map(|t| format!("{t:.0}°C"))
@@ -2038,7 +2087,22 @@ impl TaskManagerApp {
                 } else {
                     self.display(&component.label)
                 };
-                content = content.child(kv(label, value));
+                // Mirror the overview temperature gauges: the detail row also
+                // carries the textual state so AT-SPI never has to infer it
+                // from the colour of the number.
+                let aria_label = a11y_temperature_label(
+                    &label,
+                    &value,
+                    component.temperature_c,
+                    component.max_c,
+                    component.critical_c,
+                );
+                content = content.child(
+                    kv(label, value)
+                        .id(("details-temperature", index))
+                        .role(Role::Group)
+                        .aria_label(aria_label),
+                );
             }
         }
         v_flex()
@@ -2355,6 +2419,12 @@ impl TaskManagerApp {
         Some(
             div()
                 .id("help-overlay")
+                // Without a role the modal is just a generic container in the
+                // real AccessKit tree, so AT-SPI never sees a dialog. The
+                // 「閉じる」 button inside already goes through `action_button`,
+                // which now supplies Role::Button and its Japanese name.
+                .role(Role::Dialog)
+                .aria_label("キーボード操作")
                 .absolute()
                 .top_0()
                 .left_0()
@@ -2715,6 +2785,62 @@ fn usage_severity(percent: f32) -> &'static str {
     }
 }
 
+/// Accessible name of a colour-coded utilisation gauge, matching the browser
+/// shell's `a11y_usage_label`: the displayed percentage plus the Japanese
+/// severity word, so a colour-blind reader (and AT-SPI) hears the same state
+/// the colour conveys.
+fn a11y_usage_label(title: &str, percent: f32) -> String {
+    let percent = percent.clamp(0.0, 100.0);
+    format!(
+        "{title} {percent:.0}%、{severity}",
+        severity = usage_severity(percent)
+    )
+}
+
+/// Japanese state of a temperature reading relative to its two thresholds.
+///
+/// Only finite readings and strictly positive thresholds are compared: a NaN
+/// from a driver or a missing/broken threshold must never be reported as an
+/// optimistic "正常". Mirrors the browser shell's `temperature_severity`.
+fn temperature_severity_label(
+    temperature_c: Option<f32>,
+    max_c: Option<f32>,
+    critical_c: Option<f32>,
+) -> &'static str {
+    let finite = |value: Option<f32>| value.filter(|value| value.is_finite());
+    let positive = |value: Option<f32>| finite(value).filter(|value| *value > 0.0);
+    let Some(temperature) = finite(temperature_c) else {
+        return "不明";
+    };
+    let max = positive(max_c);
+    let critical = positive(critical_c);
+    if max.is_none() && critical.is_none() {
+        return "不明";
+    }
+    if critical.is_some_and(|critical| temperature >= critical) {
+        return "危険";
+    }
+    if max.is_some_and(|max| temperature >= max) {
+        return "注意";
+    }
+    "正常"
+}
+
+/// Accessible name of a temperature gauge: sensor, already-displayed value
+/// (including thresholds) and the textual state (正常/注意/危険/不明).
+fn a11y_temperature_label(
+    sensor: &str,
+    value_text: &str,
+    temperature_c: Option<f32>,
+    max_c: Option<f32>,
+    critical_c: Option<f32>,
+) -> String {
+    format!(
+        "{sensor} 温度 {value_text}、{state}",
+        state = temperature_severity_label(temperature_c, max_c, critical_c)
+    )
+}
+
 /// Accessible name of one process row, matching the browser shell.
 ///
 /// `name` is the already-displayed (possibly 伏せ字化済み) value, so a screen
@@ -2948,10 +3074,11 @@ mod tests {
     // were imported here.
     use super::{
         a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
-        apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, key_action,
-        power_summary_text, report_save_result, resolve_probe_retry, signal_enabled,
-        sort_header_label, sort_header_text, truncate_label, usage_severity, BackendInit,
-        DialogButton, KeyAction, ProbeRetry,
+        a11y_temperature_label, a11y_usage_label, apply_retry_status, cgroup_group_text,
+        dialog_command, help_shortcuts, key_action, power_summary_text, report_save_result,
+        resolve_probe_retry, signal_enabled, sort_header_label, sort_header_text,
+        temperature_severity_label, truncate_label, usage_severity, BackendInit, DialogButton,
+        KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -3393,6 +3520,155 @@ mod tests {
         assert_eq!(usage_severity(60.0), "中");
         assert_eq!(usage_severity(84.9), "中");
         assert_eq!(usage_severity(85.0), "高");
+    }
+
+    #[test]
+    fn action_button_exposes_button_role_and_name_in_shared_base() {
+        // `Div`'s role / aria fields are private to gpui-pre and there is no
+        // window-rendering harness here, so verify the source wiring. Split
+        // needles keep the test from matching its own literals. The inspected
+        // slice ends before the enabled/disabled branch: both must inherit the
+        // same semantics from `base`.
+        let source = include_str!("ui.rs");
+        let base = source
+            .split(concat!("pub fn action_", "button("))
+            .nth(1)
+            .and_then(|rest| rest.split("if enabled {").next())
+            .expect("action_button base must exist");
+        assert!(
+            base.contains(concat!(".role(", "Role::Button)")),
+            "every action button must expose the AccessKit push-button role"
+        );
+        assert!(
+            base.contains(concat!(".aria_label(", "label)")),
+            "the visible label must also be the accessible name"
+        );
+        assert!(
+            !base.contains("if enabled"),
+            "role/name must live on the shared base, not in one branch"
+        );
+    }
+
+    #[test]
+    fn accessible_metric_bar_exposes_progress_indicator_semantics() {
+        let source = include_str!("ui.rs");
+        let helper = source
+            .split(concat!("pub fn accessible_", "metric_bar("))
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("accessible_metric_bar helper must exist");
+        assert!(
+            helper.contains(concat!(".role(", "Role::ProgressIndicator)")),
+            "gauges must be discoverable as progress indicators by AT-SPI"
+        );
+        assert!(helper.contains(concat!(".aria_numeric_value(", "percent as f64)")));
+        assert!(helper.contains(".aria_value(format!"));
+        assert!(
+            helper.contains("metric_bar(percent, color)"),
+            "the visual bar must remain the unchanged metric_bar"
+        );
+    }
+
+    #[test]
+    fn help_overlay_exposes_a_named_dialog_to_atspi() {
+        let source = include_str!("app.rs");
+        let overlay = source
+            .split(concat!("fn help_", "overlay("))
+            .nth(1)
+            .expect("help_overlay must exist");
+        let header = overlay
+            .split(".absolute()")
+            .next()
+            .expect("help overlay header must exist");
+        assert!(
+            header.contains(concat!(".role(", "Role::Dialog)")),
+            "the F1 modal must be a dialog node in the real AccessKit tree"
+        );
+        assert!(
+            header.contains(concat!(".aria_label(", "\"キーボード操作\")")),
+            "the dialog must carry its Japanese title as accessible name"
+        );
+        assert!(
+            overlay.contains(concat!("\"help-", "close\"")),
+            "the close control must use the shared action_button (Role::Button)"
+        );
+    }
+
+    #[test]
+    fn usage_gauge_aria_label_spells_out_value_and_severity() {
+        assert_eq!(a11y_usage_label("CPU 使用率", 90.0), "CPU 使用率 90%、高");
+        assert_eq!(
+            a11y_usage_label("メモリ使用率", 70.0),
+            "メモリ使用率 70%、中"
+        );
+        assert_eq!(
+            a11y_usage_label("スワップ使用率", 10.0),
+            "スワップ使用率 10%、低"
+        );
+        // Out-of-range probe data is clamped like the visible bar.
+        assert_eq!(a11y_usage_label("CPU 使用率", 140.0), "CPU 使用率 100%、高");
+    }
+
+    #[test]
+    fn temperature_aria_label_carries_state_and_rejects_invalid_data() {
+        assert_eq!(
+            temperature_severity_label(Some(101.0), Some(68.0), Some(100.0)),
+            "危険"
+        );
+        assert_eq!(
+            temperature_severity_label(Some(70.0), Some(68.0), Some(100.0)),
+            "注意"
+        );
+        assert_eq!(
+            temperature_severity_label(Some(30.0), Some(68.0), Some(100.0)),
+            "正常"
+        );
+        assert_eq!(temperature_severity_label(None, None, None), "不明");
+        // A NaN reading or a broken threshold must never become "正常".
+        assert_eq!(
+            temperature_severity_label(Some(f32::NAN), Some(68.0), Some(100.0)),
+            "不明"
+        );
+        assert_eq!(
+            temperature_severity_label(Some(30.0), Some(-1.0), Some(0.0)),
+            "不明"
+        );
+
+        let label = a11y_temperature_label(
+            "CPU",
+            "101°C / crit 100°C",
+            Some(101.0),
+            Some(68.0),
+            Some(100.0),
+        );
+        assert_eq!(label, "CPU 温度 101°C / crit 100°C、危険");
+    }
+
+    #[test]
+    fn gauge_aria_wiring_reaches_memory_swap_and_disk_bars() {
+        let source = include_str!("app.rs");
+        assert!(source.contains(concat!("accessible_", "metric_bar(")));
+        assert!(source.contains(concat!("\"memory-", "usage-bar\"")));
+        assert!(source.contains(concat!("\"swap-", "usage-bar\"")));
+        assert!(source.contains(concat!("(\"disk-", "usage-bar\", index)")));
+        assert!(source.contains(concat!("a11y_temperature_", "label(")));
+    }
+
+    #[test]
+    fn existing_table_row_and_status_accesskit_contract_is_preserved() {
+        // The new dialog / button / gauge nodes must not replace the contracts
+        // already consumed by the AT-SPI (ta-nativeax) discovery.
+        let source = include_str!("app.rs");
+        for role in [
+            concat!("Role::", "Table"),
+            concat!("Role::", "RowGroup"),
+            concat!("Role::", "Row"),
+            concat!("Role::", "ColumnHeader"),
+            concat!("Role::", "Status"),
+            concat!("Role::", "TextInput"),
+        ] {
+            assert!(source.contains(role), "missing AccessKit role {role}");
+        }
     }
 
     #[test]

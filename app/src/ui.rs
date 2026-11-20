@@ -49,6 +49,28 @@ pub fn metric_bar(percent: f32, color: u32) -> Div {
         .child(div().h_full().flex_grow((100.0 - percent).max(0.5)))
 }
 
+/// A utilisation bar exposed to AT-SPI as an AccessKit progress indicator.
+///
+/// The bar is purely visual, so a screen reader can only understand it through
+/// the accessible name (`label`, which already spells out the value and its
+/// severity), the numeric value and the textual value. `id` must be unique
+/// within a frame; pass a `(name, index)` tuple for repeated bars (e.g. disks).
+/// The underlying [`metric_bar`] styling is unchanged.
+pub fn accessible_metric_bar(
+    id: impl Into<ElementId>,
+    percent: f32,
+    color: u32,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let percent = percent.clamp(0.0, 100.0);
+    metric_bar(percent, color)
+        .id(id)
+        .role(Role::ProgressIndicator)
+        .aria_label(label)
+        .aria_numeric_value(percent as f64)
+        .aria_value(format!("{percent:.0}%"))
+}
+
 /// A compact bar sparkline drawn with plain flex elements (no chart dependency).
 pub fn sparkline(values: &[f32], max: f32, color: u32, height: f32) -> Div {
     let max = max.max(0.001);
@@ -121,6 +143,13 @@ pub fn action_button(
 ) -> Stateful<Div> {
     let base = div()
         .id(id)
+        // Buttons carry no semantic role on a bare `div`, so without the
+        // explicit AccessKit role/name AT-SPI reports zero push buttons even
+        // though the click target is visible. `label` is `&'static str` and is
+        // reused verbatim for the visible text and the accessible name; both
+        // click branches below share these semantics.
+        .role(Role::Button)
+        .aria_label(label)
         .flex()
         .items_center()
         .justify_center()
