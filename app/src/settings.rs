@@ -55,6 +55,7 @@
 //! - **Corruption**: only malformed JSON or a wrong type in a *known* field
 //!   (other than `version`) falls back to defaults with a fixed redacted notice.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 #[cfg(unix)]
@@ -186,8 +187,27 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Returns the settings file path, if a configuration directory can be found.
+///
+/// Thin wrapper: read the three supported environment variables once and pass
+/// them to the pure `config_path_from`. Keeping the environment read here is
+/// what makes every selection branch testable without mutating process-global
+/// state (the test runner is parallel).
 pub fn config_path() -> Option<PathBuf> {
-    config_dir().map(|directory| directory.join(FILE_NAME))
+    config_path_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("APPDATA"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure counterpart of [`config_path`]: builds the settings file path from
+/// explicit environment values so tests can pin each branch directly.
+fn config_path_from(
+    xdg: Option<OsString>,
+    appdata: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    config_dir_from(xdg, appdata, home).map(|directory| directory.join(FILE_NAME))
 }
 
 /// Refuse to create persistent files on virtual filesystems, matching the
@@ -203,19 +223,42 @@ fn is_virtual_fs_root(path: &Path) -> bool {
             .is_some_and(|top| matches!(top, "dev" | "proc" | "sys"))
 }
 
-fn config_dir() -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
-        // XDG: a relative path must be ignored. Accepting it would write to
-        // $CWD (R47 settings-I/O audit).
-        let path = PathBuf::from(value);
-        if path.is_absolute() && !is_virtual_fs_root(&path) {
-            return Some(path.join(APP_DIR));
-        }
+/// Shared validation for a configuration root.
+///
+/// A relative root resolves against `$CWD` (the repository during development)
+/// and would write settings into the source tree; virtual FS roots cannot hold
+/// a durable settings file. Both the XDG override and the HOME fallback go
+/// through this predicate, mirroring `usable_state_root` on the agent side.
+fn usable_config_root(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
+}
+
+/// Pure core of the configuration-directory selection.
+///
+/// Precedence is unchanged: a usable absolute `XDG_CONFIG_HOME`, then the
+/// platform-specific root (`%APPDATA%` on Windows, `$HOME/Library/Application
+/// Support` on macOS), then the absolute non-virtual `$HOME/.config` fallback.
+/// `None` means no safe directory exists and settings must not be persisted.
+fn config_dir_from(
+    xdg: Option<OsString>,
+    appdata: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    if let Some(path) = usable_config_root(xdg) {
+        return Some(path.join(APP_DIR));
     }
+
+    // `appdata` is consulted only on Windows; keep the signature uniform so
+    // callers and tests can supply every root on any host.
+    #[cfg(not(target_os = "windows"))]
+    let _ = &appdata;
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(value) = std::env::var_os("APPDATA") {
+        if let Some(value) = appdata {
             if !value.is_empty() {
                 return Some(PathBuf::from(value).join(APP_DIR));
             }
@@ -224,7 +267,7 @@ fn config_dir() -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = home.as_ref() {
             return Some(
                 PathBuf::from(home)
                     .join("Library/Application Support")
@@ -233,10 +276,7 @@ fn config_dir() -> Option<PathBuf> {
         }
     }
 
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute() && !is_virtual_fs_root(home))
-        .map(|home| home.join(".config").join(APP_DIR))
+    usable_config_root(home).map(|home| home.join(".config").join(APP_DIR))
 }
 
 /// Clamps into the supported range without rewriting the schema `version`.
@@ -1084,17 +1124,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// HOME-based settings path on this host, mirroring `config_dir_from`.
+    fn home_settings_path(home: &Path) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            home.join("Library/Application Support")
+                .join(APP_DIR)
+                .join(FILE_NAME)
+        } else {
+            home.join(".config").join(APP_DIR).join(FILE_NAME)
+        }
+    }
+
     #[test]
-    fn config_path_uses_the_xdg_directory_when_set() {
-        // `std::env::set_var` is process-global and racy under the parallel test
-        // runner, so this test only asserts the *shape* of the path rather than
-        // mutating the environment.
-        if let Some(path) = config_path() {
-            assert!(
-                path.ends_with("gpui-task-manager/settings.json"),
-                "{path:?}"
+    fn config_path_from_prefers_an_absolute_xdg_config_home() {
+        let xdg = PathBuf::from("/srv/user-config");
+        let path = config_path_from(
+            Some(xdg.clone().into_os_string()),
+            None,
+            Some(PathBuf::from("/home/user").into_os_string()),
+        )
+        .expect("an absolute, non-virtual XDG_CONFIG_HOME must be accepted");
+        assert_eq!(path, xdg.join(APP_DIR).join(FILE_NAME));
+    }
+
+    #[test]
+    fn config_path_from_ignores_a_relative_xdg_config_home() {
+        // A relative root resolves against $CWD (the repository during
+        // development), so every relative spelling must fall back to HOME.
+        let home = PathBuf::from("/home/user");
+        let fallback = home_settings_path(&home);
+        for relative in [".", "config", "../config", "./relative", ""] {
+            let path = config_path_from(
+                Some(std::ffi::OsString::from(relative)),
+                None,
+                Some(home.clone().into_os_string()),
+            )
+            .expect("a relative XDG_CONFIG_HOME must fall back to HOME");
+            assert_eq!(path, fallback, "XDG_CONFIG_HOME={relative:?}");
+        }
+    }
+
+    #[test]
+    fn config_path_from_ignores_a_virtual_fs_xdg_config_home() {
+        // `/dev`, `/proc` and `/sys` cannot hold a durable settings file.
+        let home = PathBuf::from("/home/user");
+        let fallback = home_settings_path(&home);
+        for virtual_root in ["/dev", "/proc/self", "/sys/kernel"] {
+            let path = config_path_from(
+                Some(std::ffi::OsString::from(virtual_root)),
+                None,
+                Some(home.clone().into_os_string()),
+            )
+            .expect("a virtual XDG_CONFIG_HOME must fall back to HOME");
+            assert_eq!(path, fallback, "XDG_CONFIG_HOME={virtual_root}");
+        }
+    }
+
+    #[test]
+    fn config_path_from_falls_back_to_home() {
+        let home = PathBuf::from("/home/user");
+        let path = config_path_from(None, None, Some(home.clone().into_os_string()))
+            .expect("an absolute HOME must provide a fallback directory");
+        assert_eq!(path, home_settings_path(&home));
+
+        // The fallback applies the same root checks as the XDG override.
+        #[cfg(not(target_os = "macos"))]
+        for bad in ["relative-home", "/dev", "/proc/self", "/sys/kernel"] {
+            assert_eq!(
+                config_path_from(None, None, Some(std::ffi::OsString::from(bad))),
+                None,
+                "HOME={bad} must not anchor a settings path"
             );
         }
+    }
+
+    #[test]
+    fn config_path_from_is_none_when_no_root_is_available() {
+        // `config_path()` is a thin wrapper that feeds these three values from
+        // the environment into `config_path_from`, so this pins the "all unset"
+        // case without mutating process-global env vars under parallel tests.
+        assert_eq!(config_dir_from(None, None, None), None);
+        assert_eq!(config_path_from(None, None, None), None);
+
+        let from_env = config_path_from(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("APPDATA"),
+            std::env::var_os("HOME"),
+        );
+        assert_eq!(
+            config_path(),
+            from_env,
+            "config_path must delegate to the pure selector"
+        );
     }
 
     #[test]

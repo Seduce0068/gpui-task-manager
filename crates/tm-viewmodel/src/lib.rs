@@ -952,9 +952,11 @@ impl Dashboard {
     ///
     /// A snapshot whose `sampled_at` predates the newest sample already seen
     /// is normally a late arrival. It still refreshes the display, but it
-    /// leaves the transient status and the network rate baseline untouched so
-    /// a delayed sample cannot erase the latest error or skew the next fresh
-    /// rate.
+    /// leaves the transient status, the network rate baseline, `network_rates`
+    /// and the chart `history` untouched so a delayed sample cannot erase the
+    /// latest error, skew the next fresh rate or write a spurious 0 spike
+    /// (R2-BV01). CPU/memory percentages shown in the overview come from the
+    /// refreshed `snapshot`, not from `history`, so they still update.
     ///
     /// The exception is a wall-clock step back: when a regressed `sampled_at`
     /// arrives with network counters that have strictly advanced, the sample
@@ -1014,32 +1016,38 @@ impl Dashboard {
             .filter(|iface| !tm_core::model::is_virtual_interface(&iface.name))
             .map(|iface| iface.name.clone())
             .collect();
-        let (rx_rate, tx_rate) = match self.last_network {
-            Some((previous_rx, previous_tx))
-                if self.last_network_interfaces == physical_interfaces =>
-            {
-                // Use the probe's monotonic elapsed time, not a wall-clock
-                // delta: NTP/VM resume can move `sampled_at` backwards and
-                // produce a 1000x rate spike (R49 audit).
-                let elapsed = snapshot.sampled_elapsed;
-                NetworkCounters::new(snapshot.network_totals().0, snapshot.network_totals().1)
-                    .rate_since(NetworkCounters::new(previous_rx, previous_tx), elapsed)
-            }
-            _ => (0, 0),
-        };
-        self.network_rates = (rx_rate, tx_rate);
+        // A late arrival must not overwrite the most recently accepted rate or
+        // append to the chart history: its counters are stale (or its physical
+        // interface set differs), so the computed rate can be a spurious 0 that
+        // would replace `network_rates` and write a zero spike into `history`
+        // (R2-BV01). Only current snapshots feed those series — the display
+        // (snapshot/selection) is still refreshed below for every sample, so
+        // CPU/memory percentages keep updating as before.
         if !is_late {
+            let (rx_rate, tx_rate) = match self.last_network {
+                Some((previous_rx, previous_tx))
+                    if self.last_network_interfaces == physical_interfaces =>
+                {
+                    // Use the probe's monotonic elapsed time, not a wall-clock
+                    // delta: NTP/VM resume can move `sampled_at` backwards and
+                    // produce a 1000x rate spike (R49 audit).
+                    let elapsed = snapshot.sampled_elapsed;
+                    NetworkCounters::new(snapshot.network_totals().0, snapshot.network_totals().1)
+                        .rate_since(NetworkCounters::new(previous_rx, previous_tx), elapsed)
+                }
+                _ => (0, 0),
+            };
+            self.network_rates = (rx_rate, tx_rate);
             let (total_rx, total_tx) = snapshot.network_totals();
             self.last_network = Some((total_rx, total_tx));
             self.last_network_interfaces = physical_interfaces;
+            self.history.push(
+                snapshot.cpu.total_percent,
+                snapshot.memory.used_percent(),
+                rx_rate,
+                tx_rate,
+            );
         }
-
-        self.history.push(
-            snapshot.cpu.total_percent,
-            snapshot.memory.used_percent(),
-            rx_rate,
-            tx_rate,
-        );
 
         // Distinguish "no snapshot yet", "explicitly cleared" and "selected
         // process disappeared": only the first two cases may auto-select, and
@@ -1759,6 +1767,27 @@ mod tests {
     }
 
     #[test]
+    fn current_snapshot_updates_rates_and_history() {
+        let mut dashboard = dashboard();
+        // First sample establishes the baseline: no rate yet, one history row.
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        assert_eq!(dashboard.history().len(), 1);
+        assert_eq!(dashboard.history().network_rx_rate.latest(), Some(&0));
+
+        // A fresh sample with advanced counters reports one tick of traffic and
+        // appends a matching history row (R2-BV01 happy path).
+        dashboard.ingest(demo_snapshot(1));
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+        assert_eq!(dashboard.history().len(), 2);
+        assert_eq!(
+            dashboard.history().network_rx_rate.latest(),
+            Some(&1_234_567)
+        );
+        assert_eq!(dashboard.history().network_tx_rate.latest(), Some(&321_456));
+    }
+
+    #[test]
     fn network_rates_ignore_wall_clock_regressions() {
         let mut dashboard = dashboard();
         let first = demo_snapshot(0);
@@ -1943,6 +1972,45 @@ mod tests {
     }
 
     #[test]
+    fn late_snapshot_with_equal_counters_keeps_rates_and_history() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(1)); // baseline tick 1
+        dashboard.ingest(demo_snapshot(2)); // one tick of traffic
+        let expected_rate = (1_234_567, 321_456);
+        assert_eq!(dashboard.network_rates(), expected_rate);
+        let history_rx = dashboard.history().network_rx_rate.to_vec();
+        let history_tx = dashboard.history().network_tx_rate.to_vec();
+        let history_len = dashboard.history().len();
+
+        dashboard.set_status("直近の取得失敗", true);
+
+        // Identical counters to the newest accepted baseline, but an older
+        // clock: equal counters are not progress, so this is a late arrival
+        // (not a wall-clock rebase). Its rate would compute to a spurious 0,
+        // which must neither overwrite `network_rates` nor be appended to
+        // `history` (R2-BV01). The transient error must also survive (the
+        // existing late_snapshot_* contract).
+        let mut late = demo_snapshot(2);
+        late.sampled_at = tm_core::Timestamp::from_millis(late.sampled_at.unix_millis - 2_000);
+        assert_eq!(late.network_totals(), demo_snapshot(2).network_totals());
+        assert!(late.sampled_at < dashboard.snapshot().unwrap().sampled_at);
+        dashboard.ingest(late);
+
+        assert_eq!(dashboard.network_rates(), expected_rate);
+        assert_eq!(dashboard.history().len(), history_len);
+        assert_eq!(dashboard.history().network_rx_rate.to_vec(), history_rx);
+        assert_eq!(dashboard.history().network_tx_rate.to_vec(), history_tx);
+        assert!(
+            history_rx.last().is_some_and(|&rx| rx > 0),
+            "a late arrival must not write a 0 spike into the rate history"
+        );
+        assert!(
+            dashboard.status().is_some_and(|status| status.is_error),
+            "a late arrival must not clear the transient error"
+        );
+    }
+
+    #[test]
     fn late_snapshot_keeps_an_explicitly_cleared_selection() {
         let mut dashboard = dashboard();
         dashboard.ingest(demo_snapshot(2));
@@ -2018,6 +2086,32 @@ mod tests {
         assert_eq!(dashboard.last_ingested_at, Some(regressed_at));
         assert_eq!(dashboard.last_network, Some(regressed_totals));
         assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn rebased_clock_regression_still_updates_rates_and_history() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(1)); // baseline tick 1: rate (0, 0)
+        let history_before = dashboard.history().len();
+
+        // The clock steps back, but the counters strictly advance: this is a
+        // genuine new sample in the stepped-back era, not a late arrival.
+        // WB-CLOCK rebases the mark/baseline, and the sample still feeds rates
+        // and history just like any current sample.
+        let mut regressed = demo_snapshot(2);
+        regressed.sampled_at = tm_core::Timestamp::from_millis(1);
+        dashboard.ingest(regressed);
+
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+        assert_eq!(dashboard.history().len(), history_before + 1);
+        assert_eq!(
+            dashboard.history().network_rx_rate.latest(),
+            Some(&1_234_567)
+        );
+        assert_eq!(
+            dashboard.last_ingested_at,
+            Some(tm_core::Timestamp::from_millis(1))
+        );
     }
 
     #[test]
