@@ -332,12 +332,28 @@ jobs:
       - name: Build web distribution
         # The bundled IBM Plex fonts are OFL-1.1; ship the license with the
         # artifact (Trunk 0.22 has no `copy` config key).
+        # AGPL-3.0 本文と帰属通知／第三者ライセンス本文も配布物へ同梱する。
         run: |
+          set -euo pipefail
           cd web
           # trunk 0.22.1 の --locked は Cargo.lock が最新であることを要求する。
           # gates の locked: true と同じロック整合性を wasm ビルドにも適用する。
           trunk build --release --locked
+          # ルートの LICENSE (AGPL-3.0) / NOTICE.md / THIRD_PARTY_NOTICES.md を
+          # dist/ へコピーし、配布アーカイブ単体でライセンス要件を満たす。
+          cp ../LICENSE dist/LICENSE
+          cp ../NOTICE.md dist/NOTICE.md
+          cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
+          # ZA-DEBLIC が生成する crate 別ライセンス全文は成果物依存のため、
+          # glob で存在を確認できた場合のみ再帰コピーする（無い場合はスキップ）。
+          if compgen -G '../packaging/linux/licenses/crates/*' > /dev/null; then
+            mkdir -p dist/licenses/crates
+            cp -R ../packaging/linux/licenses/crates/. dist/licenses/crates/
+          fi
+          for f in LICENSE NOTICE.md THIRD_PARTY_NOTICES.md LICENSE-IBM-Plex.txt; do
+            test -s "dist/${f}"
+          done
       # R2 ビルド再現性ゲート。Trunk 0.22.x の modulepreload 順序は
       # HashSet 由来で非決定的なので、Trunk.toml の post_build フックで
       # パス順へ正規化している。ここで同一入力の 2 回ビルドを比較し、
@@ -348,12 +364,25 @@ jobs:
           cd web
           hash_dist() {
             # 内容と相対パスをまとめてハッシュし、順序はパス順に固定する。
+            # find dist -type f なので dist/ へコピーした LICENSE / NOTICE /
+            # THIRD_PARTY_NOTICES / crate 別ライセンスも自動的に対象になる。
             find dist -type f -print0 | sort -z | xargs -0 -r sha256sum
           }
           hash_dist > /tmp/web-dist-sha256-first.txt
           # 2 回目も 1 回目と同じ手順（ライセンスコピーを含む）でビルドする。
+          # trunk build は dist/ を作り直すため、コピーを必ず再実行する。
           trunk build --release --locked
+          cp ../LICENSE dist/LICENSE
+          cp ../NOTICE.md dist/NOTICE.md
+          cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
+          if compgen -G '../packaging/linux/licenses/crates/*' > /dev/null; then
+            mkdir -p dist/licenses/crates
+            cp -R ../packaging/linux/licenses/crates/. dist/licenses/crates/
+          fi
+          for f in LICENSE NOTICE.md THIRD_PARTY_NOTICES.md LICENSE-IBM-Plex.txt; do
+            test -s "dist/${f}"
+          done
           hash_dist > /tmp/web-dist-sha256-second.txt
           if ! diff -u /tmp/web-dist-sha256-first.txt /tmp/web-dist-sha256-second.txt; then
             echo 'web-dist: two consecutive builds produced different output' >&2

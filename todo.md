@@ -904,6 +904,40 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   `Name <email>` 形式は架空アドレスを避ける方針で意図的に未変更（low）。
   根拠 zb-version。
 
+### 優先度: 高 — ライセンス同梱完全性 2026-11-20
+
+- [x] DEB に MIT/ISC/BSD/Zlib 等のライセンス全文・著作権表示が同梱されない
+      （783 crates の静的リンク依存）。cargo ローカルレジストリからライセンス
+      全文を収集して同梱する仕組みを追加。根拠 wa-license。
+      完了（R2 za-deblic）: build-deb.sh が `cargo metadata --offline` の
+      manifest_path からローカルレジストリの全文 1259 件を licenses/crates/
+      へコピー。実測 804 registry packages のうち 724件を .deb で確認。
+      残り 80 件は NOT-VENDORED.txt に一覧化し、README.deb.md の
+      「cannot ship」を「not vendored yet」へ修正。
+- [x] Lucide(ISC)/Feather(MIT) アイコンのライセンス本文（gpui-kit-assets
+      の LICENSE-LUCIDE）が未同梱。vendoring して同梱。根拠 wa-license。
+      完了（R2 za-deblic）: .deb 内
+      licenses/crates/gpui-kit-assets-0.9.1/LICENSE-LUCIDE の存在と ISC
+      本文・Feather 由来 MIT 帰属を確認。
+- [x] Web 配布アーティファクト（web/dist）に AGPL LICENSE と NOTICE／（CI web-dist が LICENSE/NOTICE/THIRD_PARTY_NOTICES/IBM Plex を dist へコピー、再現性ゲート対象）
+      第三者ライセンス本文が含まれない。CI の web-dist へコピー。根拠 wa-license。
+- [x] debian/copyright が Files: * で同梱文書を AGPL と誤表示。Files stanza
+      を分割（OFL-1.1 / Apache-2.0 / 依存クレート類）。根拠 wa-license。
+      （差分: `packaging/linux/copyright` を DEP-5 の 4 stanza へ分割。catch-all
+      `Files: *`=AGPL-3.0-or-later、`licenses/LICENSE-IBM-Plex.txt`=OFL-1.1、
+      `THIRD_PARTY_NOTICES.md`=Apache-2.0、`licenses/crates/*`=全 family。
+      python3-debian で parse と last-match を検証。）
+- [x] NOTICE.md の帰属表が依存グラフ（783 crates）を網羅していない。
+      主要ライセンス family の列挙または自動生成。根拠 wa-license。
+      （差分: `NOTICE.md` へ deny.toml allow/exceptions + root/web の cargo
+      metadata から導出した全 18 family を表で追加。個別クレートは
+      `licenses/crates/` の同梱全文を参照する旨を明記。）
+
+### メモ — 依存鮮度 2026-11-20
+
+- advisory DB 更新後も cargo audit / deny / vet すべて問題なし、更新可能な
+  脆弱依存なし。deny ignore 9 件も 3 か月ルール内（wb-advisory）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

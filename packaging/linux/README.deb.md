@@ -68,12 +68,24 @@ listed in `NOTICE.md`; package authorship and the Debian copyright format are in
 
 ## Third-party license texts
 
-License full texts that are vendored in this source tree are installed under
-`/usr/share/doc/gpui-task-manager/licenses/`:
+License full texts are installed under
+`/usr/share/doc/gpui-task-manager/licenses/`. The package build combines two
+sources there:
+
+- texts vendored directly in this source tree, listed in the table below;
+- every `LICENSE*` / `LICENCE*` / `COPYING*` file found by `build-deb.sh` in the
+  source directory of a resolved dependency, installed as
+  `licenses/crates/<name>-<version>/<file>`. Files are copied verbatim, so the
+  original copyright notice and attribution remain with the text. The
+  reference build covers 724 of the 804 registry packages this way, including
+  `gpui-kit-assets/LICENSE-LUCIDE` for the Lucide icons.
 
 | File | License | Component |
 | --- | --- | --- |
 | `LICENSE-IBM-Plex.txt` | SIL OFL 1.1 (Reserved Font Name "Plex") | IBM Plex Sans / Mono fonts |
+| `crates/gpui-kit-assets-<version>/LICENSE-LUCIDE` | ISC, with Feather-derived icons under MIT | Lucide icons bundled by `gpui-kit-assets` |
+| `crates/<name>-<version>/LICENSE*` | per-crate declaration (MIT, Apache-2.0, ISC, BSD, Zlib, ...) | Rust dependencies from `Cargo.lock` |
+| `NOT-VENDORED.txt` | — | complete list of crates with no local license text |
 
 `LICENSE-IBM-Plex.txt` also contains the ISC text for the font's own Debian
 packaging files and a pointer to CC0-1.0; that ISC text is not the one used by
@@ -81,14 +93,19 @@ Lucide. The Apache-2.0 full text is installed as `THIRD_PARTY_NOTICES.md` in
 `/usr/share/doc/gpui-task-manager/` (Debian systems also provide
 `/usr/share/common-licenses/Apache-2.0`).
 
-The following license full texts are **not** vendored in this repository, so
-this package cannot ship them. Check the authoritative sources below; upstream
-links for the concrete crates and components are in `NOTICE.md`.
+### Crates without a vendored text (not vendored yet)
+
+`licenses/NOT-VENDORED.txt`, installed with this package, lists every resolved
+registry package whose published source has no license text file. The
+reference build lists 80 such crates; most target Windows or macOS and are not
+linked into the Linux binary. This is a packaging gap, **not** a license
+incompatibility: their SPDX expressions are still declared in `NOTICE.md` and
+allowed by `deny.toml`. Confirm the authoritative text for any such crate
+before relying on it; upstream links for concrete crates are in `NOTICE.md`.
 
 | License | Where to confirm |
 | --- | --- |
-| MIT (sysinfo, serde / serde_json, wasm-bindgen, web-sys / js-sys, console_error_panic_hook, anyhow / futures / log) | Upstream repositories linked in `NOTICE.md`; <https://spdx.org/licenses/MIT.html> |
-| ISC / MIT (Lucide icons) | <https://github.com/lucide-icons/lucide/blob/main/LICENSE>; <https://spdx.org/licenses/ISC.html> |
+| MIT / Apache-2.0 (crates with no text in their registry source) | `licenses/NOT-VENDORED.txt`; upstream repositories linked in `NOTICE.md`; <https://spdx.org/licenses/MIT.html>; <https://spdx.org/licenses/Apache-2.0.html> |
 | Unicode-3.0 (allowed by `deny.toml`) | <https://www.unicode.org/license.txt>; <https://spdx.org/licenses/Unicode-3.0.html> |
 | BSL-1.0 (allowed by `deny.toml`) | <https://www.boost.org/LICENSE_1_0.txt>; <https://spdx.org/licenses/BSL-1.0.html> |
 
