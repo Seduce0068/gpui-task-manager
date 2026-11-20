@@ -3726,9 +3726,17 @@ mod tests {
         // Simultaneous starts must not hand out different credentials. The
         // atomic publish makes the first writer authoritative; every later
         // caller re-reads and adopts that value (no truncate, no unsafe).
-        let dir =
+        let root =
             std::env::temp_dir().join(format!("tm-agent-auto-parallel-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = root.join("a/b/c");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod root");
+        }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
         let handles: Vec<_> = (0..8)
@@ -3766,7 +3774,26 @@ mod tests {
             .count();
         assert_eq!(leftovers, 0, "temporary token files must be cleaned up");
 
-        let _ = std::fs::remove_dir_all(&dir);
+        // Converge on 0700 for the leaf and every component of its parent
+        // chain that the concurrent starters created (including EEXIST wins).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            for component in [root.join("a"), root.join("a/b"), dir.clone()] {
+                let mode = std::fs::metadata(&component)
+                    .expect("component metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(
+                    mode, 0o700,
+                    "component {:?} must converge to 0700",
+                    component
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

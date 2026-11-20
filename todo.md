@@ -1248,6 +1248,47 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] umask 0777 で XDG_STATE_HOME の中間ディレクトリが 0000 になり（共通 private_dir ヘルパで作成経路へ 0700 を適用。実動 exit 124＝起動継続・ディレクトリ 0700、unit test 2 件追加）
       起動失敗（low）。根拠 rb-discover。
 
+### 優先度: 中 — swarm-limited R1 レビュー 2026-11-21
+
+- [x] Windows では README / --help のトークン自動生成説明が不成立。
+      auth.rs の cfg(windows) は固定エラーで生成しないため、
+      README:200-201,243-244 と args.rs:64-68 に Windows 例外と
+      --token-file / TM_AGENT_TOKEN 必須を明記。根拠 rb-winchk。
+      → 完了（SA-WINDOC）: README のワンショット節・認証節と args.rs の USAGE
+      認証節へ「Linux/Unix のみ自動生成、Windows は明示指定が必要」を明記。
+      auth.rs:54-59 の固定エラー文言をそのまま案内へ一致させ、
+      USAGE のテストへ Windows 例外の文言を pin した。
+      検証: bash scripts/check-public-docs.sh / markdownlint README.md
+      notes/cross-platform.md todo.md --disable MD060 MD055。
+- [x] private_dir の既存ファイルへ 0700 を適用してしまう。Path::exists() は
+      通常ファイルにも真を返すため、末尾 chmod が既存ファイルを変更。
+      dir.is_dir() を確認してから chmod（ファイルは InvalidInput で拒否）。
+      agent / app 双方の ensure_private_dir_chain へ chmod_private_dir を
+      導入し、EEXIST コンポーネントも is_dir 確認後に chmod。
+      根拠 ra-privdir。
+- [x] private_dir のコメント「pre-existing directories untouched」が
+      リーフ chmod / EEXIST コンポーネントと矛盾。実装に合わせて修正
+      （既存祖先は不改変、リーフと EEXIST 成分は 0700 に正規化、
+      ファイルは chmod しない）。根拠 ra-privdir。
+- [x] テスト品質: umask 0777 回帰テストが実際に umask を変更していない、
+      EEXIST 競合テストが 0700 収束を検証していない。テストバイナリを
+      `sh -c 'umask 0777; exec "$0" ...'` で再起動して実 umask を適用
+      （制御用 0000 ディレクトリで 0777 生效を証明）、競合テストへ
+      dir と親チェーン各成分の 0700 アサートを追加。根拠 ra-privdir。
+
+### メモ — クロスプラットフォーム 2026-11-21
+
+- [x] Windows CI は tm-agent を型検査のみ（unit test は Linux gates が担当）で、
+      README/notes に明記されていない（low）。根拠 rb-winchk。
+      → 完了（SA-WINDOC）: notes/cross-platform.md の現行構成節（§0）へ、
+      `native-windows` は workspace 全体を型検査し、tm-agent の unit test は
+      Linux `gates` ジョブが担当する旨を明記。履歴スナップショットは不改変。
+- [ ] reconsider（設計判断・SA-WINDOC 記録）: 共通ワークフローへの委譲は
+      AGENTS §5 の方針確認が必要（likely）なため、コード・CI 設定を変更せず
+      記録のみとする。あわせて -D warnings の Windows/wasm 適用は
+      tm-platform:86-88 の既存 unused imports で失敗（low）するため別途判断。
+      根拠 rb-winchk。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

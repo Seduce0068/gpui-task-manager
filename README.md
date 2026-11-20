@@ -197,9 +197,11 @@ ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正
 cargo run -p tm-agent -- --once --demo      # 1 スナップショットを JSON で出力
 ```
 
-トークンを省略すると自動生成され、0600 で保存されます。stderr で案内されるのは
-ファイル名 `token` のみで、保存場所は下記の XDG state パスです。既定の待受ポートは
-8787（画面案内と同じ）です。
+Linux/Unix のサーバーモードではトークンを省略すると自動生成され、0600 で保存されます。
+stderr で案内されるのはファイル名 `token` のみで、保存場所は下記の XDG state パスです。
+**Windows では自動生成を行いません。** トークンを省略した既定起動は固定エラーで失敗するため、
+`--token-file` / `TM_AGENT_TOKEN` / `--token` のいずれかを明示してください（下記「認証」節を参照）。
+既定の待受ポートは 8787（画面案内と同じ）です。
 
 **ターミナル A（サーバー）** — 起動したままにしておきます:
 
@@ -240,13 +242,21 @@ curl -sS -H "Authorization: Bearer $(cat "${token_file}")" \
 エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
 CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:port]`）のみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
-を使ってください。トークンを省略すると自動生成され、
+を使ってください。**Linux/Unix では**トークンを省略すると自動生成され、
 `$XDG_STATE_HOME/tm-agent/token`（未設定なら `~/.local/state/tm-agent/token`）に 0600 で保存します。
+**Windows では自動生成を行いません。** 既存のトークンファイル（`%APPDATA%`／
+`%USERPROFILE%\AppData\Roaming` 配下）があれば再利用されますが、新規に生成することはできないため、
+トークン未指定の起動は次の固定エラー（`agent/src/auth.rs` と一致）で失敗します:
+
+> Windows では --token 明示が必要です: 安全な乱数源を新規依存・unsafe なしで取得できないため、--token / --token-file / TM_AGENT_TOKEN のいずれかでトークンを指定してください。
+
+Windows では `--token-file` / `TM_AGENT_TOKEN` / `--token` のいずれかを明示してください
+（`--token` は argv が同一マシンの他プロセスから読まれ得るため常用には推奨しません）。
 stderr で案内されるのはファイル名 `token` のみで、ホームパスを含む保存場所や
 トークンの値はログ・stdout に出力されません（stderr にも出力しません）。
 再起動時は同じファイルを再利用するため、ブラウザが保持したトークンもそのまま使えます。
-接続時は上記 XDG state パスのファイル内容を読み取り、URL フラグメントや
-`--token-file` に指定してください。
+接続時は上記 XDG state パス（Windows では `%APPDATA%`／`%USERPROFILE%\AppData\Roaming`
+配下）のファイル内容を読み取り、URL フラグメントや `--token-file` に指定してください。
 
 HTTP エンドポイントは `/healthz`（ヘルスチェック）、`/api/v1/snapshot`（スナップショット、
 `?limit=N` で件数指定）、`/api/v1/stream`（SSE）、`/metrics`（Prometheus テキスト）の 4 つです。
