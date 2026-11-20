@@ -94,6 +94,11 @@ pub fn sparkline(values: &[f32], max: f32, color: u32, height: f32) -> Div {
 }
 
 /// A small rounded status label.
+///
+/// `fg` is kept as-is when it already clears WCAG AA on the filled `bg`;
+/// otherwise [`on_fill_text_color`] substitutes a readable foreground. This
+/// covers caller-supplied `base`-on-accent fills without changing the label,
+/// ids or accessibility contract.
 pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
     div()
         .px_2()
@@ -101,7 +106,7 @@ pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
         .rounded_full()
         .text_xs()
         .bg(rgb(bg))
-        .text_color(rgb(fg))
+        .text_color(rgb(on_fill_text_color(fg, bg)))
         .child(text.into())
 }
 
@@ -160,7 +165,9 @@ pub fn action_button(
         .child(label);
     if enabled {
         base.bg(rgb(color))
-            .text_color(rgb(palette().base))
+            // `color` may be a light accent (green/teal/yellow/peach); base
+            // text on those fills is ~3:1, so pick a readable foreground.
+            .text_color(rgb(on_fill_text_color(palette().base, color)))
             .cursor_pointer()
             .hover(|style| style.opacity(0.88))
             .on_click(on_click)

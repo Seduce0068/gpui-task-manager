@@ -15,7 +15,7 @@ path = "src/main.rs"
 gpui-kit = "=0.9.1"
 tm-core = { workspace = true, features = ["serde"] }
 tm-viewmodel = { workspace = true }
-tm-platform = { path = "../crates/tm-platform", version = "0.1.0" }
+tm-platform = { workspace = true }
 serde_json = { workspace = true }
 
 [build-dependencies]

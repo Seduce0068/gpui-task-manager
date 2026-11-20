@@ -9,6 +9,6 @@ description = "Read-only loopback snapshot agent for the browser shell"
 
 [dependencies]
 tm-core = { workspace = true, features = ["serde"] }
-tm-platform = { path = "../crates/tm-platform", version = "0.1.0" }
+tm-platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,34 @@
+{
+  // Single source of truth for the documentation lint scope.
+  // Referenced explicitly by .github/workflows/ci.yml (gates job) and
+  // scripts/check.sh; do not restate globs / ignores / disabled rules there.
+  // `globs` mirrors the former markdownlint-cli arguments, `ignores` replaces
+  // the former --ignore flags, and `config` replaces --disable MD060 MD055.
+  "globs": [
+    "*.md",
+    "notes/*.md",
+    "packaging/linux/README.md",
+    "packaging/linux/README.deb.md",
+    "poc-wasm/README.md",
+    "web/README.md"
+  ],
+  // log.md is an append-only historical record. SECURITY.md and three notes
+  // have pre-existing structural violations that are out of scope here.
+  // packaging/linux/README.deb.md ships in the DEB and is required by
+  // check-public-docs.sh, so its lint scope follows that public surface.
+  "ignores": [
+    "log.md",
+    "SECURITY.md",
+    "notes/verification.md",
+    "notes/cargo-vet-adoption.md",
+    "notes/ime.md"
+  ],
+  "config": {
+    "default": true,
+    "MD013": false,
+    // MD055/MD060 are new table-style rules that conflict with the compact
+    // GFM tables used throughout the existing documents.
+    "MD055": false,
+    "MD060": false
+  }
+}

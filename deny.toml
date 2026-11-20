@@ -4,8 +4,9 @@
 #
 # Policy:
 # - vulnerabilities fail the build;
-# - known unmaintained transitive dependencies are explicitly ignored with a
-#   reason and tracked in DESIGN.md §14 (they come from the pinned GPUI stack);
+# - known unmaintained transitive dependencies, and dependencies retained for
+#   API compatibility with the pinned GPUI stack, are explicitly ignored with a
+#   reason and tracked in DESIGN.md §14;
 # - allowed licenses are enumerated in [licenses].allow (permissive licenses
 #   plus AGPL-3.0-or-later and MPL-2.0);
 # - unknown registries / git sources are rejected.
@@ -28,8 +29,12 @@ feature-depth = 1
 
 [advisories]
 # Suppressions are reviewed against DESIGN.md §14; each entry must retain a
-# current rationale (non-reachability or no maintained replacement in the
-# pinned GPUI stack). cargo-deny 0.21+ supports the per-ignore `expiry` key, so
+# current rationale: non-reachability, or API incompatibility with the pinned
+# GPUI stack. Some ignored crates DO have maintained successors in Cargo.lock
+# (pastey 0.1.1 for paste, web-time 1.1.0 for instant); they are retained only
+# because migrating the pinned third-party stack would require API changes we
+# do not own, and are recorded as such rather than "no maintained replacement".
+# cargo-deny 0.21+ supports the per-ignore `expiry` key, so
 # the 3-month review cycle is now enforced: every entry below was re-reviewed
 # on 2026-11-19 and expires on 2027-02-18. The expiry matches the UTC-based
 # 3-month cap (2027-02-18) that scripts/check-advisory-ignores.sh required in
@@ -39,8 +44,8 @@ feature-depth = 1
 # CI passes `-D advisory-ignore-expired`, and scripts/check-advisory-ignores.sh
 # rejects entries without a reason/expiry or with an expiry more than 3 months out.
 ignore = [
-    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
-    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive GPUI dependency used for macros; no maintained replacement in the pinned stack. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is a transitive GPUI dependency. A maintained successor (web-time 1.1.0) is already in Cargo.lock, but the pinned GPUI stack calls instant's API directly; migrating it requires third-party code changes we do not own. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive macro dependency in the pinned GPUI stack. A maintained successor (pastey 0.1.1) is already in Cargo.lock, but the stack's macros depend on paste's API; migrating them requires third-party code changes we do not own. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency; not reachable from the task manager's own code. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is a transitive GPUI text-shaping dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is a transitive GPUI font dependency; the pinned GPUI stack has no maintained replacement. Tracked in DESIGN.md §14.", expiry = "2027-02-18" },
