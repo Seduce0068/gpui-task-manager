@@ -9,8 +9,8 @@
 //! - one request per connection (`Connection: close`), which removes
 //!   keep-alive state and request-smuggling surface,
 //! - hard cap of [`MAX_HEADER_BYTES`] on the request head,
-//! - strict CORS: only `http://127.0.0.1:<port>` and
-//!   `http://localhost:<port>` origins are reflected.
+//! - strict CORS: only `http://127.0.0.1:<port>`, `http://localhost:<port>`
+//!   and `http://[::1]:<port>` origins (port optional) are reflected.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -312,11 +312,23 @@ pub fn is_allowed_host(host: &str) -> bool {
     hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "::1"
 }
 
+/// Validates the port part of an `Origin` (digits only, representable as u16).
+///
+/// Unlike [`valid_port_suffix`] (used for `Host`), the origin check also bounds
+/// the value to `u16`: `http://127.0.0.1:99999` must stay rejected.
+fn valid_origin_port(port: &str) -> bool {
+    !port.is_empty()
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok()
+}
+
 /// Returns `true` for browser origins the agent is willing to expose data to.
 ///
-/// Only plain `http` origins on the loopback host are accepted: the agent
-/// serves a local development UI, not a public API. Any port is allowed because
-/// the browser shell and its dev server pick their own ports.
+/// Only plain `http` origins on a loopback host are accepted: the agent serves
+/// a local development UI, not a public API. Any port is allowed because the
+/// browser shell and its dev server pick their own ports. The IPv6 loopback
+/// literal is accepted as `[::1]` with an optional `:port`; a bare `[::1]` in
+/// the middle of a string or an opaque host is still rejected.
 pub fn is_allowed_origin(origin: &str) -> bool {
     let Some(rest) = origin.strip_prefix("http://") else {
         return false;
@@ -328,19 +340,57 @@ pub fn is_allowed_origin(origin: &str) -> bool {
     {
         return false;
     }
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (rest, None),
-    };
-    if let Some(port) = port {
-        if port.is_empty()
-            || !port.bytes().all(|byte| byte.is_ascii_digit())
-            || port.parse::<u16>().is_err()
-        {
+    let host = if let Some(inner) = rest.strip_prefix('[') {
+        // IPv6 literal: `[::1]` or `[::1]:port`. Everything after `]` must be
+        // empty or exactly one `:<port>`; otherwise the authorisation is
+        // ambiguous and the origin is rejected.
+        match inner.split_once(']') {
+            Some((address, suffix)) => match suffix.strip_prefix(':') {
+                Some(port) if valid_origin_port(port) => address,
+                None if suffix.is_empty() => address,
+                _ => return false,
+            },
+            None => return false,
+        }
+    } else {
+        let (host, port) = match rest.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (rest, None),
+        };
+        if let Some(port) = port {
+            if !valid_origin_port(port) {
+                return false;
+            }
+        }
+        // An IPv6 literal without brackets (e.g. `http://::1:8787`) is not a
+        // valid authority; it must never alias the bracketed loopback form.
+        if host.contains(':') {
             return false;
         }
-    }
-    host.eq_ignore_ascii_case("127.0.0.1") || host.eq_ignore_ascii_case("localhost")
+        host
+    };
+    host.eq_ignore_ascii_case("127.0.0.1")
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("::1")
+}
+
+/// Response header a browser must expose to the Web shell across origins.
+///
+/// `Retry-After` on 429/5xx carries the server's backoff hint; without this
+/// exposure header a cross-origin `fetch` can read neither the value nor the
+/// fact that the header exists, leaving only exponential backoff.
+pub const EXPOSED_RESPONSE_HEADERS: &str = "Retry-After";
+
+/// Adds the `Access-Control-Expose-Headers` header shared by every CORS path.
+///
+/// Callers that emit CORS headers without [`add_cors_headers`] (the synchronous
+/// 503 path and the SSE head in `main.rs`) call this directly so the contract
+/// stays identical on all responses.
+pub fn expose_retry_after(response: &mut Response) {
+    response.extra_headers.push((
+        "Access-Control-Expose-Headers".to_string(),
+        EXPOSED_RESPONSE_HEADERS.to_string(),
+    ));
 }
 
 /// Adds the CORS headers that expose a response to an allowed browser origin.
@@ -352,6 +402,7 @@ pub fn add_cors_headers(response: &mut Response, origin: &str) {
     response
         .extra_headers
         .push(("Vary".to_string(), "Origin".to_string()));
+    expose_retry_after(response);
 }
 
 /// Returns the percent-decoded value of `name` from a raw query string.
@@ -656,6 +707,8 @@ mod tests {
             "http://localhost:5173",
             "http://127.0.0.1",
             "http://localhost",
+            "http://[::1]:8787",
+            "http://[::1]",
         ] {
             assert!(is_allowed_origin(allowed), "{allowed} should be allowed");
         }
@@ -671,13 +724,55 @@ mod tests {
             "http://127.0.0.1:8787\r\nX-Injected: 1",
             "null",
             "",
-            "http://[::1]:8787",
+            // IPv6 forms that must stay rejected: wrong scheme, opaque/IPv4-
+            // mapped hosts, malformed brackets, bad ports and trailers.
+            "https://[::1]:8787",
+            "http://[::1]:99999",
+            "http://[::1]:abc",
+            "http://[::1]:",
+            "http://[::1",
+            "http://::1:8787",
+            "http://[::1]evil.example",
+            "http://[::1]:8787/path",
+            "http://[fe80::1]:8787",
+            "http://[::ffff:127.0.0.1]",
+            "http://[::1]:8787\r\nX-Injected: 1",
         ] {
             assert!(
                 !is_allowed_origin(rejected),
                 "{rejected} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn cors_headers_expose_retry_after_to_the_browser() {
+        let mut response = Response::json(503, "Service Unavailable", b"{}".to_vec());
+        add_cors_headers(&mut response, "http://[::1]:8787");
+        assert_eq!(
+            response.extra_headers,
+            vec![
+                (
+                    "Access-Control-Allow-Origin".to_string(),
+                    "http://[::1]:8787".to_string()
+                ),
+                ("Vary".to_string(), "Origin".to_string()),
+                (
+                    "Access-Control-Expose-Headers".to_string(),
+                    EXPOSED_RESPONSE_HEADERS.to_string()
+                ),
+            ]
+        );
+
+        // The bare 503 path uses the same helper without an Origin/Acao.
+        let mut rejected = Response::json(503, "Service Unavailable", b"{}".to_vec());
+        expose_retry_after(&mut rejected);
+        let head = String::from_utf8(write_response_bytes(&rejected)).expect("utf8");
+        assert!(
+            head.contains("Access-Control-Expose-Headers: Retry-After\r\n"),
+            "{head}"
+        );
+        assert!(!head.contains("Access-Control-Allow-Origin"), "{head}");
     }
 
     #[test]

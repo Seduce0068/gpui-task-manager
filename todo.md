@@ -1084,6 +1084,57 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   設定側 persistent 通知と export 側 stderr+exit1 の差は headless モード差で
   不整合ではない。根拠 wb-exportio。
 
+### 優先度: 高 — 実動回帰／最終観点 2026-11-20
+
+- [x] Retry-After が Web ビルドで無視される。agent の CORS レスポンスに
+      `Access-Control-Expose-Headers: Retry-After` が無く、ブラウザがヘッダを
+      読めない（対照実験で追加すると 4s 間隔で効くことを実証）。add_cors_headers
+      / preflight_response / 503 直接書き出し経路へ追加。根拠 wa-regress。
+      → 完了（WA-CORS）: `agent/src/http.rs` の `add_cors_headers` /
+      `expose_retry_after` を単一起源とし、`agent/src/main.rs` の 503 直接経路・
+      SSE head・preflight 経路（preflight は `add_cors_if_absent` 経由）で同一
+      ヘッダを付与。`cargo test -p tm-agent`（125 passed）/
+      `cargo clippy -p tm-agent --all-targets -- -D warnings`（exit 0）成功。
+- [x] 時刻逆行が持続すると is_late の間 last_network / clear_transient_status
+      がスキップされ、network rate が累積＋transient error が消えない
+      （4 サンプルで線形増加を実証）。基底を進めるか、late 中も通知クリア
+      とレート基準更新を行う。根拠 wb-discovery。
+      → 完了（WB-CLOCK）: `Dashboard::ingest` で「sampled_at の高水準マーク
+      逆行」かつ「累積 network counter が後退していない」場合を clock step
+      back と判定し、高水準マーク／last_network／transient クリアを再基底化。
+      真に古いサンプル（counter も後退）は従来どおり late として表示のみ。
+      新規テスト3件（固定・連続逆行の4サンプルでレート非累積、transient
+      error の消去、再基底後の前方進行レート）を追加。
+      `cargo test -p tm-viewmodel`（85 passed）/
+      `cargo clippy -p tm-viewmodel --all-targets -- -D warnings`（exit 0）/
+      `cargo fmt --all -- --check`（exit 0）成功。
+- [x] IPv6 loopback `[::1]` が bind/クライアント許可は通るが CORS 許可
+      リストで拒否され、ブラウザ接続だけ失敗。is_allowed_origin に `[::1]`
+      を追加（curl 200 だが fetch が CORS ブロック）。根拠 wb-discovery。
+      → 完了（WA-CORS）: `agent/src/http.rs` の `is_allowed_origin` が
+      `http://[::1]` と `http://[::1]:<port>` を許可（port は原本どおり u16
+      検証）。opaque host / 括弧なし IPv6 / 他 IPv6 リテラル / 他 origin は
+      拒否のまま。socket テスト更新済み。`cargo test -p tm-agent`（125 passed）。
+- [x] ネットワーク IF ホットプラグで合計カウンタ基準が古いまま新規 IF の
+      累積値を差分とし、1 フレームだけ数十 GB/s に跳ね上がる。IF セット
+      変化時に基準を再初期化。根拠 wb-discovery。WC-IFHOT 対応済み
+      （`tm-viewmodel/src/lib.rs` で physical IF 名セットを追跡し変化時に
+      レート 0 + `last_network` 再初期化、追加・削除の回帰テストを追加。
+      cargo test -p tm-viewmodel / clippy / fmt --check すべて通過）。
+
+### 優先度: 低 — 最終観点 2026-11-20
+
+- [ ] サスペンド/レジューム後の SSE watchdog が performance.now の前方
+      ジャンプを誤検知しうる（speculative、ブラウザ依存）。根拠 wb-discovery。
+- [ ] ハードリンク非対応 FS（exFAT 等）で自動トークンの atomic publish が
+      失敗し起動不能になりうる（likely）。rename フォールバック or 明示
+      --token-file 案内。根拠 wb-discovery。
+
+### メモ — 実動回帰 2026-11-20
+
+- SSE エラー分離・指数バックオフの 30s 上限／成功リセット・console error 0・
+  トークン非露出は実ブラウザで確認（wa-regress）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
