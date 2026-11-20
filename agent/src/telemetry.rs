@@ -12,6 +12,7 @@
 //! - only the request *path* (no `?...`) is attached to a trace,
 //! - `/metrics` exposes counters/gauges only, never machine data or secrets.
 
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -95,8 +96,42 @@ fn render_if_allowed(level: Level, minimum_rank: u8, event: &str, fields: Value)
 /// state here, so a trace cannot silently inherit a different threshold.
 pub fn emit(level: Level, event: &str, fields: Value, minimum_rank: u8) {
     if let Some(line) = render_if_allowed(level, minimum_rank, event, fields) {
-        eprintln!("{line}");
+        eprintln_ignoring_broken_pipe(&line);
     }
+}
+
+/// Writes `content` verbatim, ignoring only a closed pipe.
+///
+/// Rust ignores `SIGPIPE` on Unix, so a downstream that closes stderr early
+/// turns the write into `BrokenPipe` instead of killing the process. `eprintln!`
+/// unwraps that error and panics — the first `http.request.start` event used to
+/// abort the agent when a caller redirected `2>` into a closed pipe. Every other
+/// error is returned so the caller can decide how to report it.
+pub fn write_stderr_ignoring_broken_pipe(writer: &mut impl Write, content: &str) -> io::Result<()> {
+    if let Err(error) = writer.write_all(content.as_bytes()) {
+        return match error.kind() {
+            io::ErrorKind::BrokenPipe => Ok(()),
+            _ => Err(error),
+        };
+    }
+    match writer.flush() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// `eprintln!` equivalent that never panics when stderr is a closed pipe.
+///
+/// A non-pipe failure is also non-fatal here: stderr is the only diagnostics
+/// channel, so there is nowhere safe to report a failure of that channel.
+pub fn eprintln_ignoring_broken_pipe(content: &str) {
+    let stderr = io::stderr();
+    let mut locked = stderr.lock();
+    let mut line = String::with_capacity(content.len() + 1);
+    line.push_str(content);
+    line.push('\n');
+    let _ = write_stderr_ignoring_broken_pipe(&mut locked, &line);
 }
 
 /// Stable status bucket used in logs and metrics.
@@ -380,6 +415,49 @@ mod tests {
 
     /// Default `--log-level` rank: info (nothing below ERROR is suppressed).
     const DEFAULT_MINIMUM_RANK: u8 = 2;
+
+    #[test]
+    fn stderr_writer_ignores_broken_pipe_but_not_other_errors() {
+        struct FailOnWrite(io::ErrorKind);
+        impl Write for FailOnWrite {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(self.0))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct FailOnFlush(io::ErrorKind);
+        impl Write for FailOnFlush {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::from(self.0))
+            }
+        }
+
+        let line = "{\"event\":\"http.request.start\"}\n";
+        assert!(write_stderr_ignoring_broken_pipe(
+            &mut FailOnWrite(io::ErrorKind::BrokenPipe),
+            line
+        )
+        .is_ok());
+        assert!(write_stderr_ignoring_broken_pipe(
+            &mut FailOnFlush(io::ErrorKind::BrokenPipe),
+            line
+        )
+        .is_ok());
+        assert_eq!(
+            write_stderr_ignoring_broken_pipe(&mut FailOnWrite(io::ErrorKind::StorageFull), line)
+                .expect_err("only BrokenPipe is ignored")
+                .kind(),
+            io::ErrorKind::StorageFull
+        );
+        let mut sink = Vec::new();
+        write_stderr_ignoring_broken_pipe(&mut sink, line).expect("healthy sink");
+        assert_eq!(sink, line.as_bytes());
+    }
 
     /// Reads one counter line by its (space-terminated) prefix.
     fn counter_value(rendered: &str, line_prefix: &str) -> u64 {

@@ -565,15 +565,14 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
 | DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
 | DESIGN.md §6.3 / SECURITY.md §3 | SSE（`/api/v1/stream`）の実装 | Bearer 認証・Host 必須検証・loopback CORS・専用接続枠 `MAX_STREAMS`（2 枠）・読み取りタイムアウト非適用を実装 | `agent/src/main.rs:51,79,1187-1262` | 一致（R2-X03 反映） |
-| notes/current-state.md | 検証状況 | workspace 576 / web 195（core 176 / viewmodel 94 / platform 44 / agent 141 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
+| notes/current-state.md | 検証状況 | workspace 581 / web 196（core 176 / viewmodel 94 / platform 44 / agent 147 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
-| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 576 / web 195（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
+| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 581 / web 196（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
 | RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みで本文にも反映済み（R1-D02、2026-11-18） | `notes/ime.md`、README.md | 一致（反映済み） |
 
 - 時系列ログ（`log.md`、`notes/verification.md` の個別記録、
   `notes/residual-tasks-research.md`）は履歴として保持し、現状値のみ更新する。
-- 本次の書き込み範囲は README.md / DESIGN.md / notes/*.md / docs/*.md のみ。
-  RESEARCH.md の R1-D02 は反映済み（2026-11-18、RESEARCH.md §8 の注記を確認）。
+  RESEARCH.md §8 の R1-D02（IME / エージェント並列化の反映、2026-11-18）は上表の該当行を参照。
 
 ---
 
@@ -728,8 +727,10 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   自動ダウンロードする。2026-11-15 の再計測では 7,635,554 B（gzip 3,042,856 B、
   依存更新やコード追加により微増）。2026-11-16 の再計測では 7,641,445 B
   （gzip 3,044,050 B、ブラウザ版テーマ追加による微増）。2026-11-17 の再計測では
-  7,641,970 B（gzip 3,045,139 B、ツリーサイクル修正による微増）。2026-11-17 の最終再計測では
-  7,642,794 B（gzip 3,044,134 B）。以降のコード変更後は要再測定（R44 監査で日付を訂正）。
+  7,641,970 B（gzip 3,045,139 B、ツリーサイクル修正による微増）。2026-11-17 の再計測では
+  7,642,794 B（gzip 3,044,134 B）。2026-11-20 の現行 dist 再計測では
+  **7,949,118 B（gzip 3,165,445 B）**（本文 §8 / README.md「検証状況」と同期）。
+  旧値は履歴として保持し、現行値は 2026-11-20 に再計測済み。
 
 ### ADR-018: Windows / macOS は cfg + CI ランナーで検証
 

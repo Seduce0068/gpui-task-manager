@@ -1355,7 +1355,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       のみが正）。PID0 拒否の記述不整合。根拠 R1-FG01。
 - [x] web/README のトークン保存場所案内が「stderr で案内」と矛盾。
       XDG state パスを参照する表現へ。根拠 R4-VU01。
-- [ ] Windows トークン自動生成の例外が DESIGN/SECURITY/web/README に
+- [x] Windows トークン自動生成の例外が DESIGN/SECURITY/web/README に（c2-docs4 で実装済み: 1a83fa4）
       欠落（README のみ記載）。root cause auth.rs:51。根拠 R5-DC01。
 - [x] DEB README の AC サンプリング下限が 1s と記載（実装は 0.5s）。
       README.deb.md:18 を修正。根拠 R5-DC01。
@@ -1368,25 +1368,25 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [ ] markdownlint 除外スコープが CI と check.sh で手動同期。
       gitleaks --unshallow 失敗無視。npm markdownlint 推移依存固定なし。
       dependabot gpui-stack グループがデッド設定。根拠 R1-CF01 / R3-DP01。
-- [ ] admit 失敗の固定 50ms リトライ、stderr BrokenPipe パニック、
+- [x] admit 失敗の固定 50ms リトライ、stderr BrokenPipe パニック、
       Prometheus カウンタの同時スクレイプ不整合、容量拒否 503 の
       メトリクス区別不可。根拠 R2-ER01 / R4-OB01。
-- [ ] DOM proof の短いトークン平文露出、XDG パスの '..' 迂回、
+- [x] DOM proof の短いトークン平文露出、XDG パスの '..' 迂回、
       明示トークンの強度要件/レート制限なし、通常 snapshot の Host
       欠落許容。根拠 R3-AU01。
 - [ ] sysinfo 0.31.4/0.40.3 重複、advisory ignore 根拠が lock 実態と
       矛盾（pastey/web-time 代替あり）。根拠 R3-DP01。
-- [ ] テーマ切替ボタンの accessible name が状態を示さない、UI 文言の
+- [x] テーマ切替ボタンの accessible name が状態を示さない、UI 文言の
       i18n 層欠落、温度しきい値用語 (max/crit vs 上限/危険) 混在、
       空状態案内がマウス前提。根拠 R5-UX01。
-- [ ] 実測ホスト CPU 上限アサートと 800ms health 上限がフレークしうる。
+- [x] 実測ホスト CPU 上限アサートと 800ms health 上限がフレークしうる。
       private_dir 非 Unix 分岐・native ui.rs テスト欠落。根拠 R5-TS01。
-- [ ] notes/index 未掲載ノート多数、physical-verification の private 記述、
+- [x] notes/index 未掲載ノート多数、physical-verification の private 記述、
       Chrome 157/158 混在、ADR wasm サイズ要再測定、DESIGN 行番号 stale、
       DESIGN にレビュー作業メモ残存、advisory ignore 8/9 分岐、
       設定永続化リストの theme 欠落、HiDPI ノートの古い不具合記録。
       根拠 R4-VU01 / R5-DC01。
-- [ ] workflow_dispatch が任意ブランチから成果物生成、外部ツール導入が
+- [x] workflow_dispatch が任意ブランチから成果物生成、外部ツール導入が
      毎回ネットワーク依存でキャッシュなし。根拠 R4-CI01。
 - [ ] AX ミラー告知に対して CDP の AX 検証が warning 止まり
       (PROMOTE_AX_TO_FAILURE=False)。昇格または注記。根拠 R4-VU01。

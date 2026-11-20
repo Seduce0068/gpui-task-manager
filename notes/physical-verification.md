@@ -36,9 +36,9 @@ status: draft
 | Windows（クラウド GPU） | **無料では難しい** | Azure/AWS の GPU VM は時間課金。無料クレジットは期間・金額限定。 |
 | macOS 物理実機 | **借用できれば無料** | 知人・家族・勤務先の Mac を借りる。新規購入は有料。 |
 | macOS クラウド | **無料枠なし** | MacStadium / AWS EC2 Mac は有料（MacStadium M4.S $149/月〜、AWS は最低 24 時間）。 |
-| macOS CI（ビルド・テスト） | 条件付きで無料 | GitHub Actions の標準ランナーは**public リポジトリでは無料**。private リポジトリは無料枠の範囲内なら追加課金なし（ランナーにより利用量が異なる）。**GUI・IME・プロセス操作は不可**。 |
+| macOS CI（ビルド・テスト） | 無料（本リポジトリは public） | GitHub-hosted ランナーは **public リポジトリでは無料**。本リポジトリは public（README.md「GitHub」参照）のため利用量に応じた追加課金はない（並列数等の制限は GitHub Docs を参照）。**GUI・IME・プロセス操作は不可**。 |
 
-- 本リポジトリは private。CI 1 回あたり Linux 約 6 分 / Windows 約 5 分 / macOS 約 2 分の利用量があり、無料枠の範囲内なら一定回数まで追加課金なし。
+- 本リポジトリは **public**（README.md「GitHub」参照）。GitHub-hosted ランナーは public リポジトリでは無料のため、CI 1 回あたり Linux 約 6 分 / Windows 約 5 分 / macOS 約 2 分の利用量でも追加課金なし。並列ジョブ数や利用時間の上限は [GitHub Docs: GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions) で最新条件を確認する。過去に private 設定でジョブが起動しなかった事象は履歴（`notes/verification.md` の 2026-11-16 エントリ）として残す。
 - **無料で「全部」はできない**: macOS の対話 GUI/IME を無料で新規に用意する公式ルートはない。
   現実的な無料構成は「Windows は評価版で物理検証、macOS は借用 or CI でビルド/テストのみ」。
 
