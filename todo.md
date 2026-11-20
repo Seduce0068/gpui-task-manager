@@ -866,6 +866,44 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   CDP 実動検証で補完済み。初回 statvfs テスト 1 件の失敗は環境依存フレーク
   （再実行 pass）。根拠 wa-coverage。
 
+### 優先度: 中 — ドキュメント整合最終監査 2026-11-20
+
+- [x] SECURITY.md:185 の「Safari / Firefox 未検証」を更新（Firefox 160 は
+      2026-11-20 実動確認済み）。:190 のゼロ幅文字記述も実装（全 Cf 除去）
+      へ整合。根拠 za-links。
+- [x] DESIGN.md:843 の「ゼロ幅文字は除去しない」記述を削除（:393-394 と
+      実装は除去済み）。根拠 za-links。
+- [x] notes/web-shell.md:299 の旧制約を更新（Firefox 160 は 2026-11-20 に
+      WebDriver BiDi で実動確認済み、Safari と実 GPU WebGPU は未検証）。
+      wasm サイズを現行値（7,949,118 B / gzip 3,165,445 B、2026-11-20）へ更新。
+      根拠 za-links。
+- [x] notes/verification.md:110 のスクリーンショット枚数 18→26 を修正
+      （実ファイル 26 枚を確認）。:433 / :473 の Firefox 未検証旧記述へ
+      §6「既知の制限・未検証」のブラウザ互換性の項（2026-11-20 実測）への
+      参照を追加。根拠 za-links。
+- [x] 存在しない notes/assets/task-manager-demo.png 参照を現存画像へ差し替え（notes/review-2026-11-14.md:66 を現存画像へ、:156 は参照を削除）
+      （notes/review-2026-11-14.md:66,156、M6 の結論は維持）。当該ファイルは
+      担当外のため未変更、親へ報告済み。根拠 za-links。
+- [x] notes/residual-tasks-research.md:403 の F1 ヘルプ未実装記述に
+      2026-11-19 実装済み（V2-HELP）の解決注記。根拠 za-links。
+- [x] README 冒頭に製品バージョン 0.1.0 を明記し、schema_version=1 /
+      SETTINGS_VERSION=2 / OKF verified（日付）と別概念である旨を注記。
+      Cargo.toml の workspace.package.version と同期。根拠 zb-version。
+
+### メモ — ドキュメント整合（R2 主実行、2026-11-20）
+
+- 担当 4 件（README バージョン / web-shell / verification / residual-tasks）を
+  完了。画像参照差し替えは notes/review-2026-11-14.md が担当外のため未変更。
+- 検証: `bash scripts/check-public-docs.sh` pass、markdownlint 既存 baseline を
+  増やさないことを確認。根拠 za-links / zb-version。
+
+### メモ — バージョン整合 2026-11-20
+
+- Cargo.toml / CLI --version / DEB control すべて 0.1.0（0.1.0-1）で一致、
+  schema_version=1 と SETTINGS_VERSION=2 も正しく区別。DEB Maintainer の
+  `Name <email>` 形式は架空アドレスを避ける方針で意図的に未変更（low）。
+  根拠 zb-version。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

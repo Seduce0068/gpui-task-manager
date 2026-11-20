@@ -840,7 +840,8 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - スレッド数が取得できないプロセスは「—」と表示する。
 - `tm-agent --once` は既定で先頭 500 件のみを出力する（全件は HTTP の `limit` 指定）。
 - `--redact` はホスト名・ユーザー名・ホームパス・コマンド引数内のホスト名 / tailnet ドメインを
-  置換するが、プロセス名に含まれるゼロ幅文字・同形異義文字までは除去しない。
+  置換する。プロセス名のゼロ幅・不可視書式文字（U+200B–U+200F、Unicode 16.0 の全 Cf）は
+  `tm-core::sanitize` で除去済みだが、同形異義文字（homoglyph）は未対策。
 
 ### advisory ignore の追跡（cargo-deny）
 

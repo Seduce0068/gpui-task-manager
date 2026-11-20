@@ -181,13 +181,16 @@ gpui-task-manager.settings.corrupt.<timestamp>  →  gpui-task-manager.settings
   独立したセキュリティ監査は未実施。
 - ブラウザのトークンは URL フラグメントから読み取るため、画面共有・スクリーンショット・
   同一ユーザーの他プロセスには露出し得る。読み取り専用 API と loopback 限定で影響を抑える。
-- ネイティブ版 IME は実装済みだが実 IME（IBus/fcitx5）での手動確認は未実施。実 GPU の WebGPU、
-  Safari / Firefox、Windows / macOS の物理実機は未検証（Windows/macOS は CI ランナーで
+- ネイティブ版 IME は実装済みだが実 IME（IBus/fcitx5）での手動確認は未実施。ブラウザ版シェルは
+  Chrome 158 / Edge 157 / Firefox 160 で実動確認済み（2026-11-20、WebDriver BiDi。F1 は
+  Firefox で合成キーにより検証し、信頼済みキーは未確認）。未検証は Safari / Brave / モバイル /
+  実 GPU の WebGPU、Windows / macOS の物理実機（Windows/macOS は CI ランナーで
   型検査・単体テストを実施）。
 - Windows のシグナル送信は `taskkill /F` による強制終了で、POSIX の SIGTERM/SIGSTOP
   とは意味が異なる。
 - `--redact` は既知の識別子（ホスト名・ユーザー名・ホームパス・tailnet ドメイン）を
-  置換するが、ゼロ幅文字・同形異義文字によるなりすましは完全には防がない。
+  置換する。ゼロ幅・不可視書式文字（U+200B–U+200F、Unicode 16.0 の全 Cf）は
+  `tm-core::sanitize` で除去済みで、残るなりすましリスクは同形異義文字（homoglyph）のみ。
 
 ## 8. 検証
 
