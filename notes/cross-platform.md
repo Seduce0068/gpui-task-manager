@@ -13,6 +13,19 @@ status: draft
 > §2.6 の CI YAML 抜粋、§3.4 の web workspace 失敗記述はすべて当時の状態である。
 > 現行の構成は `.github/workflows/ci.yml`、検証結果は `README.md`「検証状況」を参照。
 
+## 0. 現行構成（2026-11-21 時点）
+
+- Windows CI の `native-windows` ジョブ（`.github/workflows/ci.yml`）は
+  `cargo check --locked --workspace` で `tm-agent` を含む全クレートを型検査する一方、
+  unit test は `-p tm-core -p tm-viewmodel -p tm-platform` に限定しており、
+  `tm-agent` の unit test は実行しない（根拠 rb-winchk）。
+- `tm-agent` の unit test は Linux の `gates` ジョブが担当する。同ジョブは
+  再利用可能ワークフロー `Seduce0068/workflows` の `rust-gates.yml` へ委譲され、
+  fmt → check → test → clippy → extra_gates のゲートを実行する。
+- 共通ワークフローへの一括委譲（AGENTS §5）は設計判断が必要なため、
+  ここでは現行構成の記録にとどめ、CI 設定は変更しない（reconsider 事項、
+  `todo.md` の「メモ — クロスプラットフォーム 2026-11-21」を参照）。
+
 ## 1. 結論（要約）
 
 - `crates/tm-platform` を Windows / macOS でコンパイル可能にした。rustix は

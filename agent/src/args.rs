@@ -61,11 +61,14 @@ pub const USAGE: &str = concat!(
     "  /metrics               Prometheus テキストのカウンタ/ゲージ (認証不要、機械データなし)\n\n",
     "認証:\n",
     "  Authorization: Bearer <token>（クエリ文字列のトークンは拒否）\n",
-    "  トークン未指定時は起動時に生成し、0600 のファイルに保存して場所を stderr で案内します（値はログに出力しません）。\n",
+    "  Linux/Unix ではトークン未指定時に起動時に生成し、0600 のファイルに保存して場所を stderr で案内します（値はログに出力しません）。\n",
     "  再起動時は同じファイルを再利用します。明示的に制御するには --token-file または TM_AGENT_TOKEN を使ってください。\n",
+    "  Windows では自動生成を行いません（auth.rs の固定エラー）: 既存トークンファイルは再利用しますが、\n",
+    "  未指定の既定起動は失敗します。--token-file / TM_AGENT_TOKEN / --token のいずれかを明示してください。\n",
+    "    固定エラー: Windows では --token 明示が必要です: 安全な乱数源を新規依存・unsafe なしで取得できないため、--token / --token-file / TM_AGENT_TOKEN のいずれかでトークンを指定してください。\n",
     "  推奨順: --token-file（argv/environ を避けられる）> TM_AGENT_TOKEN（/proc/<pid>/environ に残存し得る）\n",
     "          > --token（/proc/<pid>/cmdline が既定で同一ホストの全ユーザーから読める）。\n",
-    "  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成。\n\n",
+    "  解決順: --token または --token-file（同時指定はエラー）> TM_AGENT_TOKEN > 自動生成（Linux/Unix のみ、Windows は未指定でエラー）。\n\n",
     "HTTP エラー本文: {\"code\":\"...\",\"message\":\"...\",\"error\":\"...\"}\n",
     "  (error は message の後方互換の別名。 code で分岐してください)\n",
     "HTTP エラーコード:\n",
@@ -458,6 +461,9 @@ mod tests {
             "3 ネットワークエラー",
             "4 プローブエラー",
             "5 認証・トークンエラー",
+            "Windows では自動生成を行いません",
+            "--token-file / TM_AGENT_TOKEN / --token のいずれかを明示してください",
+            "固定エラー: Windows では --token 明示が必要です",
         ] {
             assert!(USAGE.contains(fragment), "missing {fragment:?}");
         }
