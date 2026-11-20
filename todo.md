@@ -1313,7 +1313,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [ ] エクスポート後の private_dir / Retry-After / CORS の実経路テストが
       弱い（EEXIST 分岐・既存 leaf/ancestor 権限・stream 503 CORS・
       連続 hint・5xx 境界）。根拠 R2-TQ01 / R5-TS01。
-- [ ] late サンプルで network_rates/history が (0,0) に上書きされる。
+- [x] late サンプルで network_rates/history が (0,0) に上書きされる。
       is_late ならレート更新と history.push をスキップ。根拠 R2-BV01。
 - [ ] 自動トークン read→remove→publish の TOCTOU で並行起動が別トークン
       を持ち得る。adopt 直前の再読込または直列化。根拠 R2-BV01。
@@ -1346,9 +1346,9 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       advisory DB 読み込みをアサート。根拠 R4-CI01。
 - [ ] gitleaks チェックサムがバイナリと同一オリジンで真正性検証に
       なっていない。repo 内ピン留めまたは署名 attestation。根拠 R4-CI01。
-- [ ] XDG_CONFIG_HOME パステストが環境変数を設定せず名前だけ検証。
+- [x] XDG_CONFIG_HOME パステストが環境変数を設定せず名前だけ検証。
       純粋関数へ切り出し各分岐を明示テスト。根拠 R5-TS01。
-- [ ] テスト件数 556/191 に対し README 内訳 176+91+44+132+111=554。
+- [x] テスト件数 556/191 に対し README 内訳 176+91+44+132+111=554。
       内訳を再計測して合計と揃え DESIGN マトリクスも更新。
       根拠 R1-FG01 / R5-DC01。
 - [ ] loopback 許可範囲の記述が SECURITY/DESIGN で広い（127.0.0.1/[::1]
