@@ -266,12 +266,19 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 ### 6.3 エージェント
 
-- ループバックアドレスのみ bind（既定 127.0.0.1、IPv4/IPv6 の loopback を許可）。認証は `Authorization: Bearer` のみ受け付ける
+- ループバックアドレスのみ bind（既定 `127.0.0.1`、`--listen` は `127.0.0.1` と `[::1]` のみ許可、`127.0.0.2` などの loopback は拒否）。認証は `Authorization: Bearer` のみ受け付ける
   （クエリ文字列のトークンは URL 漏洩対策として拒否する）。
-- トークンは起動時に `/dev/urandom` から生成するが、**値はログに出力しない**
-  （stderr は CI 出力やサポートバンドルに拾われるため）。接続には
-  `--token-file PATH` または `TM_AGENT_TOKEN` で渡す（ファイル推奨）。
-  `--token` はテスト専用で、argv が `/proc/<pid>/cmdline` から読まれ得るため警告を出す。
+- トークンは Linux/Unix では起動時に `/dev/urandom` から生成するが、**値はログに出力しない**
+  （stderr は CI 出力やサポートバンドルに拾われるため）。自動生成分は XDG state
+  ディレクトリ配下（`~/.local/state/tm-agent/token` 等）に 0600 で保存し、stderr には
+  ファイル名 `token` のみ案内する（保存場所は README.md「読み取り専用エージェント」の
+  XDG state パスを参照）。接続には `--token-file PATH` または `TM_AGENT_TOKEN` で渡す
+  （ファイル推奨）。`--token` はテスト専用で、argv が `/proc/<pid>/cmdline` から読まれ得るため警告を出す。
+- **Windows はトークンの自動生成に非対応**（`std` に CSPRNG がなく、`unsafe` FFI と新規依存を
+  使わないため、`agent/src/auth.rs:51-60` が固定エラーを返す）。既存のトークンファイル
+  （`%APPDATA%` / `%USERPROFILE%\AppData\Roaming` 配下）は再利用されるが、新規生成はできない。
+  トークン未指定の起動は固定エラーで失敗するため、`--token-file` / `TM_AGENT_TOKEN` /
+  `--token` のいずれかを明示する必要がある（固定エラーの文言は README.md「認証」節を参照）。
 - エンドポイントは、認証不要の `GET /healthz` と `GET /metrics`（カウンタ/ゲージのみ、
   マシンデータなし、ループバック限定）、Bearer 必須の `GET /api/v1/snapshot` と
   長時間ストリーム `GET /api/v1/stream`（SSE）の 4 つ。SSE も通常経路と同じく
@@ -350,7 +357,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
    PID + 起動時刻の一致を送信直前に再確認。
 4. **読み取り専用ブラウザ**: エージェントに操作 API を置かない。UI 側でも
    `supports_process_control = false` としてボタンを無効化する。
-5. **ループバック限定**: エージェントは `127.0.0.1` にのみ bind。`Authorization:
+5. **ループバック限定**: エージェントは `127.0.0.1` / `[::1]` のみ bind（`--listen` もこの 2 つのみ許可）。`Authorization:
    Bearer` 必須、`Host` ヘッダも loopback に限定。CORS は `http://127.0.0.1[:port]` / `http://localhost[:port]` のみ。
 6. **表示サニタイズ**: プロセス名・コマンドライン・コンポーネントラベル等の表示文字列から制御文字・ANSI エスケープ・bidi／ゼロ幅の不可視書式文字を除去し、文字数を制限する。
 7. **供給網**: GPUI 系は完全一致ピン + `Cargo.lock` コミット。`cargo audit` に加え
@@ -365,10 +372,14 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
    CI は共通 `rust-gates.yml@v1` の `extra_gates` で `cargo vet --locked` を必須化。
 8. **秘密情報を扱わない**: 認証情報・DB を保存しない。トークンの**値**はログ・stdout に
    出力しない（接続には `--token-file` または `TM_AGENT_TOKEN` を明示指定してもよい）。
-   起動時に自動生成したトークンは XDG state ディレクトリ配下
+   Linux/Unix で起動時に自動生成したトークンは XDG state ディレクトリ配下
    （`~/.local/state/tm-agent/token` 等、ディレクトリは 0700）の 0600 ファイルに保存し、
-   場所のみ stderr で案内して再起動時に再利用する。`--token` 等で明示指定した値は
-   ディスクに保存せずプロセス終了で失効する（`--token` は argv から見えるため警告する）。
+   stderr にはファイル名 `token` のみ案内して再起動時に再利用する（保存先は README.md「認証」節参照）。
+   **Windows では自動生成を行わない**（既存ファイルの再利用のみ。固定エラーは
+   `agent/src/auth.rs:51-60`、文言は README.md「認証」節を参照）。トークン未指定の
+   起動は失敗するため `--token-file` / `TM_AGENT_TOKEN` / `--token` の明示が必要。
+   `--token` 等で明示指定した値はディスクに保存せずプロセス終了で失効する
+   （`--token` は argv から見えるため警告する）。
    ディスクに永続化するのはこのトークンファイルと**表示設定だけ**
    （更新間隔・ソート・詳細パネル・ツリー表示・テーマ）で、プロセス情報・フィルタ・
    ホスト名・ユーザー名はディスクに書かない。ネイティブの設定ファイルは原子的に書き込み、
@@ -380,7 +391,7 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - GPUI 系は個人アカウントが crates.io に再公開したスナップショットであり、
   bus factor = 1。完全ピンで更新を統制するが、upstream のセキュリティ修正を
   自動では取り込めない。
-- 自動生成トークンは XDG state ディレクトリ配下の 0600 ファイルに保存され再起動時に
+- Linux/Unix の自動生成トークンは XDG state ディレクトリ配下の 0600 ファイルに保存され再起動時に
   再利用されるため、そのファイルを読める同一ユーザーのプロセスには露出し得る
   （TTL・ローテーションは未実装）。`--token` / `--token-file` / `TM_AGENT_TOKEN` で
   明示指定した値は保存されずプロセス終了で失効する。ブラウザでは URL フラグメントから

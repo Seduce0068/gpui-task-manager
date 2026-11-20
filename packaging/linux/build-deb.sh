@@ -120,92 +120,6 @@ install -m 0644 "${repo_root}/THIRD_PARTY_NOTICES.md" \
 install -m 0644 "${repo_root}/LICENSE" "${staging}/usr/share/doc/${package}/LICENSE"
 install -m 0644 "${script_dir}/copyright" "${staging}/usr/share/doc/${package}/copyright"
 
-# Collect the license full texts of the resolved dependency graph from the
-# local Cargo registry. This runs after `cargo build` (or, with --skip-build,
-# after a previous build populated the cache), so `cargo metadata --offline`
-# sees the same sources that produced the binary.
-#
-# Existing-solution survey (AGENTS.md §2, 2026-11-20):
-#   - cargo-about is purpose-built for license reports, but is not installed
-#     here: adopting it means `cargo install` (a new build-time dependency,
-#     forbidden for this task). It also renders a consolidated report instead
-#     of populating a per-crate directory of upstream license full texts.
-#   - cargo-deny 0.21.0 is installed, but its license support is policy checking
-#     (`cargo deny check licenses` / `cargo deny list`) against deny.toml. It
-#     has no command that copies those full texts into a Debian package, so it
-#     stays in place as the license-policy gate, not as the vendoring tool.
-#   - cargo metadata + the local registry source cache needs no new dependency:
-#     cargo and jq are already hard requirements of this script, --offline
-#     keeps the step network-free, and each source directory is derived from
-#     the package's manifest_path (no hardcoded registry hash or home path,
-#     so the same code works in CI).
-# Decision: use cargo metadata + jq; keep cargo-deny unchanged as policy gate.
-vendor_crate_license_texts() {
-  local licenses_root="$1"
-  local metadata name version manifest source_dir file base
-  local count=0
-  local -a license_files=()
-  local -a no_text_crates=()
-
-  # Idempotent: rebuilding replaces the tree so a removed dependency cannot
-  # leave a stale text behind. The `:?` guard prevents an empty root from
-  # ever turning into `rm -rf /crates`.
-  rm -rf "${licenses_root:?}/crates"
-  mkdir -p "${licenses_root}/crates"
-
-  # Filter to the Linux target: the unfiltered graph also resolves
-  # macOS/Windows-only crates (e.g. accesskit_macos) that are not in the local
-  # registry during a Linux-only CI build, which made --offline metadata fail.
-  local target_platform
-  target_platform="$(rustc -vV | sed -n 's/^host: //p')"
-  if ! metadata="$(cargo metadata --offline --format-version 1 \
-    --filter-platform "${target_platform}")"; then
-    echo "error: cargo metadata --offline failed; build once to cache dependencies." >&2
-    return 1
-  fi
-
-  while IFS=$'\t' read -r name version manifest; do
-    [ -n "${name}" ] || continue
-    source_dir="$(dirname -- "${manifest}")"
-    [ -d "${source_dir}" ] || continue
-
-    # Match upstream names case-insensitively: some crates ship `license-mit`
-    # / `license-apache-2.0` instead of uppercase `LICENSE*`.
-    license_files=()
-    for file in "${source_dir}"/*; do
-      [ -f "${file}" ] || continue
-      base="$(basename -- "${file}")"
-      case "${base,,}" in
-      license* | licence* | copying*) license_files+=("${file}") ;;
-      esac
-    done
-
-    # `source == null` marks this workspace's own crates, covered by the
-    # top-level LICENSE / NOTICE.md installed above, not by per-crate texts.
-    if ((${#license_files[@]} == 0)); then
-      no_text_crates+=("${name}-${version}")
-      continue
-    fi
-
-    mkdir -p "${licenses_root}/crates/${name}-${version}"
-    for file in "${license_files[@]}"; do
-      install -m 0644 "${file}" \
-        "${licenses_root}/crates/${name}-${version}/$(basename -- "${file}")"
-      count=$((count + 1))
-    done
-  done < <(printf '%s\n' "${metadata}" |
-    jq -r '.packages[] | select(.source != null) | [.name, .version, .manifest_path] | @tsv')
-
-  # Complete audit trail for crates whose published source has no text. The
-  # installed README.deb.md points here: the gap is "not vendored yet", not a
-  # claim that the upstream license is incompatible or cannot be shipped.
-  : >"${licenses_root}/NOT-VENDORED.txt"
-  if ((${#no_text_crates[@]} > 0)); then
-    printf '%s\n' "${no_text_crates[@]}" | LC_ALL=C sort >>"${licenses_root}/NOT-VENDORED.txt"
-  fi
-  echo "==> vendored ${count} crate license text(s); ${#no_text_crates[@]} crate(s) have no local text"
-}
-
 # Bundle the third-party license full texts that are actually vendored in this
 # repository. A missing source is a hard error so the .deb never silently ships
 # without a text that is known to exist. Crates whose registry source has no
@@ -225,7 +139,11 @@ done
 # Every other license text ships inside the crate source archives themselves.
 # This includes gpui-kit-assets/LICENSE-LUCIDE (ISC + Feather MIT attributions),
 # which cargo metadata resolves from the local registry just like any crate.
-vendor_crate_license_texts "${licenses_dir}"
+# The vendoring logic is a shared script so the web-dist CI job ships the same
+# licenses/crates/** tree (R4-CI01). A metadata failure is fatal here (set -e);
+# crates without an upstream text are recorded in NOT-VENDORED.txt, never
+# invented. The survey/decision record now lives in the shared script.
+bash "${repo_root}/scripts/vendor-crate-licenses.sh" "${licenses_dir}"
 
 # Compute runtime dependencies from ldd + dpkg -S. The Vulkan loader is
 # dlopen()ed by wgpu/Blade, so it does not appear in ldd and is added explicitly.

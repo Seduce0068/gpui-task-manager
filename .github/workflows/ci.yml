@@ -82,21 +82,23 @@ jobs:
         # back into published docs (regression guard for the publication review).
         bash scripts/check-public-docs.sh
         # Secret scanning with gitleaks (both working tree and git history).
-        # Pin the version and verify the tarball against the official release
-        # checksums before extracting/executing it: a mismatch fails the gate.
+        # R4-CI01: 旧来は tarball と checksums.txt を同じ GitHub release から
+        # 取得していたため、配布元侵害時に改ざんバイナリと一致するチェックサム
+        # が一緒に配信され真正性検証にならなかった。期待 SHA256 を repo 内へ
+        # ピン留めし（git 履歴がトラストアンカー）、リリース側の checksums.txt
+        # には依存しない。GITLEAKS_VERSION を更新するときは
+        # GITLEAKS_SHA256 も公式リリースの checksums.txt から取り直して必ず
+        # 同時に更新する。対応を忘れると sha256sum -c が失敗するため放置できない。
         GITLEAKS_VERSION=8.30.1
+        # sha256(gitleaks_8.30.1_linux_x64.tar.gz), official v8.30.1 release.
+        GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         GITLEAKS_ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
         (
           cd /tmp
           curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_ARCHIVE}" \
             -o "${GITLEAKS_ARCHIVE}"
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
-            -o gitleaks_checksums.txt
-          awk -v name="${GITLEAKS_ARCHIVE}" '$2 == name' gitleaks_checksums.txt > gitleaks_expected.txt
-          if [ ! -s gitleaks_expected.txt ]; then
-            echo "gitleaks: checksum entry for ${GITLEAKS_ARCHIVE} not found" >&2
-            exit 1
-          fi
+          # Expected digest is the in-repo pin, NOT a same-origin download.
+          printf '%s  %s\n' "${GITLEAKS_SHA256}" "${GITLEAKS_ARCHIVE}" > gitleaks_expected.txt
           sha256sum -c gitleaks_expected.txt || exit 1
           tar -xzf "${GITLEAKS_ARCHIVE}" gitleaks
         )
@@ -231,6 +233,13 @@ jobs:
   # check-advisory-ignores.sh の UTC 基準 3 か月上限は 2027-02-18 となる
   # （deny.toml の 9 件の expiry と一致）。cargo-deny 0.21 が期限切れを検知し、
   # `-D advisory-ignore-expired` でゲートを失敗させる（手動レビュー依存ではない）。
+  # R4-CI01: 旧来の `-A advisory-not-detected` は削除した。cargo-deny 0.21 の
+  # 当該 lint は「ignore が依存グラフに一致しなかった」という警告（既定値
+  # unused-ignored-advisory = "warn"）であり、allow すると古い ignore と
+  # DB 未読み込みの兆候を同時に隠してしまう。scripts/check.sh とフラグを
+  # 揃えるため警告は残しつつ、失敗条件は `-D advisory-ignore-expired` に
+  # 一本化する。さらに check-advisory-db.sh で DB の読み込み自体を
+  # 件数アサートし、空 DB の「0 件」をクリーンな結果と混同しないようにする。
   deny:
     name: cargo-deny (licenses / advisories / duplicates)
     runs-on: ubuntu-24.04
@@ -245,9 +254,11 @@ jobs:
       - name: Validate advisory ignore policy (reason / expiry / 3-month cap)
         run: bash scripts/check-advisory-ignores.sh
       - name: Check native workspace
-        run: cargo deny --manifest-path Cargo.toml check -A advisory-not-detected -D advisory-ignore-expired
+        run: cargo deny --manifest-path Cargo.toml check -D advisory-ignore-expired
       - name: Check web workspace
-        run: cargo deny --manifest-path web/Cargo.toml check -A advisory-not-detected -D advisory-ignore-expired
+        run: cargo deny --manifest-path web/Cargo.toml check -D advisory-ignore-expired
+      - name: Assert advisory database was loaded
+        run: bash scripts/check-advisory-db.sh
 
   # リリース成果物（Linux バイナリ + DEB）。検証とは分離し、必要なときだけ
   # ダウンロードできるようにする。
@@ -409,6 +420,13 @@ jobs:
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: trunk@0.22.1
+      # scripts/vendor-crate-licenses.sh parses `cargo metadata` with jq, the
+      # same hard dependency build-deb.sh installs in release-linux. Install
+      # it here too so the shared script behaves identically in both jobs.
+      - name: Install jq for crate-license vendoring
+        run: |
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends jq
       - name: Build web distribution
         # The bundled IBM Plex fonts are OFL-1.1; ship the license with the
         # artifact (Trunk 0.22 has no `copy` config key).
@@ -425,11 +443,15 @@ jobs:
           cp ../NOTICE.md dist/NOTICE.md
           cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
-          # ZA-DEBLIC が生成する crate 別ライセンス全文は成果物依存のため、
-          # glob で存在を確認できた場合のみ再帰コピーする（無い場合はスキップ）。
-          if compgen -G '../packaging/linux/licenses/crates/*' > /dev/null; then
-            mkdir -p dist/licenses/crates
-            cp -R ../packaging/linux/licenses/crates/. dist/licenses/crates/
+          # R4-CI01: crate 別ライセンス全文は DEB と同じ共有スクリプトで
+          # web ワークスペースの wasm32 依存グラフから生成する。旧来の
+          # ../packaging/linux/licenses/crates は repo に存在せず常に
+          # スキップされていた。生成は必須で、空ならビルドを失敗させる。
+          bash ../scripts/vendor-crate-licenses.sh dist/licenses Cargo.toml wasm32-unknown-unknown
+          if [ ! -d dist/licenses/crates ] ||
+            [ -z "$(find dist/licenses/crates -type f -print -quit)" ]; then
+            echo 'web-dist: licenses/crates is missing or empty' >&2
+            exit 1
           fi
           for f in LICENSE NOTICE.md THIRD_PARTY_NOTICES.md LICENSE-IBM-Plex.txt; do
             test -s "dist/${f}"
@@ -456,9 +478,12 @@ jobs:
           cp ../NOTICE.md dist/NOTICE.md
           cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           cp assets/fonts/LICENSE-IBM-Plex.txt dist/LICENSE-IBM-Plex.txt
-          if compgen -G '../packaging/linux/licenses/crates/*' > /dev/null; then
-            mkdir -p dist/licenses/crates
-            cp -R ../packaging/linux/licenses/crates/. dist/licenses/crates/
+          # 初回と同じ共有スクリプトで licenses/crates を再生成する（R4-CI01）。
+          bash ../scripts/vendor-crate-licenses.sh dist/licenses Cargo.toml wasm32-unknown-unknown
+          if [ ! -d dist/licenses/crates ] ||
+            [ -z "$(find dist/licenses/crates -type f -print -quit)" ]; then
+            echo 'web-dist: licenses/crates is missing or empty (second build)' >&2
+            exit 1
           fi
           for f in LICENSE NOTICE.md THIRD_PARTY_NOTICES.md LICENSE-IBM-Plex.txt; do
             test -s "dist/${f}"
