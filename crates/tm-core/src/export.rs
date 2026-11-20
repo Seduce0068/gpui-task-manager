@@ -74,6 +74,10 @@ pub fn redact_for_export(
 /// newline, space, tab, carriage return, VT and FF are neutralised too
 /// (spreadsheet importers may skip them). Numeric fields are never neutralised
 /// this way.
+///
+/// `cpu_percent` is rounded to two decimal places **at serialisation time only**
+/// (e.g. `4.3799996` becomes `4.38`); the snapshot's raw `f32` still drives
+/// filtering and sorting, and the JSON exporter keeps wire-compatible numbers.
 pub fn snapshot_to_csv(snapshot: &SystemSnapshot, ids: &RedactionIdentifiers<'_>) -> String {
     // A local caller has no wire envelope, so the published rows are the only
     // process count available.
@@ -116,7 +120,7 @@ pub fn snapshot_to_csv_with_total(
         out.push(',');
         out.push_str(csv_status(process.status));
         out.push(',');
-        push_display(&mut out, crate::normalise_percent(process.cpu_percent));
+        push_csv_percent(&mut out, process.cpu_percent);
         out.push(',');
         push_display(&mut out, process.memory_bytes);
         out.push(',');
@@ -661,6 +665,20 @@ fn push_optional_csv<T: std::fmt::Display>(out: &mut String, value: Option<T>) {
     }
 }
 
+/// Writes one CPU percentage for the CSV at two decimal places.
+///
+/// The probe's `f32` values carry representation noise (`4.3799996`,
+/// `1.9399999`) that a plain `Display` prints verbatim. The UI already renders
+/// one or two decimals, so the export rounds at this single serialisation point
+/// and never mutates the snapshot: filtering and sorting keep using the raw
+/// value, and the JSON exporter keeps its wire-compatible number. Trailing
+/// zeroes are trimmed so integral values stay `0` / `100` as before.
+fn push_csv_percent(out: &mut String, value: f32) {
+    let rounded = format!("{:.2}", crate::normalise_percent(value));
+    let trimmed = rounded.trim_end_matches('0').trim_end_matches('.');
+    out.push_str(trimmed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +890,45 @@ mod tests {
         assert!(csv.contains("'=cmd|' /C calc'!A0 next"), "{csv}");
         // Empty Option fields stay empty instead of inventing a value.
         assert!(csv.contains("0,0,0,,,'=cmd|'"), "{csv}");
+    }
+
+    #[test]
+    fn csv_rounds_cpu_percent_to_two_decimals_without_touching_the_model() {
+        let mut snapshot = SystemSnapshot::default();
+        for (pid, cpu) in [
+            (1, 4.3799996_f32),
+            (2, 1.9399999_f32),
+            (3, 100.0_f32),
+            (4, f32::NAN),
+        ] {
+            snapshot.processes.push(crate::model::ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                cpu_percent: cpu,
+                ..crate::model::ProcessSnapshot::default()
+            });
+        }
+        let original = snapshot.clone();
+        let csv = snapshot_to_csv(&snapshot, &secret_ids());
+
+        // Column 7 (0-based 6) is cpu_percent; raw f32 noise must be gone.
+        let percents: Vec<&str> = csv
+            .lines()
+            .skip(1)
+            .map(|row| row.split(',').nth(6).expect("cpu_percent column"))
+            .collect();
+        assert_eq!(percents, ["4.38", "1.94", "100", "0"], "{csv}");
+        assert!(!csv.contains("4.3799996"), "{csv}");
+        assert!(!csv.contains("1.9399999"), "{csv}");
+
+        // Formatting is the only place that rounds: the snapshot keeps the
+        // original values for filtering and sorting, and JSON keeps its
+        // wire-compatible number.
+        assert_eq!(snapshot.processes[0].cpu_percent, 4.3799996_f32);
+        assert_eq!(snapshot.processes[1].cpu_percent, 1.9399999_f32);
+        assert!(snapshot.processes[3].cpu_percent.is_nan());
+        assert_eq!(format!("{snapshot:?}"), format!("{original:?}"));
+        let json = snapshot_to_json(&snapshot, &secret_ids());
+        assert!(json.contains("\"cpu_percent\": 4.3799996"), "{json}");
     }
 
     #[test]

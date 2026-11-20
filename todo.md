@@ -796,6 +796,38 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       検証成功（Firefox は BiDi・F1 は合成キーで信頼済みキー未確認）を反映。
       Safari / Brave / モバイル / 実 GPU は未検証のまま。根拠 ra-browsers。
 
+### 優先度: 高 — ネイティブAX実検証 2026-11-20
+
+- [x] ネイティブ版の F1 ヘルプダイアログが実 AX ツリーに存在しない
+      （Dialog role / 「閉じる」ボタン欠落）。Web 版と同じ
+      `.role(Role::Dialog).aria_label(HELP_TITLE)` とボタン role を付与。
+      根拠 ta-nativeax。
+- [x] ネイティブ版の全ボタン（一時停止／詳細／シグナル／ヘルプ等）が AX から
+      欠落。`app/src/ui.rs:115-142` の action_button() へ Role::Button +
+      label 由来の aria_label を付与。根拠 ta-nativeax。
+- [x] 使用率ゲージ・温度状態・詳細パネルが AX に現れない。Web 版の
+      Group + aria_label + ProgressIndicator と同等を native へ付与。
+      根拠 ta-nativeax。
+
+### 優先度: 中 — エクスポート実利用 2026-11-20
+
+- [x] CSV の cpu_percent に f32 丸め誤差（4.3799996 等）がそのまま出力され
+      可読性が低い。UI と同じ小数 2 桁へ丸めるか、生値である旨を明記。
+      根拠 tb-export。
+      → 完了: `export.rs` の `push_csv_percent` で出力時のみ小数 2 桁へ丸め
+      （4.3799996 → "4.38"、1.9399999 → "1.94"）。JSON / 計算 / ソートは生値維持。
+- [x] CSV の sampled_at_unix_millis（13桁 epoch）が表計算で日付にならず、
+      README に列の意味・形式の説明が無い。列説明を追記するか ISO-8601 列
+      を併設。根拠 tb-export。
+      → 完了: README「エクスポート形式（CSV / JSON）」へ 12 列の意味・形式を表で
+      記載。ISO-8601 列の併設は固定 12 列契約を壊すため見送り（README に判断記録）。
+
+### メモ — 環境依存エッジ 2026-11-20
+
+- TZ 3 タイムゾーンで --once 出力バイト一致、4 ロケールで日本語/CSV 同一、
+  0622 トークン拒否、PID 再利用防御済み、ゼロ幅文字除去済み。
+  問題なし（sa-signal / sb-env）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
