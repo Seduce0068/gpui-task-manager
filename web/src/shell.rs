@@ -1090,10 +1090,19 @@ impl TaskManagerApp {
 
         // V3-KEYS: 唯一の解決点。ネイティブの `key_action` と同じ契約で、
         // 編集中はナビゲーションキーとシェルショートカットを一切解決しない。
-        // 戻り値 None のときは stop_propagation しないので、隠し textarea の
+        // 戻り値 Unhandled のときは stop_propagation しないので、隠し textarea の
         // 既定動作（キャレット移動・変換候補選択）がそのまま働く。
+        // 行メニュー表示中は native の確認ダイアログと同じモーダルとして扱い、
+        // F2 / Space / Ctrl+K は Swallowed にして無視する（YA-ROWMENU）。
         let editing_text = self.filter_editing || self.filter_input.is_composing();
-        let Some(action) = web_key_action(&key, modifiers, editing_text) else {
+        let decision = resolve_web_key(&key, modifiers, editing_text, self.row_menu.is_some());
+        if decision == WebKeyDecision::Swallowed {
+            // モーダルがキーを消費した。隠し textarea の既定動作（Space の
+            // 文字挿入など）まで及ばないよう伝播も止める。
+            cx.stop_propagation();
+            return;
+        }
+        let Some(action) = decision.into_action() else {
             // Web 固有の例外: 編集中でない Enter も改行既定を止める（隠し
             // textarea に改行が入ると filter へ混入するため）。編集中は上の
             // resolver が CommitFilter を返すのでここには来ない。
@@ -3618,6 +3627,55 @@ fn web_key_action(key: &str, modifiers: Modifiers, editing_text: bool) -> Option
         (false, "escape") => Some(WebKeyAction::ClearFilter),
         _ => None,
     }
+}
+
+/// キー解決の結果（YA-ROWMENU）。
+///
+/// 行メニューを native の確認ダイアログと同じモーダルとみなし、メニュー表示中は
+/// 詳細トグル / 一時停止通知 / 読み取り専用通知を発火させない。Esc / Enter /
+/// 矢印（メニュー項目の移動・実行）やヘルプは従来どおり通す。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebKeyDecision {
+    /// `action` を実行する。
+    Run(WebKeyAction),
+    /// 行メニュー（モーダル）がキーを消費した。伝播を止めて無視する。
+    Swallowed,
+    /// バインドなし。隠し textarea / ブラウザの既定動作へ委譲する。
+    Unhandled,
+}
+
+impl WebKeyDecision {
+    fn into_action(self) -> Option<WebKeyAction> {
+        match self {
+            Self::Run(action) => Some(action),
+            _ => None,
+        }
+    }
+}
+
+/// [`web_key_action`] に行メニューのモーダル抑止を重ねた純粋関数。
+///
+/// `on_key_down` とテストが同じ判定を使うことで、メニュー表示中の F2 / Space /
+/// Ctrl+K が詳細・status を書き換えないことを固定できる（YA-ROWMENU）。
+/// `row_menu_open = false` のときは従来の resolver と完全に同じ結果になる。
+fn resolve_web_key(
+    key: &str,
+    modifiers: Modifiers,
+    editing_text: bool,
+    row_menu_open: bool,
+) -> WebKeyDecision {
+    let Some(action) = web_key_action(key, modifiers, editing_text) else {
+        return WebKeyDecision::Unhandled;
+    };
+    if row_menu_open
+        && matches!(
+            action,
+            WebKeyAction::ToggleDetails | WebKeyAction::TogglePaused | WebKeyAction::ReadOnlyNotice
+        )
+    {
+        return WebKeyDecision::Swallowed;
+    }
+    WebKeyDecision::Run(action)
 }
 
 /// Accessible name for one process row.
@@ -6184,6 +6242,77 @@ mod tests {
             "Ctrl+K の読み取り専用通知が status に載ること"
         );
         assert!(dashboard.status().is_some_and(|status| status.is_error));
+    }
+
+    #[test]
+    fn row_menu_is_modal_for_f2_space_and_ctrl_k_until_esc_closes_it() {
+        // 判断（YA-ROWMENU）: 行メニューは native の確認ダイアログと同等の
+        // モーダル。表示中は F2 / Space / Ctrl+K を消費して無視し、Esc / Enter /
+        // メニュー項目のキーボード操作は従来どおり通す。
+        let plain = Modifiers::default();
+        let (mut dashboard, _, _) = dashboard_with_two_visible_rows();
+        let conflicting = [("f2", plain), ("space", plain), ("k", ctrl()), ("k", cmd())];
+
+        // メニュー表示中は 3 種のショートカットがすべて Swallowed。
+        // ガードが無ければこれらは詳細トグル / status 変更として観測される。
+        for (key, modifiers) in conflicting {
+            assert_eq!(
+                resolve_web_key(key, modifiers, false, true),
+                WebKeyDecision::Swallowed,
+                "{key} must be ignored while the row menu is open"
+            );
+            assert!(matches!(
+                web_key_action(key, modifiers, false),
+                Some(
+                    WebKeyAction::ToggleDetails
+                        | WebKeyAction::TogglePaused
+                        | WebKeyAction::ReadOnlyNotice
+                )
+            ));
+        }
+
+        // メニュー項目のキーボード操作（矢印移動）と Enter の既定停止は維持。
+        // Esc は resolver より前の分岐が行メニューを閉じるため、閉じた後は
+        // row_menu_open = false で解決される（下の F2 の確認）。
+        assert_eq!(
+            resolve_web_key("down", plain, false, true),
+            WebKeyDecision::Run(WebKeyAction::SelectRelative(1))
+        );
+        assert_eq!(
+            resolve_web_key("enter", plain, false, true),
+            WebKeyDecision::Unhandled
+        );
+
+        // on_key_down と同じ判定で実際に detailed / status が変わらないことを固定。
+        let apply = |dashboard: &mut Dashboard, action: WebKeyAction| match action {
+            WebKeyAction::ToggleDetails => {
+                dashboard.apply(Command::ToggleDetails);
+            }
+            WebKeyAction::TogglePaused => {
+                dashboard.set_status(PAUSE_UNSUPPORTED_NOTICE, false);
+            }
+            WebKeyAction::ReadOnlyNotice => {
+                dashboard.set_status(READONLY_SIGNAL_NOTICE, true);
+            }
+            _ => {}
+        };
+        let details_before = dashboard.details_visible();
+        let status_before = dashboard.status().cloned();
+        for (key, modifiers) in conflicting {
+            if let WebKeyDecision::Run(action) = resolve_web_key(key, modifiers, false, true) {
+                apply(&mut dashboard, action);
+            }
+        }
+        assert_eq!(dashboard.details_visible(), details_before);
+        assert_eq!(dashboard.status().cloned(), status_before);
+
+        // Esc で閉じた後（row_menu = None）は F2 が従来どおり詳細を反転する。
+        assert_eq!(
+            resolve_web_key("f2", plain, false, false),
+            WebKeyDecision::Run(WebKeyAction::ToggleDetails)
+        );
+        dashboard.apply(Command::ToggleDetails);
+        assert_ne!(dashboard.details_visible(), details_before);
     }
 
     #[test]

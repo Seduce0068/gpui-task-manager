@@ -472,73 +472,14 @@ impl AgentClient {
         // Remember the settings generation so the body read can abort early if
         // a reload supersedes this request while it is streaming (R4-A02).
         let generation = self.config.generation();
-        // Never attach the bearer token before checking the destination.
-        if !is_loopback_http_endpoint(&config.endpoint) {
-            return Err(FetchError::InvalidEndpoint);
-        }
-        let url = snapshot_url(&config.endpoint);
-        let mut builder = Request::builder().method("GET").uri(&url);
-        if let Some(token) = &config.token {
-            // クエリではなくヘッダで渡す（URL・Referer・アクセスログに残さない）。
-            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-        }
-        let request = builder.body(AsyncBody::empty()).map_err(|error| {
-            FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
-        })?;
-        let response = self.http.send(request).await.map_err(|error| {
-            // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
-            // トークンを伏せたうえで console に残す。
-            log::warn!(
-                "エージェントへの fetch に失敗: {}",
-                redact_token(&format!("{error:#}"), config.token.as_deref())
-            );
-            FetchError::Connect
-        })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            // `401` invalidates the token and is the only reconnect trigger;
-            // `403` is a rejected Origin and gets its own guidance, so the DOM
-            // proof's `reconnect=` flag stays false for it (C2-WEB).
-            // No body is read at all, so the error path stays cheap.
-            return Err(status_error(code));
-        }
-
-        // Earliest possible abort: a declared oversized body is rejected from
-        // the header alone, before a single byte is pulled into the wasm heap.
-        let declared_length = response
-            .headers()
-            .get(header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok());
-        if content_length_exceeds_cap(declared_length) {
-            return Err(FetchError::SizeLimit);
-        }
-        let body = response.into_body();
-        let mut buffer = Vec::new();
-        // Chunked and abortable: if the settings change mid-read, drop the
-        // stream immediately instead of accumulating up to 8 MiB of heap for a
-        // response we will no longer use (R4-A02).
-        read_body_abortable(
-            body,
-            &mut buffer,
-            MAX_SNAPSHOT_BYTES,
-            config.token.as_deref(),
-            || self.config.generation() != generation,
-        )
-        .await?;
-
-        let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
-            FetchError::Parse(redact_token(&format!("{error:#}"), config.token.as_deref()))
-        })?;
-        check_schema_version(envelope.schema_version)?;
-        // `into_response` is the one sanitise-and-redact gate shared with SSE.
-        // Never trust display strings from the wire: a malicious or corrupted
-        // agent could inject ANSI/control characters into the canvas (R2X-D1),
-        // and its `--redact` flag defaults to false, so host / user / home /
-        // tailnet identifiers must be masked here too. Do NOT duplicate the
-        // redaction call in this reader — that would split the boundary again.
-        Ok(envelope.into_response())
+        // The transport and the abort predicate are handed to one free function
+        // so every branch below can be exercised with a fake `HttpClient` on the
+        // native test host. No production contract moves with it: loopback-only
+        // endpoint, Bearer header, 8 MiB cap and the shared redaction gate.
+        fetch_snapshot_once(&config, &*self.http, || {
+            self.config.generation() != generation
+        })
+        .await
     }
 
     /// Subscribes to the agent's long-lived `GET /api/v1/stream` endpoint.
@@ -573,6 +514,92 @@ impl AgentClient {
         let setup_deadline = self.executor.timer(FETCH_TIMEOUT);
         Ok(drive_snapshot_stream(params, on_snapshot, setup_deadline))
     }
+}
+
+/// One snapshot request/parse pipeline, with the transport injected.
+///
+/// This is the single testable seam for [`AgentClient::fetch_snapshot_inner`]:
+/// the method snapshots the shared config and passes its HTTP client plus a
+/// generation predicate here. Nothing about the production contract moves —
+/// loopback-only destination (checked *before* the bearer token is attached),
+/// `Authorization: Bearer` header with no token in the URL, 8 MiB declared and
+/// streamed body cap, and the one [`SnapshotEnvelope::into_response`]
+/// sanitise-and-redact gate shared with SSE.
+async fn fetch_snapshot_once<F>(
+    config: &AgentConfig,
+    http: &dyn HttpClient,
+    aborted: F,
+) -> Result<SnapshotResponse, FetchError>
+where
+    F: Fn() -> bool,
+{
+    // Never attach the bearer token before checking the destination.
+    if !is_loopback_http_endpoint(&config.endpoint) {
+        return Err(FetchError::InvalidEndpoint);
+    }
+    let url = snapshot_url(&config.endpoint);
+    let mut builder = Request::builder().method("GET").uri(&url);
+    if let Some(token) = &config.token {
+        // クエリではなくヘッダで渡す（URL・Referer・アクセスログに残さない）。
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = builder.body(AsyncBody::empty()).map_err(|error| {
+        FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
+    })?;
+    let response = http.send(request).await.map_err(|error| {
+        // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
+        // トークンを伏せたうえで console に残す。
+        log::warn!(
+            "エージェントへの fetch に失敗: {}",
+            redact_token(&format!("{error:#}"), config.token.as_deref())
+        );
+        FetchError::Connect
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        // `401` invalidates the token and is the only reconnect trigger;
+        // `403` is a rejected Origin and gets its own guidance, so the DOM
+        // proof's `reconnect=` flag stays false for it (C2-WEB).
+        // No body is read at all, so the error path stays cheap.
+        return Err(status_error(code));
+    }
+
+    // Earliest possible abort: a declared oversized body is rejected from
+    // the header alone, before a single byte is pulled into the wasm heap.
+    let declared_length = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok());
+    if content_length_exceeds_cap(declared_length) {
+        return Err(FetchError::SizeLimit);
+    }
+    let body = response.into_body();
+    let mut buffer = Vec::new();
+    // Chunked and abortable: if the settings change mid-read, drop the
+    // stream immediately instead of accumulating up to 8 MiB of heap for a
+    // response we will no longer use (R4-A02).
+    read_body_abortable(
+        body,
+        &mut buffer,
+        MAX_SNAPSHOT_BYTES,
+        config.token.as_deref(),
+        aborted,
+    )
+    .await?;
+
+    let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
+        FetchError::Parse(redact_token(&format!("{error:#}"), config.token.as_deref()))
+    })?;
+    check_schema_version(envelope.schema_version)?;
+    // `into_response` is the one sanitise-and-redact gate shared with SSE.
+    // Never trust display strings from the wire: a malicious or corrupted
+    // agent could inject ANSI/control characters into the canvas (R2X-D1),
+    // and its `--redact` flag defaults to false, so host / user / home /
+    // tailnet identifiers must be masked here too. Do NOT duplicate the
+    // redaction call in this reader — that would split the boundary again.
+    Ok(envelope.into_response())
 }
 
 /// Races a fallible operation against a deadline future.
@@ -2018,5 +2045,370 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // ------------------------------------------------- polling pipeline support
+
+    const TEST_ENDPOINT: &str = "http://127.0.0.1:18787";
+
+    /// Only booleans are recorded: a failing assertion must never echo the
+    /// bearer token or a request URI into test output.
+    #[derive(Clone, Debug, Default)]
+    struct RecordedFetch {
+        uri_is_snapshot: bool,
+        bearer_matches: bool,
+    }
+
+    /// Counts reads and can bump the settings generation on the first chunk, so
+    /// the mid-read abort is exercised without a live browser or a second
+    /// thread calling `set_config`.
+    struct TrackedReader {
+        bytes: Vec<u8>,
+        position: usize,
+        chunk: usize,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+        bump_generation: Option<Arc<AtomicU64>>,
+    }
+
+    impl futures::AsyncRead for TrackedReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            let remaining = this.bytes.len() - this.position;
+            if remaining == 0 {
+                return std::task::Poll::Ready(Ok(0));
+            }
+            let take = remaining.min(buf.len()).min(this.chunk.max(1));
+            buf[..take].copy_from_slice(&this.bytes[this.position..this.position + take]);
+            this.position += take;
+            let reads = this.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if reads == 1
+                && let Some(generation) = &this.bump_generation
+            {
+                generation.fetch_add(1, Ordering::SeqCst);
+            }
+            std::task::Poll::Ready(Ok(take))
+        }
+    }
+
+    struct FakeFetchHttpClient {
+        calls: Arc<std::sync::Mutex<Vec<RecordedFetch>>>,
+        status: u16,
+        content_length: Option<String>,
+        body: Vec<u8>,
+        chunk: usize,
+        expected_auth: Option<String>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+        bump_generation: Option<Arc<AtomicU64>>,
+        fail_with: Option<String>,
+    }
+
+    impl HttpClient for FakeFetchHttpClient {
+        fn user_agent(&self) -> Option<&header::HeaderValue> {
+            None
+        }
+
+        fn proxy(&self) -> Option<&gpui::http_client::Url> {
+            None
+        }
+
+        fn send(
+            &self,
+            request: Request<AsyncBody>,
+        ) -> futures::future::BoxFuture<
+            'static,
+            anyhow::Result<gpui::http_client::http::Response<AsyncBody>>,
+        > {
+            let authorization = request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok());
+            self.calls.lock().unwrap().push(RecordedFetch {
+                uri_is_snapshot: request.uri().to_string() == snapshot_url(TEST_ENDPOINT),
+                bearer_matches: authorization == self.expected_auth.as_deref(),
+            });
+            let status = self.status;
+            let content_length = self.content_length.clone();
+            let body = self.body.clone();
+            let chunk = self.chunk;
+            let reads = Arc::clone(&self.reads);
+            let bump_generation = self.bump_generation.clone();
+            let fail_with = self.fail_with.clone();
+            Box::pin(async move {
+                if let Some(detail) = fail_with {
+                    return Err(anyhow::anyhow!("{detail}"));
+                }
+                let reader = TrackedReader {
+                    bytes: body,
+                    position: 0,
+                    chunk,
+                    reads,
+                    bump_generation,
+                };
+                let mut builder = gpui::http_client::http::Response::builder().status(status);
+                if let Some(length) = content_length {
+                    builder = builder.header(header::CONTENT_LENGTH, length);
+                }
+                builder
+                    .body(AsyncBody::from_reader(reader))
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+            })
+        }
+    }
+
+    fn fake_fetch_client(
+        token: Option<&str>,
+        status: u16,
+        body: Vec<u8>,
+    ) -> (
+        AgentConfig,
+        FakeFetchHttpClient,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = FakeFetchHttpClient {
+            calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+            status,
+            content_length: None,
+            body,
+            chunk: 8,
+            expected_auth: token.map(|token| format!("Bearer {token}")),
+            reads: Arc::clone(&reads),
+            bump_generation: None,
+            fail_with: None,
+        };
+        (
+            AgentConfig::new(TEST_ENDPOINT, token.map(str::to_string)),
+            client,
+            reads,
+        )
+    }
+
+    fn run_fetch(
+        config: &AgentConfig,
+        client: &FakeFetchHttpClient,
+    ) -> Result<SnapshotResponse, FetchError> {
+        futures::executor::block_on(fetch_snapshot_once(config, client, || false))
+    }
+
+    fn valid_snapshot_body(total: usize) -> Vec<u8> {
+        serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": total,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// Static failure messages only: a regression must not print leaked wire
+    /// text (raw identifiers, home paths or control characters) to the console.
+    fn assert_polling_snapshot_is_clean(snapshot: &tm_core::SystemSnapshot) {
+        assert!(
+            snapshot.hostname.as_deref() == Some("host"),
+            "hostname must be redacted"
+        );
+        assert!(
+            snapshot.disks[0].mount_point == "<home>/work",
+            "home path must be masked"
+        );
+        let process = &snapshot.processes[0];
+        assert!(
+            process.user.as_deref() == Some("user"),
+            "user must be redacted"
+        );
+        assert!(
+            process.name == "user-worker",
+            "process name must be redacted"
+        );
+        for needle in [
+            "alice", "my-host", "tail1234", "ts.net", "\u{1b}", "\u{200b}",
+        ] {
+            assert!(
+                !process.command.contains(needle),
+                "raw identifier or control character survived the gate"
+            );
+        }
+        assert!(process.command.contains("RED"), "visible text must remain");
+    }
+
+    #[test]
+    fn polling_rejects_a_non_loopback_endpoint_before_attaching_the_token() {
+        let (mut config, client, reads) =
+            fake_fetch_client(Some("secret-agent-token"), 200, valid_snapshot_body(1));
+        config.endpoint = "https://agent.example".to_string();
+        let error = run_fetch(&config, &client).expect_err("a remote endpoint must be rejected");
+        assert_eq!(error, FetchError::InvalidEndpoint);
+        assert!(
+            client.calls.lock().unwrap().is_empty(),
+            "no request may be sent to a non-loopback endpoint"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn polling_non_success_statuses_are_typed_with_fixed_wording() {
+        let cases = [
+            (401, FetchError::Auth, RECONNECT_GUIDANCE, true),
+            (403, FetchError::Forbidden, FORBIDDEN_GUIDANCE, false),
+            (
+                429,
+                FetchError::Http(429),
+                "エージェントが HTTP 429 を返しました。",
+                false,
+            ),
+            (
+                500,
+                FetchError::Http(500),
+                "エージェントが HTTP 500 を返しました。",
+                false,
+            ),
+            (
+                503,
+                FetchError::Http(503),
+                SERVICE_UNAVAILABLE_GUIDANCE,
+                false,
+            ),
+        ];
+        for (status, expected, wording, reconnect) in cases {
+            let (config, client, reads) =
+                fake_fetch_client(Some("secret-agent-token"), status, Vec::new());
+            let error = run_fetch(&config, &client).expect_err("a non-2xx status must fail");
+            assert_eq!(error, expected);
+            let text = error.to_string();
+            assert!(text.contains(wording), "fixed wording must be preserved");
+            assert_eq!(requires_reconnect(&error), reconnect);
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                0,
+                "the error path must not read the body"
+            );
+            assert_eq!(redact_token(&text, Some("secret-agent-token")), text);
+            let calls = client.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0].uri_is_snapshot);
+            assert!(calls[0].bearer_matches);
+        }
+    }
+
+    #[test]
+    fn polling_rejects_oversized_content_length_before_reading_a_byte() {
+        for declared in [
+            MAX_SNAPSHOT_BYTES.to_string(),
+            (MAX_SNAPSHOT_BYTES + 1).to_string(),
+            "999999999".to_string(),
+        ] {
+            let (config, mut client, reads) =
+                fake_fetch_client(Some("secret-agent-token"), 200, valid_snapshot_body(3));
+            client.content_length = Some(declared);
+            let error = run_fetch(&config, &client).expect_err("declared cap must be enforced");
+            assert_eq!(error, FetchError::SizeLimit);
+            assert_eq!(error.to_string(), SIZE_LIMIT_ERROR);
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                0,
+                "rejection must happen from the header alone"
+            );
+        }
+    }
+
+    #[test]
+    fn polling_success_passes_the_shared_redact_and_sanitize_gate() {
+        let token = "secret-agent-token";
+        let json = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION,
+            "total_process_count": 9,
+            "snapshot": dirty_wire_snapshot(),
+        })
+        .to_string();
+        let (config, client, _) = fake_fetch_client(Some(token), 200, json.into_bytes());
+        let response = run_fetch(&config, &client).expect("a valid envelope must parse");
+        assert_eq!(response.total_process_count, 9);
+        assert_polling_snapshot_is_clean(&response.snapshot);
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].uri_is_snapshot,
+            "the request must target the snapshot endpoint"
+        );
+        assert!(
+            calls[0].bearer_matches,
+            "the token must travel in the Bearer header only"
+        );
+    }
+
+    #[test]
+    fn polling_generation_change_aborts_the_body_read() {
+        let generation = Arc::new(AtomicU64::new(7));
+        let (config, mut client, reads) =
+            fake_fetch_client(Some("secret-agent-token"), 200, b"{\"unused\":1}".to_vec());
+        client.bump_generation = Some(Arc::clone(&generation));
+        client.chunk = BODY_READ_CHUNK;
+        let error = futures::executor::block_on(fetch_snapshot_once(&config, &client, || {
+            generation.load(Ordering::SeqCst) != 7
+        }))
+        .expect_err("a superseded read must abort");
+        assert_eq!(error, FetchError::BodyAborted);
+        assert_eq!(error.to_string(), BODY_ABORTED_ERROR);
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "at most one chunk may be consumed after a config change"
+        );
+        assert_eq!(generation.load(Ordering::SeqCst), 8);
+        assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn polling_transport_failure_stays_redaction_safe() {
+        let (config, mut client, _) =
+            fake_fetch_client(Some("secret-agent-token"), 200, Vec::new());
+        client.fail_with = Some("token=secret-agent-token at /private/path".to_string());
+        let error = run_fetch(&config, &client).expect_err("a transport failure must be typed");
+        assert_eq!(error, FetchError::Connect);
+        let text = error.to_string();
+        assert!(!text.contains("secret"));
+        assert!(!text.contains("/private/path"));
+        assert_eq!(redact_token(&text, Some("secret-agent-token")), text);
+    }
+
+    #[test]
+    fn polling_parse_and_schema_errors_are_typed_and_token_free() {
+        let (config, client, _) = fake_fetch_client(
+            Some("secret-agent-token"),
+            200,
+            b"secret-agent-token".to_vec(),
+        );
+        let error = run_fetch(&config, &client).expect_err("invalid JSON must fail");
+        assert!(error.to_string().contains("解析に失敗"));
+        match error {
+            FetchError::Parse(detail) => {
+                assert!(!detail.is_empty());
+                assert!(!detail.contains("secret"));
+                assert_eq!(redact_token(&detail, Some("secret-agent-token")), detail);
+            }
+            _ => panic!("unexpected error variant"),
+        }
+
+        let future = serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION + 1,
+            "total_process_count": 1,
+            "snapshot": tm_core::demo::demo_snapshot(0),
+        })
+        .to_string();
+        let (config, client, _) =
+            fake_fetch_client(Some("secret-agent-token"), 200, future.into_bytes());
+        let error = run_fetch(&config, &client).expect_err("a future schema must fail");
+        assert_eq!(
+            error,
+            FetchError::SchemaVersion {
+                agent: WIRE_SCHEMA_VERSION + 1,
+                web: WIRE_SCHEMA_VERSION,
+            }
+        );
     }
 }
