@@ -1059,11 +1059,16 @@ fn spawn_connection(
         let _slot = ActiveConnection(state);
         let mut trace = RequestTrace::begin_unknown(&metrics);
         trace.finish(503);
-        let response = http::Response::json(
+        let mut response = http::Response::json(
             503,
             "Service Unavailable",
             error_body(ErrorCode::Busy, "同時接続数が上限に達しました"),
         );
+        // This rejection happens before the request head is read, so there is
+        // no Origin to reflect (no Access-Control-Allow-Origin here). Still
+        // expose Retry-After so every CORS-capable 503 path shares the same
+        // header contract; a browser would otherwise never see the hint.
+        http::expose_retry_after(&mut response);
         // The 503 path is written synchronously on the accept thread, bounded
         // by WRITE_TIMEOUT (5 s). In practice the ~240-byte response fits in
         // the loopback send buffer and returns immediately; a peer stopping
@@ -1513,6 +1518,10 @@ fn write_sse_head<W: io::Write>(stream: &mut W, origin: Option<&str>) -> io::Res
     if let Some(origin) = origin {
         head.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\n"));
         head.push_str("Vary: Origin\r\n");
+        // Same exposure contract as the non-streaming CORS paths (`add_cors_headers`).
+        head.push_str("Access-Control-Expose-Headers: ");
+        head.push_str(http::EXPOSED_RESPONSE_HEADERS);
+        head.push_str("\r\n");
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
@@ -1826,6 +1835,10 @@ fn preflight_response(request: &http::Request, allowed_origin: Option<&str>) -> 
     response
         .extra_headers
         .push(("Access-Control-Max-Age".to_string(), "600".to_string()));
+    // `add_cors_if_absent` delegates to `http::add_cors_headers`, which appends
+    // `Access-Control-Expose-Headers: Retry-After`. Preflight therefore shares
+    // the exact exposure contract of the ordinary and 503 paths, without a
+    // duplicate header line here.
     add_cors_if_absent(&mut response, allowed_origin);
     response
 }
@@ -2455,6 +2468,10 @@ mod tests {
             "{allowed}"
         );
         assert!(allowed.contains("Vary: Origin"));
+        assert!(
+            allowed.contains("Access-Control-Expose-Headers: Retry-After"),
+            "browser fetch must be able to read Retry-After: {allowed}"
+        );
 
         let foreign = send_request(
             address,
@@ -2464,6 +2481,66 @@ mod tests {
         assert!(
             !foreign.contains("Access-Control-Allow-Origin"),
             "foreign origins must not receive CORS headers: {foreign}"
+        );
+        assert!(
+            !foreign.contains("Access-Control-Expose-Headers"),
+            "foreign origins must not receive CORS exposure headers: {foreign}"
+        );
+
+        join_demo_server(handle);
+    }
+
+    #[test]
+    fn ipv6_loopback_origin_gets_cors_and_retry_after_exposure() {
+        // `[::1]` is accepted by --listen and by the Web client, so the browser
+        // Origin must be reflected too (curl 200 alone was not enough).
+        let (address, handle) = spawn_demo_server(3);
+        let allowed = send_request(
+            address,
+            "GET /healthz HTTP/1.1\r\nOrigin: http://[::1]:8787\r\n\r\n",
+        );
+        assert!(allowed.starts_with("HTTP/1.1 200 OK"), "{allowed}");
+        assert!(
+            allowed.contains("Access-Control-Allow-Origin: http://[::1]:8787"),
+            "{allowed}"
+        );
+        assert!(allowed.contains("Vary: Origin"), "{allowed}");
+        assert!(
+            allowed.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{allowed}"
+        );
+
+        // Preflight shares the same exposure contract as the ordinary path.
+        let preflight = send_request(
+            address,
+            "OPTIONS /api/v1/snapshot HTTP/1.1\r\nOrigin: http://[::1]\r\n\r\n",
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "{preflight}"
+        );
+        assert!(
+            preflight.contains("Access-Control-Allow-Origin: http://[::1]"),
+            "{preflight}"
+        );
+        assert!(
+            preflight.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{preflight}"
+        );
+
+        // A different IPv6 literal stays an opaque, unauthorised origin.
+        let foreign = send_request(
+            address,
+            "GET /healthz HTTP/1.1\r\nOrigin: http://[fe80::1]:8787\r\n\r\n",
+        );
+        assert!(foreign.starts_with("HTTP/1.1 200 OK"), "{foreign}");
+        assert!(
+            !foreign.contains("Access-Control-Allow-Origin"),
+            "{foreign}"
+        );
+        assert!(
+            !foreign.contains("Access-Control-Expose-Headers"),
+            "{foreign}"
         );
 
         join_demo_server(handle);
@@ -2480,6 +2557,10 @@ mod tests {
         assert!(allowed.starts_with("HTTP/1.1 204 No Content"), "{allowed}");
         assert!(allowed.contains("Access-Control-Allow-Origin: http://localhost:5173"));
         assert!(allowed.contains("Access-Control-Allow-Methods: GET, OPTIONS"));
+        assert!(
+            allowed.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{allowed}"
+        );
 
         let foreign = send_request(
             address,
@@ -3767,6 +3848,12 @@ mod tests {
             response.starts_with("HTTP/1.1 503 Service Unavailable"),
             "{response}"
         );
+        // The pre-read 503 has no Origin to reflect, but it must still expose
+        // Retry-After so the header contract matches every other CORS path.
+        assert!(
+            response.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{response}"
+        );
         assert_eq!(state.active.load(Ordering::Acquire), MAX_CONNECTIONS);
         // The 503 path is synchronous on the accept thread: it must not add a
         // worker handle, or repeated rejections would grow the tracker forever.
@@ -3874,6 +3961,53 @@ mod tests {
         assert!(body["snapshot"]["processes"].is_array());
         assert_eq!(body["snapshot"]["hostname"], "host");
         assert!(!response.contains("kubuntu-demo"));
+    }
+
+    #[test]
+    fn cors_changes_keep_host_auth_and_redact_contracts() {
+        let (address, handle) = spawn_demo_server_with_redaction(3, true);
+
+        // Host validation still wins, even for the newly allowed IPv6 Origin.
+        let bad_host = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: evil.example\r\nOrigin: http://[::1]:8787\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(bad_host.starts_with("HTTP/1.1 403"), "{bad_host}");
+        assert_eq!(parse_body(&bad_host)["code"], "forbidden");
+        assert!(
+            bad_host.contains("Access-Control-Allow-Origin: http://[::1]:8787"),
+            "{bad_host}"
+        );
+        assert!(
+            bad_host.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{bad_host}"
+        );
+
+        // Authentication is unchanged; a request without Origin gets no CORS.
+        let no_token = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        );
+        assert!(no_token.starts_with("HTTP/1.1 401"), "{no_token}");
+        assert!(no_token.contains("WWW-Authenticate: Bearer"));
+        assert!(!no_token.contains("Access-Control-Allow-Origin"));
+
+        // Redaction still applies to the CORS-enabled success path.
+        let ok = send_request(
+            address,
+            "GET /api/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        assert!(ok.starts_with("HTTP/1.1 200 OK"), "{ok}");
+        assert!(
+            ok.contains("Access-Control-Expose-Headers: Retry-After"),
+            "{ok}"
+        );
+        let body = parse_body(&ok);
+        assert_eq!(body["schema_version"], json!(tm_core::WIRE_SCHEMA_VERSION));
+        assert_eq!(body["snapshot"]["hostname"], "host");
+        assert!(!ok.contains("kubuntu-demo"));
+
+        join_demo_server(handle);
     }
 
     #[test]
@@ -4095,6 +4229,7 @@ mod tests {
         // A streaming response must not advertise a finite body length.
         assert!(!text.to_ascii_lowercase().contains("content-length"));
         assert!(text.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
+        assert!(text.contains("Access-Control-Expose-Headers: Retry-After\r\n"));
         assert!(text.ends_with("\r\n\r\n"));
     }
 

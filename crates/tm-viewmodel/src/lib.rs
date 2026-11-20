@@ -507,8 +507,17 @@ pub struct Dashboard {
     pending_kill: Option<PendingKill>,
     status: Option<StatusMessage>,
     last_network: Option<(u64, u64)>,
-    /// High-water mark of ingested sample times. Only a snapshot that is at
-    /// least this new may clear transient status or become the network baseline.
+    /// Physical interface names whose counters contributed to `last_network`.
+    ///
+    /// Cumulative totals are only comparable while the set of contributors is
+    /// unchanged: a hot-plugged interface brings its own boot-time counter and
+    /// would otherwise look like a one-frame traffic spike (WC-IFHOT).
+    last_network_interfaces: HashSet<String>,
+    /// High-water mark of ingested sample times in the current clock era. A
+    /// snapshot older than this is late unless its network counters show it is
+    /// newer than the baseline, in which case the mark is rebased onto the new
+    /// clock era (WB-CLOCK). Only an accepted snapshot may clear transient
+    /// status or become the network baseline.
     last_ingested_at: Option<Timestamp>,
     network_rates: (u64, u64),
 }
@@ -538,6 +547,7 @@ impl Dashboard {
             pending_kill: None,
             status: None,
             last_network: None,
+            last_network_interfaces: HashSet::new(),
             last_ingested_at: None,
             network_rates: (0, 0),
         }
@@ -933,9 +943,17 @@ impl Dashboard {
     /// `Tick`, `ingest` and `ConfirmKill` under the same pause invariant.
     ///
     /// A snapshot whose `sampled_at` predates the newest sample already seen
-    /// is a late arrival. It still refreshes the display, but it leaves the
-    /// transient status and the network rate baseline untouched so a delayed
-    /// sample cannot erase the latest error or skew the next fresh rate.
+    /// is normally a late arrival. It still refreshes the display, but it
+    /// leaves the transient status and the network rate baseline untouched so
+    /// a delayed sample cannot erase the latest error or skew the next fresh
+    /// rate.
+    ///
+    /// The exception is a wall-clock step back: when a regressed `sampled_at`
+    /// arrives with network counters that have not gone backwards, the sample
+    /// itself is newer than the baseline and only the clock is stale. The
+    /// high-water mark and rate baseline are rebased onto it, so a *sustained*
+    /// regression cannot keep accumulating rates from an obsolete baseline or
+    /// pin a transient error forever (WB-CLOCK).
     pub fn ingest(&mut self, snapshot: SystemSnapshot) {
         if self.paused {
             // Keep the "paused" notice: an in-flight sample finishing now must
@@ -946,9 +964,22 @@ impl Dashboard {
         // one. Compare against the high-water mark rather than the last stored
         // `snapshot`: a repeated late arrival must not be able to walk the mark
         // backwards and eventually become the baseline itself.
-        let is_late = self
+        //
+        // Cumulative network counters cannot be higher in an older sample. If
+        // a "late" snapshot nevertheless carries counters at least as high as
+        // the current baseline, the sample is newer than the baseline and only
+        // the wall clock stepped back (NTP/VM resume). Rebase the mark and the
+        // baseline onto it so a *sustained* regression cannot accumulate rates
+        // or pin a transient error forever (WB-CLOCK). Genuinely older samples
+        // keep the previous contract: display only, no status/rate changes.
+        let wall_clock_regressed = self
             .last_ingested_at
             .is_some_and(|last| snapshot.sampled_at < last);
+        let (total_rx, total_tx) = snapshot.network_totals();
+        let counters_advanced = self.last_network.is_none_or(|(previous_rx, previous_tx)| {
+            total_rx >= previous_rx && total_tx >= previous_tx
+        });
+        let is_late = wall_clock_regressed && !counters_advanced;
         if !is_late {
             self.last_ingested_at = Some(snapshot.sampled_at);
             // Only a current snapshot may clear a transient notice. Doing this
@@ -956,8 +987,23 @@ impl Dashboard {
             // notices are never touched (SECURITY §5).
             self.clear_transient_status();
         }
+        // `network_totals()` sums the cumulative counters of the physical
+        // interfaces, so those totals are only comparable while the contributor
+        // set is unchanged. A hot-plugged interface brings its own boot-time
+        // counter: without a guard the aggregate delta looks like a one-frame
+        // multi-GB/s spike (WC-IFHOT). Treat a changed set like the first sample
+        // after startup — no rate for this frame, then re-baseline.
+        let physical_interfaces: HashSet<String> = snapshot
+            .network
+            .interfaces
+            .iter()
+            .filter(|iface| !tm_core::model::is_virtual_interface(&iface.name))
+            .map(|iface| iface.name.clone())
+            .collect();
         let (rx_rate, tx_rate) = match self.last_network {
-            Some((previous_rx, previous_tx)) => {
+            Some((previous_rx, previous_tx))
+                if self.last_network_interfaces == physical_interfaces =>
+            {
                 // Use the probe's monotonic elapsed time, not a wall-clock
                 // delta: NTP/VM resume can move `sampled_at` backwards and
                 // produce a 1000x rate spike (R49 audit).
@@ -965,12 +1011,13 @@ impl Dashboard {
                 NetworkCounters::new(snapshot.network_totals().0, snapshot.network_totals().1)
                     .rate_since(NetworkCounters::new(previous_rx, previous_tx), elapsed)
             }
-            None => (0, 0),
+            _ => (0, 0),
         };
         self.network_rates = (rx_rate, tx_rate);
         if !is_late {
             let (total_rx, total_tx) = snapshot.network_totals();
             self.last_network = Some((total_rx, total_tx));
+            self.last_network_interfaces = physical_interfaces;
         }
 
         self.history.push(
@@ -1356,6 +1403,20 @@ mod tests {
         }
     }
 
+    /// Demo snapshot with an extra physical interface carrying boot-time totals.
+    fn snapshot_with_usb0(tick: u64, rx: u64, tx: u64) -> tm_core::SystemSnapshot {
+        let mut snapshot = demo_snapshot(tick);
+        snapshot
+            .network
+            .interfaces
+            .push(tm_core::NetworkInterfaceSnapshot {
+                name: "usb0".to_string(),
+                received_bytes: rx,
+                transmitted_bytes: tx,
+            });
+        snapshot
+    }
+
     fn firefox_key() -> ProcessKey {
         tm_core::demo::demo_process_key(800).expect("demo firefox process")
     }
@@ -1615,6 +1676,124 @@ mod tests {
         // probe still reports a full one-second monotonic interval (R49).
         second.sampled_at = tm_core::Timestamp::from_millis(1);
         dashboard.ingest(second);
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn sustained_clock_regression_does_not_accumulate_network_rates() {
+        let mut regressing = dashboard();
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        let expected = (1_234_567, 321_456);
+
+        // The wall clock steps back once and stays there while the probe keeps
+        // producing one second of new traffic per tick (WB-CLOCK).
+        for tick in 1..=4 {
+            let mut snapshot = demo_snapshot(tick);
+            snapshot.sampled_at = tm_core::Timestamp::from_millis(1);
+            dashboard.ingest(snapshot);
+            assert_eq!(
+                dashboard.network_rates(),
+                expected,
+                "tick {tick} must not accumulate an obsolete baseline"
+            );
+        }
+
+        // The same holds when the clock keeps drifting further backwards.
+        regressing.ingest(demo_snapshot(0));
+        let base = demo_snapshot(0).sampled_at.unix_millis;
+        for tick in 1..=4 {
+            let mut snapshot = demo_snapshot(tick);
+            snapshot.sampled_at = tm_core::Timestamp::from_millis(base - tick * 1_000);
+            regressing.ingest(snapshot);
+            assert_eq!(
+                regressing.network_rates(),
+                expected,
+                "progressively regressing tick {tick} must not accumulate an obsolete baseline"
+            );
+        }
+    }
+
+    #[test]
+    fn sustained_clock_regression_clears_transient_status() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        dashboard.set_status("直近の取得失敗", true);
+        assert!(dashboard.status().is_some_and(|status| status.is_error));
+
+        for tick in 1..=4 {
+            let mut snapshot = demo_snapshot(tick);
+            snapshot.sampled_at = tm_core::Timestamp::from_millis(1);
+            dashboard.ingest(snapshot);
+            assert!(
+                dashboard.status().is_none(),
+                "a newer sample in a stepped-back clock era must clear the transient error (tick {tick})"
+            );
+        }
+
+        // A genuinely older sample (lower counters *and* older clock) still
+        // preserves the error: the late-arrival contract is unchanged.
+        dashboard.set_status("直近の取得失敗", true);
+        let mut older = demo_snapshot(0);
+        older.sampled_at = tm_core::Timestamp::from_millis(0);
+        dashboard.ingest(older);
+        assert!(dashboard.status().is_some_and(|status| status.is_error));
+    }
+
+    #[test]
+    fn forward_progress_after_clock_rebase_reports_normal_rates() {
+        let mut dashboard = dashboard();
+        let mut first = demo_snapshot(0);
+        first.sampled_at = tm_core::Timestamp::from_millis(1);
+        dashboard.ingest(first);
+        assert_eq!(dashboard.network_rates(), (0, 0));
+
+        let mut next = demo_snapshot(1);
+        next.sampled_at = tm_core::Timestamp::from_millis(1_001);
+        dashboard.ingest(next);
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+
+        let mut later = demo_snapshot(2);
+        later.sampled_at = tm_core::Timestamp::from_millis(2_001);
+        dashboard.ingest(later);
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn new_interface_does_not_spike_the_network_rate() {
+        let mut dashboard = dashboard();
+        ingest_ticks(&mut dashboard, 3); // baseline: tick 2, steady traffic
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+
+        // A physical interface appears with large boot-time counters. The
+        // aggregate jumps by 50 GB/20 GB even though no traffic moved.
+        dashboard.ingest(snapshot_with_usb0(3, 50_000_000_000, 20_000_000_000));
+        assert_eq!(
+            dashboard.network_rates(),
+            (0, 0),
+            "the hot-plug frame must re-baseline instead of reporting the new IF's boot counter"
+        );
+
+        // With the interface set stable again, only real traffic is reported.
+        dashboard.ingest(snapshot_with_usb0(4, 50_000_000_000, 20_000_000_000));
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn removed_interface_rebaselines_without_a_negative_rate() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(snapshot_with_usb0(0, 50_000_000_000, 20_000_000_000));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        dashboard.ingest(snapshot_with_usb0(1, 50_000_000_000, 20_000_000_000));
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+
+        // usb0 disappears: totals fall below the old baseline. The saturated
+        // subtraction already yielded (0, 0) here; the set-change guard must
+        // preserve that result and move the baseline to the reduced totals.
+        dashboard.ingest(demo_snapshot(2));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        dashboard.ingest(demo_snapshot(3));
         assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
     }
 
