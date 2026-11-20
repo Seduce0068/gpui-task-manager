@@ -354,10 +354,42 @@ PROOF_AX_STATE_FIELDS: dict[str, str] = {
 # ミラー実装済み。期待値（row = rows + ヘッダ行）と照合方法（dir は名前の
 # 昇順/降順）の修正後、self-check と実 CDP（demo: rows=30 に対して row=31、
 # dir=asc が名前の「昇順」で 1 件一致）の両方で accessibility.warnings = 0 件を
-# 確認した。これは昇格の判断材料だが、AX 検証の未カバー項目が残るため False 維持。
-# なお選択行の selected property 照合は、ミラー実装に伴いこのフラグに関わらず
-# 常に failure へ昇格する（verify_ax_roles の selected_pid 処理を参照）。
-PROMOTE_AX_TO_FAILURE = False
+# 確認済み。未カバー項目が残るが、警告を放置すると AX 退行を検知できないため
+# True へ反転する（R4-VU01）。未カバー項目が原因で落ちた場合は下記の注記を
+# failure メッセージへ添える。
+# 選択行の selected property 照合は、このフラグに関わらず常に failure である
+# （verify_ax_roles の selected_pid 処理を参照）。
+PROMOTE_AX_TO_FAILURE = True
+
+# AX 検証の未カバー項目（R4-VU01）:
+# - CDP は aria-sort を property として露出しないため dir は列名テキストで代替照合
+# - selected property の露出はブラウザ / CDP 環境依存
+# - Accessibility.getFullAXTree が使えない環境では AX 全体を検証できない
+# 昇格後にこれらが原因で失敗した場合、failure メッセージへ明記する。
+AX_UNCOVERED_NOTE = (
+    "AX 未カバー項目が原因の可能性: CDP の selected / aria-sort property 非露出"
+    "（dir は名前テキストで代替照合）、Accessibility.getFullAXTree 不可環境"
+)
+
+
+def ax_enforcement() -> str:
+    """証拠 JSON の accessibility.enforcement に載せる昇格先を返す。"""
+    return "failure" if PROMOTE_AX_TO_FAILURE else "warning"
+
+
+def promoted_ax_failures(
+    ax_failures: list[str], ax_warnings: list[str]
+) -> list[str]:
+    """AX 不一致を failure へ昇格する純粋関数。
+
+    warning 由来のメッセージには未カバー項目の注記を付ける。evidence の
+    accessibility.failures / warnings 構造は変更せず、最終的な failures リスト
+    のみに反映する（証拠スキーマ互換を保つ）。
+    """
+    promoted = list(ax_failures)
+    if PROMOTE_AX_TO_FAILURE:
+        promoted.extend(f"{message}（{AX_UNCOVERED_NOTE}）" for message in ax_warnings)
+    return promoted
 
 
 def expected_ax_role_counts(proof: dict[str, str]) -> dict[str, tuple[int, int]]:
@@ -424,7 +456,7 @@ def verify_ax_roles(
 
     戻り値は (failures, warnings, detail)。選択行の `selected=true` property 照合
     だけを常時 failure とし、それ以外の AX 不一致は warnings に積む（呼び出し側が
-    PROMOTE_AX_TO_FAILURE で failure へ昇格する）。
+    promoted_ax_failures で failure へ昇格する）。
     """
     counts = count_ax_roles(ax_nodes)
     expected = expected_ax_role_counts(proof)
@@ -773,6 +805,26 @@ def self_check() -> int:
         and len(zero_failures) == 1
         and zero_detail["role_counts"]["row"]["actual"] == 0,
         "AX ノード 0 件（ミラー未実装）は警告と selected failure で検出される",
+    )
+
+    # AX failure 昇格の self-check（R4-VU01）: フラグ反転・証拠の enforcement・
+    # warning 由来 failure への未カバー項目注記をオフラインで確認する。
+    check(PROMOTE_AX_TO_FAILURE is True, "AX ロール不一致が failure へ昇格する設定になっている")
+    check(ax_enforcement() == "failure", "証拠 JSON の enforcement が failure を報告する")
+    mismatch_failures, mismatch_warnings, _ = verify_ax_roles(
+        [{"role": {"value": "grid"}}], consistent_proof
+    )
+    check(len(mismatch_warnings) >= 3, "AX ロール不一致が warning として検出される")
+    promoted = promoted_ax_failures(mismatch_failures, mismatch_warnings)
+    check(len(promoted) > len(mismatch_failures), "AX warning が failure へ昇格する")
+    check(
+        all(AX_UNCOVERED_NOTE in message for message in promoted[len(mismatch_failures):]),
+        "昇格した failure に未カバー項目の注記が含まれる",
+    )
+    zero_promoted = promoted_ax_failures(zero_failures, zero_warnings)
+    check(
+        len(zero_promoted) == len(zero_failures) + len(zero_warnings),
+        "AX ノード 0 件の警告も failure へ昇格する",
     )
 
     # 列座標: 全列が正の座標で、左から右へ単調増加すること。
@@ -1147,14 +1199,16 @@ async def main() -> int:
     # ミラー実装後は role="grid" + aria-selected="true" により Chrome の AX ツリーに
     # 選択 row の selected=true property が露出される。selected 照合はこの property
     # のみを厳格に見て、未検出なら PROMOTE_AX_TO_FAILURE に関わらず failure にする。
-    # その他のロール/ソート不一致は従来どおり warnings（フラグで昇格）に留める。
+    # その他のロール/ソート不一致は warnings として集め、フラグが True のとき
+    # promoted_ax_failures で failure へ昇格する（未カバー項目の注記付き）。
     ax_failures: list[str] = []
     try:
         ax_tree = await cdp.call("Accessibility.getFullAXTree")
         ax_nodes = ax_tree.get("nodes", []) if isinstance(ax_tree, dict) else []
     except RuntimeError as error:
         # AX ドメイン自体が使えない環境では「selected property が無い」と断定できない
-        # ため failure ではなく warning に留める（property 非露出の環境差への配慮）。
+        # ため一度 warning に積む。PROMOTE_AX_TO_FAILURE=True では昇格して failure
+        # になるが、未カバー項目の注記を添えて環境差を切り分けられるようにする。
         ax_nodes = []
         ax_warnings = [f"Accessibility.getFullAXTree が失敗し AX 検証ができない: {error}"]
         ax_detail = {"role_counts": {}, "state": {}, "error": repr(error)}
@@ -1166,15 +1220,17 @@ async def main() -> int:
         "state": ax_detail["state"],
         "failures": ax_failures,
         "warnings": ax_warnings,
-        "enforcement": "failure" if PROMOTE_AX_TO_FAILURE else "warning",
+        "enforcement": ax_enforcement(),
         "selected_enforcement": "failure",
     }
-    failures.extend(ax_failures)
-    for message in ax_failures:
+    # PROMOTE_AX_TO_FAILURE=True: ロール/ソート不一致も failure へ昇格する。
+    # 未カバー項目が原因で落ちる場合があるため、昇格したメッセージには
+    # AX_UNCOVERED_NOTE を添えて可視化する（R4-VU01）。
+    all_ax_failures = promoted_ax_failures(ax_failures, ax_warnings)
+    failures.extend(all_ax_failures)
+    for message in all_ax_failures:
         print(f"  FAIL: {message}")
-    if PROMOTE_AX_TO_FAILURE:
-        failures.extend(ax_warnings)
-    else:
+    if not PROMOTE_AX_TO_FAILURE:
         warnings.extend(ax_warnings)
         for message in ax_warnings:
             print(f"  WARN: {message}")

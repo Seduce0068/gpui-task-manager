@@ -149,6 +149,11 @@ pub fn process_sparkline(
 }
 
 /// A small rounded status label.
+///
+/// `fg` is kept as-is when it already clears WCAG AA on the filled `bg`;
+/// otherwise [`on_fill_text_color`] substitutes a readable foreground. This
+/// covers caller-supplied `base`-on-accent fills without changing the label,
+/// ids or accessibility contract.
 pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
     div()
         .px_2()
@@ -156,7 +161,7 @@ pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32) -> Div {
         .rounded_full()
         .text_xs()
         .bg(rgb(bg))
-        .text_color(rgb(fg))
+        .text_color(rgb(on_fill_text_color(fg, bg)))
         .child(text.into())
 }
 
@@ -257,7 +262,8 @@ pub fn filter_preset_chip(
 ) -> Stateful<Div> {
     let palette = palette();
     let (fg, bg) = if active {
-        (palette.base, palette.blue)
+        // base on the blue fill is ~4.3:1; swap in a readable foreground.
+        (on_fill_text_color(palette.base, palette.blue), palette.blue)
     } else {
         (palette.subtext, palette.surface)
     };

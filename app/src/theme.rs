@@ -56,8 +56,8 @@ pub const LIGHT: Palette = Palette {
     surface_hi: 0xbcc0cc,
     text: 0x4c4f69,
     subtext: 0x5c5f77,
-    muted: 0x6c6f85,
-    dim: 0x8c8fa1,
+    muted: 0x585b70,
+    dim: 0x64677c,
     blue: 0x1e66f5,
     green: 0x40a02b,
     yellow: 0xdf8e1d,
@@ -91,6 +91,57 @@ pub fn palette() -> &'static Palette {
     match theme() {
         Theme::Dark => &DARK,
         Theme::Light => &LIGHT,
+    }
+}
+
+/// Minimum contrast ratio for normal text under WCAG 2.x AA (SC 1.4.3).
+pub const WCAG_AA_NORMAL: f64 = 4.5;
+
+/// Linearises one 8-bit sRGB channel for WCAG relative-luminance math.
+///
+/// Pure integer-in / float-out helper: no theme state is consulted.
+fn linearize(channel: u8) -> f64 {
+    let value = f64::from(channel) / 255.0;
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// WCAG 2.x relative luminance of an `0xRRGGBB` colour, in `0.0..=1.0`.
+pub fn relative_luminance(color: u32) -> f64 {
+    let r = linearize(((color >> 16) & 0xff) as u8);
+    let g = linearize(((color >> 8) & 0xff) as u8);
+    let b = linearize((color & 0xff) as u8);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// WCAG 2.x contrast ratio between two `0xRRGGBB` colours, in `1.0..=21.0`.
+///
+/// Symmetric by construction; which colour is "foreground" does not matter.
+pub fn contrast_ratio(a: u32, b: u32) -> f64 {
+    let la = relative_luminance(a);
+    let lb = relative_luminance(b);
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// High-contrast foreground for text drawn on a filled `bg`.
+///
+/// Keeps the caller's `fg` when it already clears [`WCAG_AA_NORMAL`]; otherwise
+/// picks whichever of near-black / near-white has more contrast on `bg`. This
+/// keeps `base`-coloured text on light accent fills legible without changing
+/// the palette or the caller's colour semantics.
+pub fn on_fill_text_color(fg: u32, bg: u32) -> u32 {
+    if contrast_ratio(fg, bg) >= WCAG_AA_NORMAL {
+        return fg;
+    }
+    const NEAR_BLACK: u32 = 0x11111b;
+    const NEAR_WHITE: u32 = 0xffffff;
+    if contrast_ratio(NEAR_WHITE, bg) >= contrast_ratio(NEAR_BLACK, bg) {
+        NEAR_WHITE
+    } else {
+        NEAR_BLACK
     }
 }
 
@@ -193,5 +244,80 @@ mod tests {
         assert_eq!(palette().base, LIGHT.base);
         set_theme(tm_viewmodel::Theme::Dark);
         assert_eq!(palette().base, DARK.base);
+    }
+
+    #[test]
+    fn wcag_contrast_helpers_are_pure_and_symmetric() {
+        assert_eq!(relative_luminance(0x000000), 0.0);
+        assert!((relative_luminance(0xffffff) - 1.0).abs() < 1e-9);
+        let black_white = contrast_ratio(0x000000, 0xffffff);
+        assert!((black_white - 21.0).abs() < 1e-9, "{black_white}");
+        assert!((contrast_ratio(0xffffff, 0x000000) - black_white).abs() < 1e-9);
+        assert!((contrast_ratio(0x12345678, 0x12345678) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn light_theme_normal_text_meets_wcag_aa() {
+        for (name, fg) in [
+            ("text", LIGHT.text),
+            ("subtext", LIGHT.subtext),
+            ("muted", LIGHT.muted),
+            ("dim", LIGHT.dim),
+        ] {
+            for (bg_name, bg) in [("base", LIGHT.base), ("mantle", LIGHT.mantle)] {
+                let ratio = contrast_ratio(fg, bg);
+                assert!(
+                    ratio >= WCAG_AA_NORMAL,
+                    "LIGHT {name} on {bg_name}: {ratio:.2}:1 < {WCAG_AA_NORMAL}:1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn on_fill_text_color_clears_wcag_aa_on_every_light_fill() {
+        for (name, fill) in [
+            ("blue", LIGHT.blue),
+            ("green", LIGHT.green),
+            ("yellow", LIGHT.yellow),
+            ("red", LIGHT.red),
+            ("mauve", LIGHT.mauve),
+            ("teal", LIGHT.teal),
+            ("peach", LIGHT.peach),
+            ("surface_hi", LIGHT.surface_hi),
+        ] {
+            let fg = on_fill_text_color(LIGHT.base, fill);
+            let ratio = contrast_ratio(fg, fill);
+            assert!(
+                ratio >= WCAG_AA_NORMAL,
+                "LIGHT {name} fill {fill:06x}: {fg:06x} gives {ratio:.2}:1"
+            );
+        }
+    }
+
+    /// Extracts the verbatim `DARK` / `LIGHT` palette literal blocks from a source file.
+    fn palette_literals(source: &str) -> String {
+        let mut out = String::new();
+        for name in ["DARK", "LIGHT"] {
+            let marker = format!("pub const {name}: Palette = Palette {{");
+            let start = source
+                .find(&marker)
+                .expect("{name} palette literal must exist");
+            let block = &source[start..];
+            let end = block
+                .find("\n};")
+                .expect("{name} palette literal must terminate")
+                + 3;
+            out.push_str(&block[..end]);
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn native_and_web_palettes_are_verbatim_copies() {
+        let here = include_str!("theme.rs");
+        let other = include_str!("../../web/src/theme.rs");
+        assert_eq!(palette_literals(here), palette_literals(other));
     }
 }

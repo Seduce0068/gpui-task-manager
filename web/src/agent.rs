@@ -28,7 +28,7 @@
 
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -475,6 +475,81 @@ impl Drop for FetchGuard {
     }
 }
 
+/// Monotonic epoch that invalidates poll snapshots superseded by SSE.
+///
+/// Distinct from [`SharedConfig::generation`]: a token/endpoint reload changes
+/// the *settings*, while this epoch changes when the SSE stream becomes
+/// authoritative (its first frame) or a subscription is (re)started. A poll
+/// captures [`PollGeneration::current`] before it is issued; if the epoch has
+/// moved by the time the body is parsed, the sample belongs to the past and
+/// must not be ingested (R2-BV01 / R4-VU01).
+#[derive(Clone, Debug, Default)]
+pub struct PollGeneration(Arc<AtomicU64>);
+
+impl PollGeneration {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// Epoch a caller must capture before starting a poll.
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Invalidates every poll that captured an older value.
+    pub fn bump(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether a captured epoch still describes the current transport.
+    pub fn is_current(&self, captured: u64) -> bool {
+        self.current() == captured
+    }
+
+    /// Shared inner value, used by abortable body readers in tests.
+    #[cfg(test)]
+    fn shared(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.0)
+    }
+}
+
+/// RAII guard that pauses poll *requests* while SSE is connecting.
+///
+/// The shell creates one guard in `start_sse_stream` and keeps it alive until
+/// the stream delivers its first frame (or ends). While any guard for a client
+/// is alive, [`AgentClient::fetch_snapshot_guarded`] returns `Ok(None)` without
+/// issuing an HTTP request, so `Connecting(Fallback)` no longer samples the
+/// same probe as the SSE task and inflates the network rate. Dropping the guard
+/// resumes polling even on the error path; [`Self::confirm_sse`] bumps the
+/// generation first so an in-flight poll cannot land after SSE is active.
+#[must_use = "dropping the guard immediately would not pause polling"]
+#[derive(Debug)]
+pub struct PollSuspendGuard {
+    suspensions: Arc<AtomicUsize>,
+    generation: PollGeneration,
+}
+
+impl PollSuspendGuard {
+    fn new(suspensions: Arc<AtomicUsize>, generation: PollGeneration) -> Self {
+        suspensions.fetch_add(1, Ordering::SeqCst);
+        Self {
+            suspensions,
+            generation,
+        }
+    }
+
+    /// Call on the first SSE frame, immediately before dropping the guard.
+    pub fn confirm_sse(&self) {
+        self.generation.bump();
+    }
+}
+
+impl Drop for PollSuspendGuard {
+    fn drop(&mut self) {
+        self.suspensions.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// HTTP client for the loopback agent.
 pub struct AgentClient {
     config: SharedConfig,
@@ -483,6 +558,10 @@ pub struct AgentClient {
     executor: BackgroundExecutor,
     /// Enforces at most one in-flight fetch regardless of caller behaviour.
     gate: FetchGate,
+    /// Epoch bumped when SSE becomes authoritative; see [`PollGeneration`].
+    poll_generation: PollGeneration,
+    /// Number of live [`PollSuspendGuard`]s held against this client.
+    poll_suspensions: Arc<AtomicUsize>,
 }
 
 impl AgentClient {
@@ -497,6 +576,8 @@ impl AgentClient {
             http,
             executor,
             gate: FetchGate::default(),
+            poll_generation: PollGeneration::new(),
+            poll_suspensions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -521,7 +602,16 @@ impl AgentClient {
     /// they never trigger a silent fallback to demo data. The single-flight
     /// permit is held until this method resolves (success, error or deadline
     /// cancellation), so no second request can overlap this one.
+    ///
+    /// In addition, a poll whose captured [`PollGeneration`] was bumped while
+    /// it was in flight is *never returned as a success*: SSE has become
+    /// authoritative and the stale sample must not be ingested. The typed
+    /// [`FetchError::BodyAborted`] signal keeps the existing error contract
+    /// (no new DOM-proof variant) for callers that still use this method.
     pub async fn fetch_snapshot(&self) -> Result<SnapshotResponse, FetchError> {
+        // Capture before acquiring the gate so a bump while a previous fetch
+        // releases its permit also invalidates this attempt.
+        let captured = self.poll_generation.current();
         // Losing callers never reach `http.send`: a parallel fetch cannot
         // start, which is the wasm heap bound R4-A02 asks for.
         let _permit = match self.gate.try_acquire() {
@@ -529,25 +619,92 @@ impl AgentClient {
             None => return Err(FetchError::Busy),
         };
         let deadline = self.executor.timer(FETCH_TIMEOUT);
-        with_deadline(self.fetch_snapshot_inner(), deadline).await
+        let result = with_deadline(self.fetch_snapshot_inner(captured), deadline).await;
+        // Check again after the deadline wrapper: a first SSE frame may arrive
+        // after the body was parsed but before the caller ingests the sample.
+        if result.is_ok() && !self.poll_generation.is_current(captured) {
+            return Err(FetchError::BodyAborted);
+        }
+        result
+    }
+
+    /// Poll that honours the [`PollSuspendGuard`] RAII suspension.
+    ///
+    /// `Ok(None)` means "nothing to ingest" — either polling is suspended while
+    /// SSE is connecting, or an in-flight poll was superseded by SSE
+    /// confirmation. The shell should skip such a tick silently (no
+    /// `live_error`, no backoff, no tick increment) and switch to this method
+    /// instead of [`Self::fetch_snapshot`] to stop double-sampling during
+    /// `Connecting(Fallback)` (R2-BV01). No HTTP request is issued while a
+    /// guard is alive, so the shared probe cannot inflate the network rate.
+    pub async fn fetch_snapshot_guarded(&self) -> Result<Option<SnapshotResponse>, FetchError> {
+        let captured = self.poll_generation.current();
+        if self.polls_suspended() || !self.poll_generation.is_current(captured) {
+            return Ok(None);
+        }
+        let _permit = match self.gate.try_acquire() {
+            Some(permit) => permit,
+            None => return Err(FetchError::Busy),
+        };
+        // Re-check after acquiring the permit: a subscription may have started
+        // while we waited (the gate is non-blocking, so this is only a fast
+        // preemption guard, not a lock).
+        if self.polls_suspended() {
+            return Ok(None);
+        }
+        let deadline = self.executor.timer(FETCH_TIMEOUT);
+        let result = with_deadline(self.fetch_snapshot_inner(captured), deadline).await?;
+        if !self.poll_generation.is_current(captured) {
+            return Ok(None);
+        }
+        Ok(Some(result))
+    }
+
+    /// Current poll epoch. Capture it before issuing a poll.
+    pub fn poll_generation(&self) -> PollGeneration {
+        self.poll_generation.clone()
+    }
+
+    /// Whether a [`PollSuspendGuard`] is currently pausing poll requests.
+    pub fn polls_suspended(&self) -> bool {
+        self.poll_suspensions.load(Ordering::SeqCst) > 0
+    }
+
+    /// Pauses poll requests until the returned guard is dropped.
+    ///
+    /// Wire in `shell.rs` (担当外): store the guard on the app in
+    /// `start_sse_stream`, call `guard.confirm_sse()` in the first-frame
+    /// callback (before `stream_mode = Active`) and drop it there; also drop it
+    /// in `on_sse_ended` / `on_sse_idle_timeout` so a failed connection resumes
+    /// polling immediately.
+    #[must_use = "the guard must be stored until the first SSE frame or stream end"]
+    pub fn suspend_polls_while_connecting(&self) -> PollSuspendGuard {
+        PollSuspendGuard::new(Arc::clone(&self.poll_suspensions), self.poll_generation())
     }
 
     /// The actual request/parse pipeline, kept separate so the deadline can
     /// cover the body read as well as the response headers.
-    async fn fetch_snapshot_inner(&self) -> Result<SnapshotResponse, FetchError> {
+    async fn fetch_snapshot_inner(
+        &self,
+        captured_generation: u64,
+    ) -> Result<SnapshotResponse, FetchError> {
         // Snapshot once per request, after the shell may have re-read the URL.
         // The guard is dropped here, never held across the awaits below.
         let config = self.config.snapshot();
         // Remember the settings generation so the body read can abort early if
         // a reload supersedes this request while it is streaming (R4-A02).
         let generation = self.config.generation();
-        // The transport and the abort predicate are handed to one free function
-        // so every branch below can be exercised with a fake `HttpClient` on the
-        // native test host. No production contract moves with it: loopback-only
-        // endpoint, Bearer header, 8 MiB cap and the shared redaction gate.
-        fetch_snapshot_once(&config, &*self.http, || {
-            self.config.generation() != generation
-        })
+        // The transport and both generation predicates are handed to one free
+        // function so every branch below can be exercised with a fake
+        // `HttpClient` on the native test host. No production contract moves
+        // with it: loopback-only endpoint, Bearer header, 8 MiB cap and the
+        // shared redaction gate.
+        fetch_snapshot_once(
+            &config,
+            &*self.http,
+            Some((&self.poll_generation, captured_generation)),
+            || self.config.generation() != generation,
+        )
         .await
     }
 
@@ -588,20 +745,32 @@ impl AgentClient {
 /// One snapshot request/parse pipeline, with the transport injected.
 ///
 /// This is the single testable seam for [`AgentClient::fetch_snapshot_inner`]:
-/// the method snapshots the shared config and passes its HTTP client plus a
-/// generation predicate here. Nothing about the production contract moves —
+/// the method snapshots the shared config and passes its HTTP client plus both
+/// generation predicates here. Nothing about the production contract moves —
 /// loopback-only destination (checked *before* the bearer token is attached),
 /// `Authorization: Bearer` header with no token in the URL, 8 MiB declared and
 /// streamed body cap, and the one [`SnapshotEnvelope::into_response`]
 /// sanitise-and-redact gate shared with SSE.
+///
+/// `generation_guard` is `(live epoch, epoch captured before the request)`.
+/// A bump before the request is issued or after the body is read means SSE
+/// became authoritative while this poll was in flight: the response is
+/// discarded as [`FetchError::BodyAborted`] instead of being ingested.
+/// `None` disables the guard for transport-only unit tests.
 async fn fetch_snapshot_once<F>(
     config: &AgentConfig,
     http: &dyn HttpClient,
+    generation_guard: Option<(&PollGeneration, u64)>,
     aborted: F,
 ) -> Result<SnapshotResponse, FetchError>
 where
     F: Fn() -> bool,
 {
+    // Earliest possible supersession check: an SSE confirmation that landed
+    // before this point must not even open a request.
+    if generation_guard.is_some_and(|(live, captured)| !live.is_current(captured)) {
+        return Err(FetchError::BodyAborted);
+    }
     // Never attach the bearer token before checking the destination.
     if !is_loopback_http_endpoint(&config.endpoint) {
         return Err(FetchError::InvalidEndpoint);
@@ -658,6 +827,14 @@ where
         aborted,
     )
     .await?;
+
+    // Second supersession check: the first SSE frame may arrive while the body
+    // was streaming. Parsing and redaction have not happened yet, so the stale
+    // sample costs at most one extra chunk and never reaches the shell's ingest
+    // path (R2-BV01).
+    if generation_guard.is_some_and(|(live, captured)| !live.is_current(captured)) {
+        return Err(FetchError::BodyAborted);
+    }
 
     let envelope: SnapshotEnvelope = serde_json::from_slice(&buffer).map_err(|error| {
         FetchError::Parse(redact_token(&format!("{error:#}"), config.token.as_deref()))
@@ -2428,7 +2605,7 @@ mod tests {
         config: &AgentConfig,
         client: &FakeFetchHttpClient,
     ) -> Result<SnapshotResponse, FetchError> {
-        futures::executor::block_on(fetch_snapshot_once(config, client, || false))
+        futures::executor::block_on(fetch_snapshot_once(config, client, None, || false))
     }
 
     fn valid_snapshot_body(total: usize) -> Vec<u8> {
@@ -2607,10 +2784,11 @@ mod tests {
             fake_fetch_client(Some("secret-agent-token"), 200, b"{\"unused\":1}".to_vec());
         client.bump_generation = Some(Arc::clone(&generation));
         client.chunk = BODY_READ_CHUNK;
-        let error = futures::executor::block_on(fetch_snapshot_once(&config, &client, || {
-            generation.load(Ordering::SeqCst) != 7
-        }))
-        .expect_err("a superseded read must abort");
+        let error =
+            futures::executor::block_on(fetch_snapshot_once(&config, &client, None, || {
+                generation.load(Ordering::SeqCst) != 7
+            }))
+            .expect_err("a superseded read must abort");
         assert_eq!(error, FetchError::BodyAborted);
         assert_eq!(error.to_string(), BODY_ABORTED_ERROR);
         assert_eq!(
@@ -2620,6 +2798,62 @@ mod tests {
         );
         assert_eq!(generation.load(Ordering::SeqCst), 8);
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn poll_generation_bump_discards_a_superseded_poll_before_ingest() {
+        // R2-BV01: an SSE first frame arriving mid-poll must invalidate the
+        // sample even when the body is perfectly valid JSON.
+        let generation = PollGeneration::new();
+        let captured = generation.current();
+        let (config, mut client, reads) = fake_fetch_client(None, 200, valid_snapshot_body(3));
+        client.bump_generation = Some(generation.shared());
+        client.chunk = BODY_READ_CHUNK;
+        let error = futures::executor::block_on(fetch_snapshot_once(
+            &config,
+            &client,
+            Some((&generation, captured)),
+            || false,
+        ))
+        .expect_err("a poll superseded by SSE confirmation must not be ingested");
+        assert_eq!(error, FetchError::BodyAborted);
+        assert_eq!(error.to_string(), BODY_ABORTED_ERROR);
+        assert_eq!(generation.current(), captured + 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn poll_generation_guard_rejects_an_already_stale_poll_without_a_request() {
+        let generation = PollGeneration::new();
+        let captured = generation.current();
+        generation.bump();
+        let (config, client, reads) = fake_fetch_client(None, 200, valid_snapshot_body(1));
+        let error = futures::executor::block_on(fetch_snapshot_once(
+            &config,
+            &client,
+            Some((&generation, captured)),
+            || false,
+        ))
+        .expect_err("a stale poll must be rejected before the request");
+        assert_eq!(error, FetchError::BodyAborted);
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn poll_suspend_guard_is_raii_and_confirm_bumps_the_generation() {
+        let generation = PollGeneration::new();
+        let captured = generation.current();
+        let suspensions = Arc::new(AtomicUsize::new(0));
+        {
+            let guard = PollSuspendGuard::new(Arc::clone(&suspensions), generation.clone());
+            assert_eq!(suspensions.load(Ordering::SeqCst), 1);
+            guard.confirm_sse();
+            assert_ne!(generation.current(), captured);
+        }
+        // RAII: the slot is released on drop even without an explicit `resume`.
+        assert_eq!(suspensions.load(Ordering::SeqCst), 0);
+        assert!(!generation.is_current(captured));
     }
 
     #[test]

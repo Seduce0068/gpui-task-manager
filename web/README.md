@@ -277,12 +277,11 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
   proof と一致するかを確認します（対応表は `PROOF_AX_STATE_FIELDS`）。`dir` は
   CDP の AX ツリーが `aria-sort` を property として露出しないため、列見出しの
   名前テキストに含まれる `昇順` / `降順` で照合します。
-- 現状は **warning 扱い**です。不一致は証拠 JSON の `accessibility.warnings` と
-  最終チェック出力の `warnings` に記録し、`failures` / `passed` には影響させません。
+- AX ロール不一致は **failure 扱い**です（`PROMOTE_AX_TO_FAILURE = True`）。
   ミラー実装と期待値・照合方法の修正後、`--self-check` と実 CDP の両方で
-  `accessibility.warnings` = 0 件を確認済みです。AX 検証の未カバー項目が残るため
-  `PROMOTE_AX_TO_FAILURE` は `False` のままで、残項目が解消されたら `True` へ
-  反転して同じチェックをエラーへ昇格します。
+  `accessibility.warnings` = 0 件を確認済みです。未カバー項目（AX の `selected`
+  プロパティ／`aria-sort` property 非露出、`dir` の名前テキスト代替照合、
+  `getFullAXTree` 不可環境）は failure メッセージに明記されます。
 - `--self-check`（オフライン）では `EXPECTED_AX_ROLES` の構造と、proof からの
   期待値解決（`rows+1` を含む）・AX ノード集計・名前テキストによる `dir` 照合の
   純粋関数だけを検証します（ブラウザ不要）。

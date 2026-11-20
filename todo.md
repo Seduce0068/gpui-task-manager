@@ -1333,7 +1333,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] 列ヘッダのソートがマウス専用（WCAG 2.1.1）。フォーカス＋
       Enter/Space＋aria-sort。ネイティブ確認ダイアログの Dialog role 欠落。
       根拠 R5-UX01。
-- [ ] ライトテーマの muted/dim/塗り背景が WCAG AA 4.5:1 未満。
+- [x] ライトテーマの muted/dim/塗り背景が WCAG AA 4.5:1 未満。
       コントラスト比の自動検証テスト追加。根拠 R5-UX01。
 - [x] F5「今すぐ更新」が Web で実更新せず通知のみ。実 fetch または
       文言を「要求のみ」に変更。根拠 R5-UX01。
@@ -1362,10 +1362,10 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 低 — swarm-project-review + todo-discovery 2026-11-21
 
-- [ ] tm-platform が workspace.dependencies に無く path/version 重複。
+- [x] tm-platform が workspace.dependencies に無く path/version 重複。
       deny 重複 warn と CI コメント矛盾。all-features 監査が実ビルドと
       異なる feature 集合。根拠 R1-CF01。
-- [ ] markdownlint 除外スコープが CI と check.sh で手動同期。
+- [x] markdownlint 除外スコープが CI と check.sh で手動同期。
       gitleaks --unshallow 失敗無視。npm markdownlint 推移依存固定なし。
       dependabot gpui-stack グループがデッド設定。根拠 R1-CF01 / R3-DP01。
 - [x] admit 失敗の固定 50ms リトライ、stderr BrokenPipe パニック、
@@ -1374,7 +1374,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] DOM proof の短いトークン平文露出、XDG パスの '..' 迂回、
       明示トークンの強度要件/レート制限なし、通常 snapshot の Host
       欠落許容。根拠 R3-AU01。
-- [ ] sysinfo 0.31.4/0.40.3 重複、advisory ignore 根拠が lock 実態と
+- [x] sysinfo 0.31.4/0.40.3 重複、advisory ignore 根拠が lock 実態と
       矛盾（pastey/web-time 代替あり）。根拠 R3-DP01。
 - [x] テーマ切替ボタンの accessible name が状態を示さない、UI 文言の
       i18n 層欠落、温度しきい値用語 (max/crit vs 上限/危険) 混在、
@@ -1388,7 +1388,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       根拠 R4-VU01 / R5-DC01。
 - [x] workflow_dispatch が任意ブランチから成果物生成、外部ツール導入が
      毎回ネットワーク依存でキャッシュなし。根拠 R4-CI01。
-- [ ] AX ミラー告知に対して CDP の AX 検証が warning 止まり
+- [x] AX ミラー告知に対して CDP の AX 検証が warning 止まり
       (PROMOTE_AX_TO_FAILURE=False)。昇格または注記。根拠 R4-VU01。
 
 ### メモ — 却下 / speculative 2026-11-21

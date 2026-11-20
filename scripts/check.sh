@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Runs the standard verification loop for this repository:
-#   fmt -> clippy -> tests -> wasm -> web gates -> deny -> vet -> machete -> rustdoc -> markdownlint
+#   fmt -> clippy -> tests -> wasm -> web gates -> deny -> vet -> machete -> rustdoc -> markdownlint-cli2
 #
 # Gate order and commands are kept intact. Skipped gates are now reported
 # explicitly: a gate skipped because its tool is missing is NOT reported as a
@@ -30,7 +30,7 @@ usage() {
   cat <<'EOF'
 Runs the standard verification loop for this repository.
 
-  fmt -> clippy -> tests -> wasm -> web gates -> deny -> vet -> machete -> rustdoc -> markdownlint
+  fmt -> clippy -> tests -> wasm -> web gates -> deny -> vet -> machete -> rustdoc -> markdownlint-cli2
 
 Usage:
   bash scripts/check.sh            # full loop
@@ -195,26 +195,14 @@ else
   record_skip 'gitleaks' 'gitleaks is not installed'
 fi
 
-if optional_gate_enabled markdownlint; then
-  # Markdown lint gate. Keep this scope in sync with extra_gates in
-  # .github/workflows/ci.yml.
-  # - MD060/MD055: new table-style rules that conflict with the compact GFM
-  #   tables used throughout the existing documents.
-  # - log.md: append-only historical record (duplicate headings / bare URLs).
-  # - SECURITY.md, notes/{verification,cargo-vet-adoption,ime}.md: pre-existing
-  #   MD012/MD024/MD034/MD047 violations that are out of scope for this task.
-  # - packaging/linux/README.deb.md ships in the DEB and is required by
-  #   check-public-docs.sh; lint scope follows that public-document surface.
-  echo '==> markdownlint (documentation)'
-  markdownlint '*.md' 'notes/*.md' 'packaging/linux/README.md' 'packaging/linux/README.deb.md' 'poc-wasm/README.md' 'web/README.md' \
-    --ignore log.md \
-    --ignore SECURITY.md \
-    --ignore notes/verification.md \
-    --ignore notes/cargo-vet-adoption.md \
-    --ignore notes/ime.md \
-    --disable MD060 MD055
+if optional_gate_enabled markdownlint-cli2; then
+  # Markdown lint gate. Globs, ignores and disabled rules are defined once in
+  # the repository-root .markdownlint-cli2.jsonc, which the `gates` job in
+  # .github/workflows/ci.yml also references. Do not restate scope flags here.
+  echo '==> markdownlint-cli2 --config .markdownlint-cli2.jsonc'
+  markdownlint-cli2 --config .markdownlint-cli2.jsonc
 else
-  record_skip 'markdownlint' 'markdownlint is not installed'
+  record_skip 'markdownlint-cli2' 'markdownlint-cli2 is not installed'
 fi
 
 # Public-document disclosure gate (always on, no external tool required).

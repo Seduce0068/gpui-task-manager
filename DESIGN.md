@@ -565,9 +565,9 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
 | DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
 | DESIGN.md §6.3 / SECURITY.md §3 | SSE（`/api/v1/stream`）の実装 | Bearer 認証・Host 必須検証・loopback CORS・専用接続枠 `MAX_STREAMS`（2 枠）・読み取りタイムアウト非適用を実装 | `agent/src/main.rs:51,79,1187-1262` | 一致（R2-X03 反映） |
-| notes/current-state.md | 検証状況 | workspace 581 / web 196（core 176 / viewmodel 94 / platform 44 / agent 147 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
+| notes/current-state.md | 検証状況 | workspace 585 / web 203（core 176 / viewmodel 94 / platform 44 / agent 148 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
-| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 581 / web 196（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
+| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 585 / web 203（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
 | RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みで本文にも反映済み（R1-D02、2026-11-18） | `notes/ime.md`、README.md | 一致（反映済み） |
 
 - 時系列ログ（`log.md`、`notes/verification.md` の個別記録、
@@ -847,6 +847,13 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   （root / web の `supply-chain/`、全依存 exempt ベースライン、imports 未使用）で、
   `notes/cargo-vet-adoption.md` に運用方針・imports 候補の一次調査がある
   （監査記録の捏造は行わない）。branch protection は public 化後に有効化済み。
+- `Cargo.lock` では `sysinfo` が 0.31.4 と 0.40.3 の 2 バージョンで並存する。
+  0.40.3 は `tm-platform` が ADR-003 に従って固定した直接依存、
+  0.31.4 はピン留め GPUI スタックの `zed-scap 0.0.8-zed` が要求する推移依存である。
+  統一には `zed-scap` 側の sysinfo API 追従（＝ピン留めスタックの更新）が必要で、
+  現スタックでは行っていない。`deny.toml` は `multiple-versions = "warn"` で
+  可視化のみとし、重複はレビューで受容する（レビュー日 2026-11-21）。
+  GPUI スタックを更新する際は統合の可否を再検討する。
 - ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。
 - ディスクは `total_space() == 0` の擬似マウントを除外する。
 - スレッド数が取得できないプロセスは「—」と表示する。
@@ -858,14 +865,19 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 ### advisory ignore の追跡（cargo-deny）
 
 `deny.toml` の `[advisories].ignore` には 9 件を登録している。いずれもピン留め
-GPUI スタック由来の未保守依存、またはタスクマネージャ自身のコードから到達不能な
-推移依存である。2026-11-19 に再レビューし、2027-02-18 に期限切れとなる。
-各エントリの `reason` 末尾 `Tracked in DESIGN.md §14.` は本表を指す。
+GPUI スタック由来で API 互換性から置換できない依存、またはタスクマネージャ自身の
+コードから到達不能な推移依存である。`pastey 0.1.1` と `web-time 1.1.0` は
+`Cargo.lock` に存在する保守済みの後継だが、ピン留めされたサードパーティの
+API を変更せずに差し替えることはできない。この 2 件の旧来の「保守済み代替なし」
+という記述は lock の実態と矛盾するため、`deny.toml` と本表の当該行を
+2026-11-21 に訂正した（他 7 件の根拠・expiry は変更なし）。
+2026-11-19 に再レビューし、2027-02-18 に期限切れとなる。各エントリの
+`reason` 末尾 `Tracked in DESIGN.md §14.` は本表を指す。
 
 | ID | 根拠 | レビュー日 | expiry |
 | --- | --- | --- | --- |
-| RUSTSEC-2024-0384 | instant 0.1.13 は GPUI の推移依存。ピン留め GPUI スタックに保守済み代替なし | 2026-11-19 | 2027-02-18 |
-| RUSTSEC-2024-0436 | paste 1.0.15 はマクロ用の GPUI 推移依存。ピン留めスタックに保守済み代替なし | 2026-11-19 | 2027-02-18 |
+| RUSTSEC-2024-0384 | instant 0.1.13 は GPUI の推移依存。後継 web-time 1.1.0 は `Cargo.lock` に存在するが、ピン留めスタックの API を変えずに置換できない | 2026-11-19 | 2027-02-18 |
+| RUSTSEC-2024-0436 | paste 1.0.15 はマクロ用の GPUI 推移依存。後継 pastey 0.1.1 は `Cargo.lock` に存在するが、ピン留めスタックの API を変えずに置換できない | 2026-11-19 | 2027-02-18 |
 | RUSTSEC-2025-0134 | rustls-pemfile は推移依存で、タスクマネージャ自身のコードから到達不能 | 2026-11-19 | 2027-02-18 |
 | RUSTSEC-2026-0206 | rustybuzz は GPUI テキスト整形の推移依存。ピン留めスタックに保守済み代替なし | 2026-11-19 | 2027-02-18 |
 | RUSTSEC-2026-0192 | ttf-parser は GPUI フォントの推移依存。ピン留めスタックに保守済み代替なし | 2026-11-19 | 2027-02-18 |
