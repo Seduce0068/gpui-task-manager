@@ -377,12 +377,24 @@ fn run() -> Result<(), AgentError> {
         (None, None) => match std::env::var("TM_AGENT_TOKEN") {
             Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
             _ => {
+                // Detect reuse before resolution so the log reflects whether
+                // a credential was generated or simply read back. This is
+                // guidance only; a concurrent starter between the check and
+                // resolution would at worst print the wrong verb.
+                let reused = auto_token_dir()
+                    .map(|dir| read_token_file(&dir.join(AUTO_TOKEN_FILE_NAME)).is_ok())
+                    .unwrap_or(false);
                 let (token, path) = resolve_auto_token()
                     .map_err(|message| AgentError::new(ExitCategory::Auth, message))?;
                 // Only the path is announced; the value is never written to
                 // stderr (which is routinely captured in CI output and support
                 // bundles). Users read the 0600 file out of band to connect.
-                eprintln!("{}", generated_token_message(&path));
+                let message = if reused {
+                    reused_token_message(&path)
+                } else {
+                    generated_token_message(&path)
+                };
+                eprintln!("{}", message);
                 token
             }
         },
@@ -737,6 +749,21 @@ fn generated_token_message(path: &std::path::Path) -> String {
         concat!(
             "tm-agent: 認証トークンを自動生成し、{} に 0600 で保存しました（値はログに出力しません）。",
             "再起動時は同じファイルを再利用します。接続時は内容を読み取り --token-file に指定してください。"
+        ),
+        token_file_name(path)
+    )
+}
+
+/// Operator guidance when an existing 0600 token file was reused.
+///
+/// Keeping the generated and reused messages distinct avoids making operators
+/// believe the credential was rotated on every restart. The value and parent
+/// path are never printed, matching [`generated_token_message`].
+fn reused_token_message(path: &std::path::Path) -> String {
+    format!(
+        concat!(
+            "tm-agent: 既存の認証トークンを {} から再利用しました（値はログに出力しません）。",
+            "接続時は内容を読み取り --token-file に指定してください。"
         ),
         token_file_name(path)
     )
@@ -2758,6 +2785,18 @@ mod tests {
 
     /// The auto-token startup line goes to stderr even with `--redact`, so it
     /// must follow the same leaf-only rule as token error messages.
+    #[test]
+    fn reused_token_message_never_exposes_home_or_value() {
+        let path = std::path::Path::new("/home/alice/.local/state/tm-agent/token");
+        let message = super::reused_token_message(path);
+        assert!(message.contains("再利用"));
+        assert!(message.contains("token"));
+        assert!(!message.contains("home"));
+        assert!(!message.contains("alice"));
+        assert!(!message.contains('/'));
+        assert!(!message.contains("46464646"));
+    }
+
     #[test]
     fn generated_token_message_never_exposes_home_component() {
         let path = std::path::Path::new("/home/alice/.local/state/tm-agent/token.txt");
