@@ -156,15 +156,6 @@ const AUTO_TOKEN_FILE_NAME: &str = "token";
 /// lower-severity to reveal at those settings.
 static LOG_THRESHOLD: AtomicU8 = AtomicU8::new(2);
 
-/// Lower ranks are more severe; used for both `Level` and the CLI threshold.
-fn level_rank(level: Level) -> u8 {
-    match level {
-        Level::Error => 0,
-        Level::Warn => 1,
-        Level::Info => 2,
-    }
-}
-
 fn threshold_rank(level: args::LogLevel) -> u8 {
     match level {
         args::LogLevel::Error => 0,
@@ -173,26 +164,50 @@ fn threshold_rank(level: args::LogLevel) -> u8 {
     }
 }
 
-/// Pure form of the threshold check (kept separate so it can be tested).
+/// Current `--log-level` as the rank consumed by [`telemetry::level_allowed`].
+///
+/// Lower ranks are more severe; 0 = error, 1 = warn, 2 = info. Handing this rank
+/// to `RequestTrace::begin` makes its span lines obey the same threshold.
+fn current_minimum_rank() -> u8 {
+    LOG_THRESHOLD.load(Ordering::Relaxed)
+}
+
+/// Pure form of the threshold check, delegating to the shared telemetry decision.
 fn level_allowed(level: Level, minimum: args::LogLevel) -> bool {
-    level_rank(level) <= threshold_rank(minimum)
+    telemetry::level_allowed(level, threshold_rank(minimum))
 }
 
 /// Emits a structured event unless `--log-level` suppresses it.
 fn emit(level: Level, event: &str, fields: serde_json::Value) {
-    let minimum = match LOG_THRESHOLD.load(Ordering::Relaxed) {
+    let minimum = match current_minimum_rank() {
         0 => args::LogLevel::Error,
         1 => args::LogLevel::Warn,
         _ => args::LogLevel::Info,
     };
+    let rank = threshold_rank(minimum);
     if level_allowed(level, minimum) {
-        telemetry::emit(level, event, fields);
+        // `telemetry::emit` applies the same rank again; `RequestTrace` passes
+        // that very rank to its own events, so no emit path can bypass it.
+        telemetry::emit(level, event, fields, rank);
     }
+}
+
+/// Adds the correlation id to a request-scoped error event.
+///
+/// Fields are merged into the object rather than replaced, so callers keep
+/// their `phase`/`recovered`/`status` keys while gaining `request_id`; this lets
+/// an ERROR event be joined to its `http.request.*` trace even at
+/// `--log-level error`, when the Info-level span lines are filtered out.
+fn request_error_fields(request_id: u64, mut fields: serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(ref mut map) = fields {
+        map.insert("request_id".to_string(), json!(request_id));
+    }
+    fields
 }
 
 /// Fields of an authentication failure, always correlated with its request.
 fn auth_denied_fields(request_id: u64, reason: &'static str, path: &str) -> serde_json::Value {
-    json!({ "request_id": request_id, "reason": reason, "path": path })
+    request_error_fields(request_id, json!({ "reason": reason, "path": path }))
 }
 
 /// Emits `auth.denied` at ERROR with the trace id.
@@ -1420,7 +1435,7 @@ fn spawn_connection(
         // Drop guard returns the slot even if writing the rejection panics.
         let metrics = Arc::clone(&state.metrics);
         let _slot = ActiveConnection(state);
-        let mut trace = RequestTrace::begin_unknown(&metrics);
+        let mut trace = RequestTrace::begin_unknown(&metrics, current_minimum_rank());
         trace.finish(503);
         let mut response = http::Response::json(
             503,
@@ -1479,7 +1494,7 @@ fn spawn_connection(
                                 emit(
                                     Level::Warn,
                                     "probe.mutex_poisoned",
-                                    json!({ "recovered": true }),
+                                    request_error_fields(request_id, json!({ "recovered": true })),
                                 );
                                 err.into_inner()
                             }
@@ -1555,7 +1570,7 @@ fn read_request_head(
                     "リクエストの送信がタイムアウトしました",
                 ),
             };
-            let mut trace = RequestTrace::begin_unknown(metrics);
+            let mut trace = RequestTrace::begin_unknown(metrics, current_minimum_rank());
             trace.finish(status);
             let response = http::Response::json(status, reason, error_body(code, message));
             http::write_response(stream, &response)?;
@@ -1643,7 +1658,12 @@ fn write_short_response(
     state: &SharedState,
     response: http::Response,
 ) -> io::Result<()> {
-    let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
+    let mut trace = RequestTrace::begin(
+        &state.metrics,
+        &request.method,
+        &request.path,
+        current_minimum_rank(),
+    );
     trace.finish(response.status);
     http::write_response(stream, &response)
 }
@@ -1657,7 +1677,12 @@ fn handle_request(
 ) -> io::Result<()> {
     // Only `path` is traced. The raw target (with `?token=...`) and the
     // Authorization header must never reach a log line.
-    let mut trace = RequestTrace::begin(metrics, &request.method, &request.path);
+    let mut trace = RequestTrace::begin(
+        metrics,
+        &request.method,
+        &request.path,
+        current_minimum_rank(),
+    );
 
     // Compute the allowed Origin before any early return so error responses
     // (e.g. the Host check below) carry CORS headers too. Without this, the
@@ -1741,7 +1766,7 @@ fn route(
     }
 
     match request.path.as_str() {
-        HEALTH_PATH => health_response(),
+        HEALTH_PATH => health_response(context.request_id),
         SNAPSHOT_PATH => match probe {
             Some(probe) => {
                 snapshot_response(request, probe, token, redact, warmed_up, context.request_id)
@@ -1944,7 +1969,12 @@ fn handle_stream_connection_with_encoder<F>(
 where
     F: Fn(&SnapshotEnvelope<'_>) -> Result<String, serde_json::Error>,
 {
-    let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
+    let mut trace = RequestTrace::begin(
+        &state.metrics,
+        &request.method,
+        &request.path,
+        current_minimum_rank(),
+    );
     let origin = request.header("origin").map(str::to_string);
     let allowed_origin = origin
         .as_deref()
@@ -2035,7 +2065,7 @@ where
                         emit(
                             Level::Warn,
                             "probe.mutex_poisoned",
-                            json!({ "recovered": true }),
+                            request_error_fields(trace.id(), json!({ "recovered": true })),
                         );
                         err.into_inner()
                     }
@@ -2079,7 +2109,7 @@ where
                     emit(
                         Level::Error,
                         "probe.sample_failed",
-                        json!({ "phase": "warmup" }),
+                        request_error_fields(trace.id(), json!({ "phase": "warmup" })),
                     );
                     false
                 }
@@ -2142,7 +2172,7 @@ where
                         emit(
                             Level::Error,
                             "response.serialize_failed",
-                            json!({ "path": STREAM_PATH }),
+                            request_error_fields(trace.id(), json!({ "path": STREAM_PATH })),
                         );
                         sse_event("error", "{\"error\":\"JSON への変換に失敗しました\"}")
                     }
@@ -2157,7 +2187,7 @@ where
                 emit(
                     Level::Error,
                     "probe.sample_failed",
-                    json!({ "phase": "stream" }),
+                    request_error_fields(trace.id(), json!({ "phase": "stream" })),
                 );
                 sse_event(
                     "error",
@@ -2218,7 +2248,7 @@ fn preflight_response(request: &http::Request, allowed_origin: Option<&str>) -> 
 }
 
 /// `/healthz`: liveness only, no machine data, no token.
-fn health_response() -> http::Response {
+fn health_response(request_id: u64) -> http::Response {
     json_response(
         200,
         "OK",
@@ -2226,6 +2256,7 @@ fn health_response() -> http::Response {
             ok: true,
             schema_version: tm_core::WIRE_SCHEMA_VERSION,
         },
+        request_id,
     )
 }
 
@@ -2294,7 +2325,7 @@ fn snapshot_response(
             emit(
                 Level::Error,
                 "probe.sample_failed",
-                json!({ "phase": "warmup" }),
+                request_error_fields(request_id, json!({ "phase": "warmup" })),
             );
             return http::Response::json(
                 500,
@@ -2324,7 +2355,7 @@ fn snapshot_response(
                 total_process_count: total,
                 snapshot: &snapshot,
             };
-            json_response(200, "OK", &envelope)
+            json_response(200, "OK", &envelope, request_id)
         }
         Err(err) => {
             // Only the error class reaches the operator's log; the free-form
@@ -2337,7 +2368,7 @@ fn snapshot_response(
             emit(
                 Level::Error,
                 "probe.sample_failed",
-                json!({ "phase": "snapshot" }),
+                request_error_fields(request_id, json!({ "phase": "snapshot" })),
             );
             http::Response::json(
                 500,
@@ -2449,7 +2480,15 @@ fn unauthorized_response() -> http::Response {
 }
 
 /// Serialises `value` as JSON, mapping serialisation failures to a `500`.
-fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> http::Response {
+///
+/// `request_id` is the owning trace's id, threaded in by both callers so the
+/// ERROR event stays correlated even at `--log-level error`.
+fn json_response<T: Serialize>(
+    status: u16,
+    reason: &'static str,
+    value: &T,
+    request_id: u64,
+) -> http::Response {
     match serde_json::to_vec(value) {
         Ok(body) => http::Response::json(status, reason, body),
         Err(err) => {
@@ -2457,7 +2496,7 @@ fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> 
             emit(
                 Level::Error,
                 "response.serialize_failed",
-                json!({ "status": status }),
+                request_error_fields(request_id, json!({ "status": status })),
             );
             http::Response::json(
                 500,
@@ -4866,6 +4905,24 @@ mod tests {
         // bucket used by response counters (status_class is unchanged).
         assert!(level_allowed(Level::Error, args::LogLevel::Error));
         assert_eq!(telemetry::status_class(401), "4xx");
+    }
+
+    #[test]
+    fn request_scoped_error_events_carry_the_trace_id() {
+        // `request_error_fields` is used by probe.mutex_poisoned,
+        // probe.sample_failed and response.serialize_failed: it must add the
+        // correlation id without dropping the event-specific fields.
+        let fields = request_error_fields(77, json!({ "phase": "warmup" }));
+        assert_eq!(fields["request_id"].as_u64(), Some(77));
+        assert_eq!(fields["phase"], "warmup");
+
+        let line = telemetry::format_event(Level::Error, "probe.sample_failed", fields);
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("event must be JSON");
+        assert_eq!(parsed["event"], "probe.sample_failed");
+        assert_eq!(parsed["request_id"].as_u64(), Some(77));
+        assert_eq!(parsed["phase"], "warmup");
+        // ERROR events with a correlation id survive --log-level error.
+        assert!(level_allowed(Level::Error, args::LogLevel::Error));
     }
 
     #[test]
