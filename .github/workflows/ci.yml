@@ -126,6 +126,9 @@ jobs:
   # も不安定機能 `slice_as_array` を使うため、MSRV を 1.95 へ引き上げた。
   # 以前の 1.92 では workspace 全体をビルドできず portable crate に限定していたが、
   # 要件が解消されたため workspace 全体を検証する。
+  # web/ は [workspace] による独立 workspace なのでルートの --workspace には
+  # 含まれない。同じジョブで wasm32 ターゲットを指定した web のチェックも
+  # 実行し、web/Cargo.toml の rust-version = "1.95" 宣言を実検証する。
   msrv-1-95:
     name: MSRV 1.95 check
     runs-on: ubuntu-24.04
@@ -134,6 +137,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: "1.95.0"
+          # web/ は独立 workspace かつ wasm32 向け crate。同じ 1.95.0 に
+          # wasm32 ターゲットを追加するだけ（rustup target add）で、
+          # apt パッケージの新規導入は不要。これで web の MSRV も検証できる。
+          targets: wasm32-unknown-unknown
       - name: Install build dependencies
         run: |
           # Ubuntu mirror can return transient 503s; retry a few times so a
@@ -149,6 +156,11 @@ jobs:
             libx11-xcb-dev
       - name: Check workspace with MSRV
         run: cargo +1.95.0 check --workspace --locked
+      # web/ は独立 workspace のため上の --workspace には含まれない。
+      # wasm32 ターゲットを指定して web の rust-version = "1.95" 宣言を
+      # 実際に検証する（宣言のみで未検証、という状態を避ける）。
+      - name: Check web workspace with MSRV (wasm32)
+        run: cargo +1.95.0 check --manifest-path web/Cargo.toml --target wasm32-unknown-unknown --locked
 
   # CDP 実動検証スクリプトの CI ゲート（R1-V01）。
   # GitHub Actions の Linux runner では静的サーバ/ヘッドレス Chrome の起動と
@@ -242,7 +254,7 @@ jobs:
   release-linux:
     name: release artifacts (linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95, cdp-verify]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -386,7 +398,7 @@ jobs:
   web-dist:
     name: web dist artifact
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95, cdp-verify]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -511,7 +523,7 @@ jobs:
   sbom:
     name: sbom (cyclonedx)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95]
+    needs: [gates, deny, wasm, native-windows, native-macos, msrv-1-95, cdp-verify]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

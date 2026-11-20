@@ -3,7 +3,13 @@
 name = "tm-web"
 version = "0.1.0"
 edition = "2024"
-# MSRV はルート workspace と同じ 1.95（ci.yml の msrv-1-95 ジョブで検証）。
+# MSRV はルート workspace と同じ 1.95。ci.yml の msrv-1-95 ジョブで
+# wasm32 ターゲット付きの `cargo +1.95.0 check --manifest-path web/Cargo.toml`
+# として実検証している（web は独立 workspace のためルートの --workspace には
+# 含まれない点に注意）。
+# 判断理由: (B) の「宣言のみ」へ後退させず (A) を採用した。1.95.0 ツールチェーン
+# は元々導入されるため wasm32 ターゲット追加（rustup target add）のみで apt
+# パッケージの新規導入は不要、かつ宣言を実際に検証できるため。
 # sysinfo 0.40.3 が rustc 1.95 を要求するため、1.95 へ引き上げた。
 rust-version = "1.95"
 publish = false

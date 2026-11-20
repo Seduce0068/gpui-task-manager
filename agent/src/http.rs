@@ -374,23 +374,75 @@ pub fn is_allowed_origin(origin: &str) -> bool {
         || host.eq_ignore_ascii_case("::1")
 }
 
+/// Header name shared by the emitted hint and the CORS exposure list.
+///
+/// Deriving both from one constant keeps the wire name and the exposure list
+/// from drifting apart (WA-RETRY).
+const RETRY_AFTER_HEADER: &str = "Retry-After";
+
 /// Response header a browser must expose to the Web shell across origins.
 ///
 /// `Retry-After` on 429/5xx carries the server's backoff hint; without this
 /// exposure header a cross-origin `fetch` can read neither the value nor the
 /// fact that the header exists, leaving only exponential backoff.
-pub const EXPOSED_RESPONSE_HEADERS: &str = "Retry-After";
+pub const EXPOSED_RESPONSE_HEADERS: &str = RETRY_AFTER_HEADER;
+
+/// Upper bound for a numeric `Retry-After` delta-seconds hint emitted here.
+///
+/// The Web shell clamps the same value at `MAX_RETRY_AFTER_SECS` (30). Clamping
+/// on the agent too means a misconfigured hint can never park the poll even
+/// with an older shell; `0` is normalised to `1` to avoid a hot retry loop.
+pub const MAX_RETRY_AFTER_SECS: u64 = 30;
 
 /// Adds the `Access-Control-Expose-Headers` header shared by every CORS path.
 ///
 /// Callers that emit CORS headers without [`add_cors_headers`] (the synchronous
 /// 503 path and the SSE head in `main.rs`) call this directly so the contract
-/// stays identical on all responses.
+/// stays identical on all responses. Idempotent: composing this with
+/// [`add_cors_headers`] must never emit a duplicate exposure line.
 pub fn expose_retry_after(response: &mut Response) {
+    let already_exposed = response.extra_headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("Access-Control-Expose-Headers")
+            && value == EXPOSED_RESPONSE_HEADERS
+    });
+    if already_exposed {
+        return;
+    }
     response.extra_headers.push((
         "Access-Control-Expose-Headers".to_string(),
         EXPOSED_RESPONSE_HEADERS.to_string(),
     ));
+}
+
+/// Adds a numeric `Retry-After: <delta-seconds>` hint to a transient response.
+///
+/// Only `429` and `5xx` carry a hint: a success or a plain client error must
+/// not ask the browser to wait. The value is clamped to
+/// [`MAX_RETRY_AFTER_SECS`] on the agent side, then the header is exposed
+/// through [`expose_retry_after`] — the same constant as every CORS path — so
+/// the Web shell's `retry_after_secs` hint path can actually fire in
+/// production. Callers pass only fixed constants; no request-derived data
+/// (token, path, Host/Origin) is ever written into this header.
+pub fn set_retry_after(response: &mut Response, secs: u64) {
+    let transient = response.status == 429 || (500..=599).contains(&response.status);
+    if !transient {
+        return;
+    }
+    // A call site may have already chosen a specific hint; keep the first one
+    // and only make sure its CORS exposure is present.
+    if response
+        .extra_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(RETRY_AFTER_HEADER))
+    {
+        expose_retry_after(response);
+        return;
+    }
+    let secs = secs.clamp(1, MAX_RETRY_AFTER_SECS);
+    response
+        .extra_headers
+        .push((RETRY_AFTER_HEADER.to_string(), secs.to_string()));
+    expose_retry_after(response);
 }
 
 /// Adds the CORS headers that expose a response to an allowed browser origin.
@@ -746,8 +798,8 @@ mod tests {
     }
 
     #[test]
-    fn cors_headers_expose_retry_after_to_the_browser() {
-        let mut response = Response::json(503, "Service Unavailable", b"{}".to_vec());
+    fn cors_and_retry_after_headers_are_exposed_to_the_browser() {
+        let mut response = Response::json(200, "OK", b"{}".to_vec());
         add_cors_headers(&mut response, "http://[::1]:8787");
         assert_eq!(
             response.extra_headers,
@@ -764,15 +816,64 @@ mod tests {
             ]
         );
 
-        // The bare 503 path uses the same helper without an Origin/Acao.
+        // The bare 503 path carries both the numeric hint and its exposure on
+        // the wire — an expose-only response cannot trigger the Web shell's
+        // `retry_after_secs` hint path.
         let mut rejected = Response::json(503, "Service Unavailable", b"{}".to_vec());
-        expose_retry_after(&mut rejected);
+        set_retry_after(&mut rejected, 5);
         let head = String::from_utf8(write_response_bytes(&rejected)).expect("utf8");
+        assert!(head.contains("Retry-After: 5\r\n"), "{head}");
         assert!(
             head.contains("Access-Control-Expose-Headers: Retry-After\r\n"),
             "{head}"
         );
+        assert_eq!(
+            head.matches("Access-Control-Expose-Headers:").count(),
+            1,
+            "{head}"
+        );
         assert!(!head.contains("Access-Control-Allow-Origin"), "{head}");
+    }
+
+    #[test]
+    fn retry_after_is_clamped_and_only_set_on_transient_statuses() {
+        // CORS + retry composition must not duplicate the exposure line, and a
+        // single oversized hint must be clamped to the agent-side bound.
+        let mut busy = Response::json(500, "Internal Server Error", b"{}".to_vec());
+        add_cors_headers(&mut busy, "http://127.0.0.1:5173");
+        set_retry_after(&mut busy, u64::MAX);
+        assert_eq!(
+            busy.extra_headers
+                .iter()
+                .filter(|(name, _)| name == "Retry-After")
+                .count(),
+            1
+        );
+        assert!(busy
+            .extra_headers
+            .contains(&("Retry-After".to_string(), MAX_RETRY_AFTER_SECS.to_string())));
+        assert_eq!(
+            busy.extra_headers
+                .iter()
+                .filter(|(name, _)| name == "Access-Control-Expose-Headers")
+                .count(),
+            1
+        );
+
+        // Zero would otherwise ask the browser to retry in a hot loop.
+        let mut throttled = Response::json(429, "Too Many Requests", b"{}".to_vec());
+        set_retry_after(&mut throttled, 0);
+        assert!(throttled
+            .extra_headers
+            .contains(&("Retry-After".to_string(), "1".to_string())));
+
+        // Success and plain client errors keep their exact header set.
+        let mut ok = Response::json(200, "OK", b"{}".to_vec());
+        set_retry_after(&mut ok, 5);
+        assert!(ok.extra_headers.is_empty());
+        let mut not_found = Response::json(404, "Not Found", b"{}".to_vec());
+        set_retry_after(&mut not_found, 5);
+        assert!(not_found.extra_headers.is_empty());
     }
 
     #[test]
