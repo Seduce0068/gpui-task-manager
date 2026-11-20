@@ -736,6 +736,20 @@ const AUTO_TOKEN_HARD_LINK_UNSUPPORTED: &str = concat!(
     "ハードリンク対応ファイルシステム上のディレクトリを XDG_STATE_HOME に指定してください。"
 );
 
+/// Fixed guidance when an existing token path cannot be backed up and
+/// restored with std alone (FIFO/device/directory/symlink, or a file we cannot
+/// read even for a byte-for-byte copy).
+///
+/// Decision (R2-ER01): rather than deleting a file we cannot recreate — which
+/// would lose the old credential when the subsequent publish fails — we leave
+/// it completely untouched and ask the operator for an explicit token file.
+/// Like [`AUTO_TOKEN_HARD_LINK_UNSUPPORTED`], the message names no value and no
+/// parent path, so it is safe on stderr (CI logs / support bundles).
+const AUTO_TOKEN_UNSAFE_TO_REPLACE: &str = concat!(
+    "自動トークンファイルを安全に置き換えられません: 既存ファイルの内容を退避・復元できないため、",
+    "ファイルを変更せずに終了しました。--token-file <0600 のトークンファイル> を明示してください。"
+);
+
 /// Pure classification of a failed `hard_link` publish; performs no I/O.
 ///
 /// `hard_link` is the std primitive that is *both* atomic and no-replace: it
@@ -783,23 +797,23 @@ fn hard_link_failure_result(
     }
 }
 
-/// Writes a candidate token to a private temp file, then publishes it at `path`
-/// with one atomic link operation.
+/// Fully writes `bytes` to a fresh 0600 temp file in `dir` and returns its path.
 ///
-/// The temp file is fully written (and chmod'ed to 0600 on Unix) *before* it
-/// becomes visible at `path`, so a concurrent reader can never observe a
-/// half-written credential — the old `create().truncate()` sequence had that
-/// window. `hard_link` is atomic and fails with `AlreadyExists` if another
-/// starter published first; the caller then re-reads that value instead of
-/// overwriting it. On filesystems without hard-link support the caller gets
-/// explicit `--token-file` guidance instead of a raw OS error. Both the temp
-/// creation and the publish use no `unsafe`.
-fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublish, String> {
+/// Shared by [`publish_token_file`] and [`restore_token_file`] so both new and
+/// restored credentials become visible at the destination only through the
+/// same atomic hard-link step. A concurrent reader therefore never sees a
+/// half-written value. The temp name embeds the PID and a monotonic counter so
+/// it is unique inside this process; cross-process exclusivity comes from the
+/// atomic publish, never from the temp name. No `unsafe` is used.
+fn write_private_temp(
+    dir: &std::path::Path,
+    bytes: &[u8],
+    label: &str,
+) -> Result<std::path::PathBuf, String> {
     use std::io::Write as _;
 
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let temp = dir.join(format!(
-        "{AUTO_TOKEN_FILE_NAME}.tmp.{}.{}",
+        "{AUTO_TOKEN_FILE_NAME}.{label}.{}.{}",
         std::process::id(),
         AUTO_TOKEN_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -818,7 +832,7 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
                 token_file_name(&temp)
             )
         })?;
-        file.write_all(token.as_bytes()).map_err(|err| {
+        file.write_all(bytes).map_err(|err| {
             format!(
                 "トークンファイルに書き込めません ({}): {err}",
                 token_file_name(&temp)
@@ -841,6 +855,22 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
         let _ = std::fs::remove_file(&temp);
         return Err(err);
     }
+    Ok(temp)
+}
+
+/// Writes a candidate token to a private temp file, then publishes it at `path`
+/// with one atomic link operation.
+///
+/// The temp file is fully written (and chmod'ed to 0600 on Unix) *before* it
+/// becomes visible at `path`, so a concurrent reader can never observe a
+/// half-written credential — the old `create().truncate()` sequence had that
+/// window. `hard_link` is atomic and fails with `AlreadyExists` if another
+/// starter published first; the caller then re-reads that value instead of
+/// overwriting it. On filesystems without hard-link support the caller gets
+/// explicit `--token-file` guidance instead of a raw OS error.
+fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublish, String> {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let temp = write_private_temp(dir, token.as_bytes(), "tmp")?;
 
     let outcome = match std::fs::hard_link(&temp, path) {
         Ok(()) => Ok(TokenPublish::Published),
@@ -848,6 +878,83 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
     };
     let _ = std::fs::remove_file(&temp);
     outcome
+}
+
+/// Byte-for-byte copy of an existing token file, used to undo a removal when a
+/// later generate/publish step fails (R2-ER01).
+///
+/// Only a regular file can be recreated with std alone. A FIFO/device/directory
+/// would need `mkfifo`/`mknod` (libc FFI + `unsafe`), and a symlink would need
+/// its target preserved; none of those can be promised here, so such paths are
+/// deliberately not backed up (callers leave them untouched instead).
+struct TokenFileBackup {
+    bytes: Vec<u8>,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+/// Captures `path` for a later restore. `meta` must come from
+/// `symlink_metadata` so a symlink is never followed. `None` means the file
+/// cannot be safely recreated and must be left untouched.
+fn capture_token_file_backup(
+    path: &std::path::Path,
+    meta: &std::fs::Metadata,
+) -> Option<TokenFileBackup> {
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt as _;
+        meta.permissions().mode() & 0o777
+    };
+    Some(TokenFileBackup {
+        bytes,
+        #[cfg(unix)]
+        mode,
+    })
+}
+
+/// Restores a previously captured file after a failed publish.
+///
+/// Uses the same 0600 temp + atomic hard-link path as a fresh publish, then
+/// reapplies the original mode. If a concurrent starter published at `path`
+/// meanwhile, the link fails with `AlreadyExists` and we leave its valid
+/// credential in place — restoring over it would recreate the divergence this
+/// change is meant to prevent. Restore is best-effort: there is no useful
+/// recovery if the filesystem itself refuses to create a file.
+fn restore_token_file(path: &std::path::Path, backup: &TokenFileBackup) {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let temp = match write_private_temp(dir, &backup.bytes, "restore") {
+        Ok(temp) => temp,
+        Err(_) => return,
+    };
+    if std::fs::hard_link(&temp, path).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(backup.mode));
+        }
+    }
+    let _ = std::fs::remove_file(&temp);
+}
+
+/// Reads a token and immediately re-reads it before it is adopted.
+///
+/// A concurrent starter can remove and atomically publish a different token
+/// between the two reads (R2-BV01). Adopting the first value in that window
+/// would leave two processes holding different credentials. The re-read makes
+/// the change observable: on a mismatch (or a vanished/unreadable file) we
+/// return `None`, so the caller re-loops and adopts the newer value instead.
+///
+/// `between_reads` lets a test swap the file deterministically inside the
+/// critical window; production passes a no-op closure.
+fn read_stable_token_with<F: Fn()>(path: &std::path::Path, between_reads: F) -> Option<String> {
+    let first = read_token_file(path).ok()?;
+    between_reads();
+    let second = read_token_file(path).ok()?;
+    (first == second).then_some(first)
 }
 
 /// Resolves the auto-generated token under an explicit directory.
@@ -862,45 +969,112 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
 ///
 /// Concurrent starters converge on one value: the first atomic publish wins
 /// and every later caller re-reads and adopts that value instead of truncating
-/// it. The file is intentionally **not** deleted on exit/SIGINT. Persisting it
-/// is what makes the reuse above possible; the credential is 0600 inside a 0700
-/// directory under the user's home, so leaving it behind is the safer and more
+/// it. Adoption is guarded by an immediate re-read (R2-BV01), and a removal is
+/// backed up so a failed publish can restore it (R2-ER01). The file is
+/// intentionally **not** deleted on exit/SIGINT. Persisting it is what makes
+/// the reuse above possible; the credential is 0600 inside a 0700 directory
+/// under the user's home, so leaving it behind is the safer and more
 /// convenient choice for a loopback-only agent.
 fn resolve_auto_token_in(dir: &std::path::Path) -> Result<(String, std::path::PathBuf), String> {
+    resolve_auto_token_in_with(dir, publish_token_file)
+}
+
+/// Core of [`resolve_auto_token_in`] with the publish step injectable.
+///
+/// Decision (R2-ER01): `publish` is a parameter only so a test can inject a
+/// failing publish and prove the old token file is restored, without depending
+/// on a filesystem that refuses hard links. The production caller always passes
+/// the real [`publish_token_file`], so the atomic no-replace contract is
+/// unchanged.
+fn resolve_auto_token_in_with<F>(
+    dir: &std::path::Path,
+    publish: F,
+) -> Result<(String, std::path::PathBuf), String>
+where
+    F: Fn(&std::path::Path, &str) -> Result<TokenPublish, String>,
+{
     crate::private_dir::ensure_private_dir_chain(dir)
         .map_err(|err| format!("トークン保存ディレクトリを準備できません: {err}"))?;
     let path = dir.join(AUTO_TOKEN_FILE_NAME);
 
     for _ in 0..AUTO_TOKEN_CREATE_ATTEMPTS {
-        // Any valid file — ours or one a concurrent starter just published —
-        // wins. This is the convergence point for simultaneous starts.
-        if let Ok(token) = read_token_file(&path) {
+        // (1) Adopt only a *stable* token. The immediate re-read closes the
+        // remove+publish TOCTOU window: if another starter changed the value
+        // between our reads we loop and adopt its winner, never a stale value.
+        if let Some(token) = read_stable_token_with(&path, || {}) {
             return Ok((token, path));
         }
 
-        // Missing or unusable. Re-read just before removing: a valid file may
-        // have appeared since the check above, in which case we adopt it
-        // instead of deleting a concurrent winner's credential.
-        if path.exists() {
-            if let Ok(token) = read_token_file(&path) {
-                return Ok((token, path));
+        // (2) No usable file: inspect exactly what is at the path.
+        let existing = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => Some(meta),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(format!(
+                    "トークンファイルの属性を読めません ({}): {err}",
+                    token_file_name(&path)
+                ));
             }
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(format!(
-                        "既存のトークンファイルを削除できません ({}): {err}",
-                        token_file_name(&path)
-                    ));
-                }
-            }
-        }
+        };
 
-        let token = auth::generate_token()?;
-        match publish_token_file(&path, &token)? {
-            TokenPublish::Published => return Ok((token, path)),
-            TokenPublish::Conflict => continue,
+        let backup = match existing {
+            Some(meta) => {
+                // Re-check immediately before touching the file: a concurrent
+                // starter may have published a valid token since the first
+                // stable read failed. Adopt it instead of deleting its
+                // credential (the original remove-after-read TOCTOU guard).
+                if let Some(token) = read_stable_token_with(&path, || {}) {
+                    return Ok((token, path));
+                }
+
+                // Capture the original bytes *and mode* before any mutation,
+                // so a later failure can restore them exactly (R2-ER01).
+                // Decision: we do NOT chmod-and-adopt here. A file that failed
+                // the 0o077 / type / UTF-8 checks must stay discarded —
+                // trusting it would break the existing 0600/0o077 contract
+                // and could resurrect an attacker-controlled credential.
+                let backup = match capture_token_file_backup(&path, &meta) {
+                    Some(backup) => backup,
+                    // Cannot recreate it with std alone; leave it untouched and
+                    // ask for an explicit token file rather than risking loss.
+                    None => return Err(AUTO_TOKEN_UNSAFE_TO_REPLACE.to_string()),
+                };
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        return Err(format!(
+                            "既存のトークンファイルを削除できません ({}): {err}",
+                            token_file_name(&path)
+                        ));
+                    }
+                }
+                Some(backup)
+            }
+            None => None,
+        };
+
+        // (3) Generate and publish. Any failure after the removal restores the
+        // backup. A benign Conflict means a concurrent starter already won —
+        // we must NOT restore over its credential; just re-loop and adopt it.
+        let token = match auth::generate_token() {
+            Ok(token) => token,
+            Err(err) => {
+                if let Some(backup) = backup.as_ref() {
+                    restore_token_file(&path, backup);
+                }
+                return Err(err);
+            }
+        };
+        match publish(&path, &token) {
+            Ok(TokenPublish::Published) => return Ok((token, path)),
+            Ok(TokenPublish::Conflict) => continue,
+            Err(err) => {
+                if let Some(backup) = backup.as_ref() {
+                    restore_token_file(&path, backup);
+                }
+                return Err(err);
+            }
         }
     }
 
@@ -3496,6 +3670,10 @@ mod tests {
         );
         assert!(message.contains("0600"), "{message}");
 
+        // A loose-mode file is discarded, never repaired-and-trusted: adopting
+        // it would break the 0o077 contract and could reuse a credential an
+        // attacker planted. The replacement is 0600 and differs from the old
+        // value (pinned by auto_token_replaces_a_loose_permission_file below).
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3813,7 +3991,163 @@ mod tests {
             }
         }
 
+        // R2-BV01: a second simultaneous wave reuses the *same* value. The
+        // immediate re-read before adoption prevents a starter that removes
+        // and republishes mid-flight from handing out a stale credential.
+        let reuse_barrier = Arc::new(std::sync::Barrier::new(8));
+        let reuse_handles: Vec<_> = (0..8)
+            .map(|_| {
+                let dir = dir.clone();
+                let barrier = Arc::clone(&reuse_barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    resolve_auto_token_in(&dir).expect("reuse resolve")
+                })
+            })
+            .collect();
+        let reuse: Vec<_> = reuse_handles
+            .into_iter()
+            .map(|handle| handle.join().expect("reuse worker thread"))
+            .collect();
+        assert!(
+            reuse
+                .iter()
+                .all(|(token, path)| token == adopted && path == &results[0].1),
+            "concurrent reuse diverged from the published token"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stable_token_read_refuses_a_value_swapped_between_reads() {
+        // R2-BV01: a concurrent starter can remove + atomically publish a
+        // different token between our two reads. Adopting the first value
+        // would leave two processes holding different credentials.
+        let dir = std::env::temp_dir().join(format!("tm-agent-auto-stable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join(AUTO_TOKEN_FILE_NAME);
+        std::fs::write(&path, b"token-A").expect("write token A");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod 0600");
+        }
+
+        // An undisturbed file is adopted.
+        assert_eq!(
+            read_stable_token_with(&path, || {}).as_deref(),
+            Some("token-A")
+        );
+
+        // Now swap the value in the critical window. The stale value must not
+        // escape; the caller re-loops and adopts the winner on the next read.
+        let swap = path.clone();
+        let stale = read_stable_token_with(&path, || {
+            std::fs::write(&swap, b"token-B").expect("swap token");
+        });
+        assert_ne!(
+            stale.as_deref(),
+            Some("token-A"),
+            "a value changed between reads must not be adopted"
+        );
+        assert_eq!(
+            read_stable_token_with(&path, || {}).as_deref(),
+            Some("token-B"),
+            "the next attempt must converge on the winner"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_failure_restores_the_previous_token_file() {
+        // R2-ER01: when an unusable file must be replaced and the publish
+        // fails, neither the old nor a new file may disappear. A failing
+        // publish is injected so this needs no special filesystem.
+        let dir =
+            std::env::temp_dir().join(format!("tm-agent-auto-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join(AUTO_TOKEN_FILE_NAME);
+        // Invalid UTF-8 makes read_token_file reject the file, forcing the
+        // remove/publish path while still giving us bytes to back up.
+        let old = b"\xff\xfe-legacy-token";
+        std::fs::write(&path, old).expect("write legacy token");
+        #[cfg(unix)]
+        let original_mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+                .expect("chmod legacy token");
+            std::fs::metadata(&path)
+                .expect("legacy metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        let error =
+            resolve_auto_token_in_with(&dir, |_, _| Err("injected publish failure".to_string()))
+                .expect_err("injected publish must fail");
+        assert!(error.contains("injected publish failure"), "{error}");
+
+        // The old file survives, byte-for-byte and with its original mode.
+        assert_eq!(
+            std::fs::read(&path).expect("restored token"),
+            old,
+            "old token file must be restored on publish failure"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let restored_mode = std::fs::metadata(&path)
+                .expect("restored metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                restored_mode, original_mode,
+                "original permissions must be restored"
+            );
+        }
+        let leftovers = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".restore."))
+            .count();
+        assert_eq!(leftovers, 0, "restore temp files must be cleaned up");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_conflict_adopts_the_winner_without_restoring_the_old_file() {
+        // A benign Conflict means another starter already published. Restoring
+        // the backup over it would reintroduce the divergence of R2-BV01.
+        let dir =
+            std::env::temp_dir().join(format!("tm-agent-auto-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join(AUTO_TOKEN_FILE_NAME);
+        std::fs::write(&path, b"\xff-legacy-token").expect("write legacy token");
+
+        let winner = "concurrent-winner-token";
+        let (token, _) = resolve_auto_token_in_with(&dir, |publish_path, _generated| {
+            // Simulate a concurrent starter winning the atomic publish.
+            let _ = publish_token_file(publish_path, winner)?;
+            Ok(TokenPublish::Conflict)
+        })
+        .expect("must adopt the concurrent winner");
+        assert_eq!(token, winner, "must adopt the winner, not a stale value");
+        assert_eq!(
+            read_token_file(&path).expect("winner must remain"),
+            winner,
+            "the backup must not be restored over a concurrent winner"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

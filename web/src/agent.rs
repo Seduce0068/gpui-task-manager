@@ -823,13 +823,20 @@ pub fn stream_url(endpoint: &str) -> String {
 
 /// Parses one SSE `snapshot` frame from the agent.
 ///
-/// Only compact JSON produced by `serde_json` is accepted. Error strings are
-/// fixed (no agent text is echoed), so a malformed or hostile stream cannot
-/// inject a token or control characters into the UI or the `aria-live` mirror.
-/// A frame carries at most one `event:` field and exactly one `data:` field:
-/// SSE allows a single event type per frame, and this probe emits one compact
-/// JSON line, so a second occurrence of either field is a parse error.
-pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, String> {
+/// Returns `Ok(None)` for an `event: error` frame: the agent sends those on a
+/// transient probe failure and then keeps the same stream alive, so the frame
+/// is skipped instead of tearing down the subscription. Its `data` is never
+/// read or parsed — it may contain host paths or other sensitive text, and no
+/// agent text may reach the UI, the DOM proof or the console.
+///
+/// Only compact JSON produced by `serde_json` is accepted for snapshots. Error
+/// strings are fixed (no agent text is echoed), so a malformed or hostile
+/// stream cannot inject a token or control characters into the UI or the
+/// `aria-live` mirror. A frame carries at most one `event:` field and exactly
+/// one `data:` field: SSE allows a single event type per frame, and this probe
+/// emits one compact JSON line, so a second occurrence of either field is a
+/// parse error.
+pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<Option<SnapshotEnvelope>, String> {
     const PARSE_ERROR: &str = "SSE データの解析に失敗しました";
 
     let mut event = None;
@@ -853,7 +860,10 @@ pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, Str
     }
     match event {
         Some("snapshot") => {}
-        Some("error") => return Err("エージェントがエラーイベントを返しました".to_string()),
+        // Transient probe failure reported in-band while the stream continues.
+        // Do not touch `data`: skipping is the whole contract, and the payload
+        // must never be parsed, logged, or surfaced in fixed error text.
+        Some("error") => return Ok(None),
         _ => return Err("不明な SSE イベントを受信しました".to_string()),
     }
     let data = data
@@ -862,7 +872,7 @@ pub(crate) fn parse_sse_event_frame(frame: &str) -> Result<SnapshotEnvelope, Str
     let envelope: SnapshotEnvelope =
         serde_json::from_str(data).map_err(|_| PARSE_ERROR.to_string())?;
     check_schema_version(envelope.schema_version).map_err(|error| error.to_string())?;
-    Ok(envelope)
+    Ok(Some(envelope))
 }
 
 /// Owned inputs for one SSE subscription.
@@ -941,9 +951,11 @@ fn find_sse_delimiter(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
 ///
 /// The future ends on a settings-generation change ([`FetchError::BodyAborted`]),
 /// a setup timeout ([`FetchError::Timeout`]), an HTTP/read error, a malformed
-/// frame, EOF or a size-cap breach. The shell
-/// uses that termination to switch back to the ordinary snapshot poll, so a
-/// broken or closing stream never leaves the user without monitoring.
+/// frame, EOF or a size-cap breach. An `event: error` frame is skipped and the
+/// next frame is still read, so a transient agent-side probe failure does not
+/// end the subscription. The shell uses a real termination to switch back to
+/// the ordinary snapshot poll, so a broken or closing stream never leaves the
+/// user without monitoring.
 async fn drive_snapshot_stream<F, Deadline>(
     params: StreamParams,
     mut on_snapshot: F,
@@ -1034,9 +1046,14 @@ where
             let frame = &pending[frame_start..at];
             let text = std::str::from_utf8(frame)
                 .map_err(|_| FetchError::Parse("SSE データの解析に失敗しました".to_string()))?;
-            let envelope = parse_sse_event_frame(text)
+            let frame = parse_sse_event_frame(text)
                 .map_err(|detail| FetchError::Parse(redact_token(&detail, token.as_deref())))?;
-            on_snapshot(envelope);
+            // `event: error` parses to `None`: ignore it and keep reading this
+            // stream. Only a real parse failure produces `Err` above and ends
+            // the subscription (which drives the shell's fallback/cooldown).
+            if let Some(envelope) = frame {
+                on_snapshot(envelope);
+            }
             frame_start = at + delimiter_len;
             cursor = frame_start;
         }
@@ -1734,7 +1751,9 @@ mod tests {
         })
         .to_string();
         let frame = format!("event: snapshot\ndata: {json}\n\n");
-        let parsed = parse_sse_event_frame(&frame).expect("parse frame");
+        let parsed = parse_sse_event_frame(&frame)
+            .expect("parse frame")
+            .expect("snapshot frame must carry an envelope");
         assert_eq!(parsed.schema_version, WIRE_SCHEMA_VERSION);
         assert_eq!(parsed.total_process_count, 7);
 
@@ -1753,12 +1772,21 @@ mod tests {
     }
 
     #[test]
-    fn sse_error_frames_never_echo_agent_text() {
-        let error = parse_sse_event_frame("event: error\ndata: {\"error\":\"SECRET-PATH\"}\n\n")
-            .expect_err("error event must not parse as a snapshot");
-        assert_eq!(error, "エージェントがエラーイベントを返しました");
-        assert!(!error.contains("SECRET"));
+    fn sse_error_frames_are_skipped_without_echoing_agent_text() {
+        let skipped = parse_sse_event_frame("event: error\ndata: {\"error\":\"SECRET-PATH\"}\n\n")
+            .expect("an error event must be skipped, not end the stream");
+        assert!(
+            skipped.is_none(),
+            "an error event must never produce a snapshot"
+        );
 
+        // Even non-JSON error data is ignored: the frame is skipped before its
+        // `data` is inspected, so it cannot become a parse failure either.
+        let skipped = parse_sse_event_frame("event: error\ndata: SECRET-PATH\n\n")
+            .expect("error data must not be parsed");
+        assert!(skipped.is_none());
+
+        // Malformed JSON on a snapshot frame stays the fixed, recoverable error.
         let malformed = parse_sse_event_frame("event: snapshot\ndata: {oops\n\n")
             .expect_err("malformed data must be rejected");
         assert_eq!(malformed, "SSE データの解析に失敗しました");
@@ -2124,6 +2152,48 @@ mod tests {
         let recorded = requests.lock().unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].uri, "http://127.0.0.1:18787/api/v1/stream");
+    }
+
+    #[test]
+    fn sse_error_frame_is_skipped_and_later_snapshots_still_arrive() {
+        // Models the agent's in-band transient failure: one `error` frame in
+        // the middle of a live stream, followed by ordinary snapshots. The
+        // subscription must not end and the sensitive error data must never be
+        // handed to the shell callback.
+        let mut body = b"event: error\ndata: {\"error\":\"SECRET-PATH\"}\n\n".to_vec();
+        body.extend_from_slice(&sse_snapshot_frame(17));
+        body.extend_from_slice(&sse_snapshot_frame(23));
+        let (params, _) = stream_params(
+            Some("secret-agent-token"),
+            body,
+            7,
+            200,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        futures::executor::block_on(drive_snapshot_stream(
+            params,
+            move |envelope| {
+                let count = envelope.total_process_count;
+                let response = envelope.into_response();
+                sink.lock().unwrap().push((count, format!("{response:?}")));
+            },
+            never_timeout(),
+        ))
+        .expect("an error frame must not terminate the stream");
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.iter().map(|(count, _)| *count).collect::<Vec<_>>(),
+            vec![17, 23],
+            "both snapshots after the error frame are delivered"
+        );
+        for (_, text) in seen.iter() {
+            assert!(
+                !text.contains("SECRET"),
+                "error frame data must never reach the UI"
+            );
+        }
     }
 
     #[test]
