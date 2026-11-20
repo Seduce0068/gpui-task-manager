@@ -1213,13 +1213,36 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 中 — swarm-limited R1 発掘 2026-11-20
 
-- [ ] Windows で /dev/urandom 直読み＋XDG_STATE_HOME 前提のためトークン
+- [x] Windows で /dev/urandom 直読み＋XDG_STATE_HOME 前提のためトークン
       未指定の既定起動が不能（high、静的確認）。mining: Windows では
       APPDATA/USERPROFILE と OS RNG を使う分岐を検討。根拠 rb-discover。
-- [ ] stdout の非 EPIPE 書込み失敗（/dev/full / ENOSPC）が無言 exit 0
+      （SC-WINTOKEN: 明示エラー化を選択。generate_token に cfg 分岐を追加し、
+      Unix は現状維持、Windows / その他は「--token 明示が必要」固定エラー。
+      std に CSPRNG API が無く、getrandom は間接依存のみで新規依存追加は
+      担当外、Win32 API は unsafe FFI で禁止、時刻/PID フォールバックも
+      既に禁止されているため。auto_token_dir は Windows で APPDATA →
+      USERPROFILE/AppData/Roaming を絶対パス・仮想 FS 共有検査で選択し、
+      Linux 分岐は不変。既存トークンファイルがあれば Windows でも再利用可。）
+- [x] stdout の非 EPIPE 書込み失敗（/dev/full / ENOSPC）が無言 exit 0
       （--once 出力喪失）。EPIPE と区別して警告 or 非0終了。根拠 rb-discover。
-- [ ] --once が --token-file / TM_AGENT_TOKEN の妥当性を検証せず黙って
+      → 完了（SD-STDOUT）: `write_stdout_ignoring_broken_pipe` が BrokenPipe
+      のみ無視し他は Err。`--once` は exit 1 + 固定警告、`--version` / `--help`
+      も非 0 終了。モック書込みテストと実プロセス `> /dev/full` で確認。
+- [x] --once が --token-file / TM_AGENT_TOKEN の妥当性を検証せず黙って
       無視（once=0 / server=5）。根拠 rb-discover。
+      → 完了（SE-ONCETOKEN）: 方針 (A) を採用。`run_with` の `--once` 早期
+      リターン前に `resolve_configured_token` / `env_token` を集約し、サーバー
+      モードと同一の検証・終了コード（不正な `--token-file` は両方 exit 5）。
+      one-shot は認証リスナーがなく自動生成トークンの作成のみ明示的に
+      非対応（副作用回避）。`args::USAGE` に両モード共通の検証と
+      自動生成なしを明記。`run_with` へ argv を注入し両モードの終了コードを
+      比較する unit テストを追加（トークン値は出力せず）。
+      検証: `cargo test -p tm-agent`（131 passed）/
+      `cargo clippy -p tm-agent --all-targets -- -D warnings`（exit 0）/
+      `cargo fmt --all -- --check`（exit 0）。実プロセスで
+      `--demo --once --token-file /nonexistent` と
+      サーバーモードが共に exit 5、`--demo --once` は exit 0・1 行 JSON・
+      先頭 30 件（デモ全件、上限 500 を下回る）を確認。
 - [ ] 追跡済み PoC ログ 2 件に内部 worktree パスが残り開示ゲートの
       走査対象外。根拠 rb-discover。
 - [ ] umask 0777 で XDG_STATE_HOME の中間ディレクトリが 0000 になり
