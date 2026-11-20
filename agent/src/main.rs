@@ -1498,6 +1498,14 @@ fn sse_event(event: &str, data: &str) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
 
+/// Serialises one snapshot envelope for the SSE `snapshot` frame.
+///
+/// Named so tests can pass the exact production encoder to
+/// [`handle_stream_connection_with_encoder`].
+fn encode_sse_json(envelope: &SnapshotEnvelope<'_>) -> Result<String, serde_json::Error> {
+    serde_json::to_string(envelope)
+}
+
 /// Serves [`STREAM_PATH`]: authenticated, read-only snapshots as SSE.
 ///
 /// This path never reads a request body and keeps no probe lock between events,
@@ -1512,6 +1520,25 @@ fn handle_stream_connection(
     state: &SharedState,
     interval: Duration,
 ) -> io::Result<()> {
+    handle_stream_connection_with_encoder(stream, request, state, interval, encode_sse_json)
+}
+
+/// Same as [`handle_stream_connection`], with an injectable JSON encoder.
+///
+/// Every field of `SystemSnapshot` serialises successfully, so no probe value
+/// can make `serde_json::to_string` fail: without this seam the fixed error
+/// frame (and its redact contract) could not be regression-tested. Production
+/// always passes [`encode_sse_json`]; tests inject a failing encoder instead.
+fn handle_stream_connection_with_encoder<F>(
+    stream: &mut TcpStream,
+    request: &http::Request,
+    state: &SharedState,
+    interval: Duration,
+    encode: F,
+) -> io::Result<()>
+where
+    F: Fn(&SnapshotEnvelope<'_>) -> Result<String, serde_json::Error>,
+{
     let mut trace = RequestTrace::begin(&state.metrics, &request.method, &request.path);
     let origin = request.header("origin").map(str::to_string);
     let allowed_origin = origin
@@ -1698,7 +1725,7 @@ fn handle_stream_connection(
                     total_process_count: total,
                     snapshot: &snapshot,
                 };
-                match serde_json::to_string(&envelope) {
+                match encode(&envelope) {
                     Ok(json) => sse_event("snapshot", &json),
                     Err(err) => {
                         eprintln!("tm-agent: SSE JSON への変換に失敗: {err}");
@@ -4297,5 +4324,280 @@ mod tests {
             "stream slot must be released promptly after client disconnect"
         );
         join_demo_server(handle);
+    }
+
+    // -------------------------------------------------------- R2 SSE error paths
+
+    /// Free-form probe detail carrying every identifier the redact contract
+    /// forbids on the wire: a credential, an internal path and a host name.
+    const SSE_SECRET_DETAIL: &str =
+        "SECRET-PATH /home/victim host=victim.internal token=test-token";
+
+    /// Probe whose failures carry [`SSE_SECRET_DETAIL`]. The index windows let a
+    /// test fail warm-up, the published stream sample, or every sample.
+    struct SseFailingProbe {
+        inner: DemoProbe,
+        warmup_failures: usize,
+        fail_from: Option<usize>,
+        calls: usize,
+    }
+
+    impl SystemProbe for SseFailingProbe {
+        fn platform_info(&self) -> tm_core::PlatformInfo {
+            self.inner.platform_info()
+        }
+        fn sample(&mut self) -> Result<tm_core::SystemSnapshot, tm_core::ProbeError> {
+            let index = self.calls;
+            self.calls += 1;
+            let fail =
+                index < self.warmup_failures || self.fail_from.is_some_and(|from| index >= from);
+            if fail {
+                Err(tm_core::ProbeError::Io(SSE_SECRET_DETAIL.to_string()))
+            } else {
+                self.inner.sample()
+            }
+        }
+    }
+
+    fn spawn_sse_worker(
+        listener: TcpListener,
+        state: Arc<SharedState>,
+        interval: Duration,
+    ) -> JoinHandle<()> {
+        spawn_sse_worker_with_encoder(listener, state, interval, encode_sse_json)
+    }
+
+    fn spawn_sse_worker_with_encoder<F>(
+        listener: TcpListener,
+        state: Arc<SharedState>,
+        interval: Duration,
+        encode: F,
+    ) -> JoinHandle<()>
+    where
+        F: Fn(&SnapshotEnvelope<'_>) -> Result<String, serde_json::Error> + Send + 'static,
+    {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept sse");
+            let request = http::read_request(&mut stream)
+                .expect("read sse request")
+                .expect("sse request head");
+            handle_stream_connection_with_encoder(&mut stream, &request, &state, interval, encode)
+                .expect("handle stream connection");
+        })
+    }
+
+    /// Always fails, with a message that is deliberately different from every
+    /// probe marker: the error frame must stay fixed either way.
+    fn failing_sse_encoder(_envelope: &SnapshotEnvelope<'_>) -> Result<String, serde_json::Error> {
+        Err(serde_json::Error::io(io::Error::other(
+            "injected SSE serialization failure",
+        )))
+    }
+
+    fn connect_sse_client(address: SocketAddr) -> BufReader<TcpStream> {
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        client
+            .write_all(
+                b"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer test-token\r\n\r\n",
+            )
+            .expect("write sse request");
+        BufReader::new(client)
+    }
+
+    fn read_sse_head(reader: &mut BufReader<TcpStream>) -> String {
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("sse head line");
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        head
+    }
+
+    /// One SSE event occupies exactly three lines: `event:`, `data:` and the
+    /// terminating blank line (see [`sse_event`]).
+    fn read_sse_frame(reader: &mut BufReader<TcpStream>) -> String {
+        let mut frame = String::new();
+        for _ in 0..3 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("sse frame line");
+            frame.push_str(&line);
+        }
+        frame
+    }
+
+    /// Shared redact assertion for every frame emitted by the failure branches.
+    fn assert_sse_frame_has_no_secrets(frame: &str) {
+        for marker in [
+            TEST_TOKEN,
+            "SECRET-PATH",
+            "/home/victim",
+            "victim.internal",
+            "token=",
+        ] {
+            assert!(
+                !frame.contains(marker),
+                "SSE frame leaked {marker}: {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn sse_warmup_failure_emits_only_the_fixed_error_frame() {
+        const INTERVAL: Duration = Duration::from_millis(20);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(SseFailingProbe {
+                inner: DemoProbe::new(),
+                warmup_failures: 0,
+                fail_from: Some(0), // every sample fails, including warm-up
+                calls: 0,
+            }),
+            TEST_TOKEN,
+            false,
+            true, // real probe: warm-up required
+        ));
+        let worker = spawn_sse_worker(listener, Arc::clone(&state), INTERVAL);
+        let mut reader = connect_sse_client(address);
+
+        let head = read_sse_head(&mut reader);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        let frame = read_sse_frame(&mut reader);
+        assert_eq!(
+            frame,
+            "event: error\ndata: {\"error\":\"スナップショットを取得できませんでした\"}\n\n"
+        );
+        assert_sse_frame_has_no_secrets(&frame);
+        // Logs use the classified label, never the free-form detail either.
+        assert_eq!(
+            probe_error_label(&tm_core::ProbeError::Io(SSE_SECRET_DETAIL.to_string())),
+            "I/O エラー"
+        );
+        // A failed warm-up must not claim readiness (the retry contract).
+        assert!(!state.warmed_up.load(Ordering::Acquire));
+
+        state.request_shutdown();
+        drop(reader);
+        join_demo_server(worker);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn sse_probe_mutex_poison_is_recovered_and_streaming_continues() {
+        const INTERVAL: Duration = Duration::from_millis(20);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            true, // exercises both lock sites: warm-up and published sample
+        ));
+
+        // Poison exactly as a panicking worker would: a thread dies while
+        // holding the guard, and `catch_unwind` keeps the test alive.
+        let poison_state = Arc::clone(&state);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = poison_state.probe.lock().expect("lock before panic");
+            panic!("poison the probe mutex");
+        }));
+
+        let worker = spawn_sse_worker(listener, Arc::clone(&state), INTERVAL);
+        let mut reader = connect_sse_client(address);
+        let head = read_sse_head(&mut reader);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+
+        // Recovery must reach a real snapshot, not fail open with an error frame.
+        let frame = read_sse_frame(&mut reader);
+        assert!(frame.starts_with("event: snapshot\n"), "{frame}");
+        assert!(frame.contains("\"schema_version\":"), "{frame}");
+        assert_sse_frame_has_no_secrets(&frame);
+        assert!(state.warmed_up.load(Ordering::Acquire));
+
+        state.request_shutdown();
+        drop(reader);
+        join_demo_server(worker);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn sse_json_conversion_failure_emits_only_the_fixed_error_frame() {
+        const INTERVAL: Duration = Duration::from_millis(20);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(DemoProbe::new()),
+            TEST_TOKEN,
+            false,
+            false, // no warm-up: the very first sample is published
+        ));
+        let worker = spawn_sse_worker_with_encoder(
+            listener,
+            Arc::clone(&state),
+            INTERVAL,
+            failing_sse_encoder,
+        );
+        let mut reader = connect_sse_client(address);
+
+        let head = read_sse_head(&mut reader);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        let frame = read_sse_frame(&mut reader);
+        assert_eq!(
+            frame,
+            "event: error\ndata: {\"error\":\"JSON への変換に失敗しました\"}\n\n"
+        );
+        assert_sse_frame_has_no_secrets(&frame);
+
+        state.request_shutdown();
+        drop(reader);
+        join_demo_server(worker);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn sse_stream_sample_failure_emits_only_the_fixed_error_frame() {
+        const INTERVAL: Duration = Duration::from_millis(20);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("local addr");
+        let state = Arc::new(SharedState::new(
+            Box::new(SseFailingProbe {
+                inner: DemoProbe::new(),
+                warmup_failures: 0,
+                fail_from: Some(1), // warm-up succeeds, published sample fails
+                calls: 0,
+            }),
+            TEST_TOKEN,
+            false,
+            true,
+        ));
+        let worker = spawn_sse_worker(listener, Arc::clone(&state), INTERVAL);
+        let mut reader = connect_sse_client(address);
+
+        let head = read_sse_head(&mut reader);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        let frame = read_sse_frame(&mut reader);
+        assert_eq!(
+            frame,
+            "event: error\ndata: {\"error\":\"スナップショットを取得できませんでした\"}\n\n"
+        );
+        assert_sse_frame_has_no_secrets(&frame);
+        assert_eq!(
+            probe_error_label(&tm_core::ProbeError::Io(SSE_SECRET_DETAIL.to_string())),
+            "I/O エラー"
+        );
+        // Unlike a warm-up failure, the published-sample failure keeps readiness.
+        assert!(state.warmed_up.load(Ordering::Acquire));
+
+        state.request_shutdown();
+        drop(reader);
+        join_demo_server(worker);
+        assert_eq!(state.streams.load(Ordering::Acquire), 0);
     }
 }

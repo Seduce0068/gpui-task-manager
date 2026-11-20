@@ -621,12 +621,35 @@ fn merged_for_save(
     merged_for_save_inner(settings, stored, baseline.as_ref())
 }
 
+/// Whether a save failure may replace the currently queued notice.
+///
+/// A corrupt load and a failed save are both persistent errors, but the
+/// corrupt notice carries the quarantine / recovery guidance and must win when
+/// both happen back-to-back (e.g. the first write after quarantine fails). Any
+/// other state — no notice or a transient one — may be replaced.
+fn should_announce_save_failure(current: Option<&SettingsNotice>) -> bool {
+    !current.is_some_and(|notice| notice.is_error && notice.persistent)
+}
+
 /// Records a fixed, redacted save-failure notice and publishes it to the DOM
 /// node. The shell can drain `PENDING_NOTICE` later without any shell change;
 /// the DOM node shows the failure immediately (C2-SETTINGS).
+///
+/// A persistent pending notice (normally the corrupt-load notice) is kept
+/// intact in both places: a save failure immediately after quarantine must not
+/// erase the recovery guidance from `PENDING_NOTICE` or the DOM node.
 fn record_save_failure() {
-    let notice = SettingsNotice::save_failed();
-    *lock(&PENDING_NOTICE) = Some(notice.clone());
+    let notice = {
+        let mut pending = lock(&PENDING_NOTICE);
+        if !should_announce_save_failure(pending.as_ref()) {
+            // Do not republish either: the DOM node already carries the fixed
+            // corrupt text, and overwriting it would lose the same notice.
+            return;
+        }
+        let notice = SettingsNotice::save_failed();
+        *pending = Some(notice.clone());
+        notice
+    };
     publish_notice_dom(&notice);
 }
 
@@ -1076,6 +1099,55 @@ mod tests {
         assert!(notice.persistent, "must survive the next sample");
         assert!(!notice.text.contains('/'), "{}", notice.text);
         assert!(!notice.text.contains(STORAGE_KEY), "{}", notice.text);
+        assert_eq!(take_pending_notice(), None, "notice must be drained once");
+    }
+
+    #[test]
+    fn save_failure_guard_keeps_only_persistent_errors() {
+        assert!(should_announce_save_failure(None));
+        assert!(should_announce_save_failure(Some(&SettingsNotice {
+            text: "一時的なお知らせ".to_string(),
+            is_error: false,
+            persistent: false,
+        })));
+        // Both fixed notices are persistent errors; neither may be replaced.
+        assert!(!should_announce_save_failure(Some(
+            &SettingsNotice::corrupt()
+        )));
+        assert!(!should_announce_save_failure(Some(
+            &SettingsNotice::save_failed()
+        )));
+    }
+
+    #[test]
+    fn save_failure_after_corrupt_load_keeps_the_corrupt_notice() {
+        let _guard = lock(&NOTICE_TEST_LOCK);
+
+        // A corrupt load leaves the fixed, persistent corrupt notice pending.
+        // Use the non-draining loader so the notice is still queued when the
+        // immediately following save fails.
+        let _ = load_from_raw(Some("{ not json"));
+
+        // The recovery guidance must win in PENDING_NOTICE; publish_notice_dom
+        // is skipped as well, so the DOM node keeps the same fixed text.
+        record_save_failure();
+        let notice = take_pending_notice().expect("corrupt notice must survive");
+        assert_eq!(notice, SettingsNotice::corrupt());
+        assert_eq!(notice.text, NOTICE_CORRUPT);
+        assert!(notice.is_error && notice.persistent);
+        assert!(!notice.text.contains('/'));
+        assert!(!notice.text.contains(STORAGE_KEY));
+        assert_eq!(take_pending_notice(), None, "notice must be drained once");
+
+        // After the persistent notice is drained, a save failure is queued
+        // again with the existing fixed, redacted text (drain-once contract).
+        record_save_failure();
+        let notice = take_pending_notice().expect("save failure notice");
+        assert_eq!(notice, SettingsNotice::save_failed());
+        assert_eq!(notice.text, NOTICE_SAVE_FAILED);
+        assert!(notice.is_error && notice.persistent);
+        assert!(!notice.text.contains('/'));
+        assert!(!notice.text.contains(STORAGE_KEY));
         assert_eq!(take_pending_notice(), None, "notice must be drained once");
     }
 
