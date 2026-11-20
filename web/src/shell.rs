@@ -271,21 +271,29 @@ fn sse_fallback_status(status: Option<&StatusMessage>) -> Option<&'static str> {
 /// The complete, deliberately minimal effect an SSE endpoint failure may have.
 ///
 /// A stream error says the *stream endpoint* broke, not that the snapshot poll
-/// is failing. The poll therefore remains the sole owner of `live_error` and
-/// `reconnect_required` (wa-netfail / WB-SSEERR2). This type has no field for
-/// either, so a broken stream cannot blink the DOM proof's `live_error=` marker
-/// while the poll keeps ticking. The only effect is an optional transient status
-/// notice, already gated by [`sse_fallback_status`] so an outstanding persistent
-/// corrupt / save-failure notice keeps priority (SECURITY.md §5).
+/// is failing. The poll therefore remains the sole owner of `live_error`
+/// (wa-netfail / WB-SSEERR2): this type has no field for it, so a broken stream
+/// cannot blink the DOM proof's `live_error=` marker while the poll keeps
+/// ticking. The normal effect is an optional transient status notice, gated by
+/// [`sse_fallback_status`] so an outstanding persistent corrupt / save-failure
+/// notice keeps priority (SECURITY.md §5).
+///
+/// The one deliberate exception is `401`: an auth rejection carries the same
+/// token re-entry guidance whichever transport observed it, so `reconnect=`
+/// must be raised immediately instead of waiting for the next poll tick
+/// (SA-SSE401). Only that flag and the guidance status cross the boundary;
+/// `live_error`, `stale`, `ticks` and the snapshot stay poll-owned.
 #[derive(Debug, PartialEq, Eq)]
 struct SseErrorEffect {
     transient_status: Option<&'static str>,
+    reconnect_required: bool,
 }
 
-/// Computes the SSE error effect without touching poll-owned fields.
-fn sse_error_effect(status: Option<&StatusMessage>) -> SseErrorEffect {
+/// Computes the SSE error effect without touching the poll-owned `live_error`.
+fn sse_error_effect(status: Option<&StatusMessage>, error: &FetchError) -> SseErrorEffect {
     SseErrorEffect {
         transient_status: sse_fallback_status(status),
+        reconnect_required: crate::agent::requires_reconnect(error),
     }
 }
 
@@ -738,12 +746,14 @@ impl TaskManagerApp {
     /// Returns the view to the existing fetch poll after a subscription ends.
     ///
     /// A clean EOF or a typed error both get a fixed, DOM-safe transient notice
-    /// via [`Self::handle_sse_error`] / [`sse_fallback_status`]. Neither writes
-    /// the poll-owned `live_error` / `reconnect_required` fields (WB-SSEERR2),
-    /// and a snapshot delivered by this stream is never re-labelled stale just
-    /// because its endpoint failed afterwards (X2-STALE). Either way the user
-    /// keeps receiving snapshots from the poll while the retry cooldown runs,
-    /// and the `sse=` field is rewritten in the same callback.
+    /// via [`Self::handle_sse_error`] / [`sse_fallback_status`]. The stream does
+    /// not write the poll-owned `live_error` field (WB-SSEERR2); the sole
+    /// exception is a `401`, which raises `reconnect_required` immediately so
+    /// the token guidance is visible without waiting for the next poll tick
+    /// (SA-SSE401). A snapshot delivered by this stream is never re-labelled
+    /// stale just because its endpoint failed afterwards (X2-STALE). Either way
+    /// the user keeps receiving snapshots from the poll while the retry
+    /// cooldown runs, and the `sse=` field is rewritten in the same callback.
     fn on_sse_ended(&mut self, outcome: Result<(), FetchError>) {
         self.stream_mode = stream_mode_after_sse_end(&outcome);
         self.sse_last_snapshot_at = None;
@@ -759,18 +769,31 @@ impl TaskManagerApp {
         self.sync_proof_dom();
     }
 
-    /// Announces an SSE endpoint error without touching poll-owned state.
+    /// Announces an SSE endpoint error without touching the poll-owned error.
     ///
     /// A BodyRead / Parse / HTTP failure means the *stream endpoint* broke, not
     /// that the poll is failing. Writing `live_error` here used to blink the
     /// DOM proof's `live_error=` flag for a second or two until the next healthy
     /// poll cleared it (wa-netfail). Now only a transient status notice is
-    /// emitted through [`sse_error_effect`], so `live_error`,
-    /// `reconnect_required`, `stale`, `ticks`, the snapshot and the row menu stay
-    /// exactly as the poll left them (WB-SSEERR2 / X2-STALE). The retry cooldown
-    /// is set by [`Self::on_sse_ended`].
-    fn handle_sse_error(&mut self, _error: FetchError) {
-        let effect = sse_error_effect(self.dashboard.status());
+    /// emitted through [`sse_error_effect`], so `live_error`, `stale`, `ticks`,
+    /// the snapshot and the row menu stay exactly as the poll left them
+    /// (WB-SSEERR2 / X2-STALE). The retry cooldown is set by
+    /// [`Self::on_sse_ended`].
+    ///
+    /// Exception (SA-SSE401): when [`crate::agent::requires_reconnect`] holds,
+    /// the sticky `reconnect_required` flag and the token guidance status are
+    /// published here as well. Waiting for the poll to observe the same `401`
+    /// would leave `reconnect=0` for a whole tick and contradict the
+    /// `web/README.md` contract. `live_error` is still not written, so the DOM
+    /// proof changes only `reconnect=1`, never `live_error=1`.
+    fn handle_sse_error(&mut self, error: FetchError) {
+        let effect = sse_error_effect(self.dashboard.status(), &error);
+        if effect.reconnect_required {
+            self.reconnect_required = true;
+            self.dashboard
+                .set_status(format!("エージェントから取得できません: {error}"), true);
+            return;
+        }
         if let Some(text) = effect.transient_status {
             self.dashboard.set_status(text, false);
         }
@@ -3098,23 +3121,14 @@ impl TaskManagerApp {
 
     // -------------------------------------------------------------- DOM proof
 
-    /// Writes a compact state summary into `body[data-gpui-proof]` so the CDP
-    /// verification script can assert on it.
+    /// Builds the exact `body[data-gpui-proof]` payload from the current state.
     ///
-    /// `document.title` is intentionally *not* part of the proof: it is a fixed,
-    /// human-facing label plus the data source, so no `key=value` field (and no
-    /// filter text, tick count, row count, …) ever leaks into the browser tab.
-    ///
-    /// This is the only DOM interaction in the shell; everything else is drawn on
-    /// the GPUI canvas.
-    #[cfg(target_family = "wasm")]
-    fn sync_proof_dom(&self) {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let Some(document) = window.document() else {
-            return;
-        };
+    /// Split out from the DOM write so native unit tests can assert on the real
+    /// proof produced by `on_sse_ended` instead of hand-concatenated literals
+    /// (SA-SSE401). Viewport dimensions are the only browser-only values and
+    /// are supplied by the wasm caller; the byte layout is otherwise identical.
+    #[cfg(any(target_family = "wasm", test))]
+    fn proof_string(&self, viewport_width: u32, viewport_height: u32) -> String {
         let snapshot = self.dashboard.snapshot();
         let live = matches!(&self.source, DataSource::Live(_));
         let mode = if live { "live" } else { "demo" };
@@ -3161,18 +3175,6 @@ impl TaskManagerApp {
             .unwrap_or_else(|| "-".to_string());
         let ime_selection = self.filter_input.selection();
         let ime_selection = format!("{}:{}", ime_selection.start, ime_selection.end);
-        let viewport_width = window
-            .inner_width()
-            .ok()
-            .and_then(|value| value.as_f64())
-            .map(|value| value as u32)
-            .unwrap_or(0);
-        let viewport_height = window
-            .inner_height()
-            .ok()
-            .and_then(|value| value.as_f64())
-            .map(|value| value as u32)
-            .unwrap_or(0);
         let rows = self.dashboard.visible_count();
         // `interval=` keeps the user-configured value byte-for-byte for the
         // existing CDP hooks; the additive `sampling_ms=` reports the adaptive
@@ -3207,7 +3209,40 @@ impl TaskManagerApp {
         let proof = proof_with_sampling(&proof, self.dashboard.snapshot(), effective_interval_ms);
         // Last field on purpose: every pre-existing `key=value;` pair keeps its
         // exact bytes and the new marker is always the final one.
-        let proof = proof_with_sse(&proof, self.stream_mode);
+        proof_with_sse(&proof, self.stream_mode)
+    }
+
+    /// Writes the compact state summary from [`Self::proof_string`] into
+    /// `body[data-gpui-proof]` so the CDP verification script can assert on it.
+    ///
+    /// `document.title` is intentionally *not* part of the proof: it is a fixed,
+    /// human-facing label plus the data source, so no `key=value` field (and no
+    /// filter text, tick count, row count, …) ever leaks into the browser tab.
+    ///
+    /// This is the only DOM interaction in the shell; everything else is drawn on
+    /// the GPUI canvas.
+    #[cfg(target_family = "wasm")]
+    fn sync_proof_dom(&self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Some(document) = window.document() else {
+            return;
+        };
+        let viewport_width = window
+            .inner_width()
+            .ok()
+            .and_then(|value| value.as_f64())
+            .map(|value| value as u32)
+            .unwrap_or(0);
+        let viewport_height = window
+            .inner_height()
+            .ok()
+            .and_then(|value| value.as_f64())
+            .map(|value| value as u32)
+            .unwrap_or(0);
+        let proof = self.proof_string(viewport_width, viewport_height);
+        let live = matches!(&self.source, DataSource::Live(_));
         // タブのタイトルは人間向けの固定文言＋データ源のみ。DOM 証跡の内部
         // フィールド（mode/tick/rows/filter/…）は `body[data-gpui-proof]` に
         // だけ書き、ここには一切露出させない。
@@ -4843,6 +4878,77 @@ fn agent_config_from_url() -> Option<AgentConfig> {
 mod tests {
     use super::*;
 
+    /// Runs production state transitions on a real (headless) `TaskManagerApp`
+    /// and snapshots the observable state afterwards. The instance matches
+    /// `TaskManagerApp::new` minus the window-bound sampler / subscription
+    /// side effects, so these assertions describe the same state the browser
+    /// would expose via `body[data-gpui-proof]`.
+    fn run_sse_steps(
+        steps: impl FnOnce(&mut TaskManagerApp) + Send + 'static,
+    ) -> (bool, Option<String>, Option<String>, String) {
+        fn build(cx: &mut Context<TaskManagerApp>) -> TaskManagerApp {
+            let platform = PlatformInfo::native_read_only("Linux (エージェント経由)");
+            let dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
+            TaskManagerApp {
+                dashboard,
+                filter_input: FilterInput::new(),
+                filter_editing: false,
+                source: DataSource::Demo(DemoProbe::new()),
+                focus_handle: cx.focus_handle(),
+                scroll_handle: UniformListScrollHandle::new(),
+                live_total: None,
+                live_error: None,
+                reconnect_required: false,
+                stale: false,
+                ticks: 0,
+                last_export: None,
+                row_menu: None,
+                menu_proof: MenuProof::None,
+                stream_mode: StreamMode::Fallback,
+                sse_task: None,
+                sse_epoch: 0,
+                sse_last_snapshot_at: None,
+                sse_retry_at: None,
+                poll_backoff: PollBackoff::default(),
+                show_help: false,
+                help_close_focus: cx.focus_handle(),
+                last_help_shown: false,
+            }
+        }
+
+        // Headless Linux keeps its event loop alive even after `quit()`, so the
+        // app runs on a detached thread and the snapshot travels back through a
+        // bounded channel. The callback itself is synchronous: by the time
+        // `recv_timeout` returns, every assertion below has observed the real
+        // post-callback state.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            gpui_platform::headless().run(move |cx: &mut gpui::App| {
+                let entity = cx.new(build);
+                entity.update(cx, |app, _cx| {
+                    steps(app);
+                    let _ = sender.send((
+                        app.reconnect_required,
+                        app.live_error.clone(),
+                        app.dashboard.status().map(|status| status.text.clone()),
+                        app.proof_string(0, 0),
+                    ));
+                });
+                cx.quit();
+            });
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("headless callback must publish the snapshot")
+    }
+
+    /// Ends the stream once through the production callback.
+    fn sse_end_state(
+        outcome: Result<(), FetchError>,
+    ) -> (bool, Option<String>, Option<String>, String) {
+        run_sse_steps(move |app| app.on_sse_ended(outcome))
+    }
+
     #[test]
     fn failed_refresh_marks_the_existing_snapshot_stale() {
         assert!(stale_after_poll(true, false));
@@ -5354,6 +5460,39 @@ mod tests {
         assert!(!DEMO_MODE_STATUS_NOTICE.contains(';'));
         assert!(!DEMO_MODE_STATUS_NOTICE.contains('\n'));
         assert!(DEMO_MODE_NOTICE.contains("127.0.0.1:8787"));
+    }
+
+    #[test]
+    fn demo_export_notice_yields_to_the_standing_guide_on_next_sample() {
+        // SC-STATUSRESTORE: mode=demo installs the standing notice, an export
+        // confirmation covers it briefly, and the next demo sample must bring
+        // the guide back instead of ending on "ステータス: 変更なし".
+        let mut demo = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        demo.set_persistent_info(DEMO_MODE_STATUS_NOTICE);
+        let guide = demo.status().cloned().expect("demo guide");
+
+        demo.set_status(export_status_message(ExportFormat::Csv, 12, 4096), false);
+        let export_notice = demo.status().cloned().expect("export notice");
+        assert!(!export_notice.persistent);
+        assert!(export_notice.text.contains("CSV"));
+        assert_ne!(export_notice.text, guide.text);
+
+        demo.ingest(tm_core::demo::demo_snapshot(0));
+        assert_eq!(demo.status(), Some(&guide));
+        let announced = a11y_live_text(demo.status(), false);
+        assert!(!announced.contains("ステータス: 変更なし"), "{announced}");
+        assert!(announced.contains(DEMO_MODE_STATUS_NOTICE), "{announced}");
+
+        // mode=live never installs the demo guide, so the same clear leaves an
+        // empty status instead of surfacing demo guidance.
+        let mut live = Dashboard::new(
+            PlatformInfo::native_read_only("Linux (エージェント経由)"),
+            DEFAULT_REFRESH_INTERVAL,
+        );
+        live.set_status("エージェントに接続しています…", false);
+        live.ingest(tm_core::demo::demo_snapshot(0));
+        assert!(live.status().is_none());
+        assert_eq!(a11y_live_text(live.status(), false), "ステータス: 変更なし");
     }
 
     #[test]
@@ -6090,69 +6229,74 @@ mod tests {
 
     #[test]
     fn sse_endpoint_error_keeps_the_401_403_reconnect_contract() {
-        // 401 raises the token re-entry flag and keeps its guidance in status.
-        let (live_error, reconnect_required, status) =
-            live_error_fields(None, false, &FetchError::Auth);
-        assert!(reconnect_required);
-        assert_eq!(
-            live_error.as_deref(),
-            Some(crate::agent::RECONNECT_GUIDANCE)
+        // 401 on the *stream* endpoint raises the token re-entry flag in the
+        // same callback (SA-SSE401), publishes the guidance, and still leaves
+        // the poll-owned `live_error` at 0. The proof is the real one produced
+        // by `sync_proof_dom`'s builder, not a hand-concatenated literal.
+        let (reconnect, live_error, status, proof) = sse_end_state(Err(FetchError::Auth));
+        assert!(reconnect, "SSE 401 must set reconnect=1 immediately");
+        assert!(live_error.is_none(), "SSE must not write live_error");
+        let status = status.expect("401 must publish a status");
+        assert!(
+            status.contains(crate::agent::RECONNECT_GUIDANCE),
+            "{status}"
         );
         assert!(status.contains("#token="), "{status}");
+        assert!(proof.contains("live_error=0;"), "{proof}");
+        assert!(proof.contains("reconnect=1;"), "{proof}");
+        assert!(proof.ends_with("sse=fallback;"), "{proof}");
 
-        // 403 (`status_error(403)`) is an origin problem, not a token problem.
-        // The real variant is checked here so the SSE path cannot silently
-        // reintroduce reconnect=1 for it (w3-tests 実経路).
+        // 403 is an origin problem: neither the poll nor the stream may invent
+        // an auth failure for it.
         let forbidden = FetchError::Forbidden;
         assert_eq!(forbidden.to_string(), crate::agent::FORBIDDEN_GUIDANCE);
         assert!(!crate::agent::requires_reconnect(&forbidden));
-        let (live_error, reconnect_required, status) = live_error_fields(None, false, &forbidden);
-        assert!(!reconnect_required, "403 must not set reconnect=1");
-        assert_eq!(
-            live_error.as_deref(),
-            Some(crate::agent::FORBIDDEN_GUIDANCE)
-        );
-        assert!(status.contains("同一ホスト"), "{status}");
+        let (reconnect, live_error, _status, proof) = sse_end_state(Err(forbidden));
+        assert!(!reconnect, "403 must not set reconnect=1");
+        assert!(live_error.is_none(), "SSE must not write live_error");
+        assert!(proof.contains("live_error=0;"), "{proof}");
+        assert!(proof.contains("reconnect=0;"), "{proof}");
+        assert!(!proof.contains("#token="), "{proof}");
 
-        // A sticky 401 flag survives a following 403.
-        let (_, reconnect_required, _) = live_error_fields(
-            Some(crate::agent::RECONNECT_GUIDANCE),
-            true,
-            &FetchError::Forbidden,
-        );
-        assert!(reconnect_required);
+        // The flag is sticky: a following non-auth stream failure cannot lower
+        // it again (R49 audit), even when both observations came from SSE.
+        let (reconnect, live_error, _status, proof) = run_sse_steps(|app| {
+            app.on_sse_ended(Err(FetchError::Auth));
+            app.on_sse_ended(Err(FetchError::Forbidden));
+        });
+        assert!(reconnect, "a sticky 401 flag survives a following 403");
+        assert!(live_error.is_none(), "SSE must not write live_error");
+        assert!(proof.contains("reconnect=1;"), "{proof}");
     }
 
     #[test]
     fn sse_error_only_emits_a_transient_status_not_live_error() {
         // wa-netfail / WB-SSEERR2: a stream endpoint failing with 503 must not
         // blink the DOM proof's `live_error=` marker while the poll is healthy.
-        // `SseErrorEffect` has no field for `live_error` / `reconnect_required`,
-        // so the stream path is structurally unable to write either.
-        let effect = sse_error_effect(None);
+        // The effect carries no `live_error` field at all, and the real state
+        // observation confirms the marker stays 0 on the production path.
+        let effect = sse_error_effect(None, &FetchError::Http(503));
         assert_eq!(
             effect,
             SseErrorEffect {
-                transient_status: Some(SSE_FALLBACK_NOTICE)
+                transient_status: Some(SSE_FALLBACK_NOTICE),
+                reconnect_required: false,
             }
         );
-        // The notice is informational/transient, never an error status write.
-        assert_eq!(effect.transient_status, Some(SSE_FALLBACK_NOTICE));
         assert!(!SSE_FALLBACK_NOTICE.contains(';'));
         assert!(!SSE_FALLBACK_NOTICE.contains('\n'));
 
-        // The stream still ends cleanly into the poll and `reconnect=` stays 0.
-        let mode = stream_mode_after_sse_end(&Err(FetchError::Http(503)));
-        assert_eq!(mode, StreamMode::Fallback);
-        let proof = proof_with_sse(
-            &proof_with_reconnect("mode=live;live_error=0;stale=0;tick=9;", false),
-            mode,
-        );
-        assert_eq!(
-            proof,
-            "mode=live;live_error=0;stale=0;tick=9;reconnect=0;sse=fallback;"
+        let (reconnect, live_error, status, proof) = sse_end_state(Err(FetchError::Http(503)));
+        assert!(!reconnect, "503 must not set reconnect=1");
+        assert!(live_error.is_none(), "SSE must not write live_error");
+        let status = status.expect("503 must publish the fallback notice");
+        assert!(
+            status.contains(SSE_FALLBACK_NOTICE),
+            "unexpected status: {status}"
         );
         assert!(proof.contains("live_error=0;"), "{proof}");
+        assert!(proof.contains("reconnect=0;"), "{proof}");
+        assert!(proof.ends_with("sse=fallback;"), "{proof}");
     }
 
     #[test]
@@ -6184,9 +6328,10 @@ mod tests {
             persistent: true,
         };
         assert_eq!(
-            sse_error_effect(Some(&persistent)),
+            sse_error_effect(Some(&persistent), &FetchError::BodyRead),
             SseErrorEffect {
-                transient_status: None
+                transient_status: None,
+                reconnect_required: false,
             }
         );
         // A transient status, in contrast, may be replaced by the notice.
@@ -6196,9 +6341,28 @@ mod tests {
             persistent: false,
         };
         assert_eq!(
-            sse_error_effect(Some(&transient)).transient_status,
+            sse_error_effect(Some(&transient), &FetchError::BodyRead).transient_status,
             Some(SSE_FALLBACK_NOTICE)
         );
+
+        // Real path: the guard still holds after `on_sse_ended` for a non-auth
+        // stream failure — the persistent corrupt notice stays on screen and
+        // neither `reconnect=` nor `live_error=` moves.
+        let (reconnect, live_error, status, proof) = run_sse_steps(|app| {
+            app.dashboard
+                .set_persistent_status("設定ファイルが破損しています");
+            app.on_sse_ended(Err(FetchError::BodyRead));
+        });
+        assert!(!reconnect, "BodyRead must not set reconnect=1");
+        assert!(live_error.is_none(), "SSE must not write live_error");
+        assert!(
+            status
+                .as_deref()
+                .is_some_and(|text| text.contains("設定ファイルが破損しています")),
+            "persistent notice must win: {status:?}"
+        );
+        assert!(proof.contains("reconnect=0;"), "{proof}");
+        assert!(proof.contains("live_error=0;"), "{proof}");
     }
 
     #[test]

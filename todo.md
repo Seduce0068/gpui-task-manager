@@ -1167,6 +1167,64 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - wa-corslive は途中失敗したため wa-cors2 に範囲を絞って再委譲し完了
   （AGENTS.md §7 に従い失敗を無視せず再実行）。
 
+### 優先度: 高 — swarm-limited R1 回帰 2026-11-20
+
+- [x] SSE の 401 が reconnect=1 / トークン案内を即時設定しなくなった
+      （2fea1fb の SSE エラー分離で回帰）。requires_reconnect が真のとき
+      だけ例外経路を追加し、web/README の契約を復元。根拠 ra-diff。
+      → 完了（SA-SSE401）: `SseErrorEffect` に `reconnect_required` を追加し
+      `sse_error_effect(status, error)` が `requires_reconnect` で判定。
+      `handle_sse_error` は 401 のときだけ sticky な `reconnect_required` と
+      `#token=` 入りの案内ステータスを即時設定し、`live_error` は poll 専用
+      のまま（DOM proof は `live_error=0` / `reconnect=1`）。
+      `web/README.md` の contract を SSE 経由にも拡張して復元。
+      `cargo test --manifest-path web/Cargo.toml --lib`（191 passed）/
+      web clippy native + wasm / web fmt --check すべて exit 0。
+- [x] カウンタ不変の古いサンプル（total_rx/tx が等値のアイドル時）が
+      時刻逆行リベースとして誤受理され、transient 通知をearly消去＋
+      baseline を上書き（6c035fc で回帰）。counters_advanced を厳密
+      増加判定へ。根拠 ra-diff。
+      → 完了（SB-CLOCKFIX）: `Dashboard::ingest` の `counters_advanced` を
+      `>= && >=` から `> || >` の厳密増加判定へ変更。等値は late のまま
+      保持し、transient 通知・`last_ingested_at`・`last_network`・
+      `last_network_interfaces` を巻き戻さない。カウンタが明確に進んだ
+      時刻逆行は従来どおり再基底（WB-CLOCK 契約維持）。新規テスト3件
+      （アイドル等値＋古い sampled_at が late で各状態を保持／カウンタ
+      進展逆行の再基底／アイドル連続後の前方進行レート）を追加し、既存
+      `late_snapshot_*` および WC-IFHOT 契約テストの非回帰を確認。
+      `cargo test -p tm-viewmodel`（88 passed）/
+      `cargo clippy -p tm-viewmodel --all-targets -- -D warnings`（exit 0）/
+      `cargo fmt --all -- --check`（exit 0）成功。
+- [x] 401/403 と SSE エラーの契約テストが純粋関数／リテラル結合だけで
+      実経路（on_sse_ended / sync_proof_dom）を通っていない（weak
+      assertion）。回帰を検出できるテストへ置換。根拠 ra-diff。
+      → 完了（SA-SSE401）: 2 件の weak assertion を実経路へ置換。
+      (1) `sse_endpoint_error_keeps_the_401_403_reconnect_contract` は
+      headless GPUI の実 `TaskManagerApp` で `on_sse_ended(Auth/Forbidden)`
+      を呼び、`proof_string()`（= `sync_proof_dom` が DOM へ書くペイロード）
+      から `reconnect=` / `live_error=` / `sse=` を検証。401 の sticky 性も
+      実経路で確認。
+      (2) `SseErrorEffect` の DOM proof テストもリテラル結合を廃し、503 の
+      実経路状態（`live_error=0` / `reconnect=0` / fallback notice）を検証。
+      あわせて persistent corrupt 通知ガードの実経路非回帰も追加。
+- [x] エクスポート完了後に常設デモ案内が復帰せず「ステータス: 変更なし」
+      になる。transient が persistent を置換しない保護 or 復元。根拠
+      rc-dogfood。persistent slot を保持し transient 消去時に復元（SC-STATUSRESTORE）。
+
+### 優先度: 中 — swarm-limited R1 発掘 2026-11-20
+
+- [ ] Windows で /dev/urandom 直読み＋XDG_STATE_HOME 前提のためトークン
+      未指定の既定起動が不能（high、静的確認）。mining: Windows では
+      APPDATA/USERPROFILE と OS RNG を使う分岐を検討。根拠 rb-discover。
+- [ ] stdout の非 EPIPE 書込み失敗（/dev/full / ENOSPC）が無言 exit 0
+      （--once 出力喪失）。EPIPE と区別して警告 or 非0終了。根拠 rb-discover。
+- [ ] --once が --token-file / TM_AGENT_TOKEN の妥当性を検証せず黙って
+      無視（once=0 / server=5）。根拠 rb-discover。
+- [ ] 追跡済み PoC ログ 2 件に内部 worktree パスが残り開示ゲートの
+      走査対象外。根拠 rb-discover。
+- [ ] umask 0777 で XDG_STATE_HOME の中間ディレクトリが 0000 になり
+      起動失敗（low）。根拠 rb-discover。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

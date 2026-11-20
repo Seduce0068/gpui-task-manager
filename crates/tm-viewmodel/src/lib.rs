@@ -506,6 +506,13 @@ pub struct Dashboard {
     interval: Duration,
     pending_kill: Option<PendingKill>,
     status: Option<StatusMessage>,
+    /// Standing notice retained while a transient message is on screen.
+    ///
+    /// A transient write (e.g. the export confirmation) may cover the demo-mode
+    /// guidance on screen; clearing it restores this slot instead of leaving the
+    /// live region empty (SC-STATUSRESTORE). Only explicit persistent setters
+    /// populate it, so live mode never gains a demo notice through this path.
+    persistent_status: Option<StatusMessage>,
     last_network: Option<(u64, u64)>,
     /// Physical interface names whose counters contributed to `last_network`.
     ///
@@ -546,6 +553,7 @@ impl Dashboard {
             interval: clamp_interval(interval),
             pending_kill: None,
             status: None,
+            persistent_status: None,
             last_network: None,
             last_network_interfaces: HashSet::new(),
             last_ingested_at: None,
@@ -949,11 +957,13 @@ impl Dashboard {
     /// rate.
     ///
     /// The exception is a wall-clock step back: when a regressed `sampled_at`
-    /// arrives with network counters that have not gone backwards, the sample
+    /// arrives with network counters that have strictly advanced, the sample
     /// itself is newer than the baseline and only the clock is stale. The
     /// high-water mark and rate baseline are rebased onto it, so a *sustained*
     /// regression cannot keep accumulating rates from an obsolete baseline or
-    /// pin a transient error forever (WB-CLOCK).
+    /// pin a transient error forever (WB-CLOCK). Equal counters are not
+    /// progress: an idle delayed sample stays late and cannot clear the newest
+    /// transient error or roll the baseline back (SB-CLOCKFIX).
     pub fn ingest(&mut self, snapshot: SystemSnapshot) {
         if self.paused {
             // Keep the "paused" notice: an in-flight sample finishing now must
@@ -966,18 +976,22 @@ impl Dashboard {
         // backwards and eventually become the baseline itself.
         //
         // Cumulative network counters cannot be higher in an older sample. If
-        // a "late" snapshot nevertheless carries counters at least as high as
-        // the current baseline, the sample is newer than the baseline and only
-        // the wall clock stepped back (NTP/VM resume). Rebase the mark and the
-        // baseline onto it so a *sustained* regression cannot accumulate rates
-        // or pin a transient error forever (WB-CLOCK). Genuinely older samples
-        // keep the previous contract: display only, no status/rate changes.
+        // a "late" snapshot nevertheless carries counters that strictly
+        // advanced past the current baseline, the sample is newer than the
+        // baseline and only the wall clock stepped back (NTP/VM resume). Rebase
+        // the mark and the baseline onto it so a *sustained* regression cannot
+        // accumulate rates or pin a transient error forever (WB-CLOCK).
+        //
+        // Equality is NOT progress: on an idle network a delayed sample carries
+        // the very same totals, so it stays late and must not clear the newest
+        // transient error, rewind `last_ingested_at` or overwrite the baseline
+        // and its physical-IF set (SB-CLOCKFIX).
         let wall_clock_regressed = self
             .last_ingested_at
             .is_some_and(|last| snapshot.sampled_at < last);
         let (total_rx, total_tx) = snapshot.network_totals();
         let counters_advanced = self.last_network.is_none_or(|(previous_rx, previous_tx)| {
-            total_rx >= previous_rx && total_tx >= previous_tx
+            total_rx > previous_rx || total_tx > previous_tx
         });
         let is_late = wall_clock_regressed && !counters_advanced;
         if !is_late {
@@ -1072,9 +1086,12 @@ impl Dashboard {
     /// Sets a transient status message (cleared on the next successful sample).
     ///
     /// Persistent notices survive automatic transitions (ingest / pause-resume)
-    /// but an explicit transient message replaces them, as documented in
-    /// SECURITY.md §5. All transient writes go through this method so a future
-    /// policy change (e.g. protecting persistent notices) needs one edit here.
+    /// but an explicit transient message may replace them on screen, as
+    /// documented in SECURITY.md §5. The standing notice is retained in the
+    /// persistent slot and restored by [`Self::clear_transient_status`], so the
+    /// demo guidance never degrades into "ステータス: 変更なし" after an export
+    /// confirmation (SC-STATUSRESTORE). All transient writes go through this
+    /// method so a future policy change needs one edit here.
     pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
         self.status = Some(if is_error {
             StatusMessage::error(text)
@@ -1098,7 +1115,9 @@ impl Dashboard {
     /// the `[情報]` prefix and the persistent flag, so a successful sample does
     /// not clear it while assistive technology never announces it as an error.
     pub fn set_persistent_info(&mut self, text: impl Into<String>) {
-        self.status = Some(StatusMessage::persistent_info(text));
+        let status = StatusMessage::persistent_info(text);
+        self.persistent_status = Some(status.clone());
+        self.status = Some(status);
     }
 
     /// Sets a persistent status with an explicit severity (V2-HELP).
@@ -1106,27 +1125,39 @@ impl Dashboard {
     /// `is_error = true` is the legacy `set_persistent_status` behaviour;
     /// `false` produces the same persistent message with the info prefix.
     pub fn set_persistent_status_with_tone(&mut self, text: impl Into<String>, is_error: bool) {
-        self.status = Some(if is_error {
+        let status = if is_error {
             StatusMessage::persistent_error(text)
         } else {
             StatusMessage::persistent_info(text)
-        });
+        };
+        self.persistent_status = Some(status.clone());
+        self.status = Some(status);
     }
 
     /// Clears the current status only when it is transient (R3-U05).
+    ///
+    /// When a standing notice was temporarily covered by a transient message,
+    /// it is restored from the persistent slot instead of leaving the live
+    /// region empty (SC-STATUSRESTORE). Live mode never installs a demo notice,
+    /// so this cannot surface demo guidance there.
     pub fn clear_transient_status(&mut self) {
         if self
             .status
             .as_ref()
             .is_some_and(|status| !status.persistent)
         {
-            self.status = None;
+            self.status = self.persistent_status.clone();
         }
     }
 
-    /// Clears the status message.
+    /// Clears the status message and its persistent restore slot.
+    ///
+    /// The native shell's probe-retry recovery uses this to dismiss a matching
+    /// startup failure for good; restoring it on a later transient clear would
+    /// resurrect a failure the user already saw recovered.
     pub fn clear_status(&mut self) {
         self.status = None;
+        self.persistent_status = None;
     }
 
     /// Formats the overview CPU label, shared by both shells.
@@ -1476,6 +1507,67 @@ mod tests {
         let status = dashboard.status().expect("persistent status survives");
         assert!(status.persistent);
         assert_eq!(status.text, format!("{STATUS_PREFIX_ERROR} 起動時の警告"));
+    }
+
+    #[test]
+    fn demo_persistent_info_is_restored_after_a_transient_notice_is_cleared() {
+        let mut dashboard = dashboard();
+        // Demo mode installs a standing info notice at startup.
+        dashboard.set_persistent_info("デモ表示中。実データ接続はヘルプ F1 を参照");
+        let standing = dashboard.status().cloned().expect("demo guidance");
+
+        // An export confirmation is transient and briefly covers the guidance.
+        dashboard.set_status("CSV をエクスポートしました", false);
+        let transient = dashboard.status().expect("export notice");
+        assert!(!transient.persistent);
+        assert_ne!(transient.text, standing.text);
+
+        // The next accepted sample clears the transient notice; the standing
+        // demo guidance must come back instead of an empty live region.
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.status(), Some(&standing));
+
+        // A second cycle must behave identically (no one-shot restore).
+        dashboard.set_status("JSON をエクスポートしました", false);
+        dashboard.clear_transient_status();
+        assert_eq!(dashboard.status(), Some(&standing));
+    }
+
+    #[test]
+    fn live_mode_without_a_persistent_notice_stays_empty_after_transient_clear() {
+        let mut dashboard = dashboard();
+        // Live mode only sets a transient "connecting" notice; no demo guidance
+        // is ever installed, so clearing it must not surface demo text there.
+        dashboard.set_status("エージェントに接続しています…", false);
+        dashboard.ingest(demo_snapshot(0));
+        assert!(
+            dashboard.status().is_none(),
+            "live mode must not show the demo notice"
+        );
+    }
+
+    #[test]
+    fn persistent_error_notices_are_restored_and_explicit_clear_dismisses_them() {
+        for text in ["設定ファイルが破損しています", "設定を保存できませんでした"]
+        {
+            let mut dashboard = dashboard();
+            dashboard.set_persistent_status(text);
+            let standing = dashboard.status().cloned().expect("persistent error");
+            assert!(standing.persistent && standing.is_error);
+
+            // A transient notice may cover it on screen but must not destroy
+            // the corrupt / save-failure notice (SECURITY.md §5, non-regression).
+            dashboard.set_status("一時的なお知らせ", false);
+            dashboard.clear_transient_status();
+            assert_eq!(dashboard.status(), Some(&standing), "{text}");
+
+            // An explicit clear (native probe-retry recovery) dismisses both,
+            // so a recovered startup failure cannot resurrect later.
+            dashboard.clear_status();
+            dashboard.set_status("一時的なお知らせ", false);
+            dashboard.clear_transient_status();
+            assert!(dashboard.status().is_none(), "{text} must not resurrect");
+        }
     }
 
     #[test]
@@ -1860,6 +1952,96 @@ mod tests {
         // Re-syncing against the late snapshot must not auto-select a row.
         dashboard.ingest(demo_snapshot(1));
         assert_eq!(dashboard.selected_key(), None);
+    }
+
+    #[test]
+    fn idle_snapshot_with_older_timestamp_is_late_and_keeps_baseline() {
+        let mut dashboard = dashboard();
+        let current = demo_snapshot(3);
+        let current_at = current.sampled_at;
+        let current_totals = current.network_totals();
+        dashboard.ingest(current);
+        assert_eq!(dashboard.network_rates(), (0, 0));
+        let baseline_interfaces = dashboard.last_network_interfaces.clone();
+
+        dashboard.set_status("直近の取得失敗", true);
+        assert!(dashboard.status().is_some_and(|status| status.is_error));
+
+        // An idle delayed sample: `usb0` carries zero bytes so the cumulative
+        // totals are unchanged, but sampled_at is older and the physical-IF set
+        // differs. Equal counters are not progress, so this stays late instead
+        // of being mistaken for a clock step back and rebased (SB-CLOCKFIX).
+        let mut stale = snapshot_with_usb0(3, 0, 0);
+        stale.sampled_at = tm_core::Timestamp::from_millis(current_at.unix_millis - 2_000);
+        assert_eq!(stale.network_totals(), current_totals);
+        assert!(stale.sampled_at < current_at);
+        dashboard.ingest(stale);
+
+        // The transient error, high-water mark, network baseline and IF set are
+        // all preserved: none may be rolled back by the stale sample.
+        assert!(
+            dashboard.status().is_some_and(|status| status.is_error),
+            "an idle late sample must not clear the newest transient error"
+        );
+        assert_eq!(dashboard.last_ingested_at, Some(current_at));
+        assert_eq!(dashboard.last_network, Some(current_totals));
+        assert_eq!(dashboard.last_network_interfaces, baseline_interfaces);
+
+        // The next fresh sample still reports one tick of traffic from the
+        // preserved baseline. Had the stale IF set been accepted, this frame
+        // would look like a set change and report (0, 0) instead (WC-IFHOT).
+        dashboard.ingest(demo_snapshot(4));
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn advancing_counters_still_rebase_a_regressed_timestamp() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(1));
+        dashboard.set_status("直近の取得失敗", true);
+
+        // The clock steps back while the network stays active: both counters
+        // advance, so this really is a new sample in a stepped-back clock era.
+        // It must keep the 6c035fc contract and be rebased (WB-CLOCK).
+        let mut regressed = demo_snapshot(2);
+        regressed.sampled_at = tm_core::Timestamp::from_millis(1);
+        let regressed_at = regressed.sampled_at;
+        let regressed_totals = regressed.network_totals();
+        assert!(regressed_at < dashboard.last_ingested_at.expect("high-water mark"));
+        assert!(regressed_totals.0 > dashboard.last_network.expect("baseline").0);
+        dashboard.ingest(regressed);
+
+        assert!(
+            dashboard.status().is_none(),
+            "a genuinely newer sample must still clear the transient error"
+        );
+        assert_eq!(dashboard.last_ingested_at, Some(regressed_at));
+        assert_eq!(dashboard.last_network, Some(regressed_totals));
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
+    }
+
+    #[test]
+    fn forward_progress_after_an_idle_streak_reports_normal_rates() {
+        let mut dashboard = dashboard();
+        let base_at = demo_snapshot(0).sampled_at;
+        dashboard.ingest(demo_snapshot(0));
+        assert_eq!(dashboard.network_rates(), (0, 0));
+
+        // Idle ticks keep the counters equal while the wall clock moves
+        // forward. They are current samples, never late arrivals, and must not
+        // disturb the baseline.
+        for tick in 1..=3 {
+            let mut idle = demo_snapshot(0);
+            idle.sampled_at = tm_core::Timestamp::from_millis(base_at.unix_millis + tick * 1_000);
+            dashboard.ingest(idle);
+            assert_eq!(dashboard.network_rates(), (0, 0));
+        }
+
+        // Traffic resumes: the rate is measured from the unchanged baseline.
+        let mut moving = demo_snapshot(1);
+        moving.sampled_at = tm_core::Timestamp::from_millis(base_at.unix_millis + 4_000);
+        dashboard.ingest(moving);
+        assert_eq!(dashboard.network_rates(), (1_234_567, 321_456));
     }
 
     #[test]
