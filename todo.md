@@ -1012,6 +1012,36 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   wins により更新消失（設計判断どおり、flock 未提供）。app/src/settings.rs の
   モジュール doc に「逐次ケースに限る」旨を明記（wb-concurrent）。
 
+### 優先度: 中 — ネットワーク障害／I/O失敗監査 2026-11-20
+
+- [x] Content-Length 不一致の途中切断が FetchError::BodyRead に分類され、
+      再試行案内（TRANSIENT_RETRY_GUIDANCE）が欠ける。5xx/timeout と案内を
+      統一。根拠 wa-netfail。（WA-BODYREAD: `web/src/agent.rs` の BodyRead の
+      Display へ TRANSIENT_RETRY_GUIDANCE を付与し、BODY_READ_ERROR の固定前缀
+      と redact 契約を維持。完全一致アサートを prefix + 案内含有へ更新し、
+      transient テストにも BodyRead を追加。）
+- [x] SSE 端点だけ 503 のとき、poll は健全（tick 進行・stale=0）なのに
+      live_error=1 が点滅する。SSE エラーを poll 由来の live_error と分離
+      するか、直近 successful poll があれば反映しないゲート。根拠 wa-netfail。
+      → `record_live_error` は poll 経路のみが呼び、SSE 経路は transient な
+      fallback status のみ（`SseErrorEffect` は live_error / reconnect を持た
+      ない）。persistent 通知ガードと sse=fallback / reconnect=0 を維持。
+      根拠 WB-SSEERR2（R2 主実行）。
+- [ ] FETCH_TIMEOUT が wasm の実リクエストを abort できず回復がピア切断
+      まで遅延（最大20s）。AbortController の明示呼び出しを検討（wasm 側
+      复杂度が高いため記録のみ）。根拠 wa-netfail。
+- [ ] 連続 503/429 で Retry-After が無視され約1req/s で試行。poll 側にも
+      クールダウン/バックオフを検討（暴走ではない）。根拠 wa-netfail。
+- [ ] RLIMIT_FSIZE 超過（SIGXFSZ）で export 一時ファイルが残存。シグナル
+      終了なのでクリーンアップ不可。極端ケースとして記録。根拠 wb-exportio。
+
+### メモ — I/O 失敗 2026-11-20
+
+- /dev/full・権限拒否・上書き・シンボリックリンク・存在しない親ディレクトリ
+  はすべて安全に処理（非通常ファイル拒否・0600維持・識別子非露出・panic無し）。
+  設定側 persistent 通知と export 側 stderr+exit1 の差は headless モード差で
+  不整合ではない。根拠 wb-exportio。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
