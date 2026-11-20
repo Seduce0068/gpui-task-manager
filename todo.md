@@ -1291,14 +1291,14 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 高 — swarm-project-review + todo-discovery 2026-11-21
 
-- [ ] Retry-After 実ヘッダが agent 側に存在せず、expose ヘッダのみ。
+- [x] Retry-After 実ヘッダが agent 側に存在せず、expose ヘッダのみ。（R6 coding で実装済み: 521e294）
       web の retry_after_secs/HttpRetryAfter/PollBackoff のヒント経路が
       本番で発火せず指数バックオフのみになる。503 に数値 Retry-After を
       設定し実ソケット経由のテストを追加。根拠 R2-TQ01 / R2-ER01。
-- [ ] cdp-verify が release-linux / web-dist / sbom の needs から漏れており、
+- [x] cdp-verify が release-linux / web-dist / sbom の needs から漏れており、（R6 coding で実装済み: 521e294）
       CDP 検証スクリプトの回帰があっても成果物が公開されうる。needs へ
       追加。根拠 R3-DP01 / R4-CI01。
-- [ ] web クレートの MSRV 宣言 (rust-version 1.95) が CI で検証されていない。
+- [x] web クレートの MSRV 宣言 (rust-version 1.95) が CI で検証されていない。（R6 coding で実装済み: 521e294）
       msrv-1-95 ジョブは workspace のみ。web の wasm check を 1.95 で追加
       するか、宣言から検証済みの主張を削除。根拠 R1-CF01。
 - [ ] ワイヤ型/エラー契約 (SnapshotEnvelope, ErrorCode, 固定ガイダンス) が
@@ -1315,15 +1315,15 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       連続 hint・5xx 境界）。根拠 R2-TQ01 / R5-TS01。
 - [x] late サンプルで network_rates/history が (0,0) に上書きされる。
       is_late ならレート更新と history.push をスキップ。根拠 R2-BV01。
-- [ ] 自動トークン read→remove→publish の TOCTOU で並行起動が別トークン
+- [x] 自動トークン read→remove→publish の TOCTOU で並行起動が別トークン
       を持ち得る。adopt 直前の再読込または直列化。根拠 R2-BV01。
 - [ ] SSE 接続確定前のポールと SSE が同一 probe をサンプリングし、
       sampled_elapsed 短縮でレート過大。接続元分離またはポールにも
       世代ガード。根拠 R2-BV01。
-- [ ] SSE error イベントが Web 側で Parse エラー化してストリーム終了。
+- [x] SSE error イベントが Web 側で Parse エラー化してストリーム終了。
       1 回の回復可能失敗で fallback＋5s クールダウンが発生。Frame::Error
       等でスキップ継続。根拠 R2-ER01。
-- [ ] トークン公開の部分失敗で旧ファイルも新ファイルも失われる。
+- [x] トークン公開の部分失敗で旧ファイルも新ファイルも失われる。
       退避/復元または chmod 先試行。根拠 R2-ER01。
 - [ ] --log-level が RequestTrace を抑制できず、--log-level error でも
       http.request.start/end が出力される。root cause: telemetry::emit が
