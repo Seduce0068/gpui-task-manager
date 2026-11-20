@@ -34,7 +34,10 @@ scan_list="$(
     'COPYING*' \
     'NOTICE*' \
     'THIRD_PARTY_NOTICES*' \
-    'licenses/crates/**' | sort -u
+    'licenses/crates/**' \
+    '*.log' \
+    '*.txt' \
+    '*.json' | sort -u
 )"
 if [[ -z "${scan_list}" ]]; then
   echo 'public-docs: no public documents found to scan' >&2

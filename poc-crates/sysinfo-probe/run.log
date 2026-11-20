@@ -1,4 +1,4 @@
-   Compiling sysinfo-probe v0.1.0 (/home/user/document/deepseek-harness/default-workspace/work/gpui-task-manager/poc-crates/sysinfo-probe)
+   Compiling sysinfo-probe v0.1.0 (/workspace/gpui-task-manager/poc-crates/sysinfo-probe)
     Finished `release` profile [optimized] target(s) in 0.62s
      Running `target/release/sysinfo-probe`
 == sysinfo probe: crate version 0.40.3 ==

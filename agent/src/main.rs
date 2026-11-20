@@ -25,6 +25,7 @@
 mod args;
 mod auth;
 mod http;
+mod private_dir;
 mod telemetry;
 
 use std::io::{self, Write};
@@ -857,14 +858,8 @@ fn publish_token_file(path: &std::path::Path, token: &str) -> Result<TokenPublis
 /// directory under the user's home, so leaving it behind is the safer and more
 /// convenient choice for a loopback-only agent.
 fn resolve_auto_token_in(dir: &std::path::Path) -> Result<(String, std::path::PathBuf), String> {
-    std::fs::create_dir_all(dir)
-        .map_err(|err| format!("トークン保存ディレクトリを作成できません: {err}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|err| format!("トークン保存ディレクトリの権限を設定できません: {err}"))?;
-    }
+    crate::private_dir::ensure_private_dir_chain(dir)
+        .map_err(|err| format!("トークン保存ディレクトリを準備できません: {err}"))?;
     let path = dir.join(AUTO_TOKEN_FILE_NAME);
 
     for _ in 0..AUTO_TOKEN_CREATE_ATTEMPTS {

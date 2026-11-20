@@ -1243,9 +1243,9 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       `--demo --once --token-file /nonexistent` と
       サーバーモードが共に exit 5、`--demo --once` は exit 0・1 行 JSON・
       先頭 30 件（デモ全件、上限 500 を下回る）を確認。
-- [ ] 追跡済み PoC ログ 2 件に内部 worktree パスが残り開示ゲートの
+- [x] 追跡済み PoC ログ 2 件に内部 worktree パスが残り開示ゲートの
       走査対象外。根拠 rb-discover。
-- [ ] umask 0777 で XDG_STATE_HOME の中間ディレクトリが 0000 になり
+- [x] umask 0777 で XDG_STATE_HOME の中間ディレクトリが 0000 になり（共通 private_dir ヘルパで作成経路へ 0700 を適用。実動 exit 124＝起動継続・ディレクトリ 0700、unit test 2 件追加）
       起動失敗（low）。根拠 rb-discover。
 
 ## 完了
