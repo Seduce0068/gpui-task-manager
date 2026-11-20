@@ -775,6 +775,27 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       漏れる）。generated_token_message を token_file_name と同じ leaf 名
       規律へ。根拠 od-discovery。
 
+### 優先度: 中 — README再現性／ブラウザ互換監査 2026-11-20
+
+- [x] README クイックスタートのコードブロックに長時間サーバー（cargo run /
+      trunk serve）と後続クライアントコマンドが混在し、コピペすると停止する。
+      別ブロック＋「ターミナル A / B」明記。wasm 節の `cd poc-wasm` は
+      実在しない（`cd ../poc-wasm` が必要）。根拠 rb-readme。
+- [x] README 別ポート例が未定義のシェル変数 ${token_file} を参照（新しい
+      ターミナルでは未定義で 401）。各ブロック内で再定義。根拠 rb-readme。
+- [x] README の curl 例が jq に依存するが前提パッケージ一覧に jq が無い。
+      apt 一覧へ追加するか jq 依存を外す。根拠 rb-readme。
+      → `curl -sS ... | head -c 500` へ変更し、apt 一覧は据え置き（理由を README に記載）。
+- [x] README「トークン場所は stderr で案内」と実装（leaf 名「token」のみ）
+      が不一致。記述を修正。根拠 rb-readme。
+- [x] README「まず試す（最短）」に Rust 1.95+ の導入手順が無い（cargo
+      command not found）。公式手順へのリンクを追加。根拠 rb-readme。
+- [x] ブラウザ検証状況の記述が古い: web/README.md:302 と
+      notes/verification.md:118 の「Firefox 未検証」、README.md:315 の
+      「ヘッドレス Chrome のみ」。Chrome 158 / Edge 157 / Firefox 160 で
+      検証成功（Firefox は BiDi・F1 は合成キーで信頼済みキー未確認）を反映。
+      Safari / Brave / モバイル / 実 GPU は未検証のまま。根拠 ra-browsers。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

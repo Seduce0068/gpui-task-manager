@@ -115,7 +115,10 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 - X11 セッションでの表示は未検証。
 - 合成入力によるキーボード E2E は未実施（手動・スクリーンショット確認のみ）。
 - KWin D-Bus の `queryWindowInfo` は本環境で `NoReply`。ウィンドウ確認は Spectacle で代替。
-- WebGPU の実 GPU 描画、Safari / Firefox は未検証。
+- ブラウザ互換性（2026-11-20 実測）: Chrome 158 / Edge 157 / Firefox 160 で
+  実動確認成功。Firefox 160 は WebDriver BiDi での確認で、F1 のみ合成キーを
+  用い、信頼済みキーは未確認。WebGPU の実 GPU 描画、Safari / Brave / モバイルは
+  未検証。
 - 日本語 IME（composition）はブラウザ版・ネイティブ版とも実装済み。ブラウザ版は CDP
   32 チェック pass、ネイティブ版は `TM_DEBUG_IME=1` で状態遷移を確認（詳細は `notes/ime.md`）。
   実 IME（IBus/fcitx5）の手動確認は未実施。
