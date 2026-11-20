@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::accesskit::{Live, Node};
+use gpui_kit::accesskit::{Live, Node, SortDirection as AccessKitSortDirection};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -211,6 +211,10 @@ pub struct TaskManagerApp {
     show_help: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
+    /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
+    /// フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
+    sort_header_focus: [FocusHandle; 7],
     /// 確認ダイアログの安全側ボタン（キャンセル）のフォーカス先。
     dialog_cancel_focus: FocusHandle,
     /// 確認ダイアログの実行ボタンのフォーカス先。
@@ -307,6 +311,7 @@ impl TaskManagerApp {
             show_help: false,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
             dialog_cancel_focus: cx.focus_handle(),
             dialog_confirm_focus: cx.focus_handle(),
             help_close_focus: cx.focus_handle(),
@@ -700,6 +705,21 @@ impl TaskManagerApp {
             if let Some(command) = dialog_command(&key, modifiers) {
                 self.handle_command(command, cx);
             }
+            return;
+        }
+
+        // WCAG 2.1.1: a focused column header owns Enter/Space for sorting.
+        // GPUI's focusable Div fires the existing on_click (SetSortKey) on the
+        // key-up, so this handler only keeps the key away from Space=pause and
+        // from filter editing; propagation is stopped on key-down to suppress
+        // platform defaults without cancelling that built-in activation.
+        if is_sort_key_activation(&key, modifiers, self.filter_editing)
+            && self
+                .sort_header_focus
+                .iter()
+                .any(|handle| handle.is_focused(window))
+        {
+            cx.stop_propagation();
             return;
         }
 
@@ -1547,6 +1567,7 @@ impl TaskManagerApp {
             let active = sort.key == *key;
             let text = sort_header_text(label, active, sort.direction);
             let key = *key;
+            let header_focus = self.sort_header_focus[index].clone();
             // AccessKit role/name for the column header. The browser shell
             // exposes the same `ColumnHeader` role; a bare ↑/↓ arrow carries no
             // text, so the direction is spelled out in Japanese in aria_label.
@@ -1554,6 +1575,17 @@ impl TaskManagerApp {
                 .id(("header", index))
                 .role(Role::ColumnHeader)
                 .aria_label(sort_header_label(label, active, sort.direction))
+                // Mouse clicks keep the old path; track_focus adds Tab access
+                // and lets GPUI activate the same on_click on Enter/Space.
+                .track_focus(&header_focus)
+                .aria_keyshortcuts("Enter, Space")
+                // Native equivalent of the browser mirror's `aria-sort`.
+                .a11y_synthetic_children(move |builder| {
+                    match a11y_sort_accesskit(active, sort.direction) {
+                        Some(direction) => builder.parent_node().set_sort_direction(direction),
+                        None => builder.parent_node().clear_sort_direction(),
+                    }
+                })
                 .flex()
                 .items_center()
                 .cursor_pointer()
@@ -1565,7 +1597,9 @@ impl TaskManagerApp {
                 }))
                 .hover(|style| style.text_color(rgb(palette().text)))
                 .on_click(cx.listener(move |this, _event, window, cx| {
-                    this.focus_handle.focus(window, cx);
+                    // マウスでもキーボードでもソート後に見出しへフォーカスを
+                    // 保ち、続けて Enter/Space を押してもソートできるようにする。
+                    header_focus.focus(window, cx);
                     this.handle_command(Command::SetSortKey(key), cx);
                 }))
                 .child(text);
@@ -2788,6 +2822,28 @@ fn sort_header_label(label: &str, active: bool, direction: SortDirection) -> Str
     }
 }
 
+/// AccessKit `aria-sort` counterpart of the browser DOM mirror's attribute.
+///
+/// The browser mirror publishes a direction only on the active column; native
+/// headers clear the property so a stale sort state is never announced.
+fn a11y_sort_accesskit(active: bool, direction: SortDirection) -> Option<AccessKitSortDirection> {
+    if !active {
+        return None;
+    }
+    Some(match direction {
+        SortDirection::Ascending => AccessKitSortDirection::Ascending,
+        SortDirection::Descending => AccessKitSortDirection::Descending,
+    })
+}
+
+/// Enter/Space on a focused column header is reserved for sorting (WCAG 2.1.1).
+///
+/// GPUI's focusable `Div` activates its existing `on_click` (SetSortKey) on the
+/// key-up; `on_key_down` must not treat that key as Space=pause or a filter key.
+fn is_sort_key_activation(key: &str, modifiers: Modifiers, editing: bool) -> bool {
+    !editing && !modifiers.modified() && matches!(key, "enter" | "space")
+}
+
 /// Textual severity for a colour-coded value (no colour dependency).
 ///
 /// Mirrors the browser shell and the 60/85 thresholds of `theme::usage_color`,
@@ -3090,12 +3146,12 @@ mod tests {
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
     use super::{
-        a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_direction,
-        a11y_temperature_label, a11y_usage_label, apply_retry_status, cgroup_group_text,
-        dialog_command, help_shortcuts, key_action, power_summary_text, report_save_result,
-        resolve_probe_retry, signal_enabled, sort_header_label, sort_header_text,
-        temperature_severity_label, truncate_label, usage_severity, BackendInit, DialogButton,
-        KeyAction, ProbeRetry,
+        a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_accesskit,
+        a11y_sort_direction, a11y_temperature_label, a11y_usage_label, apply_retry_status,
+        cgroup_group_text, dialog_command, help_shortcuts, is_sort_key_activation, key_action,
+        power_summary_text, report_save_result, resolve_probe_retry, signal_enabled,
+        sort_header_label, sort_header_text, temperature_severity_label, truncate_label,
+        usage_severity, AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -3433,6 +3489,41 @@ mod tests {
         assert_eq!(
             sort_header_text("CPU", false, SortDirection::Ascending),
             "CPU"
+        );
+    }
+
+    #[test]
+    fn focused_sort_header_owns_enter_space_for_accesskit() {
+        assert_eq!(
+            a11y_sort_accesskit(true, SortDirection::Ascending),
+            Some(AccessKitSortDirection::Ascending)
+        );
+        assert_eq!(
+            a11y_sort_accesskit(true, SortDirection::Descending),
+            Some(AccessKitSortDirection::Descending)
+        );
+        assert_eq!(a11y_sort_accesskit(false, SortDirection::Ascending), None);
+        assert_eq!(a11y_sort_accesskit(false, SortDirection::Descending), None);
+
+        assert!(is_sort_key_activation("enter", plain(), false));
+        assert!(is_sort_key_activation("space", plain(), false));
+        assert!(!is_sort_key_activation("enter", plain(), true));
+        assert!(!is_sort_key_activation(
+            "space",
+            Modifiers {
+                shift: true,
+                ..plain()
+            },
+            false
+        ));
+        // 既存の Space=一時停止 / F2 ショートカットは見出し以外で従来どおり。
+        assert_eq!(
+            key_action("space", plain(), false),
+            Some(KeyAction::TogglePaused)
+        );
+        assert_eq!(
+            key_action("f2", plain(), false),
+            Some(KeyAction::ToggleDetails)
         );
     }
 

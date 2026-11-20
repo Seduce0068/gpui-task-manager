@@ -1325,19 +1325,19 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       等でスキップ継続。根拠 R2-ER01。
 - [x] トークン公開の部分失敗で旧ファイルも新ファイルも失われる。
       退避/復元または chmod 先試行。根拠 R2-ER01。
-- [ ] --log-level が RequestTrace を抑制できず、--log-level error でも
+- [x] --log-level が RequestTrace を抑制できず、--log-level error でも
       http.request.start/end が出力される。root cause: telemetry::emit が
       直接呼ばれる。根拠 R4-OB01。
-- [ ] リクエストスコープのエラーイベント (probe.mutex_poisoned 等) に
+- [x] リクエストスコープのエラーイベント (probe.mutex_poisoned 等) に
       request_id が付かず相関できない。根拠 R4-OB01。
-- [ ] 列ヘッダのソートがマウス専用（WCAG 2.1.1）。フォーカス＋
+- [x] 列ヘッダのソートがマウス専用（WCAG 2.1.1）。フォーカス＋
       Enter/Space＋aria-sort。ネイティブ確認ダイアログの Dialog role 欠落。
       根拠 R5-UX01。
 - [ ] ライトテーマの muted/dim/塗り背景が WCAG AA 4.5:1 未満。
       コントラスト比の自動検証テスト追加。根拠 R5-UX01。
-- [ ] F5「今すぐ更新」が Web で実更新せず通知のみ。実 fetch または
+- [x] F5「今すぐ更新」が Web で実更新せず通知のみ。実 fetch または
       文言を「要求のみ」に変更。根拠 R5-UX01。
-- [ ] web 行メニューが右クリック専用でキーボードから開けない（WCAG）。
+- [x] web 行メニューが右クリック専用でキーボードから開けない（WCAG）。
       Shift+F10/ContextMenu 対応。根拠 R5-UX01。
 - [ ] web-dist の licenses/crates/** が CI で常にスキップされ、DEB と
       ライセンス同梱が非対称。共有スクリプト化または必須アサーション。

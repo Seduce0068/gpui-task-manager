@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
-use gpui::accesskit::{Live, Node, Role, Toggled};
+use gpui::accesskit::{Live, Node, Role, SortDirection as AccessKitSortDirection, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
     KeyDownEvent, Modifiers, MouseButton, Pixels, Render, ScrollStrategy, Stateful, Task,
@@ -119,7 +119,15 @@ const READONLY_SIGNAL_NOTICE: &str =
     "ブラウザ版は読み取り専用です。プロセス操作（シグナル送信）は行いません。";
 /// F5（手動更新要求）を可視化する固定通知。`tick=` はサンプラーが増やすので、
 /// この通知は「要求した」ことだけを表し、サンプル件数を偽装しない。
-const MANUAL_REFRESH_NOTICE: &str = "今すぐ更新を要求しました";
+///
+/// 判断（C2-UXKEY）: 選択肢 (A) の `Effect::SampleNow` で `fetch_snapshot` を
+/// 1 回実行するならネイティブの即サンプリングと旅程が一致するが、Web の
+/// サンプラーは SSE / ポーリング / backoff / stale 判定を single-flight で
+/// 管理しており、別経路の one-shot fetch を足すと in-flight の二重取得と
+/// 通知優先度（永続通知の上書き）の回帰リスクが生じる。受入条件は
+/// 「実更新するか文言を要求のみへ統一する」なので、既存の sampler-owned
+/// cadence 契約を壊さない (B) を採用し、文言を要求のみへ明示する。
+const MANUAL_REFRESH_NOTICE: &str = "次回の自動更新を待ちます（要求のみ）";
 /// Space（一時停止相当）。Web サンプラーは一時停止を持たないため、
 /// 無反応にせず理由を status へ出す（V3-KEYS）。
 const PAUSE_UNSUPPORTED_NOTICE: &str = "ブラウザ版では更新の一時停止はできません";
@@ -151,7 +159,9 @@ const HELP_SHORTCUTS: &[(&str, &str)] = &[
     ("↑ / ↓", "行の選択"),
     ("PgUp / PgDn", "10 行移動"),
     ("Home / End", "先頭 / 末尾"),
+    ("Enter / Space", "フォーカスした列見出しで並び替え"),
     ("Space", "更新の一時停止・再開"),
+    ("Shift+F10 / ContextMenu", "選択行のメニューを開く"),
     ("Ctrl+F / Cmd+F", "絞り込み入力"),
     ("Ctrl+K / Cmd+K", "選択プロセスの終了"),
     ("F2", "詳細パネルの表示切替"),
@@ -419,6 +429,12 @@ pub struct TaskManagerApp {
     filter_editing: bool,
     source: DataSource,
     focus_handle: FocusHandle,
+    /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
+    /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
+    /// フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
+    sort_header_focus: [FocusHandle; 7],
+    /// 行メニューをキーボードで開いたときに最初へ移す項目のフォーカスハンドル。
+    row_menu_item_focus: FocusHandle,
     scroll_handle: UniformListScrollHandle,
     /// Number of processes on the agent's machine before `?limit=` truncation.
     live_total: Option<usize>,
@@ -515,6 +531,8 @@ impl TaskManagerApp {
             filter_editing: false,
             source,
             focus_handle,
+            sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
+            row_menu_item_focus: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
             live_error: None,
@@ -1107,7 +1125,9 @@ impl TaskManagerApp {
         );
         for effect in self.dashboard.apply(command) {
             match effect {
-                // The sampling loop owns the cadence; a manual sample request is a no-op.
+                // C2-UXKEY (B): the sampler owns the cadence; F5 only asks for a
+                // refresh and the fixed notice says so. See MANUAL_REFRESH_NOTICE
+                // for why an extra one-shot fetch was not added here.
                 Effect::SampleNow => {}
                 Effect::Signal { .. } => self.dashboard.set_status(READONLY_SIGNAL_NOTICE, true),
             }
@@ -1163,6 +1183,35 @@ impl TaskManagerApp {
             if unmodified && key == "tab" {
                 self.help_close_focus.focus(window, cx);
             }
+            cx.stop_propagation();
+            return;
+        }
+
+        // WCAG 2.1.1: 列見出しにフォーカスがある間の Enter/Space はソート操作。
+        // GPUI の focusable div が keyup で既存の `on_click`（SetSortKey）を
+        // 発火させるので、ここでは Space=一時停止 / Enter=改行既定へ渡さず、
+        // keydown の伝播だけ止めてブラウザ既定動作を防ぐ。
+        if is_sort_key_activation(&key, modifiers, self.filter_editing)
+            && self
+                .sort_header_focus
+                .iter()
+                .any(|handle| handle.is_focused(window))
+        {
+            cx.stop_propagation();
+            return;
+        }
+
+        // Shift+F10 / ContextMenu: 選択行のメニューを開き、最初の項目へ移る。
+        // メニュー項目は track_focus 済みなので Enter/Space で既定の on_click が働く。
+        if is_row_menu_shortcut(&key, modifiers)
+            && !self.filter_editing
+            && let (Some(target), Some(index)) = (
+                self.dashboard.selected_key(),
+                self.dashboard.selected_visible_index(),
+            )
+        {
+            self.open_row_menu(target, index, cx);
+            self.row_menu_item_focus.focus(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1238,9 +1287,9 @@ impl TaskManagerApp {
                 cx.stop_propagation();
             }
             WebKeyAction::Refresh => {
-                // Tick 相当。サンプラーが周期を管理するのでデータ取得は no-op。
-                // 要求したことを status に残し、DOM proof の status ミラーから
-                // 確認できるようにする（tick= は実サンプルだけが増やす）。
+                // 判断（C2-UXKEY）: (B) を採用。サンプラーが周期を管理するので
+                // データ取得は no-op のまま、要求のみであることを文言で明示する。
+                // DOM proof の tick= は実サンプルだけが増やす契約を維持する。
                 self.handle_command(Command::Tick, cx);
                 self.dashboard.set_status(MANUAL_REFRESH_NOTICE, false);
                 self.sync_proof_dom();
@@ -1488,13 +1537,18 @@ impl TaskManagerApp {
                 .border_1()
                 .border_color(rgb(palette().surface))
                 .bg(rgb(palette().mantle))
-                .child(self.menu_item(
-                    "menu-select",
-                    "行を選択",
-                    "行を選択".to_string(),
-                    move |this, cx| this.handle_command(Command::Select(Some(menu.key)), cx),
-                    cx,
-                ))
+                .child(
+                    self.menu_item(
+                        "menu-select",
+                        "行を選択",
+                        "行を選択".to_string(),
+                        move |this, cx| this.handle_command(Command::Select(Some(menu.key)), cx),
+                        cx,
+                    )
+                    // Shift+F10 / ContextMenu で開いた直後のフォーカス先。
+                    // ここから Tab / Enter でメニュー操作を続けられる。
+                    .track_focus(&self.row_menu_item_focus),
+                )
                 .child(self.menu_item(
                     "menu-copy-pid",
                     "PID をコピー",
@@ -2500,9 +2554,15 @@ impl TaskManagerApp {
             .role(Role::RowGroup)
             .aria_label("プロセス一覧の列見出し")
             .child(
-                self.sort_cell("sort-name", "名前", SortKey::Name, cx)
-                    .w(px(COL_NAME))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-name",
+                    "名前",
+                    SortKey::Name,
+                    &self.sort_header_focus[0],
+                    cx,
+                )
+                .w(px(COL_NAME))
+                .flex_shrink_0(),
             )
             .child(
                 div()
@@ -2513,34 +2573,70 @@ impl TaskManagerApp {
                     .child("コマンド"),
             )
             .child(
-                self.sort_cell("sort-cpu", "CPU", SortKey::Cpu, cx)
-                    .w(px(COL_CPU))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-cpu",
+                    "CPU",
+                    SortKey::Cpu,
+                    &self.sort_header_focus[1],
+                    cx,
+                )
+                .w(px(COL_CPU))
+                .flex_shrink_0(),
             )
             .child(
-                self.sort_cell("sort-memory", "メモリ", SortKey::Memory, cx)
-                    .w(px(COL_MEMORY))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-memory",
+                    "メモリ",
+                    SortKey::Memory,
+                    &self.sort_header_focus[2],
+                    cx,
+                )
+                .w(px(COL_MEMORY))
+                .flex_shrink_0(),
             )
             .child(
-                self.sort_cell("sort-pid", "PID", SortKey::Pid, cx)
-                    .w(px(COL_PID))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-pid",
+                    "PID",
+                    SortKey::Pid,
+                    &self.sort_header_focus[3],
+                    cx,
+                )
+                .w(px(COL_PID))
+                .flex_shrink_0(),
             )
             .child(
-                self.sort_cell("sort-user", "ユーザー", SortKey::User, cx)
-                    .w(px(COL_USER))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-user",
+                    "ユーザー",
+                    SortKey::User,
+                    &self.sort_header_focus[4],
+                    cx,
+                )
+                .w(px(COL_USER))
+                .flex_shrink_0(),
             )
             .child(
-                self.sort_cell("sort-status", "状態", SortKey::Status, cx)
-                    .w(px(COL_STATUS))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-status",
+                    "状態",
+                    SortKey::Status,
+                    &self.sort_header_focus[5],
+                    cx,
+                )
+                .w(px(COL_STATUS))
+                .flex_shrink_0(),
             )
             .child(
-                self.sort_cell("sort-threads", "スレッド", SortKey::Threads, cx)
-                    .w(px(COL_THREADS))
-                    .flex_shrink_0(),
+                self.sort_cell(
+                    "sort-threads",
+                    "スレッド",
+                    SortKey::Threads,
+                    &self.sort_header_focus[6],
+                    cx,
+                )
+                .w(px(COL_THREADS))
+                .flex_shrink_0(),
             )
     }
 
@@ -2549,6 +2645,7 @@ impl TaskManagerApp {
         id: &'static str,
         label: &'static str,
         key: SortKey,
+        focus: &FocusHandle,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let sort = self.dashboard.sort_spec();
@@ -2564,6 +2661,18 @@ impl TaskManagerApp {
                 )
             } else {
                 format!("{label} 列で並び替え")
+            })
+            // マウス操作は従来どおり on_click が担う。track_focus により
+            // Tab で到達可能になり、Enter/Space は GPUI の組み込み活性化が
+            // 同じ on_click（SetSortKey）を keyup で発火する（WCAG 2.1.1）。
+            .track_focus(focus)
+            .aria_keyshortcuts("Enter, Space")
+            // 隠し DOM ミラーの aria-sort と同じ状態を AccessKit にも出す。
+            .a11y_synthetic_children(move |builder| {
+                match a11y_sort_accesskit(active, sort.direction) {
+                    Some(direction) => builder.parent_node().set_sort_direction(direction),
+                    None => builder.parent_node().clear_sort_direction(),
+                }
             })
             .flex()
             .items_center()
@@ -3845,6 +3954,43 @@ fn a11y_sort_direction(direction: SortDirection) -> &'static str {
     }
 }
 
+/// AccessKit `aria-sort` counterpart of the DOM mirror's `aria-sort` attribute.
+///
+/// Only the active column publishes a direction; the others clear the property
+/// so assistive tech does not announce a stale sort state on an inactive header.
+fn a11y_sort_accesskit(active: bool, direction: SortDirection) -> Option<AccessKitSortDirection> {
+    if !active {
+        return None;
+    }
+    Some(match direction {
+        SortDirection::Ascending => AccessKitSortDirection::Ascending,
+        SortDirection::Descending => AccessKitSortDirection::Descending,
+    })
+}
+
+/// Enter/Space on a *focused* column header is reserved for sorting.
+///
+/// GPUI's focusable `Div` turns Enter/Space key-up into the existing `on_click`
+/// (`Command::SetSortKey`). The shell-level `on_key_down` must therefore not
+/// interpret the same keystroke as Space=pause or Enter=newline (WCAG 2.1.1).
+fn is_sort_key_activation(key: &str, modifiers: Modifiers, editing: bool) -> bool {
+    !editing && !modifiers.modified() && matches!(key, "enter" | "space")
+}
+
+/// Shift+F10 or the ContextMenu (a.k.a. Menu) key opens the selected row's menu.
+///
+/// Web maps the DOM `ContextMenu` key to `"contextmenu"`; native platforms may
+/// report the same physical key as `"menu"`, so both spellings are accepted.
+fn is_row_menu_shortcut(key: &str, modifiers: Modifiers) -> bool {
+    if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
+        return false;
+    }
+    if key == "f10" {
+        return modifiers.shift;
+    }
+    !modifiers.shift && matches!(key, "contextmenu" | "menu")
+}
+
 /// Visible text of a sortable column header.
 ///
 /// Kept in step with the native shell: the active header carries the shared
@@ -4895,6 +5041,8 @@ mod tests {
                 filter_editing: false,
                 source: DataSource::Demo(DemoProbe::new()),
                 focus_handle: cx.focus_handle(),
+                sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
+                row_menu_item_focus: cx.focus_handle(),
                 scroll_handle: UniformListScrollHandle::new(),
                 live_total: None,
                 live_error: None,
@@ -5551,10 +5699,14 @@ mod tests {
 
     #[test]
     fn help_shortcuts_cover_f1_escape_and_native_rows() {
-        assert_eq!(HELP_SHORTCUTS.len(), 12);
+        // C2-UXKEY: 列見出しの Enter/Space と行メニューの Shift+F10 /
+        // ContextMenu を追記したので 12 → 14 行。
+        assert_eq!(HELP_SHORTCUTS.len(), 14);
         let keys: Vec<_> = HELP_SHORTCUTS.iter().map(|(key, _)| *key).collect();
         assert!(keys.contains(&"F1"));
         assert!(keys.contains(&"Esc"));
+        assert!(keys.contains(&"Enter / Space"));
+        assert!(keys.contains(&"Shift+F10 / ContextMenu"));
         let f1 = HELP_SHORTCUTS
             .iter()
             .find(|(key, _)| *key == "F1")
@@ -6651,15 +6803,16 @@ mod tests {
         dashboard.apply(Command::ToggleDetails);
         assert_ne!(dashboard.details_visible(), before);
 
-        // F5 → Tick 相当。Web はサンプラーが周期を管理するので実サンプルは
-        // 増やさず、要求があったことを固定 status に残す（DOM の a11y ミラー
-        // が同じ文言を読み上げる）。tick= は実サンプルだけが増やす。
+        // F5 → Tick 相当。C2-UXKEY (B): Web はサンプラーが周期を管理するので
+        // 実サンプルは増やさず、「要求のみ」であることを固定 status に残す
+        // （DOM の a11y ミラーが同じ文言を読み上げる）。tick= は実サンプルだけ。
         assert_eq!(
             web_key_action("f5", plain, false),
             Some(WebKeyAction::Refresh)
         );
         assert_eq!(dashboard.apply(Command::Tick), vec![Effect::SampleNow]);
         assert!(MANUAL_REFRESH_NOTICE.contains("更新"));
+        assert!(MANUAL_REFRESH_NOTICE.contains("要求のみ"));
         assert!(!MANUAL_REFRESH_NOTICE.contains(';'));
         dashboard.set_status(MANUAL_REFRESH_NOTICE, false);
         assert!(
@@ -7017,6 +7170,99 @@ mod tests {
         assert_eq!(
             escape_html("a&b<c>\"d\"'"),
             "a&amp;b&lt;c&gt;&quot;d&quot;&#39;"
+        );
+    }
+
+    #[test]
+    fn focused_column_header_enter_space_is_reserved_for_sorting() {
+        let plain = Modifiers::default();
+        assert!(is_sort_key_activation("enter", plain, false));
+        assert!(is_sort_key_activation("space", plain, false));
+        // 編集中は IME の確定 / 文字入力へ譲る（既存のガードを維持）。
+        assert!(!is_sort_key_activation("enter", plain, true));
+        assert!(!is_sort_key_activation("space", plain, true));
+        assert!(!is_sort_key_activation(
+            "space",
+            Modifiers {
+                shift: true,
+                ..plain
+            },
+            false
+        ));
+        assert!(!is_sort_key_activation("f5", plain, false));
+
+        // GPUI の組み込み活性化が呼ぶ on_click と同じコマンドでソートが変わる。
+        let (mut dashboard, _, _) = dashboard_with_two_visible_rows();
+        let before = dashboard.sort_spec().key;
+        let target = if before == SortKey::Name {
+            SortKey::Pid
+        } else {
+            SortKey::Name
+        };
+        dashboard.apply(Command::SetSortKey(target));
+        assert_eq!(dashboard.sort_spec().key, target);
+    }
+
+    #[test]
+    fn aria_sort_matches_between_dom_mirror_and_accesskit() {
+        assert_eq!(
+            a11y_sort_accesskit(true, SortDirection::Ascending),
+            Some(AccessKitSortDirection::Ascending)
+        );
+        assert_eq!(
+            a11y_sort_accesskit(true, SortDirection::Descending),
+            Some(AccessKitSortDirection::Descending)
+        );
+        assert_eq!(a11y_sort_accesskit(false, SortDirection::Ascending), None);
+        assert_eq!(a11y_sort_accesskit(false, SortDirection::Descending), None);
+
+        // 隠し DOM ミラーはアクティブ列にだけ aria-sort を出す（既存契約）。
+        let header = a11y_mirror_header_html(SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Descending,
+        });
+        assert_eq!(header.matches("aria-sort=\"descending\"").count(), 1);
+        assert!(!header.contains("aria-sort=\"ascending\""));
+        let header = a11y_mirror_header_html(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        });
+        assert_eq!(header.matches("aria-sort=\"ascending\"").count(), 1);
+    }
+
+    #[test]
+    fn row_menu_key_shortcuts_cover_shift_f10_and_context_menu() {
+        let plain = Modifiers::default();
+        assert!(is_row_menu_shortcut(
+            "f10",
+            Modifiers {
+                shift: true,
+                ..plain
+            }
+        ));
+        assert!(is_row_menu_shortcut("contextmenu", plain));
+        assert!(is_row_menu_shortcut("menu", plain));
+        // 無修飾 F10 や修飾付き ContextMenu は他ショートカットを邪魔しない。
+        assert!(!is_row_menu_shortcut("f10", plain));
+        assert!(!is_row_menu_shortcut(
+            "contextmenu",
+            Modifiers {
+                control: true,
+                ..plain
+            }
+        ));
+        assert!(!is_row_menu_shortcut(
+            "contextmenu",
+            Modifiers {
+                shift: true,
+                ..plain
+            }
+        ));
+        // F5 は従来どおり更新要求のまま（行メニューには影響しない）。
+        assert!(!is_row_menu_shortcut("f5", plain));
+        assert_eq!(
+            web_key_action("f5", plain, false),
+            Some(WebKeyAction::Refresh)
         );
     }
 }

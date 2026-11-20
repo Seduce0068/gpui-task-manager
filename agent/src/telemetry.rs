@@ -33,6 +33,26 @@ impl Level {
             Self::Error => "ERROR",
         }
     }
+
+    /// Lower ranks are more severe, matching the CLI `--log-level` scale:
+    /// error = 0, warn = 1, info = 2.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Error => 0,
+            Self::Warn => 1,
+            Self::Info => 2,
+        }
+    }
+}
+
+/// Canonical threshold decision shared by every structured event.
+///
+/// `main.rs::emit` and `RequestTrace` both consult this function, so an event
+/// that fails the `--log-level` threshold cannot slip through just because it
+/// was emitted from a different module. `minimum_rank` is the CLI rank
+/// (0 = error, 1 = warn, 2 = info); an event passes when its rank is `<=`.
+pub fn level_allowed(level: Level, minimum_rank: u8) -> bool {
+    level.rank() <= minimum_rank
 }
 
 fn now_millis() -> u128 {
@@ -60,9 +80,23 @@ pub fn format_event(level: Level, event: &str, fields: Value) -> String {
         .unwrap_or_else(|_| r#"{"event":"log.serialize.failed"}"#.to_string())
 }
 
-/// Emits a structured event on stderr (never stdout).
-pub fn emit(level: Level, event: &str, fields: Value) {
-    eprintln!("{}", format_event(level, event, fields));
+/// Renders an event only when it passes `minimum_rank`.
+///
+/// Kept separate from [`emit`] so tests can assert the threshold decision
+/// without capturing stderr (the crate is `std`-only, with no log capture).
+fn render_if_allowed(level: Level, minimum_rank: u8, event: &str, fields: Value) -> Option<String> {
+    level_allowed(level, minimum_rank).then(|| format_event(level, event, fields))
+}
+
+/// Emits a structured event on stderr (never stdout) when it passes `minimum_rank`.
+///
+/// `minimum_rank` is supplied by the caller (`--log-level` in `main.rs`, or a
+/// threshold handed to [`RequestTrace::begin`]); there is deliberately no global
+/// state here, so a trace cannot silently inherit a different threshold.
+pub fn emit(level: Level, event: &str, fields: Value, minimum_rank: u8) {
+    if let Some(line) = render_if_allowed(level, minimum_rank, event, fields) {
+        eprintln!("{line}");
+    }
 }
 
 /// Stable status bucket used in logs and metrics.
@@ -185,17 +219,25 @@ pub struct RequestTrace<'a> {
     started: Instant,
     metrics: &'a Metrics,
     status: Option<u16>,
+    /// Threshold inherited from `--log-level`; used for both span lines and
+    /// the `Drop` fallback so no path can emit Info events at `error` level.
+    minimum_rank: u8,
 }
 
 impl<'a> RequestTrace<'a> {
     /// Starts a span. `path` must be the path *only* — callers pass
     /// `request.path`, never the raw target with its query string.
-    pub fn begin(metrics: &'a Metrics, method: &str, path: &str) -> Self {
+    ///
+    /// `minimum_rank` is the caller's current `--log-level` rank; passing it in
+    /// (instead of reading global state) keeps the span lines subject to the
+    /// same [`level_allowed`] decision as `main.rs::emit`.
+    pub fn begin(metrics: &'a Metrics, method: &str, path: &str, minimum_rank: u8) -> Self {
         let id = metrics.next_request_id();
         emit(
             Level::Info,
             "http.request.start",
             json!({ "request_id": id, "method": method, "path": path }),
+            minimum_rank,
         );
         Self {
             id,
@@ -204,12 +246,13 @@ impl<'a> RequestTrace<'a> {
             started: Instant::now(),
             metrics,
             status: None,
+            minimum_rank,
         }
     }
 
     /// Used when the request head could not be parsed; no method/path exist.
-    pub fn begin_unknown(metrics: &'a Metrics) -> Self {
-        Self::begin(metrics, "-", "-")
+    pub fn begin_unknown(metrics: &'a Metrics, minimum_rank: u8) -> Self {
+        Self::begin(metrics, "-", "-", minimum_rank)
     }
 
     /// Identifier shared by every event of this request.
@@ -239,6 +282,7 @@ impl<'a> RequestTrace<'a> {
                 "outcome": status_class(status),
                 "duration_ms": self.started.elapsed().as_millis(),
             }),
+            self.minimum_rank,
         );
     }
 }
@@ -334,6 +378,9 @@ impl std::error::Error for AgentError {}
 mod tests {
     use super::*;
 
+    /// Default `--log-level` rank: info (nothing below ERROR is suppressed).
+    const DEFAULT_MINIMUM_RANK: u8 = 2;
+
     /// Reads one counter line by its (space-terminated) prefix.
     fn counter_value(rendered: &str, line_prefix: &str) -> u64 {
         rendered
@@ -392,7 +439,7 @@ mod tests {
     #[test]
     fn trace_finish_updates_metrics_exactly_once() {
         let metrics = Metrics::new();
-        let mut trace = RequestTrace::begin(&metrics, "GET", "/healthz");
+        let mut trace = RequestTrace::begin(&metrics, "GET", "/healthz", DEFAULT_MINIMUM_RANK);
         trace.finish(200);
         trace.finish(500); // duplicate call must be ignored
         drop(trace);
@@ -425,12 +472,13 @@ mod tests {
     #[test]
     fn trace_id_can_correlate_an_error_event_with_the_401_trace() {
         let metrics = Metrics::new();
-        let mut trace = RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot");
+        let mut trace =
+            RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot", DEFAULT_MINIMUM_RANK);
         let id = trace.id();
         trace.finish(401);
         drop(trace);
 
-        let next = RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot");
+        let next = RequestTrace::begin(&metrics, "GET", "/api/v1/snapshot", DEFAULT_MINIMUM_RANK);
         assert_eq!(next.id(), id + 1, "request ids must stay monotonic");
         drop(next);
 
@@ -451,6 +499,62 @@ mod tests {
         assert_eq!(parsed["event"], "auth.denied");
         assert_eq!(parsed["reason"], "invalid_token");
         assert_eq!(parsed["path"], "/api/v1/snapshot");
+    }
+
+    #[test]
+    fn span_events_obey_the_shared_threshold() {
+        let fields = json!({ "request_id": 1, "method": "GET", "path": "/healthz" });
+
+        // Default `--log-level` (rank 2) keeps both Info-level span lines, with
+        // their correlation id intact (the wire shape is unchanged).
+        let line = render_if_allowed(Level::Info, 2, "http.request.start", fields.clone())
+            .expect("info must pass the default threshold");
+        let parsed: Value = serde_json::from_str(&line).expect("event must be JSON");
+        assert_eq!(parsed["event"], "http.request.start");
+        assert_eq!(parsed["request_id"].as_u64(), Some(1));
+        assert!(render_if_allowed(Level::Info, 2, "http.request.end", fields.clone()).is_some());
+
+        // `--log-level error` (rank 0) suppresses start/end, but not the
+        // correlated ERROR events that carry the same request_id.
+        assert!(
+            render_if_allowed(Level::Info, 0, "http.request.start", fields.clone()).is_none(),
+            "start must be suppressed at error level"
+        );
+        assert!(
+            render_if_allowed(Level::Info, 0, "http.request.end", fields).is_none(),
+            "end must be suppressed at error level"
+        );
+        assert!(
+            render_if_allowed(
+                Level::Error,
+                0,
+                "probe.sample_failed",
+                json!({ "request_id": 1 })
+            )
+            .is_some(),
+            "error-level events must survive the strictest threshold"
+        );
+    }
+
+    #[test]
+    fn request_trace_stores_the_threshold_used_by_its_span_events() {
+        let metrics = Metrics::new();
+
+        let mut strict = RequestTrace::begin(&metrics, "GET", "/healthz", 0);
+        assert_eq!(
+            strict.minimum_rank, 0,
+            "the trace must carry the --log-level error threshold"
+        );
+        assert!(!level_allowed(Level::Info, strict.minimum_rank));
+        strict.finish(200);
+        assert!(
+            !level_allowed(Level::Info, strict.minimum_rank),
+            "finish must not loosen the threshold"
+        );
+
+        let default = RequestTrace::begin(&metrics, "GET", "/healthz", DEFAULT_MINIMUM_RANK);
+        assert!(level_allowed(Level::Info, default.minimum_rank));
+        drop(default);
     }
 
     #[test]
@@ -482,7 +586,7 @@ mod tests {
     #[test]
     fn dropped_trace_is_still_counted_as_unknown() {
         let metrics = Metrics::new();
-        drop(RequestTrace::begin_unknown(&metrics));
+        drop(RequestTrace::begin_unknown(&metrics, DEFAULT_MINIMUM_RANK));
         let rendered = String::from_utf8(metrics.render_prometheus(0, 0)).expect("utf8");
         assert!(rendered.contains("tm_agent_requests_total 1"), "{rendered}");
         assert!(
