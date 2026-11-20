@@ -82,6 +82,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
 
     const CHILD_FLAG: &str = "TM_PRIVDIR_UMASK_CHILD";
     const ROOT_VAR: &str = "TM_PRIVDIR_UMASK_ROOT";
@@ -149,6 +150,94 @@ mod tests {
                 component
             );
         }
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn concurrent_starters_converge_on_one_private_chain() {
+        // Two threads start the identical chain behind a barrier. Whichever
+        // wins a `create_dir` pushes the other through the EEXIST ->
+        // `create_dir_all` branch; both calls must still return Ok and observe
+        // a fully 0700 chain. Repeated fresh roots make the race deterministic
+        // in practice without touching production code with test hooks.
+        const ROUNDS: usize = 16;
+        for round in 0..ROUNDS {
+            let root = fresh_root(&format!("tm-privdir-concurrent-{round}"));
+            std::fs::create_dir_all(&root).expect("create root");
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod root");
+            let target = root.join(format!("r{round}/a/b/c/d/e"));
+
+            let gate = Arc::new(Barrier::new(2));
+            let left_target = target.clone();
+            let left_gate = Arc::clone(&gate);
+            let left = std::thread::spawn(move || {
+                left_gate.wait();
+                ensure_private_dir_chain(&left_target)
+            });
+            let right_target = target.clone();
+            let right = std::thread::spawn(move || {
+                gate.wait();
+                std::thread::yield_now();
+                ensure_private_dir_chain(&right_target)
+            });
+            left.join().expect("left starter").expect("left ensure");
+            right.join().expect("right starter").expect("right ensure");
+
+            let mut cursor = target.as_path();
+            while cursor != root.as_path() {
+                assert_eq!(
+                    mode_of(cursor),
+                    0o700,
+                    "component {cursor:?} must converge to 0700 after the race"
+                );
+                cursor = cursor.parent().expect("root is the top ancestor");
+            }
+            std::fs::remove_dir_all(&root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn existing_0755_leaf_is_normalised_but_ancestors_are_untouched() {
+        let root = fresh_root("tm-privdir-modes");
+        let ancestor = root.join("keep-0755");
+        let leaf = ancestor.join("leaf");
+        std::fs::create_dir_all(&leaf).expect("create chain");
+        let paths = [&root, &ancestor, &leaf];
+        for path in paths {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod 0755");
+        }
+        for path in paths {
+            assert_eq!(mode_of(path), 0o755, "precondition for {path:?}");
+        }
+
+        ensure_private_dir_chain(&leaf).expect("normalise existing leaf");
+
+        assert_eq!(
+            mode_of(&root),
+            0o755,
+            "pre-existing ancestor must stay 0755"
+        );
+        assert_eq!(
+            mode_of(&ancestor),
+            0o755,
+            "pre-existing ancestor must stay 0755"
+        );
+        assert_eq!(
+            mode_of(&leaf),
+            0o700,
+            "existing leaf must be normalised to 0700"
+        );
+
+        // A chain created below that ancestor follows the opposite rule: only
+        // the new components get 0700, the pre-existing parent is not touched.
+        let created = ancestor.join("new/a");
+        ensure_private_dir_chain(&created).expect("create below existing ancestor");
+        assert_eq!(mode_of(&ancestor), 0o755, "ancestor must stay 0755");
+        assert_eq!(mode_of(&ancestor.join("new")), 0o700);
+        assert_eq!(mode_of(&created), 0o700);
+
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 

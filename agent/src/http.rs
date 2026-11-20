@@ -877,6 +877,58 @@ mod tests {
     }
 
     #[test]
+    fn retry_after_keeps_one_server_hint_and_honours_5xx_boundaries() {
+        // At most one server hint: a later failure with a different value must
+        // never append a second Retry-After line. The agent keeps the first
+        // hint and only ensures the exposure header stays present.
+        let mut hinted = Response::json(503, "Service Unavailable", b"{}".to_vec());
+        set_retry_after(&mut hinted, 5);
+        set_retry_after(&mut hinted, 20);
+        assert_eq!(
+            hinted
+                .extra_headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case(RETRY_AFTER_HEADER))
+                .count(),
+            1
+        );
+        assert!(hinted
+            .extra_headers
+            .contains(&(RETRY_AFTER_HEADER.to_string(), "5".to_string())));
+        assert!(!hinted
+            .extra_headers
+            .contains(&(RETRY_AFTER_HEADER.to_string(), "20".to_string())));
+        let head = String::from_utf8(write_response_bytes(&hinted)).expect("utf8");
+        assert_eq!(head.matches("Retry-After:").count(), 1, "{head}");
+        assert_eq!(
+            head.matches("Access-Control-Expose-Headers:").count(),
+            1,
+            "{head}"
+        );
+
+        // Boundary set (29119-4 boundary values): 429 and 500..=599 carry a
+        // hint; 499 and 600 are outside the transient range and carry none.
+        for status in [429, 500, 501, 599] {
+            let mut response = Response::json(status, "x", b"{}".to_vec());
+            set_retry_after(&mut response, 7);
+            assert!(
+                response
+                    .extra_headers
+                    .contains(&(RETRY_AFTER_HEADER.to_string(), "7".to_string())),
+                "status {status} must carry a Retry-After hint"
+            );
+        }
+        for status in [200, 404, 428, 499, 600, 601] {
+            let mut response = Response::json(status, "x", b"{}".to_vec());
+            set_retry_after(&mut response, 7);
+            assert!(
+                response.extra_headers.is_empty(),
+                "status {status} must not carry a Retry-After hint"
+            );
+        }
+    }
+
+    #[test]
     fn writes_a_well_formed_response() {
         let mut response = Response::json(200, "OK", b"{\"ok\":true}".to_vec());
         add_cors_headers(&mut response, "http://127.0.0.1:5173");

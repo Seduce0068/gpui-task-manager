@@ -1310,14 +1310,14 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 中 — swarm-project-review + todo-discovery 2026-11-21
 
-- [ ] エクスポート後の private_dir / Retry-After / CORS の実経路テストが
+- [x] エクスポート後の private_dir / Retry-After / CORS の実経路テストが
       弱い（EEXIST 分岐・既存 leaf/ancestor 権限・stream 503 CORS・
       連続 hint・5xx 境界）。根拠 R2-TQ01 / R5-TS01。
 - [x] late サンプルで network_rates/history が (0,0) に上書きされる。
       is_late ならレート更新と history.push をスキップ。根拠 R2-BV01。
 - [x] 自動トークン read→remove→publish の TOCTOU で並行起動が別トークン
       を持ち得る。adopt 直前の再読込または直列化。根拠 R2-BV01。
-- [ ] SSE 接続確定前のポールと SSE が同一 probe をサンプリングし、
+- [x] SSE 接続確定前のポールと SSE が同一 probe をサンプリングし、
       sampled_elapsed 短縮でレート過大。接続元分離またはポールにも
       世代ガード。根拠 R2-BV01。
 - [x] SSE error イベントが Web 側で Parse エラー化してストリーム終了。
