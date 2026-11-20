@@ -938,6 +938,52 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - advisory DB 更新後も cargo audit / deny / vet すべて問題なし、更新可能な
   脆弱依存なし。deny ignore 9 件も 3 か月ルール内（wb-advisory）。
 
+### 優先度: 高 — 配布物開示／SBOM整合 2026-11-20
+
+- [x] web SBOM がホスト x86_64 対象で wasm32 成果物と不一致（wasm 固有
+      41 packages 欠落、Linux 固有 76 過剰）。generate-sbom.sh で
+      `cargo cyclonedx --target wasm32-unknown-unknown` を明示。根拠 wb-sbom。
+      完了（R2 WA-SBOMTGT）: root に `x86_64-unknown-linux-gnu`、web に
+      `wasm32-unknown-unknown` を明示。web SBOM は 368 → 332 components
+      （各自の metadata.component を合わせ 333）となり wasm32 の
+      `cargo metadata --filter-platform` 333 packages と集合一致。
+      Linux 固有 `linux-raw-sys` は消滅、wasm-bindgen / web-sys を保持。
+- [x] 公開 .deb の `licenses/crates/**`（914 件）と同梱ドキュメントが開示
+      ゲートの走査対象外。upload 直前に /tmp へ展開し全ファイルを走査する
+      ゲートを追加（値 redact・パターン名のみ）。根拠 wa-vendored。
+      （差分: ci.yml release-linux に `Gate - no development paths in DEB
+      payload` を追加。展開物は `:?` ガード付き rm -rf で cleanup。）
+- [x] web dist の開示ゲートが `*.wasm` / `*.js` のみを走査し、LICENSE /
+      NOTICE / `licenses/crates/**` が対象外。`find web/dist -type f` の
+      全ファイルへ変更し `strings -a -n 6` を適用。根拠 wa-vendored。
+- [x] 64-hex トークン様パターンが全開示ゲートに無い。追加。根拠 wa-vendored。
+      （素の `[0-9a-fA-F]{64}` は依存クレートの連結 hex 定数へ誤一致し
+      現行ビルドで binary 7 件 / wasm 9 件の偽陽性となるため、
+      `\b[0-9a-fA-F]{64}\b` でトークン境界を要求。）
+- [x] check-public-docs.sh が Markdown のみ走査し、`LICENSE*` / `COPYING*` /
+      `licenses/crates/**` をカバーしない。走査集合へ追加。根拠 wa-vendored。
+      完了（R2 WC-DOCSCAN）: git pathspec へ `LICENSE*` / `COPYING*` / `NOTICE*` /
+      `THIRD_PARTY_NOTICES*` / `licenses/crates/**` を追加し `sort -u` で重複排除。
+      併せて 64-hex パターンを追加（公開済み SHA256/コンテナ ID 10 件は
+      allowlist、新規トークンは検出）。bash -n / shellcheck / shfmt -d -i 2 /
+      現状ゲート pass、/tmp 陽性対照で2パターン検出を確認。
+
+### 優先度: 中 — SBOM スコープ明示 2026-11-20
+
+- [x] SBOM はホストターゲット・デフォルト feature のスナップショットで
+      deny.toml の全ターゲット範囲と非整合。NOTICE / README.deb.md に
+      スコープを明記。SBOM 生成の --locked 代替と冪等ゲートを内容ハッシュ
+      まで拡張。bom-ref の CI 絶対パスを正規化するか現状明記。
+      upsteam author の noreply メールは正当メタデータとして保持方針を明記。
+      根拠 wb-sbom。
+      完了（R2 WA-SBOMTGT）: NOTICE.md / README.deb.md へターゲット別
+      スナップショットである旨と全ターゲット非網羅を明記。ci.yml の
+      sbom ジョブへ生成直後の `git diff --exit-code -- Cargo.lock
+      web/Cargo.lock` とファイル名＋SHA256 の冪等ゲートを追加
+      （SOURCE_DATE_EPOCH で内容も再現可能）。bom-ref の file:// 絶対
+      パスは正規化せず現状許容、noreply メールは正当メタデータとして
+      保持（開示ゲート対象外）する方針をコメントに明記。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

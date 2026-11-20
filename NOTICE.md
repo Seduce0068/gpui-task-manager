@@ -62,6 +62,25 @@ root と web の 2 ワークスペースを合わせて約 783 crates にのぼ�
 いずれも `cargo deny check` の許可範囲内で、個別の適用条件は同梱ライセンス
 全文で確認できる。
 
+## SBOM のスコープ
+
+CycloneDX SBOM（CI 成果物 `gpui-task-manager-sbom`、`target/sbom/*.json`）は
+2 つのワークスペースを**それぞれ 1 つのターゲット**で解決したスナップショット
+である。
+
+| BOM | ワークスペース | ターゲット |
+| --- | --- | --- |
+| `sbom-root*.json` | ルート（native） | `x86_64-unknown-linux-gnu` |
+| `sbom-web*.json` | `web/`（ブラウザ） | `wasm32-unknown-unknown` |
+
+各 BOM は既定 feature と当該ターゲットの依存クロージャのみを含む。したがって
+`deny.toml` が監査する全ターゲット（Windows / macOS / aarch64 等）やオプション
+feature を網羅するものではない。別ターゲット固有の依存を確認するには、その
+ターゲットで SBOM を再生成するか、`cargo deny check` /
+`cargo metadata --locked --filter-platform <target>` を参照すること。
+SBOM の依存集合は生成時に同じターゲットの `cargo metadata` と照合され、
+target の取り違え（例: web をホスト既定で生成する）を検出する。
+
 ## バンドル済みアセット
 
 | アセット | ライセンス | 帰属・同梱先 |

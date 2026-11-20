@@ -305,7 +305,75 @@ jobs:
           check internal-worktree-dir '\.agents/worktrees'
           check internal-workspace-root 'default-workspace/work/gpui-'
           check remapped-dev-home '/build/document/'
-          echo 'binary-disclosure: OK (no development paths / account identifiers in release binary)'
+          # 単独の 64-hex トークンを検出。素の `[0-9a-fA-F]{64}` は依存
+          # クレートの連結 hex 定数に一致し現行ビルドで誤検知するため境界を要求。
+          check token-like-hex '\b[0-9a-fA-F]{64}\b'
+          echo 'binary-disclosure: OK (no development paths / account identifiers / token-like hex in release binary)'
+      # .deb に同梱される licenses/crates/** とドキュメント類はバイナリの
+      # strings 走査では見えないため、upload 直前に /tmp へ展開して同梱
+      # ドキュメントと licenses/ 配下の全ファイルを走査する。
+      # 一致値は出力せずパターン名のみを報告（--redact と同方針）。
+      - name: Gate - no development paths in DEB payload
+        run: |
+          set -euo pipefail
+          deb_files=()
+          for candidate in packaging/linux/build/*.deb; do
+            [ -f "${candidate}" ] || continue
+            deb_files+=("${candidate}")
+          done
+          if (( ${#deb_files[@]} == 0 )); then
+            echo 'deb-disclosure: no .deb file found in packaging/linux/build' >&2
+            exit 1
+          fi
+          if ! command -v dpkg-deb >/dev/null 2>&1; then
+            echo 'deb-disclosure: dpkg-deb is not available' >&2
+            exit 1
+          fi
+          extract_dir="$(mktemp -d)"
+          dump="$(mktemp)"
+          # 空文字や / を rm -rf しないよう :? ガードを付けて cleanup する。
+          trap 'rm -rf -- "${extract_dir:?}"; rm -f -- "${dump:?}"' EXIT
+          for package in "${deb_files[@]}"; do
+            dpkg-deb -x -- "${package}" "${extract_dir}"
+          done
+          # バイナリは上の release binary ゲートが走査済み。ここでは未カバーだった
+          # 同梱ドキュメントと licenses/ 配下（crates/** を含む）を全件走査する。
+          doc_root="${extract_dir}/usr/share/doc"
+          if [ ! -d "${doc_root}" ]; then
+            echo 'deb-disclosure: expected doc directory is missing from .deb payload' >&2
+            exit 1
+          fi
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find "${doc_root}" -type f -print0)
+          if (( ${#files[@]} == 0 )); then
+            echo 'deb-disclosure: no files found in .deb doc payload' >&2
+            exit 1
+          fi
+
+          # パターン名 -> 拡張正規表現。一致行は絶対に出力しない（--redact 相当）。
+          check() {
+            local name="$1" pattern="$2" file rel
+            for file in "${files[@]}"; do
+              strings -a -n 6 -- "${file}" > "${dump}"
+              if grep -Eq -- "${pattern}" "${dump}"; then
+                rel="${file#"${extract_dir}"/}"
+                echo "deb-disclosure: pattern '${name}' found in ${rel} (value redacted)" >&2
+                exit 1
+              fi
+            done
+          }
+          check dev-home-path '/home/(koppe|onoderakeita)/'
+          check account-identifier '(koppe|onoderakeita)'
+          check noreply-email '[0-9]{6,}\+[A-Za-z0-9_-]+@users\.noreply\.github\.com'
+          check tailscale-domain 'tail[0-9A-Za-z_-]+\.ts\.net'
+          check internal-worktree-dir '\.agents/worktrees'
+          check internal-workspace-root 'default-workspace/work/gpui-'
+          check remapped-dev-home '/build/document/'
+          # 単独の 64-hex トークンを検出（長い hex 定数の部分列は除外）。
+          check token-like-hex '\b[0-9a-fA-F]{64}\b'
+          echo 'deb-disclosure: OK (no development paths / account identifiers / token-like hex in .deb payload)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-linux
@@ -389,15 +457,16 @@ jobs:
             exit 1
           fi
           echo 'web-dist: OK (two consecutive builds are byte-identical)'
-      # 公開成果物（wasm / JS）の開示ゲート。release-linux と同じ方針で、
+      # 公開成果物（wasm / JS に加え同梱の LICENSE / NOTICE /
+      # licenses/crates/** など）の開示ゲート。release-linux と同じ方針で、
       # remap をすり抜ける内部 worktree パスを検知する。一致行は出力しない。
       - name: Gate - no development paths in web dist
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(web/dist/*.wasm web/dist/*.js)
+          # wasm / JS に限定せず dist 配下の全ファイルを走査する。
+          mapfile -d '' -t files < <(find web/dist -type f -print0)
           if (( ${#files[@]} == 0 )); then
-            echo 'web-disclosure: no web/dist/*.wasm or *.js files found' >&2
+            echo 'web-disclosure: no files found in web/dist' >&2
             exit 1
           fi
           if ! command -v strings >/dev/null 2>&1; then
@@ -427,7 +496,10 @@ jobs:
           check internal-worktree-dir '\.agents/worktrees'
           check internal-workspace-root 'default-workspace/work/gpui-'
           check remapped-dev-home '/build/document/'
-          echo 'web-disclosure: OK (no development paths / account identifiers in web dist)'
+          # 単独の 64-hex トークンを検出。素の `[0-9a-fA-F]{64}` は wasm 内の
+          # 依存クレート hex 定数（現行ビルド 9 件）に誤一致するため境界を要求。
+          check token-like-hex '\b[0-9a-fA-F]{64}\b'
+          echo 'web-disclosure: OK (no development paths / account identifiers / token-like hex in web dist)'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gpui-task-manager-web
@@ -448,26 +520,50 @@ jobs:
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-cyclonedx@0.5.10
-      # cargo-cyclonedx 0.5.10 には --locked オプションが無く、
-      # generate-sbom.sh は担当外のため書き換えない。gates の locked: true と
-      # 同じ整合性を、生成直前に cargo metadata --locked で明示的に担保する。
+      # cargo-cyclonedx 0.5.10 には --locked オプションが無いため、
+      # gates の locked: true と同じ整合性を生成前後の2か所で担保する:
+      # (1) 生成直前の cargo metadata --locked（下のステップ）
+      # (2) 生成直後の git diff --exit-code -- Cargo.lock web/Cargo.lock
+      # generate-sbom.sh 側では --target を明示し、SOURCE_DATE_EPOCH で
+      # バイト単位の再現性も確保している（下の SHA256 ゲートで検証）。
       - name: Verify Cargo.lock consistency before SBOM generation
         run: |
           set -euo pipefail
           cargo metadata --locked --format-version 1 >/dev/null
           cargo metadata --locked --format-version 1 --manifest-path web/Cargo.toml >/dev/null
       - name: Generate SBOMs
-        run: bash scripts/generate-sbom.sh target/sbom
-      # 2 回連続で生成し、成果物のファイル集合が変わらない（古いコピーが
-      # 蓄積しない）ことと、生成元ファイルが作業ツリーに残らないことを確認。
+        run: |
+          set -euo pipefail
+          bash scripts/generate-sbom.sh target/sbom
+          # --locked の実質ゲート: 生成処理がロックファイルを書き換えていないか確認。
+          git diff --exit-code -- Cargo.lock web/Cargo.lock
+      # 2 回連続で生成し、成果物のファイル集合と内容（SHA256）が変わらない
+      # ことと、生成元ファイルが作業ツリーに残らないことを確認する。
+      # cargo-cyclonedx は SOURCE_DATE_EPOCH 指定時に serialNumber を省略し
+      # timestamp を固定するため、内容もバイト単位で再現可能になる。
       - name: Verify SBOM generation is idempotent
         run: |
           set -euo pipefail
-          before="$(find target/sbom -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)"
+          # ファイル名だけでなく内容も比較する（パス名でソートして順序を固定）。
+          snapshot() {
+            find target/sbom -maxdepth 1 -type f -name '*.json' -print0 \
+              | sort -z \
+              | xargs -0 -r sha256sum
+          }
+          before="$(snapshot)"
           bash scripts/generate-sbom.sh target/sbom
-          after="$(find target/sbom -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)"
+          after="$(snapshot)"
           test "${before}" = "${after}"
           test -n "${after}"
+          # bom-ref の file:// 絶対パスは現状を許容する: cargo-cyclonedx の
+          # path 依存表現（#name@version 付き）であり、ビルド元 workspace の
+          # 位置を反映する情報であって秘密ではない。正規化には全 BOM の
+          # 書換えが必要で監査上の付加価値が薄いため、そのまま保持する。
+          # 同様に upstream の author フィールドに含まれる GitHub の noreply
+          # メールは正当なクレート・メタデータとして保持する方針とする。
+          # これらは開示ゲート（check-public-docs.sh）の対象外: 同ゲートは
+          # 公開 Markdown 文書を走査し、SBOM 成果物やクレート来源メタデータは
+          # 対象に含めない。
           if find . -path ./target -prune -o -type f \
               \( -name 'sbom-root*.json' -o -name 'sbom-web*.json' \) -print \
               | grep -q .; then
