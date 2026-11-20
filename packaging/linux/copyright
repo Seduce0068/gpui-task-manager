@@ -17,13 +17,51 @@ License: AGPL-3.0-or-later
  .
  On Debian systems, the full text of the GNU Affero General Public License
  version 3 is available at /usr/share/common-licenses/AGPL-3.
+Comment:
+ The full text of the application license is also shipped as
+ /usr/share/doc/gpui-task-manager/LICENSE. This catch-all stanza applies to
+ every file not covered by a more specific stanza below (the last matching
+ stanza wins in DEP-5). Third-party attributions are documented in
+ /usr/share/doc/gpui-task-manager/NOTICE.md.
+
+Files: usr/share/doc/*/licenses/LICENSE-IBM-Plex.txt
+Copyright: 2017-2018 IBM Corporation
+License: OFL-1.1
+ The IBM Plex Sans / Mono fonts are distributed under the SIL Open Font
+ License, Version 1.1, with Reserved Font Name "Plex".
  .
- The full text is also shipped as /usr/share/doc/gpui-task-manager/LICENSE.
- The previous Apache-2.0 license text is preserved in
- /usr/share/doc/gpui-task-manager/THIRD_PARTY_NOTICES.md.
+ The verbatim license text is bundled verbatim at
+ /usr/share/doc/gpui-task-manager/licenses/LICENSE-IBM-Plex.txt.
+Comment:
+ The font files themselves live in web/assets/fonts/ in the source tree; the
+ .deb ships only the license text because the binary does not embed the fonts.
+
+Files: usr/share/doc/*/THIRD_PARTY_NOTICES.md
+Copyright: respective upstream copyright holders
+License: Apache-2.0
+ This file preserves the upstream Apache License, Version 2.0 notice that
+ applied to the project before it was relicensed under AGPL-3.0-or-later.
  .
- Third-party components and their licenses are listed in
- /usr/share/doc/gpui-task-manager/NOTICE.md. Vendored third-party license full
- texts are installed under /usr/share/doc/gpui-task-manager/licenses/; the
- licenses that are not vendored, and where to verify them, are documented in
- /usr/share/doc/gpui-task-manager/README.md.
+ On Debian systems, the full text of the Apache License, Version 2.0 is
+ available at /usr/share/common-licenses/Apache-2.0.
+Comment:
+ Kept for attribution only; it does not change the license of the application,
+ which is AGPL-3.0-or-later (see the Files: * stanza above).
+
+Files: usr/share/doc/*/licenses/crates/*
+Copyright: the respective Rust crate authors (see each bundled license text)
+License: 0BSD or AGPL-3.0-or-later or Apache-2.0 or BSD-2-Clause or BSD-3-Clause or BSL-1.0 or CC0-1.0 or ISC or MIT or MIT-0 or MPL-2.0 or Unicode-3.0 or Unlicense or Zlib
+ Each file in this directory is the verbatim license text of one statically
+ linked Rust crate. The SPDX identifiers above enumerate the complete set of
+ license families allowed by deny.toml [licenses].allow and observed in
+ `cargo metadata` for the root and web workspaces; the exact identifier for an
+ individual file is recorded in that file by the generator.
+ .
+ License families that appear only as alternatives in a `cargo metadata`
+ expression (GPL-2.0-only, LGPL-2.1-or-later) and the `Apache-2.0 WITH
+ LLVM-exception` combination are covered by the permissive alternative that
+ is actually selected; see NOTICE.md for the full family list.
+Comment:
+ These texts are generated from the cargo local registry at package-build
+ time. NOTICE.md lists every license family and points to the individual
+ crate license texts for per-crate attribution.

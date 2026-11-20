@@ -26,6 +26,42 @@
 | --- | --- | --- |
 | [console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook) | Apache-2.0 OR MIT | ブラウザコンソールへの panic 出力 |
 
+## ライセンス family 一覧（全依存）
+
+上記の表は主要コンポーネントのみを列挙しているが、実際の静的リンク依存は
+root と web の 2 ワークスペースを合わせて約 783 crates にのぼる。以下は
+`deny.toml` の `[licenses].allow` / `exceptions` と `cargo metadata` の
+`license` 値（root + web）から導出した全ライセンス family の一覧で、
+主要コンポーネントに限定せず網羅することを目的とする。
+個別クレート名と各クレートの正確な SPDX 式は、配布パッケージの
+`licenses/crates/` に同梱されるライセンス全文（ビルド時に生成）を参照。
+
+| family（SPDX） | 区分 | 根拠・備考 |
+| --- | --- | --- |
+| `0BSD` | 許容（permissive） | `deny.toml` allow。`0BSD` / `0BSD OR MIT OR Apache-2.0` として出現 |
+| `AGPL-3.0-or-later` | コピーレフト（アプリ本体） | `deny.toml` allow。プロジェクト自身のライセンス |
+| `Apache-2.0` | 許容 | `deny.toml` allow。OR 式の代替として最も多く出現 |
+| `Apache-2.0 WITH LLVM-exception` | 例外付き許容 | `deny.toml` exceptions（`rustix` / `linux-raw-sys`）。平文 `Apache-2.0` 代替も許容 |
+| `BSD-2-Clause` | 許容 | `deny.toml` allow |
+| `BSD-3-Clause` | 許容 | `deny.toml` allow |
+| `BSL-1.0` | 許容 | `deny.toml` allow。`Apache-2.0 OR BSL-1.0` の代替として出現 |
+| `CC0-1.0` | パブリックドメイン宣言 | `deny.toml` allow |
+| `GPL-2.0-only` | 非選択の OR 代替 | `Apache-2.0 OR GPL-2.0-only`。許容側（`Apache-2.0`）を選択 |
+| `ISC` | 許容 | `deny.toml` allow。Lucide アイコン等 |
+| `LGPL-2.1-or-later` | 非選択の OR 代替 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later`。許容側を選択 |
+| `MIT` | 許容 | `deny.toml` allow |
+| `MIT-0` | 許容 | `deny.toml` allow。`CC0-1.0 OR MIT-0 OR Apache-2.0` 等として出現 |
+| `MPL-2.0` | 弱コピーレフト | `deny.toml` allow |
+| `NCSA` | AND 条件 | `(MIT OR Apache-2.0) AND NCSA`。Unicode データ由来 |
+| `Unicode-3.0` | 許容（Unicode データ） | `deny.toml` allow。各ワークスペースで 22 crates が単独 license 値とする |
+| `Unlicense` | パブリックドメイン宣言 | `deny.toml` allow。`Unlicense OR MIT` / `Unlicense/MIT` として出現 |
+| `Zlib` | 許容 | `deny.toml` allow |
+
+`GPL-2.0-only` と `LGPL-2.1-or-later` は `cargo metadata` の OR 式に現れるが
+選択されない代替であり、`NCSA` は AND 条件として許容ライセンスと併存する。
+いずれも `cargo deny check` の許可範囲内で、個別の適用条件は同梱ライセンス
+全文で確認できる。
+
 ## バンドル済みアセット
 
 | アセット | ライセンス | 帰属・同梱先 |
@@ -42,5 +78,6 @@
 本プロジェクト自身のコードは AGPL-3.0-or-later（[LICENSE](LICENSE)）です。
 
 配布パッケージの著作権表示は `/usr/share/doc/gpui-task-manager/copyright`、
-同梱ライセンス全文は同 `licenses/`、未同梱ライセンスの確認先は同 `README.md`
-を参照してください。
+同梱ライセンス全文は同 `licenses/`（クレート別は `licenses/crates/`、
+個別クレート名・SPDX 式は各ファイルを参照）、未同梱ライセンスの確認先は同
+`README.md` を参照してください。

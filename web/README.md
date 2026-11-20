@@ -34,7 +34,7 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 | `assets/fonts/` | IBM Plex Sans / Mono（SIL OFL 1.1、ライセンス同梱） |
 | `scripts/cdp_verify_web.py` | ヘッドレス Chrome を CDP 操作して Runtime Proof を取るスクリプト |
 | `verification/` | CDP 検証の証拠 JSON（デモ / ライブ / エラー時） |
-| `dist/` | `trunk build` の生成物（git 管理外） |
+| `dist/` | `trunk build` の生成物（git 管理外、CI ではライセンス／通知も同梱） |
 
 この crate は親 workspace に含めない独立 crate です（`Cargo.toml` に空の
 `[workspace]` を宣言）。ルートで `cargo test --workspace` しても対象外なので、
@@ -310,6 +310,12 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
 - `gpui-pre` / `gpui-pre-platform` / `gpui-pre-web` 0.3.12: Apache-2.0
 - IBM Plex Sans / Mono: SIL OFL 1.1（`assets/fonts/LICENSE-IBM-Plex.txt`）
 - 他プロジェクトからコピーした AGPL/GPL コードは含みません（`poc-wasm` と同じプロジェクトの自作コードのみ再利用）。本 crate 自体は上のとおり AGPL-3.0-or-later です。
+- 配布アーカイブ（`web-dist` ジョブの `gpui-task-manager-web`）には
+  `LICENSE`（AGPL-3.0 本文）/ `NOTICE.md` / `THIRD_PARTY_NOTICES.md` /
+  `LICENSE-IBM-Plex.txt` が同梱されます。`trunk build` の後に `web/dist/` へ
+  コピーされ、二重ビルドの SHA256 再現性ゲートにも含まれます。
+  `packaging/linux/licenses/crates/` が存在する場合は crate 別ライセンス全文も
+  `dist/licenses/crates/` へコピーされます。
 
 ## 参考
 
