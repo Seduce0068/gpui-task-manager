@@ -143,11 +143,19 @@ echo '==> check-advisory-ignores policy'
 bash "${repo_root}/scripts/check-advisory-ignores.sh"
 
 if optional_gate_enabled cargo-deny; then
-  echo '==> cargo deny check (root / web)'
-  cargo deny check
+  # Flags are kept identical to the `deny` job in .github/workflows/ci.yml.
+  # -D advisory-ignore-expired: turn an expired ignore into a hard failure
+  #   (check-advisory-ignores.sh above only validates reason/expiry/cap).
+  # advisory-not-detected is deliberately NOT allowed: cargo-deny's default is
+  # a warning (unused-ignored-advisory = "warn"), so suppressing it would hide
+  # stale ignores. CI used to pass -A; R4-CI01 removed it to match this gate.
+  echo '==> cargo deny check -D advisory-ignore-expired (root / web)'
+  cargo deny check -D advisory-ignore-expired
   if [ -f web/Cargo.toml ]; then
-    cargo deny --manifest-path web/Cargo.toml check
+    cargo deny --manifest-path web/Cargo.toml check -D advisory-ignore-expired
   fi
+  # A clean scan is only meaningful once the advisory DB is confirmed loaded.
+  bash "${repo_root}/scripts/check-advisory-db.sh"
 else
   record_skip 'cargo deny check' 'cargo-deny is not installed'
 fi

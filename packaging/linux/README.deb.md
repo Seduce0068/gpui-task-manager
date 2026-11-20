@@ -15,10 +15,10 @@ It shows process, CPU, memory, network and disk usage.
 - **Filter presets** (all / high CPU / high memory / large virtual memory /
   running) applied in one click; **refresh-interval presets** (0.5s / 1s / 2s /
   5s) can be switched and saved (native and browser)
-- **Power- and window-aware sampling**: 1s on AC, 2.5s on battery, 5s at low
-  battery (20% or less) or when the window is hidden. Applied as a lower bound
-  on the configured interval, so deliberately slower settings are preserved
-  (native and browser)
+- **Power- and window-aware sampling**: 0.5s lower bound on AC (untouched
+  default is 1s), 2.5s on battery, 5s at low battery (20% or less) or when the
+  window is hidden. Applied as a lower bound on the configured interval, so
+  deliberately slower settings are preserved (native and browser)
 - **Read-only cgroup view**: normalized group labels, member counts and the
   group count in the status bar; no process control or limit changes
 - Signal actions (SIGTERM / SIGKILL / SIGSTOP / SIGCONT) behind a confirmation

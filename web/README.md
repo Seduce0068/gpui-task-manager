@@ -81,13 +81,16 @@ URL クエリが無ければデモモードです。`tm-core` の決定論的デ
 ```bash
 cd .
 cargo build -p tm-agent
-# トークンは省略して自動生成（0600 ファイル、場所は stderr で案内、再起動でも再利用）。
+# トークンは省略して自動生成（Linux/Unix のみ、0600 ファイル、保存先は XDG state パス、
+# stderr にはファイル名 `token` のみ、再起動でも再利用）。
+# Windows では自動生成せず、--token-file / TM_AGENT_TOKEN / --token の明示が必要
+# （固定エラーの文言は ../README.md「認証」節を参照）。
 # --token は非推奨（/proc/<pid>/cmdline から読まれ得る）。既定の待受ポートは 8787。
 ./target/debug/tm-agent --redact
 token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
 ```
 
-ブラウザで次を開きます（トークンは案内されたファイルの内容を **URL フラグメント** に指定）:
+ブラウザで次を開きます（トークンは XDG state パス（Windows は AppData 配下）のファイル内容を **URL フラグメント** に指定）:
 
 ```text
 http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=<トークン>
@@ -132,6 +135,10 @@ http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=<トークン>
 
 - トークンを含む URL を共有しないでください。フラグメントはサーバに送られませんが、
   ブラウザの履歴には残ります。
+- **Windows ではトークンの自動生成を行いません**。新規生成はできず、既存ファイル
+  （`%APPDATA%` / `%USERPROFILE%\AppData\Roaming` 配下）の再利用のみです。
+  `--token-file` / `TM_AGENT_TOKEN` / `--token` のいずれかを明示してください
+  （固定エラーの文言は `../README.md`「認証」節を参照）。
 - `--redact` を付けると、ホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）・ユーザー名・`/home/<user>` が
   `host` / `user` / `/home/user` に置換されます。公開用スクリーンショットは
   このモードで取得しています（`verification/` も同様）。

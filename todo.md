@@ -1339,25 +1339,25 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       文言を「要求のみ」に変更。根拠 R5-UX01。
 - [x] web 行メニューが右クリック専用でキーボードから開けない（WCAG）。
       Shift+F10/ContextMenu 対応。根拠 R5-UX01。
-- [ ] web-dist の licenses/crates/** が CI で常にスキップされ、DEB と
+- [x] web-dist の licenses/crates/** が CI で常にスキップされ、DEB と
       ライセンス同梱が非対称。共有スクリプト化または必須アサーション。
       根拠 R4-CI01。
-- [ ] deny ジョブが -A advisory-not-detected で check.sh とフラグ不一致。
+- [x] deny ジョブが -A advisory-not-detected で check.sh とフラグ不一致。
       advisory DB 読み込みをアサート。根拠 R4-CI01。
-- [ ] gitleaks チェックサムがバイナリと同一オリジンで真正性検証に
+- [x] gitleaks チェックサムがバイナリと同一オリジンで真正性検証に
       なっていない。repo 内ピン留めまたは署名 attestation。根拠 R4-CI01。
 - [x] XDG_CONFIG_HOME パステストが環境変数を設定せず名前だけ検証。
       純粋関数へ切り出し各分岐を明示テスト。根拠 R5-TS01。
 - [x] テスト件数 556/191 に対し README 内訳 176+91+44+132+111=554。
       内訳を再計測して合計と揃え DESIGN マトリクスも更新。
       根拠 R1-FG01 / R5-DC01。
-- [ ] loopback 許可範囲の記述が SECURITY/DESIGN で広い（127.0.0.1/[::1]
+- [x] loopback 許可範囲の記述が SECURITY/DESIGN で広い（127.0.0.1/[::1]
       のみが正）。PID0 拒否の記述不整合。根拠 R1-FG01。
-- [ ] web/README のトークン保存場所案内が「stderr で案内」と矛盾。
+- [x] web/README のトークン保存場所案内が「stderr で案内」と矛盾。
       XDG state パスを参照する表現へ。根拠 R4-VU01。
 - [ ] Windows トークン自動生成の例外が DESIGN/SECURITY/web/README に
       欠落（README のみ記載）。root cause auth.rs:51。根拠 R5-DC01。
-- [ ] DEB README の AC サンプリング下限が 1s と記載（実装は 0.5s）。
+- [x] DEB README の AC サンプリング下限が 1s と記載（実装は 0.5s）。
       README.deb.md:18 を修正。根拠 R5-DC01。
 
 ### 優先度: 低 — swarm-project-review + todo-discovery 2026-11-21
