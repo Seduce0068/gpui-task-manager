@@ -828,6 +828,31 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   0622 トークン拒否、PID 再利用防御済み、ゼロ幅文字除去済み。
   問題なし（sa-signal / sb-env）。
 
+### 優先度: 中 — 状態機械／カバレッジ監査 2026-11-20
+
+- [x] 通知優先度が経路ごとに不一致。corrupt 退避直後に save 失敗すると（実装: should_announce_save_failure / sse_fallback_status の persistent ガード＋回帰テスト）
+      `record_save_failure` (web/src/settings.rs:627) が corrupt 通知を
+      無条件上書き、SSE fallback (shell.rs:692/737 の transient set_status)
+      が persistent な corrupt/save-failed を消す。cross-tab 同期は
+      persistent 保護済みなので矛盾。優先度比較またはキュー化＋回帰テスト。
+      根拠 wb-state。
+- [ ] 行メニュー表示中に F2 が通り詳細パネルがトグルされる（native の確認
+      ダイアログは F2 を無視）。仕様解釈次第だが、モーダル契約を意図する
+      なら row_menu.is_some() のとき F2/Space/Ctrl+K を無視しテスト固定。
+      根拠 wb-state（speculative）。
+- [ ] web の HTTP スナップショット取得パイプライン（fetch_snapshot_inner（注: fetch_snapshot_inner の実経路は既存の live CDP 実動検証でカバー済み。SSE エラー分岐4件は XB-SSEERR で追加済み、残りは unit モック化の検討課題）
+      の loopback 検証・Bearer・401/403 分類・redact ゲート）と agent SSE
+      エラーフレーム（warmup 失敗・mutex poison・JSON 変換失敗）が
+      カバレッジ 0。実パイプラインのテスト追加を検討。根拠 wa-coverage。
+
+### メモ — カバレッジ実測 2026-11-20
+
+- cargo-tarpaulin 0.37.6 で計測: workspace 62.31%（core 96.87 / vm 95.11 /
+  platform 91.46 / agent 81.11 / app 25.44）、web 31.60%（redact/theme 100、
+  settings 85.47、agent 73.10、shell 17.38）。低いのは GPUI 描画関数で
+  CDP 実動検証で補完済み。初回 statvfs テスト 1 件の失敗は環境依存フレーク
+  （再実行 pass）。根拠 wa-coverage。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

@@ -243,6 +243,17 @@ fn should_announce_settings_sync(status: Option<&StatusMessage>) -> bool {
     !status.is_some_and(|status| status.persistent)
 }
 
+/// Fixed status text for a clean SSE end / idle timeout, gated by the same
+/// persistent guard as the cross-tab sync notice.
+///
+/// The fallback is purely informational, so it may replace no status or a
+/// transient one but must never erase an outstanding persistent corrupt /
+/// save-failure notice (SECURITY.md §5). Both fallback call sites go through
+/// this helper so the policy lives in exactly one place.
+fn sse_fallback_status(status: Option<&StatusMessage>) -> Option<&'static str> {
+    should_announce_settings_sync(status).then_some(SSE_FALLBACK_NOTICE)
+}
+
 /// スナップショットのエクスポート形式。ファイル名・MIME・アクセシブル名はすべて
 /// 固定値で、ユーザー入力もエージェントトークンも含まない（DOM フックへ安全に
 /// 書き出せるようにするため）。
@@ -689,7 +700,11 @@ impl TaskManagerApp {
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
         match outcome {
-            Ok(()) => self.dashboard.set_status(SSE_FALLBACK_NOTICE, false),
+            Ok(()) => {
+                if let Some(text) = sse_fallback_status(self.dashboard.status()) {
+                    self.dashboard.set_status(text, false);
+                }
+            }
             Err(error) => self.handle_sse_error(error),
         }
         self.sync_proof_dom();
@@ -734,7 +749,9 @@ impl TaskManagerApp {
         self.stream_mode = StreamMode::Fallback;
         self.sse_last_snapshot_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
-        self.dashboard.set_status(SSE_FALLBACK_NOTICE, false);
+        if let Some(text) = sse_fallback_status(self.dashboard.status()) {
+            self.dashboard.set_status(text, false);
+        }
         self.sync_proof_dom();
     }
 
@@ -5283,6 +5300,68 @@ mod tests {
             is_error: true,
             persistent: true,
         })));
+    }
+
+    #[test]
+    fn sse_fallback_notice_uses_the_same_persistent_guard_as_cross_tab_sync() {
+        // The fallback notice is informational: it replaces no/transient status
+        // but must never overwrite a persistent corrupt / save-failure notice.
+        assert_eq!(sse_fallback_status(None), Some(SSE_FALLBACK_NOTICE));
+        assert_eq!(
+            sse_fallback_status(Some(&StatusMessage {
+                text: "今すぐ更新を要求しました".to_string(),
+                is_error: false,
+                persistent: false,
+            })),
+            Some(SSE_FALLBACK_NOTICE)
+        );
+        for text in [
+            crate::settings::NOTICE_CORRUPT,
+            crate::settings::NOTICE_SAVE_FAILED,
+        ] {
+            assert_eq!(
+                sse_fallback_status(Some(&StatusMessage {
+                    text: text.to_string(),
+                    is_error: true,
+                    persistent: true,
+                })),
+                None,
+                "{text}"
+            );
+        }
+        // A persistent *info* notice is protected too, exactly as in the
+        // cross-tab guard (the helper does not depend on `is_error`).
+        assert_eq!(
+            sse_fallback_status(Some(&StatusMessage {
+                text: "デモデータで起動しました".to_string(),
+                is_error: false,
+                persistent: true,
+            })),
+            None
+        );
+        assert_eq!(
+            should_announce_settings_sync(None),
+            sse_fallback_status(None).is_some()
+        );
+    }
+
+    #[test]
+    fn sse_fallback_keeps_a_real_persistent_dashboard_notice() {
+        let mut dashboard = Dashboard::new(PlatformInfo::native("Linux"), DEFAULT_REFRESH_INTERVAL);
+        dashboard.set_persistent_status(crate::settings::NOTICE_CORRUPT);
+        let before = dashboard.status().cloned().expect("persistent notice");
+        assert!(before.persistent && before.is_error);
+        assert_eq!(sse_fallback_status(dashboard.status()), None);
+        // No fallback write happened: the displayed status is unchanged.
+        assert_eq!(dashboard.status(), Some(&before));
+        assert!(before.text.contains(crate::settings::NOTICE_CORRUPT));
+
+        // A transient status still receives the fixed fallback text.
+        dashboard.set_status("一時的なお知らせ", false);
+        assert_eq!(
+            sse_fallback_status(dashboard.status()),
+            Some(SSE_FALLBACK_NOTICE)
+        );
     }
 
     #[test]
