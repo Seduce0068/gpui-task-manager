@@ -391,8 +391,8 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
   `kill_process` までの TOCTOU は完全には排除できない。PID + 起動時刻の照合で
   リスクを大幅に下げるが、`pidfd` 系 API による原子化は将来の課題。
 - プロセス名の Unicode 双方向制御文字（RTL override 等）とゼロ幅・不可視書式文字は `tm-core::sanitize` で
-  除去する（U+202A–U+202E, U+2066–U+2069, U+200E/F, U+061C）。ゼロ幅文字など
-  表示に影響する他の書式文字は将来の検討対象。
+  除去する（U+202A–U+202E, U+2066–U+2069, U+200E/F, U+061C）。ゼロ幅文字
+  （U+200B–U+200F）と Unicode 16.0 の全 Cf 文字も除去済み。
 - ネイティブ版 IME は実装済みだが、実 IME（IBus/fcitx5）での手動確認は未実施
   （`TM_DEBUG_IME=1` のデバッグフックによる状態遷移の検証のみ）。
 - Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動に
