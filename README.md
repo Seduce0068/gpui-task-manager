@@ -69,6 +69,20 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 
 ## クイックスタート（Kubuntu / Wayland）
 
+### Rust の導入（初回のみ）
+
+ビルドには **Rust 1.95+**（`rustc` / `cargo`）が必要です（CI の `msrv-1-95`
+ジョブでも同バージョンをゲートしています）。未導入または古い場合は、
+[rustup の公式インストール手順](https://rustup.rs/)で stable を入れてください。
+
+```bash
+# Kubuntu: 初回導入（既存環境は rustup update で更新）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+rustc --version   # 1.95.0 以降であることを確認
+cargo --version
+```
+
 ### まず試す（最短）
 
 ```bash
@@ -99,6 +113,8 @@ sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
 ```
 
 Vulkan 対応 GPU ドライバが必要です（GTX 1660 SUPER + NVIDIA proprietary で検証）。
+`jq` はあえて前提一覧に含めていません。後述のエージェント例は `head -c 500` で
+出力を切るため、JSON 整形ツールの追加導入なしでコピペできます。
 `libxkbcommon-x11-dev` を入れられない場合は `scripts/dev-setup.sh` が
 `app/native-libs/libxkbcommon-x11.so` を作成します（システム変更なし・root 不要）。
 
@@ -137,29 +153,62 @@ ls -l app/native-libs/libxkbcommon-x11.so 2>/dev/null || echo 'shim なし（正
 
 ### 読み取り専用エージェント（ブラウザ用）
 
+ワンショット（サーバーを起動せず JSON を 1 回だけ出力）:
+
 ```bash
 cargo run -p tm-agent -- --once --demo      # 1 スナップショットを JSON で出力
-# トークンは省略して自動生成（0600 ファイル、場所は stderr で案内）する。
-# 既定の待受ポートは 8787（画面案内と同じ）。
-cargo run -p tm-agent
-token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
-curl -s -H "Authorization: Bearer $(cat "${token_file}")" \
-  'http://127.0.0.1:8787/api/v1/snapshot?limit=5' | jq .
-
-# 別ポートの明示例（既定の 8787 が競合する並行検証などでだけ指定）
-cargo run -p tm-agent -- --listen 127.0.0.1:18787
-curl -s -H "Authorization: Bearer $(cat "${token_file}")" \
-  'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | jq .
 ```
+
+トークンを省略すると自動生成され、0600 で保存されます。stderr で案内されるのは
+ファイル名 `token` のみで、保存場所は下記の XDG state パスです。既定の待受ポートは
+8787（画面案内と同じ）です。
+
+**ターミナル A（サーバー）** — 起動したままにしておきます:
+
+```bash
+cargo run -p tm-agent
+```
+
+**ターミナル B（クライアント）** — 別のターミナルで実行します（`token_file` を
+このブロック内で定義するため、新しいターミナルでも動きます）:
+
+```bash
+token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
+curl -sS -H "Authorization: Bearer $(cat "${token_file}")" \
+  'http://127.0.0.1:8787/api/v1/snapshot?limit=5' | head -c 500
+```
+
+別ポートの明示例（既定の 8787 が競合する並行検証などでだけ指定）:
+
+**ターミナル A（サーバー、別ポート）**:
+
+```bash
+cargo run -p tm-agent -- --listen 127.0.0.1:18787
+```
+
+**ターミナル B（クライアント、別ポート）** — 新しいターミナルでも動くよう
+`token_file` を再定義しています:
+
+```bash
+token_file="${XDG_STATE_HOME:-$HOME/.local/state}/tm-agent/token"
+curl -sS -H "Authorization: Bearer $(cat "${token_file}")" \
+  'http://127.0.0.1:18787/api/v1/snapshot?limit=5' | head -c 500
+```
+
+`| jq .` を使わないのは、上記の前提パッケージ一覧に `jq` が無いためです。
+`head -c 500` なら追加パッケージなしで先頭 500 バイトを確認できます（全体を
+整形して見たい場合は `jq` を別途導入してください）。
 
 エージェントはループバックアドレスのみ bind（既定 `127.0.0.1`）、`Authorization: Bearer` 必須、読み取り専用、
 CORS は loopback オリジン（`http://127.0.0.1[:port]` / `http://localhost[:port]`）のみ許可します。`--token` はテスト専用です（argv は
 同一マシンの他プロセスから読まれ得ます）。常用時は `--token-file` か `TM_AGENT_TOKEN`
 を使ってください。トークンを省略すると自動生成され、
-`$XDG_STATE_HOME/tm-agent/token`（未設定なら `~/.local/state/tm-agent/token`）に 0600 で保存して、
-その場所だけを stderr で案内します。値はログ・stdout に出力されません。
+`$XDG_STATE_HOME/tm-agent/token`（未設定なら `~/.local/state/tm-agent/token`）に 0600 で保存します。
+stderr で案内されるのはファイル名 `token` のみで、ホームパスを含む保存場所や
+トークンの値はログ・stdout に出力されません（stderr にも出力しません）。
 再起動時は同じファイルを再利用するため、ブラウザが保持したトークンもそのまま使えます。
-接続時は案内されたファイルの内容を読み取り、URL フラグメントや `--token-file` に指定してください。
+接続時は上記 XDG state パスのファイル内容を読み取り、URL フラグメントや
+`--token-file` に指定してください。
 
 HTTP エンドポイントは `/healthz`（ヘルスチェック）、`/api/v1/snapshot`（スナップショット、
 `?limit=N` で件数指定）、`/api/v1/stream`（SSE）、`/metrics`（Prometheus テキスト）の 4 つです。
@@ -170,15 +219,31 @@ SSE を優先利用し、接続に失敗するか終了した場合は従来の�
 
 ### wasm / ブラウザ
 
+ブラウザ版シェル（読み取り専用）:
+
+**ターミナル A（サーバー）** — 起動したままにしておきます:
+
 ```bash
-# ブラウザ版シェル（読み取り専用）
 cd web && trunk build --release && trunk serve
+```
+
+**ターミナル B（クライアント）** — 別のターミナルでサーバー応答を確認し、
+ブラウザで下記 URL を開きます:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8091/
 # デモ表示:  http://127.0.0.1:8091/
 # ライブ表示: http://127.0.0.1:8091/?agent=http://127.0.0.1:8787#token=<token>
 #   （トークンは URL フラグメントで渡し、fetch の Authorization ヘッダで送る）
+```
 
-# GPUI Web の最小スパイク（Runtime Proof）
-cd poc-wasm && trunk build --release
+GPUI Web の最小スパイク（Runtime Proof、サーバーは不要。ターミナル A で
+`cd web` 済みのシェルをそのまま使うため `../poc-wasm` を指定します。
+新しいターミナルなどリポジトリルートにいる場合は
+`cd poc-wasm && trunk build --release` としてください）:
+
+```bash
+cd ../poc-wasm && trunk build --release
 ```
 
 ブラウザ版は `tm-core` / `tm-viewmodel` をネイティブ版と共有し、GPUI Web
@@ -312,7 +377,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | デモ起動 | 成功（`--demo`、合成データ） |
 | エージェント | `/healthz` 200、トークンなし 401、クエリトークン 401、`limit` 動作、CORS（403 含む）、Host 検証 403、405、ループバック強制を確認。並列接続（最大 8）でアイドル 3 本下でも `/healthz` 3.04 ms、超過は即 503（2026-11-16 実測） |
 | wasm スパイク | `trunk build --release` 成功、ヘッドレス Chrome で描画・CJK・入力・fetch を確認（WebGL2 フォールバック） |
-| ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）をヘッドレス Chrome で検証（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
+| ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）を Chrome 158 / Edge 157 / Firefox 160 で検証成功（WebDriver BiDi。F1 は合成キーで検証しており信頼済みキーは未確認）。Safari / Brave / モバイル / 実 GPU の WebGPU は未検証のまま（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
 | `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
 | `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions はコミット SHA 固定（タグはコメント併記）、Dependabot github-actions 週次更新で追従 |

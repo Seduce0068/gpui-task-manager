@@ -299,7 +299,10 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
   品質は劣ります。
 - **接続は loopback 前提**: エージェントはループバック bind・loopback Origin の
   CORS のみ許可します。リモート公開用の認証・TLS は未実装です。
-- Safari / Firefox、モバイル（タッチ・ソフトキーボード）は未検証です。
+- ブラウザ互換性は Chrome 158 / Edge 157 / Firefox 160 で実動確認済み
+  （2026-11-20 実測）。Firefox 160 は WebDriver BiDi での確認で、
+  F1 のみ合成キーを用い、信頼済みキーは未確認です。
+  Safari / Brave / モバイル（タッチ・ソフトキーボード）/ 実 GPU の WebGPU は未検証のままです。
 
 ## ライセンス
 
