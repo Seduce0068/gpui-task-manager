@@ -153,7 +153,13 @@ vendor_crate_license_texts() {
   rm -rf "${licenses_root:?}/crates"
   mkdir -p "${licenses_root}/crates"
 
-  if ! metadata="$(cargo metadata --offline --format-version 1)"; then
+  # Filter to the Linux target: the unfiltered graph also resolves
+  # macOS/Windows-only crates (e.g. accesskit_macos) that are not in the local
+  # registry during a Linux-only CI build, which made --offline metadata fail.
+  local target_platform
+  target_platform="$(rustc -vV | sed -n 's/^host: //p')"
+  if ! metadata="$(cargo metadata --offline --format-version 1 \
+    --filter-platform "${target_platform}")"; then
     echo "error: cargo metadata --offline failed; build once to cache dependencies." >&2
     return 1
   fi
