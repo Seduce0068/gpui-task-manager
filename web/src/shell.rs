@@ -177,6 +177,20 @@ const SSE_FALLBACK_NOTICE: &str = "ストリーム接続が終了したため、
 /// agent does not offer SSE, while still recovering without a page reload.
 const SSE_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+/// Base step of the *poll* backoff (WA-RETRY). One second matches the legacy
+/// ~1 req/s cadence, so the first failure does not slow an already slow poll.
+/// This is deliberately separate from [`SSE_RECONNECT_DELAY`]: SSE and polling
+/// own their own retry state, so a stream error never doubles the poll delay
+/// and a failed poll never delays a stream reconnect.
+const POLL_BACKOFF_BASE: Duration = Duration::from_secs(1);
+
+/// Ceiling for the poll backoff, including a server `Retry-After` hint.
+///
+/// Capped so a broken agent cannot park monitoring indefinitely; the ceiling
+/// also stays above the sampler's `MAX_REFRESH_INTERVAL` (10 s), so a
+/// configured cadence is never shortened by backoff.
+const POLL_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
 /// Fixed lower bound for the SSE idle watchdog.
 ///
 /// The agent emits snapshot frames on its own `STREAM_INTERVAL` (1 s in
@@ -434,6 +448,10 @@ pub struct TaskManagerApp {
     sse_last_snapshot_at: Option<Instant>,
     /// Earliest instant at which a failed stream may be retried.
     sse_retry_at: Option<Instant>,
+    /// Consecutive fetch-poll failures and the last one-shot `Retry-After`.
+    /// Independent of [`Self::sse_retry_at`] so the two retry paths cannot
+    /// accelerate or delay each other (WA-RETRY).
+    poll_backoff: PollBackoff,
     /// F1 / ヘッダーのヘルプボタンで開くキーボード操作オーバーレイの状態。
     show_help: bool,
     /// ヘルプの「閉じる」ボタン用フォーカスハンドル。キーボードだけで
@@ -503,6 +521,7 @@ impl TaskManagerApp {
             sse_epoch: 0,
             sse_last_snapshot_at: None,
             sse_retry_at: None,
+            poll_backoff: PollBackoff::default(),
             show_help: false,
             help_close_focus: cx.focus_handle(),
             last_help_shown: false,
@@ -596,8 +615,13 @@ impl TaskManagerApp {
                 // click or persisted settings) decides the next wait. Never
                 // freeze the cadence at startup. `effective_interval` also
                 // applies the adaptive power plan as a floor (R1-I11).
+                // Consecutive poll failures stretch this wait (and a one-shot
+                // `Retry-After` raises it); a success resets it to the plain
+                // configured interval. No extra request is issued here — the
+                // single-flight fetch above still gates every attempt (WA-RETRY).
                 let interval = match this.update(cx, |app, _| {
-                    sampler_wait(app.dashboard.effective_interval())
+                    app.poll_backoff
+                        .take_wait(sampler_wait(app.dashboard.effective_interval()))
                 }) {
                     Ok(interval) => interval,
                     Err(_) => break,
@@ -628,6 +652,9 @@ impl TaskManagerApp {
         }
         self.live_error = None;
         self.reconnect_required = false;
+        // A fresh connection starts with the configured cadence instead of
+        // inheriting a backoff earned by the previous credentials/endpoint.
+        self.poll_backoff.record_success();
         // Transient: the next successful sample clears it, and the auth
         // guidance (if any) is replaced by the fresh connection attempt.
         self.dashboard.set_status(RELOAD_NOTICE, false);
@@ -816,13 +843,24 @@ impl TaskManagerApp {
         self.stale = stale_after_poll(had_snapshot, result.is_ok());
         match result {
             Ok(response) => {
+                // A healthy sample from either source proves the agent is
+                // answering, so the poll returns to its configured cadence.
+                // This shared ingest path is also used by SSE frames; that is
+                // intentional — the *error* paths stay separate (WB-SSEERR2).
+                self.poll_backoff.record_success();
                 self.ticks = self.ticks.saturating_add(1);
                 self.live_total = Some(response.total_process_count);
                 self.live_error = None;
                 self.reconnect_required = false;
                 self.dashboard.ingest(response.snapshot);
             }
-            Err(error) => self.record_live_error(&error),
+            Err(error) => {
+                // Only poll failures reach here. SSE endpoint errors go through
+                // `handle_sse_error`, so they cannot change poll spacing (WA-RETRY).
+                self.poll_backoff
+                    .record_failure(crate::agent::fetch_retry_after(&error));
+                self.record_live_error(&error);
+            }
         }
         self.revalidate_row_menu();
         self.sync_proof_dom();
@@ -4276,6 +4314,61 @@ fn sampler_wait(interval: Duration) -> Duration {
     interval.clamp(MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL)
 }
 
+/// Wait before the next poll attempt after `failures` consecutive failures.
+///
+/// Healthy polling keeps the configured `interval` untouched (including a
+/// 250 ms floor). Failures grow the wait exponentially — 1 s, 2 s, 4 s, 8 s,
+/// 16 s — capped at [`POLL_BACKOFF_MAX`]. A numeric `Retry-After` from a
+/// `429` / `5xx` response raises the floor for **one** attempt and is bounded
+/// by the same cap, so a broken agent cannot freeze the view. The result is
+/// never shorter than `interval`: backoff cannot increase the request rate.
+/// Kept pure so the whole contract is testable without a browser (WA-RETRY).
+fn poll_retry_wait(interval: Duration, failures: u32, retry_after: Option<Duration>) -> Duration {
+    let ceiling = POLL_BACKOFF_MAX.max(interval);
+    let exponential = if failures == 0 {
+        Duration::ZERO
+    } else {
+        POLL_BACKOFF_BASE.saturating_mul(2u32.saturating_pow(failures - 1))
+    };
+    let mut wait = interval.max(exponential);
+    if let Some(hint) = retry_after {
+        wait = wait.max(hint);
+    }
+    wait.min(ceiling)
+}
+
+/// Consecutive-failure state of the fetch poll only (WA-RETRY).
+///
+/// Deliberately independent of the SSE `sse_retry_at` cooldown: a stream
+/// endpoint failure must not change the poll cadence and vice versa. Kept as a
+/// small value type so reset-on-success and the one-shot `Retry-After` hint
+/// are unit-testable without a GPUI context.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PollBackoff {
+    consecutive_failures: u32,
+    retry_after: Option<Duration>,
+}
+
+impl PollBackoff {
+    /// A successful sample restores the configured cadence immediately.
+    fn record_success(&mut self) {
+        *self = Self::default();
+    }
+
+    /// A failed sample raises the backoff and stores at most one server hint.
+    fn record_failure(&mut self, retry_after: Option<Duration>) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.retry_after = retry_after;
+    }
+
+    /// Resolves this cycle's wait and consumes the one-shot `Retry-After`.
+    fn take_wait(&mut self, interval: Duration) -> Duration {
+        let wait = poll_retry_wait(interval, self.consecutive_failures, self.retry_after);
+        self.retry_after = None;
+        wait
+    }
+}
+
 /// Appends the refresh-interval field to the DOM proof string.
 ///
 /// Additive only: existing `key=value;` pairs stay byte-for-byte identical, so
@@ -4848,6 +4941,89 @@ mod tests {
             sampler_wait(Duration::from_secs(3_600)),
             MAX_REFRESH_INTERVAL
         );
+    }
+
+    #[test]
+    fn consecutive_poll_failures_grow_the_backoff_and_respect_the_cap() {
+        let interval = DEFAULT_REFRESH_INTERVAL;
+        // Fresh / successful state keeps the configured cadence untouched.
+        assert_eq!(poll_retry_wait(interval, 0, None), interval);
+        // Five consecutive 503s without a hint: 1, 2, 4, 8, 16 s.
+        let expected = [
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(8),
+            Duration::from_secs(16),
+        ];
+        for (failures, want) in expected.iter().enumerate() {
+            let got = poll_retry_wait(interval, failures as u32 + 1, None);
+            assert!(
+                got > interval || failures == 0,
+                "failure {} must back off",
+                failures
+            );
+            assert_eq!(got, *want, "unexpected wait at failure {}", failures + 1);
+        }
+        // Beyond the cap the wait stops growing, even for a huge streak.
+        for failures in [6, 10, u32::MAX] {
+            assert_eq!(
+                poll_retry_wait(interval, failures, None),
+                POLL_BACKOFF_MAX,
+                "failure {failures} must stay capped"
+            );
+        }
+    }
+
+    #[test]
+    fn poll_backoff_resets_on_success_and_consumes_retry_after_once() {
+        let mut backoff = PollBackoff::default();
+        let interval = DEFAULT_REFRESH_INTERVAL;
+        for want in [
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+        ] {
+            backoff.record_failure(None);
+            assert_eq!(backoff.take_wait(interval), want);
+        }
+        // A server hint raises this one attempt but is not applied forever.
+        backoff.record_failure(Some(Duration::from_secs(10)));
+        assert_eq!(backoff.take_wait(interval), Duration::from_secs(10));
+        assert_eq!(backoff.take_wait(interval), Duration::from_secs(8));
+
+        // One success restores the normal cadence from any depth.
+        backoff.record_success();
+        assert_eq!(backoff, PollBackoff::default());
+        assert_eq!(backoff.take_wait(interval), interval);
+        backoff.record_failure(Some(Duration::from_secs(10)));
+        backoff.record_success();
+        assert_eq!(backoff.take_wait(interval), interval);
+    }
+
+    #[test]
+    fn poll_retry_after_is_bounded_and_never_speeds_up_the_configured_cadence() {
+        // A huge hint is clamped by the same ceiling as exponential backoff.
+        assert_eq!(
+            poll_retry_wait(
+                DEFAULT_REFRESH_INTERVAL,
+                1,
+                Some(Duration::from_secs(3_600))
+            ),
+            POLL_BACKOFF_MAX
+        );
+        // A slow user-configured cadence must not be shortened by backoff or
+        // by a hint smaller than the interval.
+        let slow = MAX_REFRESH_INTERVAL;
+        assert_eq!(poll_retry_wait(slow, 0, None), slow);
+        assert_eq!(poll_retry_wait(slow, 1, None), slow);
+        assert_eq!(poll_retry_wait(slow, 1, Some(Duration::from_secs(2))), slow);
+        assert_eq!(
+            poll_retry_wait(slow, 1, Some(Duration::from_secs(20))),
+            Duration::from_secs(20)
+        );
+        // Backoff is independent of the SSE cooldown: the two never share state.
+        assert_ne!(POLL_BACKOFF_MAX, SSE_RECONNECT_DELAY);
     }
 
     #[test]

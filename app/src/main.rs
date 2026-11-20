@@ -455,6 +455,15 @@ fn export_target_name(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
 /// cannot keep a permissive mode and a failed write leaves no partial output.
 /// A failure to open, write or rename is returned with the file name only,
 /// never the full path or the file contents.
+///
+/// Known limitation (unsupported): resource-limit signals such as `SIGXFSZ`
+/// (exceeding `RLIMIT_FSIZE`, e.g. under `ulimit -f`) are not caught. The
+/// default signal action terminates the process before the `io::Error`
+/// cleanup path below runs, so the 0600 temporary file can be left behind.
+/// Ordinary I/O failures (permission denied, ENOSPC, ...) do surface as
+/// `io::Error` and are cleaned up. Catching the signal would need `unsafe`
+/// FFI or a new dependency; per AGENTS §15 (no `unsafe`, minimal dependencies)
+/// signal handling is explicitly out of scope.
 fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
     use std::io::Write as _;
 

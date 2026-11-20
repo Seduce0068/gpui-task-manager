@@ -120,6 +120,19 @@ target. It therefore does **not** cover every target audited by `deny.toml`
 target, regenerate the SBOM for that target or consult `cargo deny check` /
 `cargo metadata --locked --filter-platform <target>`.
 
+## Known limitations
+
+- Resource-limit signals are not handled. If the process is terminated by a
+  signal such as `SIGXFSZ` (exceeding `RLIMIT_FSIZE`, for example under
+  `ulimit -f`) while writing an export, the default signal action ends the
+  process immediately and a temporary `.export.tmp.*` file (mode 0600) may be
+  left behind. This is unsupported: catching such signals would need `unsafe`
+  FFI or a new dependency, which this project deliberately avoids.
+- This is different from ordinary I/O failures. Errors reported through
+  `io::Error` -- such as permission denied or a full disk (`ENOSPC`) -- are
+  handled normally: they are reported on stderr with a failure exit status and
+  the temporary file is cleaned up.
+
 ## Source
 
 <https://github.com/Seduce0068/gpui-task-manager>

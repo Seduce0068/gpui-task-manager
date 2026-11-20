@@ -19,7 +19,7 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 
 ## 検証
 
-- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 534 / web 184、件数は README.md「検証状況」と同期）
+- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 534 / web 190、件数は README.md「検証状況」と同期）
 - [dependency-audit.md](dependency-audit.md) — 重複バージョン・feature 差分の監査手順（cargo deny / tree / metadata、既存ゲート非破壊）
 - [verification.md](verification.md) — ビルド・テスト・clippy・ネイティブ起動・
   エージェント・wasm の Runtime Proof と既知の制限

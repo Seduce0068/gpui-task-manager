@@ -1027,13 +1027,55 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       fallback status のみ（`SseErrorEffect` は live_error / reconnect を持た
       ない）。persistent 通知ガードと sse=fallback / reconnect=0 を維持。
       根拠 WB-SSEERR2（R2 主実行）。
-- [ ] FETCH_TIMEOUT が wasm の実リクエストを abort できず回復がピア切断
-      まで遅延（最大20s）。AbortController の明示呼び出しを検討（wasm 側
-      复杂度が高いため記録のみ）。根拠 wa-netfail。
-- [ ] 連続 503/429 で Retry-After が無視され約1req/s で試行。poll 側にも
+- [x] FETCH_TIMEOUT が wasm の実リクエストを abort できず回復がピア切断
+      まで遅延（最大20s）→ 完了（WB-ABORT: 既存ソリューション調査の結果、
+      担当範囲内では実装不可と判断し記録のみ／コード・Cargo.toml は未変更）。
+      根拠 wa-netfail。調査結果:
+      - web-sys 0.3.107 に `AbortController` / `AbortSignal` feature は存在
+        （registry web-sys/Cargo.toml:42-43）。既存 web-sys への feature 追加
+        自体は担当範囲内だが、下記の理由から単独では不十分。
+      - gpui-pre-web 0.3.12 `FetchHttpClient::send`（http_client.rs:76-102）は
+        実 fetch を `spawn_local` へ detach し oneshot で待つだけ。future を
+        drop しても receiver が落ちるだけでブラウザの fetch は継続する
+        （`with_deadline` agent.rs:616-626 は型付き Timeout を返すのみ）。
+        `HttpClient` trait（gpui-pre-http-client:118-126）に signal 受け渡し口
+        は無く、`RequestTimeout` extension（同:26,60-62）は定義のみでどの
+        実装も参照しない no-op（grep 確認）。
+      - wasm-bindgen-futures に abortable ヘルパは無い。`futures::future::Abortable`
+        （既存依存）は Rust future を落とすだけなので実 fetch は止まらない。
+        gloo-net の abortable fetch は新規クレートで禁止。
+      - 自前 transport を作るには js-sys / wasm-bindgen-futures の直接依存追加
+        （禁止）＋ gpui-web の fetch/response/stream 実装の複製（100行超・
+        native テスト用 cfg 分岐も必須）が必要 → 不採用（車輪の再発明）。
+      回避策: 古い fetch はピア側のアイドル切断（最大20s）で自然解放される。
+      その間 agent の接続スロットを占有して 503 が増えるため、poll 側の
+      クールダウン/バックオフで実害を緩和（WA-RETRY が担当）。redact / DOM
+      proof 契約はコード未変更のため非回帰。
+- [x] 連続 503/429 で Retry-After が無視され約1req/s で試行。poll 側にも
       クールダウン/バックオフを検討（暴走ではない）。根拠 wa-netfail。
-- [ ] RLIMIT_FSIZE 超過（SIGXFSZ）で export 一時ファイルが残存。シグナル
-      終了なのでクリーンアップ不可。極端ケースとして記録。根拠 wb-exportio。
+      → 完了（WA-RETRY: R2 主実行）。既存調査で web/ には SSE_RECONNECT_DELAY=5s
+      と sampler_wait の間隔クランプのみがあり Retry-After 解釈ヘルパは無かった。
+      gpui::http_client が http::HeaderMap を再公開しているため web-sys 不要・
+      新規依存なしで delta-seconds を解析可能と判断し、完全解釈を採用。
+      agent.rs は 429/5xx の数値 Retry-After（正の整数のみ、30s でクランプ、
+      HTTP-date 等は無視）を既存 Http(u16) を壊さない新 variant
+      HttpRetryAfter{status,retry_after_secs} に保持（表示文言・reconnect・
+      redact 契約は Http と同一）。shell.rs の poll は連続失敗で 1→2→4→8→16→30s
+      の指数バックオフ、成功/config 変更で即リセット、Retry-After は 1 試行だけ
+      下限を引き上げる。SSE の 5s クールダウンとは別状態（SSE エラーは poll
+      間隔に影響せず、成功フレームは共通 ingest でリセット）。
+      DOM proof キー・末尾 sse= 契約・persistent 通知ガードは無変更。
+      検証: cargo test --manifest-path web/Cargo.toml --lib（190 passed）、
+      web/ で cargo clippy --all-targets -- -D warnings、
+      cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings、
+      cargo fmt --all -- --check（すべて成功）。
+- [x] RLIMIT_FSIZE 超過（SIGXFSZ）で export 一時ファイルが残存。シグナル
+      終了なのでクリーンアップ不可。→ 完了（WC-SIGXFSZ）: サポート対象外として
+      `app/src/main.rs` の write_export doc コメントと
+      `packaging/linux/README.deb.md` の「Known limitations」へ明記。signal
+      handling は unsafe FFI / 新規依存を避ける方針（AGENTS §15）のため対象外と
+      判断。通常の io::Error（権限拒否・ENOSPC 等）は cleanup する旨も併記。
+      コード挙動変更なし。根拠 wb-exportio。
 
 ### メモ — I/O 失敗 2026-11-20
 
