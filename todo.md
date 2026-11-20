@@ -1124,11 +1124,31 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 低 — 最終観点 2026-11-20
 
-- [ ] サスペンド/レジューム後の SSE watchdog が performance.now の前方
+- [x] サスペンド/レジューム後の SSE watchdog が performance.now の前方
       ジャンプを誤検知しうる（speculative、ブラウザ依存）。根拠 wb-discovery。
-- [ ] ハードリンク非対応 FS（exFAT 等）で自動トークンの atomic publish が
-      失敗し起動不能になりうる（likely）。rename フォールバック or 明示
-      --token-file 案内。根拠 wb-discovery。
+      → 現状許容（WB-WD 静的レビュー）: ブラウザ依存で実機確認不可。現状の
+      saturating_duration_since は前方ジャンプを誤検知しうるが、誤 fallback 後は
+      5s クールダウンで自動回復するため実害は一時的。実機で再現した場合に対応する。
+      根拠: MDN「Ticking during sleep」は仕様 Level 2 がスリープ中の tick を
+      要求する一方、実際に tick するのは Windows ブラウザのみで
+      Chrome/Firefox/Safari は非 Windows でバグにより止まる
+      （`https://developer.mozilla.org/en-US/docs/Web/API/Performance/now` ）。
+      web-time 1.1.0 のクレート文書も同趣旨（~/.cargo/registry/src/.../web-time-1.1.0/src/lib.rs:35-42）。
+      対象環境（Kubuntu / Android）では前方ジャンプ自体が生じにくい。
+      しきい値方式はしきい値未満のサスペンドを守れず、再基底方式は真の停止検出を
+      1 グレース期間遅らせるため、未検証のまま採用せず。web/src/shell.rs は無変更。
+- [x] ハードリンク非対応 FS（exFAT 等）で自動トークンの atomic publish が
+      失敗し起動不能になりうる（likely）。→ 完了（WA-FSLINK・案内のみ）:
+      rename フォールバックは既存トークンを無条件上書きし並行収束を壊すため
+      不採用（std に no-replace rename は無く、RENAME_NOREPLACE/linkat は
+      libc FFI・新規依存・unsafe が必要で禁止）。hard_link が
+      Unsupported/PermissionDenied/InvalidInput/CrossesDevices で失敗した
+      場合に --token-file と XDG_STATE_HOME を案内する固定エラーへ変換。
+      AlreadyExists は従来どおり Conflict（再読込）で、0o077 チェック・
+      TOCTOU 対策・再利用ロジックは無変更。純粋分類関数のテスト2件追加、
+      トークン値・パス非露出・0600 契約維持。`cargo test -p tm-agent`
+      （127 passed）/ `cargo clippy -p tm-agent --all-targets -- -D warnings`
+      （exit 0）/ `cargo fmt --all -- --check`（exit 0）。根拠 wb-discovery。
 
 ### メモ — 実動回帰 2026-11-20
 
