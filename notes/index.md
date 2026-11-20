@@ -19,7 +19,16 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 
 ## 検証
 
-- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 576 / web 195、件数は README.md「検証状況」と同期）
+- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 581 / web 196、件数は README.md「検証状況」と同期）
+- [agent-runtime-verification.md](agent-runtime-verification.md) — `tm-agent` 実動検証（TCP ソケット経由の主要エンドポイント、loopback / 認証の Runtime Proof と制約）
+- [native-runtime-verification.md](native-runtime-verification.md) — ネイティブ GPUI アプリの Wayland 実起動（ウィンドウ生成の Runtime Proof）
+- [environment-verification.md](environment-verification.md) — 実機環境・証跡の確認記録（HiDPI / スクリーンショット鮮度 / ローカルブランチ整理、事実と未確認事項）
+- [hidpi-verification.md](hidpi-verification.md) — Web シェルの HiDPI（DPR 1 / DPR 2）描画をヘッドレス Chrome + CDP で確認した証跡（古い `tick=0` 記録には解消注記あり）
+- [web-ime-runtime-verification.md](web-ime-runtime-verification.md) — ブラウザ版日本語 IME の実ヘッドレス Chrome 検証（composition / 確定 / Escape 破棄、32 チェック成功）
+- [web-settings-runtime-verification.md](web-settings-runtime-verification.md) — Web 設定永続化の Runtime Proof（localStorage 保存・再読込・破損退避・復元）
+- [web-live-runtime-verification.md](web-live-runtime-verification.md) — Web シェルの実 `tm-agent` / SSE ライブ接続・更新・エージェント停止時の挙動を CDP で検証
+- [adr-ci-tool-version-management.md](adr-ci-tool-version-management.md) — ADR: CI ツール版の手動ピン維持と Dependabot 対象範囲、mise.toml 一元管理の移行メモ
+- [adr-wasm-inline-js-download.md](adr-wasm-inline-js-download.md) — ADR: wasm ダウンロードの inline JS 維持判断と web-sys 置換条件
 - [dependency-audit.md](dependency-audit.md) — 重複バージョン・feature 差分の監査手順（cargo deny / tree / metadata、既存ゲート非破壊）
 - [verification.md](verification.md) — ビルド・テスト・clippy・ネイティブ起動・
   エージェント・wasm の Runtime Proof と既知の制限

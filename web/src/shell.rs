@@ -428,6 +428,12 @@ pub struct TaskManagerApp {
     /// Ctrl+F で開始し、Enter / Esc で終了する。
     filter_editing: bool,
     source: DataSource,
+    /// 証跡生成時に完全一致でマスクするトークン値（URL の `#token=` 由来）。
+    ///
+    /// `AgentClient` の設定は再読込で変わり得るため、証跡ビルダが参照する値も
+    /// ここへ保持して設定変更と同じタイミングで更新する。平文を DOM・ログへ
+    /// 書き出すことはなく、置換後の `***` だけが証跡に現れる。
+    proof_token: Option<String>,
     focus_handle: FocusHandle,
     /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
     /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
@@ -496,8 +502,12 @@ impl TaskManagerApp {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
+        // 証跡のトークンマスクは URL の実際の値に完全一致で依存する。推測用の
+        // hex 長判定は使わず、以下で保持した値だけを置換に渡す。
+        let mut proof_token = None;
         let (dashboard, source) = match agent_config_from_url() {
             Some(config) => {
+                proof_token = config.token.clone();
                 let http = cx.http_client();
                 // The executor supplies the fetch deadline on wasm as well as
                 // natively; see `AgentClient::fetch_snapshot`.
@@ -530,6 +540,7 @@ impl TaskManagerApp {
             filter_input: FilterInput::new(),
             filter_editing: false,
             source,
+            proof_token,
             focus_handle,
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
             row_menu_item_focus: cx.focus_handle(),
@@ -673,9 +684,13 @@ impl TaskManagerApp {
         let DataSource::Live(client) = &self.source else {
             return false;
         };
+        // `set_config` へ move する前に値を退避し、実際に設定が変わったときだけ
+        // 証跡用のマスク対象も差し替える（以前のトークンが残ると漏えいする）。
+        let proof_token = config.token.clone();
         if !client.set_config(config) {
             return false;
         }
+        self.proof_token = proof_token;
         self.live_error = None;
         self.reconnect_required = false;
         // A fresh connection starts with the configured cadence instead of
@@ -3267,11 +3282,12 @@ impl TaskManagerApp {
         // `filter` / `ime_field` はユーザー入力由来。`key=value;` の区切り
         // （';' は従来どおり ',' へ）だけでなく '=' と改行も落として、
         // フィールド境界の注入を防ぐ。
-        let filter = proof_user_text(self.dashboard.filter_text());
+        let proof_token = self.proof_token.as_deref();
+        let filter = proof_user_text(self.dashboard.filter_text(), proof_token);
         // IME 検証用: 入力欄の表示テキスト（変換中を含む）と変換中フラグ。
         // composition 中は `filter` が変わらず `ime_composing=1` になることを
-        // CDP スクリプトが確認する。両値ともトークン様文字列は証跡へ残さない。
-        let ime_field = proof_user_text(self.filter_input.text());
+        // CDP スクリプトが確認する。両値とも実際のトークンを完全一致でマスクする。
+        let ime_field = proof_user_text(self.filter_input.text(), proof_token);
         let ime_composing = if self.filter_input.is_composing() {
             1
         } else {
@@ -4599,34 +4615,20 @@ fn proof_field_text(text: &str) -> String {
 ///
 /// CDP 検証が値を参照する契約があるため入力を完全に消すことはできないが、
 /// 「機微情報を含む可能性のある値は証跡へ残さない」方針をここで守る。
-/// `tm-agent` の自動生成トークンは 32 バイト = 64 hex（agent/src/auth.rs）なので、
-/// 32 文字以上の連続 hex をトークン様として検出して `***` に置き換える。
+/// `token` には URL から読み込んだ **実際の** `AgentConfig.token` を渡し、
+/// 出現するたびに完全一致で `***` へ置き換える。短いトークンや hex 以外の
+/// トークン（`s3cr3t-123` 等）も漏らさず、逆にトークンでない hex 文字列を
+/// 推測で消すこともない（長さベースのヒューリスティックは廃止）。
+///
+/// 置換はサニタイズより前に行うので、`=`, `;`, 改行を含むトークンも漏れない。
 /// 既存の `key=value;` キー、区切り、末尾 `sse=` 契約はバイト単位で不変。
 #[cfg(any(target_family = "wasm", test))]
-fn proof_user_text(text: &str) -> String {
-    let sanitized = proof_field_text(text);
-    let mut out = String::with_capacity(sanitized.len());
-    let mut hex_run = String::new();
-    for ch in sanitized.chars() {
-        if ch.is_ascii_hexdigit() {
-            hex_run.push(ch);
-        } else {
-            flush_proof_hex_run(&mut out, &mut hex_run);
-            out.push(ch);
-        }
-    }
-    flush_proof_hex_run(&mut out, &mut hex_run);
-    out
-}
-
-#[cfg(any(target_family = "wasm", test))]
-fn flush_proof_hex_run(out: &mut String, run: &mut String) {
-    if run.len() >= 32 {
-        out.push_str("***");
-    } else {
-        out.push_str(run);
-    }
-    run.clear();
+fn proof_user_text(text: &str, token: Option<&str>) -> String {
+    let redacted = match token {
+        Some(token) if !token.is_empty() => text.replace(token, "***"),
+        _ => text.to_string(),
+    };
+    proof_field_text(&redacted)
 }
 
 /// Builds the human-facing browser-tab title from the data source alone.
@@ -5040,6 +5042,7 @@ mod tests {
                 filter_input: FilterInput::new(),
                 filter_editing: false,
                 source: DataSource::Demo(DemoProbe::new()),
+                proof_token: None,
                 focus_handle: cx.focus_handle(),
                 sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
                 row_menu_item_focus: cx.focus_handle(),
@@ -5362,37 +5365,53 @@ mod tests {
     }
 
     #[test]
-    fn dom_proof_masks_token_like_hex_without_changing_contract() {
-        // tm-agent のトークンは 64 hex。証跡へ平文を残さない。
-        let token = "a".repeat(64);
-        let masked = proof_user_text(&format!("filter {token}"));
-        assert!(!masked.contains(&token), "{masked}");
-        assert!(masked.contains("***"), "{masked}");
-        assert!(masked.starts_with("filter "), "{masked}");
-        // 32 未満の hex（PID や短い識別子）は従来どおり残す。
-        assert_eq!(proof_user_text("deadbeef"), "deadbeef");
-        assert_eq!(proof_user_text(&"a".repeat(31)), "a".repeat(31));
-        assert_eq!(proof_user_text(&"a".repeat(32)), "***");
+    fn dom_proof_masks_exact_token_without_changing_contract() {
+        // 長さや文字種で推測せず、渡された実際のトークンだけをマスクする。
+        let token = "s3cr3t-123";
+        let masked = proof_user_text(&format!("filter {token}"), Some(token));
+        assert_eq!(masked, "filter ***", "{masked}");
+        assert!(!masked.contains(token), "{masked}");
 
-        // トークン様文字列が無い入力は既存 proof_field_text とバイト同一。
-        for raw in ["cpu;mem", "plain", "a=1;\r\nb=2;=;\n", ""] {
-            assert_eq!(proof_user_text(raw), proof_field_text(raw), "{raw:?}");
+        // 複数出現・埋め込み・前後のユーザー文字もそのまま保持する。
+        assert_eq!(
+            proof_user_text(&format!("{token}/middle/{token}"), Some(token)),
+            "***/middle/***"
+        );
+        assert_eq!(proof_user_text(&format!("x{token}y"), Some(token)), "x***y");
+
+        // トークンが無い／空なら既存 proof_field_text とバイト同一。
+        // 32 文字以上の hex もトークンでなければ消さない（ヒューリスティック廃止）。
+        let long_hex = "a".repeat(64);
+        for raw in ["cpu;mem", "plain", "a=1;\r\nb=2;=;\n", "", &long_hex] {
+            assert_eq!(proof_user_text(raw, None), proof_field_text(raw), "{raw:?}");
         }
+        assert!(proof_user_text(&long_hex, Some(token)).contains(&long_hex));
 
         // 既存キーと末尾 sse= 契約を壊さない。
         let proof = format!(
             "mode=demo;filter={};ime_field={};rows=3;sse={};",
-            proof_user_text(&token),
-            proof_user_text(&format!("x{token}y")),
+            proof_user_text(token, Some(token)),
+            proof_user_text(&format!("x{token}y"), Some(token)),
             StreamMode::Fallback.proof_value(),
         );
         assert!(proof.ends_with("sse=fallback;"), "{proof}");
-        assert!(!proof.contains(&token), "{proof}");
+        assert!(!proof.contains(token), "{proof}");
         let fields: Vec<&str> = proof.split(';').filter(|part| !part.is_empty()).collect();
         assert_eq!(fields.len(), 5, "{proof}");
         for field in fields {
             assert_eq!(field.matches('=').count(), 1, "{field} in {proof}");
         }
+    }
+
+    #[test]
+    fn dom_proof_masks_short_non_hex_token_after_sanitising_boundaries() {
+        // `=`, `;`, 改行を含むトークンもサニタイズ前に完全一致で消す。
+        let token = "a=b;\r\nc";
+        let input = format!("keep{token};tail=1");
+        let masked = proof_user_text(&input, Some(token));
+        assert_eq!(masked, "keep***,tail1");
+        assert!(!masked.contains('=') && !masked.contains(';'));
+        assert!(!masked.contains('\r') && !masked.contains('\n'));
     }
 
     fn export_sample_snapshot() -> SystemSnapshot {

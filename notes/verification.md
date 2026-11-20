@@ -28,7 +28,7 @@ verified: 2026-11-18T10:58:00+09:00
 | web ユニットテスト | 件数は README.md「検証状況」を参照（2026-11-18 時点のスナップショット） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
-| `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 8 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser` など GPUI 依存由来）は理由付き ignore。cargo-deny はルート / web とも ok |
+| `cargo audit` / `cargo-deny` | 脆弱性 0。未保守 9 件（`zvariant` 系・`instant`・`paste`・`rustls-pemfile`・`rustybuzz`・`ttf-parser`・`chrono` など GPUI 依存由来、内訳は `DESIGN.md` §14）は理由付き ignore。cargo-deny はルート / web とも ok |
 | バイナリサイズ（debug） | ネイティブ 166 MB / エージェント 7.0 MB（debuginfo 削減設定済み） |
 
 ## 3. ネイティブ UI（実データ）

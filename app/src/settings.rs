@@ -233,7 +233,17 @@ fn usable_config_root(value: Option<OsString>) -> Option<PathBuf> {
     value
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && !is_virtual_fs_root(path))
+        // `..` を含む絶対パスは先頭 2 コンポーネントの仮想 FS 判定をすり抜け
+        // （例: `/home/u/../../dev/shm`）、ホーム外へ設定 file を書き出せる。
+        // `Path::components()` は `.` を除去するが `..` は残すので明示的に拒否し、
+        // 呼び出し側の安全な HOME 既定へフォールバックさせる。
+        .filter(|path| {
+            path.is_absolute()
+                && !path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+                && !is_virtual_fs_root(path)
+        })
 }
 
 /// Pure core of the configuration-directory selection.
@@ -1177,6 +1187,28 @@ mod tests {
             )
             .expect("a virtual XDG_CONFIG_HOME must fall back to HOME");
             assert_eq!(path, fallback, "XDG_CONFIG_HOME={virtual_root}");
+        }
+    }
+
+    #[test]
+    fn config_path_from_rejects_parent_dir_components_in_xdg_config_home() {
+        // 先頭 2 コンポーネントだけを見ると `/home/u/../../dev/shm` は
+        // 仮想 FS 判定をすり抜ける。'..' を含む絶対パスは一律拒否する。
+        let home = PathBuf::from("/home/user");
+        let fallback = home_settings_path(&home);
+        for escape in [
+            "/home/user/../../dev/shm",
+            "/home/user/../..",
+            "/tmp/..",
+            "/var/tmp/../home/user",
+        ] {
+            let path = config_path_from(
+                Some(std::ffi::OsString::from(escape)),
+                None,
+                Some(home.clone().into_os_string()),
+            )
+            .expect("an XDG path with '..' must fall back to HOME");
+            assert_eq!(path, fallback, "XDG_CONFIG_HOME={escape}");
         }
     }
 

@@ -44,7 +44,7 @@ gpui-pre 0.3.12 の Web バックエンド（`wasm32-unknown-unknown`）で動�
 
 - Rust stable（検証: rustc 1.99.1）+ `rustup target add wasm32-unknown-unknown`
 - [trunk](https://trunkrs.dev/) 0.22.1（wasm-bindgen CLI は trunk が自動取得）
-- 検証用: Google Chrome 157（headless）+ Python 3 + `websockets`
+- 検証用: Google Chrome **157**（headless、CDP による Runtime Proof 専用）+ Python 3 + `websockets`。下記「既知の制約」の互換マトリクスは Chrome **158** で別途実測しており、目的が異なる（混同しないこと）
 
 ## ビルド
 
@@ -309,9 +309,11 @@ CDP 検証では次の値域でパースしてください（`../notes/web-shell
   品質は劣ります。
 - **接続は loopback 前提**: エージェントはループバック bind・loopback Origin の
   CORS のみ許可します。リモート公開用の認証・TLS は未実装です。
-- ブラウザ互換性は Chrome 158 / Edge 157 / Firefox 160 で実動確認済み
-  （2026-11-20 実測）。Firefox 160 は WebDriver BiDi での確認で、
-  F1 のみ合成キーを用い、信頼済みキーは未確認です。
+- ブラウザ互換性（互換マトリクス）は Chrome **158** / Edge 157 / Firefox 160 で実動確認済み
+  （2026-11-20 実測）。この 158 は互換マトリクス専用の値で、上記「必要環境」の Chrome **157**
+  は CDP による日常のヘッドレス Runtime Proof 用スクリプト（`cdp_verify_*.py`）
+  が動作確認済みのバージョンです。用途が異なるため使い分けてください。
+  Firefox 160 は WebDriver BiDi での確認で、F1 のみ合成キーを用い、信頼済みキーは未確認です。
   Safari / Brave / モバイル（タッチ・ソフトキーボード）/ 実 GPU の WebGPU は未検証のままです。
 
 ## ライセンス

@@ -44,6 +44,15 @@ use tm_platform::NativeProbe;
 
 use telemetry::{AgentError, ExitCategory, Level, Metrics, RequestTrace};
 
+/// 標準の `eprintln!` と同じ書式で、stderr が閉じたパイプでもパニックしない出力。
+///
+/// `emit` は `telemetry` 側のヘルパを使うが、人間向け警告も同じ方針に統一する。
+macro_rules! eprintln_safe {
+    ($($arg:tt)*) => {{
+        telemetry::eprintln_ignoring_broken_pipe(&format!($($arg)*));
+    }};
+}
+
 /// Health endpoint (no authentication, reveals nothing sensitive).
 const HEALTH_PATH: &str = "/healthz";
 /// Snapshot endpoint (bearer token required).
@@ -117,6 +126,17 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(8);
 /// `JoinHandle::join` has no deadline, so the tracker checks `is_finished`
 /// between short sleeps to bound the wait without spawning a helper thread.
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Delay before the first retry after a transient `accept` error.
+///
+/// Consecutive failures double the wait up to [`ACCEPT_BACKOFF_MAX`]; a single
+/// successful accept resets the streak. The old fixed 50 ms pause spun at full
+/// speed during a persistent failure (e.g. EMFILE).
+const ACCEPT_BACKOFF_BASE: Duration = Duration::from_millis(50);
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(2);
+/// Emit at most one human/structured log line per this many *identical*
+/// consecutive accept errors (the first one is always logged).
+const ACCEPT_LOG_EVERY: u32 = 16;
 
 /// User-facing body for every `403`, byte-identical to the Web shell's
 /// `FORBIDDEN_GUIDANCE` (R2-AUTHMSG).
@@ -343,7 +363,7 @@ fn main() {
                     "error": error.message(),
                 }),
             );
-            eprintln!("tm-agent: {}", error.message());
+            eprintln_safe!("tm-agent: {}", error.message());
             std::process::exit(error.code());
         }
     }
@@ -396,7 +416,7 @@ fn run_with(arguments: Vec<String>) -> Result<(), AgentError> {
     // Warn about argv exposure before the `--once` early return so operators
     // running a one-shot snapshot with `--token` see the same warning.
     if config.token.is_some() {
-        eprintln!("tm-agent: {TOKEN_ARGV_WARNING}");
+        eprintln_safe!("tm-agent: {TOKEN_ARGV_WARNING}");
     }
 
     // SE-ONCETOKEN: validate explicitly configured sources BEFORE the `--once`
@@ -441,7 +461,7 @@ fn run_with(arguments: Vec<String>) -> Result<(), AgentError> {
                 } else {
                     generated_token_message(&path)
                 };
-                eprintln!("{}", message);
+                eprintln_safe!("{}", message);
                 token
             }
         },
@@ -459,7 +479,7 @@ fn run_with(arguments: Vec<String>) -> Result<(), AgentError> {
             format!("待ち受けアドレスを取得できません: {err}"),
         )
     })?;
-    eprintln!(
+    eprintln_safe!(
         "tm-agent: http://{local} で待ち受けます (読み取り専用, demo={}, schema_version={})",
         config.demo,
         tm_core::WIRE_SCHEMA_VERSION
@@ -644,7 +664,15 @@ fn auto_token_dir() -> Result<std::path::PathBuf, String> {
 /// Unix and Windows selectors on exactly the same absolute-path / virtual-FS
 /// checks without changing either result.
 fn is_usable_state_root(path: &std::path::Path) -> bool {
-    path.is_absolute() && !is_virtual_fs_root(path)
+    // `..` を含む絶対パスは先頭 2 コンポーネントの仮想 FS 判定をすり抜ける
+    // （例: `/home/u/../../dev/shm`）。`Path::components()` は `.` を除去するが
+    // `..` は残すので、ここで明示的に拒否し、呼び出し側の安全な HOME 既定へ
+    // フォールバックさせる。意図したパスなら利用者が `..` なしで指定できる。
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        && !is_virtual_fs_root(path)
 }
 
 fn usable_state_root(value: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
@@ -1359,6 +1387,35 @@ impl JoinTracker {
     }
 }
 
+/// Delay before retrying `listener.accept()` after `consecutive_failures` errors.
+///
+/// Kept pure so the exponential growth and its ceiling are unit-testable without
+/// forcing a real socket error. `checked_pow` prevents an overflow panic if a
+/// listener fails an absurd number of times in a row.
+fn accept_retry_wait(consecutive_failures: u32) -> Duration {
+    let shift = consecutive_failures.saturating_sub(1);
+    let multiplier = 2u32.checked_pow(shift).unwrap_or(u32::MAX);
+    ACCEPT_BACKOFF_BASE
+        .saturating_mul(multiplier)
+        .min(ACCEPT_BACKOFF_MAX)
+}
+
+/// Whether this accept failure deserves a log line.
+///
+/// A changed error message is always logged; an unchanged one is logged only
+/// every [`ACCEPT_LOG_EVERY`] failures so a broken listener cannot flood stderr.
+fn should_log_accept_error(
+    last_logged: &mut Option<String>,
+    consecutive_failures: u32,
+    message: &str,
+) -> bool {
+    if last_logged.as_deref() != Some(message) {
+        *last_logged = Some(message.to_string());
+        return true;
+    }
+    consecutive_failures.is_multiple_of(ACCEPT_LOG_EVERY)
+}
+
 /// Accepts connections until the listener stops yielding them.
 ///
 /// There is no Ctrl-C/signal handler: the flag set below is for post-loop
@@ -1376,19 +1433,34 @@ fn serve(
 ) -> Result<(), String> {
     let state = Arc::new(SharedState::new(probe, token, redact, needs_warmup));
     let workers = JoinTracker::new();
+    let mut consecutive_accept_failures = 0u32;
+    let mut last_accept_error: Option<String> = None;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
+                // A real connection proves the listener is healthy again, so a
+                // later failure starts a fresh (always logged) error streak.
+                consecutive_accept_failures = 0;
+                last_accept_error = None;
                 if let Err(err) = spawn_connection(Arc::clone(&state), stream, &workers) {
-                    eprintln!("tm-agent: {err}");
+                    eprintln_safe!("tm-agent: {err}");
                 }
             }
             // A persistent accept error (e.g. EMFILE) would otherwise spin the
-            // loop at full speed; pause briefly before retrying (R2X-FR1).
+            // loop at full speed; back off exponentially before retrying and
+            // thin repeated identical diagnostics (R2X-FR1 / C1-SECEDGE).
             Err(err) => {
-                eprintln!("tm-agent: accept に失敗: {err}");
-                emit(Level::Warn, "accept.failed", json!({}));
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                consecutive_accept_failures = consecutive_accept_failures.saturating_add(1);
+                let message = err.to_string();
+                if should_log_accept_error(
+                    &mut last_accept_error,
+                    consecutive_accept_failures,
+                    &message,
+                ) {
+                    eprintln_safe!("tm-agent: accept に失敗: {message}");
+                    emit(Level::Warn, "accept.failed", json!({}));
+                }
+                std::thread::sleep(accept_retry_wait(consecutive_accept_failures));
             }
         }
     }
@@ -1402,7 +1474,7 @@ fn serve(
     // adds no telemetry events and leaves the CLI/error contract untouched.
     let outcome = workers.join_all(SHUTDOWN_JOIN_TIMEOUT);
     if outcome.timed_out || outcome.panicked > 0 {
-        eprintln!(
+        eprintln_safe!(
             "tm-agent: 接続スレッドの終了を確認できませんでした (join={}, panic={}, 未完了={})",
             outcome.joined,
             outcome.panicked,
@@ -1455,10 +1527,10 @@ fn spawn_connection(
         // spawning a thread per rejected connection would defeat MAX_CONNECTIONS
         // and open a local resource-exhaustion vector.
         if let Err(err) = stream.set_write_timeout(Some(http::WRITE_TIMEOUT)) {
-            eprintln!("tm-agent: 503 のタイムアウト設定に失敗: {err}");
+            eprintln_safe!("tm-agent: 503 のタイムアウト設定に失敗: {err}");
         }
         if let Err(err) = http::write_response(&mut stream, &response) {
-            eprintln!("tm-agent: 503 応答に失敗: {err}");
+            eprintln_safe!("tm-agent: 503 応答に失敗: {err}");
         }
         return Ok(());
     }
@@ -1488,7 +1560,7 @@ fn spawn_connection(
                         Some(match worker_state.probe.lock() {
                             Ok(guard) => guard,
                             Err(err) => {
-                                eprintln!(
+                                eprintln_safe!(
                                     "tm-agent: プローブの mutex が poison しました; 回収して続行します"
                                 );
                                 emit(
@@ -1521,7 +1593,7 @@ fn spawn_connection(
                 },
             );
             if let Err(err) = result {
-                eprintln!("tm-agent: 接続処理に失敗: {err}");
+                eprintln_safe!("tm-agent: 接続処理に失敗: {err}");
             }
         })
         .map_err(|err| {
@@ -2059,7 +2131,7 @@ where
                 let mut guard = match state.probe.lock() {
                     Ok(guard) => guard,
                     Err(err) => {
-                        eprintln!(
+                        eprintln_safe!(
                             "tm-agent: プローブの mutex が poison しました; 回収して続行します"
                         );
                         emit(
@@ -2102,7 +2174,7 @@ where
                 Err(err) => {
                     // Only the classified label reaches stderr; the free-form
                     // probe detail can embed internal paths or host names.
-                    eprintln!(
+                    eprintln_safe!(
                         "tm-agent: ウォームアップサンプルに失敗しました ({})",
                         probe_error_label(&err)
                     );
@@ -2138,7 +2210,9 @@ where
                 Err(err) => {
                     // Same poison recovery contract as the ordinary path: never
                     // fail open silently.
-                    eprintln!("tm-agent: プローブの mutex が poison しました; 回収して続行します");
+                    eprintln_safe!(
+                        "tm-agent: プローブの mutex が poison しました; 回収して続行します"
+                    );
                     emit(
                         Level::Warn,
                         "probe.mutex_poisoned",
@@ -2168,7 +2242,7 @@ where
                 match encode(&envelope) {
                     Ok(json) => sse_event("snapshot", &json),
                     Err(err) => {
-                        eprintln!("tm-agent: SSE JSON への変換に失敗: {err}");
+                        eprintln_safe!("tm-agent: SSE JSON への変換に失敗: {err}");
                         emit(
                             Level::Error,
                             "response.serialize_failed",
@@ -2180,7 +2254,7 @@ where
             }
             Err(err) => {
                 // No free-form probe detail in logs or stream frames.
-                eprintln!(
+                eprintln_safe!(
                     "tm-agent: スナップショット取得に失敗しました ({})",
                     probe_error_label(&err)
                 );
@@ -2318,7 +2392,7 @@ fn snapshot_response(
     // (`route`), so concurrent connections cannot race this check.
     if !warmed_up.load(Ordering::Acquire) {
         if let Err(err) = probe.sample() {
-            eprintln!(
+            eprintln_safe!(
                 "tm-agent: ウォームアップサンプルに失敗しました ({})",
                 probe_error_label(&err)
             );
@@ -2361,7 +2435,7 @@ fn snapshot_response(
             // Only the error class reaches the operator's log; the free-form
             // detail can contain paths or host names. The client always gets a
             // fixed string as well.
-            eprintln!(
+            eprintln_safe!(
                 "tm-agent: スナップショット取得に失敗しました ({})",
                 probe_error_label(&err)
             );
@@ -2492,7 +2566,7 @@ fn json_response<T: Serialize>(
     match serde_json::to_vec(value) {
         Ok(body) => http::Response::json(status, reason, body),
         Err(err) => {
-            eprintln!("tm-agent: JSON への変換に失敗: {err}");
+            eprintln_safe!("tm-agent: JSON への変換に失敗: {err}");
             emit(
                 Level::Error,
                 "response.serialize_failed",
@@ -2557,6 +2631,39 @@ mod tests {
         let mut sink = Vec::new();
         assert!(write_stdout_ignoring_broken_pipe(&mut sink, "tm-agent 0.1.0\n").is_ok());
         assert_eq!(sink, b"tm-agent 0.1.0\n");
+    }
+
+    #[test]
+    fn accept_retry_wait_grows_exponentially_and_is_capped() {
+        assert_eq!(accept_retry_wait(0), ACCEPT_BACKOFF_BASE);
+        assert_eq!(accept_retry_wait(1), ACCEPT_BACKOFF_BASE);
+        assert_eq!(accept_retry_wait(2), ACCEPT_BACKOFF_BASE * 2);
+        assert_eq!(accept_retry_wait(3), ACCEPT_BACKOFF_BASE * 4);
+        assert_eq!(accept_retry_wait(4), ACCEPT_BACKOFF_BASE * 8);
+        // 連続失敗が増えても上限を超えず、単調増加したまま頭打ちになる。
+        let capped = accept_retry_wait(64);
+        assert_eq!(capped, ACCEPT_BACKOFF_MAX);
+        assert_eq!(accept_retry_wait(u32::MAX), ACCEPT_BACKOFF_MAX);
+        assert!(accept_retry_wait(3) > accept_retry_wait(2));
+        assert!(accept_retry_wait(2) > accept_retry_wait(1));
+    }
+
+    #[test]
+    fn accept_error_log_is_throttled_for_repeated_message() {
+        let mut last = None;
+        // 初回と一定間隔だけログし、同一エラーの連続は間引く。
+        assert!(should_log_accept_error(&mut last, 1, "EMFILE"));
+        for failures in 2..ACCEPT_LOG_EVERY {
+            assert!(!should_log_accept_error(&mut last, failures, "EMFILE"));
+        }
+        assert!(should_log_accept_error(
+            &mut last,
+            ACCEPT_LOG_EVERY,
+            "EMFILE"
+        ));
+        // 別のエラーへ変わったときは即座に知らせる。
+        assert!(should_log_accept_error(&mut last, 1, "ECONNABORTED"));
+        assert!(!should_log_accept_error(&mut last, 2, "ECONNABORTED"));
     }
 
     /// A non-EPIPE failure (e.g. `/dev/full` -> ENOSPC / `StorageFull`) must be
@@ -3756,6 +3863,37 @@ mod tests {
         // A relative HOME cannot produce a safe path either.
         let error = auto_token_dir_from(None, Some(std::ffi::OsString::from("relative-home")))
             .expect_err("relative HOME must fail");
+        assert!(error.contains("HOME"), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn auto_token_dir_rejects_parent_dir_components_in_xdg_state_home() {
+        // `/home/u/../../dev/shm` は先頭 2 コンポーネントだけを見ると
+        // 仮想 FS 判定をすり抜ける。'..' を含む絶対パスは一律拒否する。
+        let home = std::path::PathBuf::from("/home/agent-user");
+        let default = home.join(".local").join("state").join(AUTO_TOKEN_DIR_NAME);
+        for escape in [
+            "/home/agent-user/../../dev/shm",
+            "/home/agent-user/../..",
+            "/tmp/..",
+            "/var/tmp/../home/agent-user",
+            "/dev/../home/agent-user",
+        ] {
+            let dir = auto_token_dir_from(
+                Some(std::ffi::OsString::from(escape)),
+                Some(home.clone().into_os_string()),
+            )
+            .expect("must fall back to the safe home default");
+            assert_eq!(dir, default, "XDG_STATE_HOME={escape}");
+        }
+
+        // 既定の HOME 自身が '..' を含むなら、安全なフォールバック先は無い。
+        let error = auto_token_dir_from(
+            None,
+            Some(std::ffi::OsString::from("/home/agent-user/../../dev/shm")),
+        )
+        .expect_err("HOME with '..' must be rejected");
         assert!(error.contains("HOME"), "{error}");
     }
 

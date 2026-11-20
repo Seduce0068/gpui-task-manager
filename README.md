@@ -62,7 +62,7 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
   スナップショットをダウンロード可能（ネイティブの `--export` と同じ
   `tm_core::export` を共有し、DOM proof の `export=csv|json` で確認できる）
 - **設定の永続化（ネイティブ / ブラウザ両方）**: 更新間隔・ソート列/方向・
-  詳細パネルの表示・ツリー表示を保存し、次回起動時に復元。ネイティブは XDG 設定
+  詳細パネルの表示・ツリー表示・**テーマ（Dark / Light）**を保存し、次回起動時に復元。ネイティブは XDG 設定
   (`~/.config/gpui-task-manager/settings.json`、Windows/macOS も対応パス、
   原子的書き込み・0600・スキーマ版付き)、ブラウザは `localStorage`
   (`gpui-task-manager.settings`)。スキーマは `tm-viewmodel::Settings` で共有
@@ -416,8 +416,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **576 passed / 0 failed**（core 176 / viewmodel 94 / platform 44 / agent 141 / app 120、2026-11-20 実測） |
-| web ユニットテスト | **195 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
+| `cargo test --workspace` | **581 passed / 0 failed**（core 176 / viewmodel 94 / platform 44 / agent 147 / app 120、2026-11-20 実測） |
+| web ユニットテスト | **196 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
@@ -425,9 +425,9 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | デモ起動 | 成功（`--demo`、合成データ） |
 | エージェント | `/healthz` 200、トークンなし 401、クエリトークン 401、`limit` 動作、CORS（403 含む）、Host 検証 403、405、ループバック強制を確認。並列接続（最大 8）でアイドル 3 本下でも `/healthz` 3.04 ms、超過は即 503（2026-11-16 実測） |
 | wasm スパイク | `trunk build --release` 成功、ヘッドレス Chrome で描画・CJK・入力・fetch を確認（WebGL2 フォールバック） |
-| ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）を Chrome 158 / Edge 157 / Firefox 160 で検証成功（WebDriver BiDi。F1 は合成キーで検証しており信頼済みキーは未確認）。Safari / Brave / モバイル / 実 GPU の WebGPU は未検証のまま（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
-| `cargo audit` | 脆弱性 0 / 未保守警告 8 件（GPUI 依存由来） |
-| `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 8 件は理由付き ignore） |
+| ブラウザ版シェル | `web/` に実装。デモ / ライブ（agent 接続）を Chrome **158** / Edge 157 / Firefox 160 の互換マトリクスで検証成功（WebDriver BiDi。F1 は合成キーで検証しており信頼済みキーは未確認）。CDP による日常のヘッドレス Runtime Proof は Chrome **157** で実施しており（[web/README.md](web/README.md)「必要環境」参照）、互換マトリクスの 158 とは用途が異なる。Safari / Brave / モバイル / 実 GPU の WebGPU は未検証のまま（[画像](notes/assets/web-shell-08-final-live.png)、詳細は [notes/web-shell.md](notes/web-shell.md)） |
+| `cargo audit` | 脆弱性 0 / 未保守警告 9 件（GPUI 依存由来、内訳は [DESIGN.md](DESIGN.md) §14） |
+| `cargo-deny` | ルート / web とも **advisories / bans / licenses / sources すべて ok**（未保守 9 件は理由付き ignore、内訳は [DESIGN.md](DESIGN.md) §14） |
 | Dependabot | Cargo（ルート / web）と GitHub Actions の週次更新を設定。セキュリティアラート / 自動修正を有効化。初回更新ジョブ 3 件実行、PR #1（actions/checkout 4→7）作成・PR CI 成功。Actions はコミット SHA 固定（タグはコメント併記）、Dependabot github-actions 週次更新で追従 |
 | wasm-opt | 14,799,786 B → **7,589,230 B**（gzip 3,656,199 → 3,024,986 B）。適用後もブラウザ検証 pass。2026-11-15 再計測 7,635,554 B（gzip 3,042,856 B）、2026-11-16 再計測 7,641,445 B（gzip 3,044,050 B）、2026-11-17 再計測 7,641,970 B（gzip 3,045,139 B）、2026-11-17 最終再計測 7,642,794 B（gzip 3,044,134 B）、2026-11-20 現行 dist 7,949,118 B（gzip 3,165,445 B） |
 | 日本語 IME（ブラウザ） | composition 32 チェックすべて pass、JS 例外 0。詳細 [notes/ime.md](notes/ime.md) |
