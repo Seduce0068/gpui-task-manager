@@ -401,6 +401,9 @@ ID は既存と衝突しないよう `R2X-` 接頭辞を使う。
 - **R2X-P8**（Medium）`crates/tm-platform/src/lib.rs:192-236` — 収集失敗が空
   リストに化け `supports_*` は true のまま、「空＝非対応」を区別不可。
 - **R2X-P9**（Low）`web/src/shell.rs` — F1 ヘルプ／ショートカット一覧が皆無。
+  **解決済み（2026-11-19、V2-HELP）**: Web に F1／ヘルプボタンでショートカット
+  一覧を追加済み（native と共通テーブル。`todo.md` の「Web に F1／ヘルプボタンで
+  ショートカット一覧を追加」の項目を参照）。
 - **R2X-P10**（Low）`crates/tm-platform/src/lib.rs:253-255,261` — load_average /
   uptime の 0 フォールバックが実測 0 と区別不能（実機未検証）。
 - **R2X-P11**（Low）`poc-wasm/src/lib.rs:43,326` — PoC が本番の model/sanitize/

@@ -212,6 +212,7 @@ $ cd web && trunk build --release
 | `dist/index.html` | 1,320 B | 842 B |
 
 `data-wasm-opt="z"` により wasm-opt（-Oz）を適用（14.8 MB → 7.6 MB）。
+現行 dist は 2026-11-20 計測で wasm 7,949,118 B（gzip 3,165,445 B、上表は 2026-11-17 時点の記録）。
 
 ### 2. デモモード（CDP 検証）
 
@@ -296,8 +297,12 @@ $ cd web && trunk build --release
 - 日本語 IME はブラウザ版・ネイティブ版とも対応（`EntityInputHandler` + composition、`notes/ime.md`）。
 - headless Chrome は WebGL2（ANGLE + SwiftShader）へフォールバックする。
   WebGPU を強制すると device lost で描画停止（スパイクで確認）。実 GPU の
-  WebGPU 描画、Safari / Firefox は未検証。
-- wasm が 7.29 MiB（gzip 2.90 MiB、2026-11-17 計測、wasm-opt 適用済み）と大きい。
+  WebGPU 描画と Safari は未検証。Firefox 160 は 2026-11-20 に WebDriver BiDi で
+  実動確認済み（F1 は合成キーのみで、信頼済みキーは未確認。
+  [`notes/verification.md`](verification.md) の §6「既知の制限・未検証」の
+  ブラウザ互換性の項を参照）。
+- wasm が 7,949,118 B（7.58 MiB、gzip 3,165,445 B、2026-11-20 計測、
+  wasm-opt 適用済み）と大きい。2026-11-17 計測値は 7,642,794 B（gzip 3,044,134 B）。
   初回ロード時間は未計測（localhost のスパイクでは wasm 転送 46 ms だったが、実ネットワークでは
   転送とコンパイルが支配的になる）。
 - 単一ウィンドウのみ。ポップアップ/ダイアログ/ファイルダイアログ不可。

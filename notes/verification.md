@@ -107,7 +107,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 
 - `cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml`: 成功
 - `cd web && trunk build --release`: 成功（wasm-opt -Oz 適用後 7.24 MiB / gzip 2.89 MiB、JS 155 KiB。2026-11-15 再計測: 7,635,554 B / gzip 3,042,856 B、JS 159,873 B。2026-11-16 再計測: 7,641,445 B / gzip 3,044,050 B、JS 159,873 B）
-- 証拠: `notes/assets/web-shell-*.png`（18 枚）、`web/verification/web-shell-evidence-*.json`
+- 証拠: `notes/assets/web-shell-*.png`（26 枚）、`web/verification/web-shell-evidence-*.json`
 
 ## 6. 既知の制限・未検証
 
@@ -430,7 +430,7 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 - `trunk build --release`（`web/`）: 成功。生成物を再計測: wasm 7,635,554 B（gzip 3,042,856 B）、JS 159,873 B（gzip 24,504 B）、`index.html` 1,320 B（gzip 842 B）。旧記録（7,589,230 B / 3,024,986 B、JS 158,865 B）から微増。
 - CDP 再検証（デモモード、ヘッドレス Chrome 157 + CDP 9223、静的配信 8091）: **failures: [] / passed: true**、panic・JS 例外 0、benign console 7 件。状態フックの時系列は既存文書の表と同一挙動（tick 増加、行クリックで選択 PID 変化、`fire` で 28→1 行、Esc で復帰、CPU/名前ソート切替）。証跡を `web/verification/web-shell-evidence-demo.json` / `notes/assets/web-shell-0*-demo.png` に更新（現行コードは `ime_composing` / `ime_field` / `ime_marked` / `ime_selection` を状態フックに含むため、証跡にもこれらが記録される）。
 - 文書の現状合わせ: `README.md` / `DESIGN.md`（§8 性能、ADR-017、§14）/ `web/README.md` / `notes/web-shell.md` の wasm サイズ記載を 2026-11-15 計測値に更新（7.24 MiB → 7.28 MiB、gzip 2.89 → 2.90 MiB）。ADR-017 には再計測値を追記し、旧測定の履歴は保持。
-- 未実施: 実 GPU の WebGPU、Safari/Firefox。ライブ / エラー時モードは次節で再検証済み。
+- 未実施（2026-11-15 時点の記録）: 実 GPU の WebGPU、Safari/Firefox。ライブ / エラー時モードは次節で再検証済み。Firefox はその後 2026-11-20 に実動確認済み（§6「既知の制限・未検証」のブラウザ互換性の項を参照）。
 
 ## 2026-11-15（ブラウザ版ライブ / エラー時モードの CDP 再検証）
 
@@ -470,7 +470,7 @@ bash packaging/linux/build-deb.sh --skip-build # 既存バイナリから再パ�
 
 ### 制約（変わりなし）
 
-- 実 GPU の WebGPU 描画は未確認（ヘッドレスは WebGL2 / SwiftShader へフォールバック）。Safari / Firefox も未検証。
+- 実 GPU の WebGPU 描画は未確認（ヘッドレスは WebGL2 / SwiftShader へフォールバック）。Safari も未検証（2026-11-15 時点の記録）。Firefox は 2026-11-20 に実動確認済み（§6「既知の制限・未検証」のブラウザ互換性の項を参照）。
 - 物理実機 Windows / macOS の GUI 操作は未検証。
 
 ## 2026-11-15（日本語 IME（composition）CDP 再検証）

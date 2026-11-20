@@ -14,6 +14,12 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 - スタック: Rust 1.95+ / `gpui-kit =0.9.1`（`gpui-pre 0.3.12`）/ `sysinfo =0.40.3` / `rustix =1.1.6`
 - ライセンス: **AGPL-3.0-or-later**（第三者表示は [NOTICE.md](NOTICE.md)、以前の Apache-2.0 本文は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
 
+> **製品バージョン: 0.1.0** — [`Cargo.toml` の `workspace.package.version`](Cargo.toml) と同期する値です。
+> この製品バージョンは、wire envelope の `schema_version=1`（`tm_core::WIRE_SCHEMA_VERSION`）、
+> 設定スキーマの `SETTINGS_VERSION=2`（`tm_viewmodel::SETTINGS_VERSION`）、
+> そして文書メタデータの OKF `verified`（RFC 3339 日時）とは**別概念**であり、
+> それぞれ独立に更新されます。混同しないでください。
+
 ## GitHub
 
 - リポジトリ: <https://github.com/Seduce0068/gpui-task-manager>（**public**）
