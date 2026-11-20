@@ -1155,6 +1155,18 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - SSE エラー分離・指数バックオフの 30s 上限／成功リセット・console error 0・
   トークン非露出は実ブラウザで確認（wa-regress）。
 
+### メモ — 最終公開監査／CORS実動 2026-11-20
+
+- 最終監査（wb-audit2）: テスト件数 workspace 543（agent 127 / app 111 /
+  core 176 / platform 44 / viewmodel 85）/ web 190 が README/current-state/
+  DESIGN/index と一致。バージョン 0.1.0 が Cargo.toml/CLI/DEB/README で一致。
+  check.sh 17 ゲートが CI 10 ジョブへすべて対応。todo 未完了 0 件。発見なし。
+- CORS 実動（wa-cors2）: フェイク 503 に Retry-After / Expose-Headers /
+  Allow-Origin が揃う。現行 tm-agent のビジー 503 に Expose-Headers 付与。
+  IPv6 [::1] リスナーで CORS 反射 200。不具合 0 件。
+- wa-corslive は途中失敗したため wa-cors2 に範囲を絞って再委譲し完了
+  （AGENTS.md §7 に従い失敗を無視せず再実行）。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
