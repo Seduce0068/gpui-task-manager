@@ -28,9 +28,9 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **519 passed / 0 failed**（tm-core 175 / tm-viewmodel 80 / tm-platform 44 / tm-agent 117 / app 103、2026-11-20 実測） |
+| `cargo test --workspace` | **527 passed / 0 failed**（tm-core 176 / tm-viewmodel 80 / tm-platform 44 / tm-agent 117 / app 110、2026-11-20 実測） |
 | web ユニットテスト | **169 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
-| 最新のテスト追加（2ba4525） | stdout EPIPE（BrokenPipe）／トークン入力検証／XDG_STATE_HOME（相対パス）／CSV 全角文字の数式エスケープ／BOM 付き設定／応答サイズ上限、の 6 件（workspace 509 → 519、web 167 → 169、2026-11-20 実測） |
+| 最新のテスト追加（5b5ac04） | ネイティブ AX role 付与 7 テスト（app 103 → 110）と CSV cpu_percent 2 桁丸め（tm-core 175 → 176）の 8 件（workspace 519 → 527、web 169 不変、2026-11-20 実測）。直近以前は 2ba4525 の 6 件（workspace 509 → 519、web 167 → 169） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
@@ -117,7 +117,7 @@ status: verified
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
   未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
   ゲートを追加（root / web とも）。
-- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（履歴: 143 → 491 → 509、現在値は 519。件数は変動するため README.md「検証状況」を参照）。
+- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（履歴: 143 → 491 → 509 → 519 → 527、現在値は 527。件数は変動するため README.md「検証状況」を参照）。
 
 ## 未解決・今後の候補
 
