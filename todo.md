@@ -836,14 +836,27 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       が persistent な corrupt/save-failed を消す。cross-tab 同期は
       persistent 保護済みなので矛盾。優先度比較またはキュー化＋回帰テスト。
       根拠 wb-state。
-- [ ] 行メニュー表示中に F2 が通り詳細パネルがトグルされる（native の確認
-      ダイアログは F2 を無視）。仕様解釈次第だが、モーダル契約を意図する
-      なら row_menu.is_some() のとき F2/Space/Ctrl+K を無視しテスト固定。
-      根拠 wb-state（speculative）。
-- [ ] web の HTTP スナップショット取得パイプライン（fetch_snapshot_inner（注: fetch_snapshot_inner の実経路は既存の live CDP 実動検証でカバー済み。SSE エラー分岐4件は XB-SSEERR で追加済み、残りは unit モック化の検討課題）
+- [x] 行メニュー表示中に F2 が通り詳細パネルがトグルされる問題を修正。
+      判断: 行メニューを native の確認ダイアログ（app/src/app.rs:672-687 の
+      dialog_first / dialog_command が F2 等を無視）と同等のモーダルとみなす。
+      row_menu.is_some() のとき resolve_web_key が F2(ToggleDetails) /
+      Space(TogglePaused) / Ctrl+K(ReadOnlyNotice) を Swallowed として返し、
+      on_key_down が stop_propagation して無視（隠し textarea の既定動作も
+      防止）。Esc（早期分岐でメニューを閉じる）/ Enter / 矢印のメニュー操作は
+      従来どおり。テスト row_menu_is_modal_for_f2_space_and_ctrl_k_until_esc_closes_it
+      で詳細・status 不変と閉じ後の F2 復帰を固定（web/src/shell.rs）。
+      根拠 wb-state（speculative → confirmed）。
+- [x] web の HTTP スナップショット取得パイプライン（fetch_snapshot_inner（注: fetch_snapshot_inner の実経路は既存の live CDP 実動検証でカバー済み。SSE エラー分岐4件は XB-SSEERR で追加済み、残りは unit モック化の検討課題）
       の loopback 検証・Bearer・401/403 分類・redact ゲート）と agent SSE
       エラーフレーム（warmup 失敗・mutex poison・JSON 変換失敗）が
       カバレッジ 0。実パイプラインのテスト追加を検討。根拠 wa-coverage。
+      YB-FETCH 完了（2026-11-20）: fetch_snapshot_inner から実パイプラインを
+      自由関数 fetch_snapshot_once（HttpClient と世代判定を注入）へ抽出し、
+      loopback 拒否 / Bearer ヘッダ / 401/403/429/5xx の型と固定文言 /
+      8MiB 超 Content-Length の読み取り前拒否 / redact+sanitize ゲート /
+      世代変更によるボディ読み取り中止 / parse・schema・transport 失敗を
+      unit モックで検証。cargo test --lib 181 件 pass、
+      clippy all-targets / wasm pass、agent.rs は fmt 済み。
 
 ### メモ — カバレッジ実測 2026-11-20
 
