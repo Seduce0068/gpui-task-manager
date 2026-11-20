@@ -109,6 +109,17 @@ before relying on it; upstream links for concrete crates are in `NOTICE.md`.
 | Unicode-3.0 (allowed by `deny.toml`) | <https://www.unicode.org/license.txt>; <https://spdx.org/licenses/Unicode-3.0.html> |
 | BSL-1.0 (allowed by `deny.toml`) | <https://www.boost.org/LICENSE_1_0.txt>; <https://spdx.org/licenses/BSL-1.0.html> |
 
+## Software bill of materials (SBOM)
+
+CycloneDX SBOMs are generated as per-target snapshots of the two Cargo
+workspaces: the native workspace is resolved for `x86_64-unknown-linux-gnu`
+and the browser workspace (`web/`) for `wasm32-unknown-unknown`. Each BOM
+contains only the default features and the dependency closure of its own
+target. It therefore does **not** cover every target audited by `deny.toml`
+(Windows, macOS, aarch64, ...) or optional features. To inspect a different
+target, regenerate the SBOM for that target or consult `cargo deny check` /
+`cargo metadata --locked --filter-platform <target>`.
+
 ## Source
 
 <https://github.com/Seduce0068/gpui-task-manager>
