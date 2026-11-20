@@ -35,7 +35,7 @@ use std::time::Duration;
 use futures::future::Either;
 use futures::{AsyncRead, AsyncReadExt as _};
 use gpui::BackgroundExecutor;
-use gpui::http_client::http::{Request, header};
+use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
 use tm_core::{SystemSnapshot, WIRE_SCHEMA_VERSION};
@@ -118,6 +118,13 @@ const TRANSIENT_RETRY_GUIDANCE: &str =
 /// the error path reads no body, so no request-derived text can reach the UI.
 const SERVICE_UNAVAILABLE_GUIDANCE: &str = "エージェントの同時接続数が上限に達しました。自動で再試行します。解消しない場合はエージェントを再起動してください";
 
+/// Largest `Retry-After` delta-seconds honoured from an agent response.
+///
+/// A numeric hint is bounded here so a broken agent cannot park the poll
+/// indefinitely. Only a parsed number is ever carried forward; the raw header
+/// text never reaches the UI, the DOM proof or a log line (WA-RETRY).
+const MAX_RETRY_AFTER_SECS: u64 = 30;
+
 /// Fixed guidance for a non-loopback endpoint.
 const INVALID_ENDPOINT_ERROR: &str = "エージェントの接続先は loopback の http URL のみ許可されます";
 
@@ -136,6 +143,13 @@ pub enum FetchError {
     Forbidden,
     /// Any other non-success HTTP status.
     Http(u16),
+    /// A `429` / `5xx` response that also supplied a numeric `Retry-After`.
+    ///
+    /// The existing [`FetchError::Http`] variant stays untouched: all variant-
+    /// based decisions (`reconnect=`, transient guidance) classify this one the
+    /// same way, and only the poll reads the bounded numeric hint to space its
+    /// next attempt. No header text is stored (WA-RETRY).
+    HttpRetryAfter { status: u16, retry_after_secs: u64 },
     /// The whole fetch exceeded [`FETCH_TIMEOUT`].
     Timeout,
     /// A second fetch was rejected by the single-flight gate.
@@ -175,6 +189,10 @@ impl fmt::Display for FetchError {
                 write!(f, "エージェントが HTTP {code} を返しました。{TRANSIENT_RETRY_GUIDANCE}")
             }
             Self::Http(code) => write!(f, "エージェントが HTTP {code} を返しました"),
+            // Delegate to the existing status wording so the fixed strings,
+            // redaction boundary and DOM proof text stay byte-for-byte identical
+            // to the equivalent `Http(code)` failure (WA-RETRY).
+            Self::HttpRetryAfter { status, .. } => fmt::Display::fmt(&Self::Http(*status), f),
             Self::Timeout => f.write_str(&fetch_timeout_error()),
             Self::Busy => f.write_str(FETCH_BUSY_ERROR),
             Self::BodyAborted => f.write_str(BODY_ABORTED_ERROR),
@@ -211,6 +229,53 @@ fn status_error(code: u16) -> FetchError {
         401 => FetchError::Auth,
         403 => FetchError::Forbidden,
         other => FetchError::Http(other),
+    }
+}
+
+/// Parses the numeric `Retry-After` (delta-seconds) form from a response.
+///
+/// Deliberately ignores the HTTP-date form: the loopback agent produces a
+/// small integer, and accepting wall-clock strings from the wire would add a
+/// parser plus a trust boundary for no benefit. Non-numeric, zero and
+/// oversized values are discarded or clamped to [`MAX_RETRY_AFTER_SECS`], so no
+/// agent-supplied text can steer the poll and a broken agent cannot park it
+/// forever (WA-RETRY).
+fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {
+    let raw = headers.get(header::RETRY_AFTER)?.to_str().ok()?.trim();
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<u64>()
+        .ok()
+        .filter(|&secs| secs > 0)
+        .map(|secs| secs.min(MAX_RETRY_AFTER_SECS))
+}
+
+/// Maps a non-success status *and its headers* to a typed error.
+///
+/// Calls [`status_error`] for every other case, so the 401 / 403 contract and
+/// the plain `FetchError::Http` variant are unchanged. Only a transient HTTP
+/// status with a parseable `Retry-After` gains the numeric hint (WA-RETRY).
+fn status_error_with_headers(code: u16, headers: &HeaderMap) -> FetchError {
+    match (code, retry_after_secs(headers)) {
+        (429 | 500..=599, Some(secs)) => FetchError::HttpRetryAfter {
+            status: code,
+            retry_after_secs: secs,
+        },
+        _ => status_error(code),
+    }
+}
+
+/// Numeric `Retry-After` hint carried by a transient HTTP failure, if any.
+///
+/// Only the poll uses this to space its next attempt; the SSE endpoint keeps
+/// its own fixed cooldown. No header text is exposed to callers (WA-RETRY).
+pub(crate) fn fetch_retry_after(error: &FetchError) -> Option<Duration> {
+    match error {
+        FetchError::HttpRetryAfter {
+            retry_after_secs, ..
+        } => Some(Duration::from_secs(*retry_after_secs)),
+        _ => None,
     }
 }
 
@@ -566,8 +631,9 @@ where
         // `401` invalidates the token and is the only reconnect trigger;
         // `403` is a rejected Origin and gets its own guidance, so the DOM
         // proof's `reconnect=` flag stays false for it (C2-WEB).
-        // No body is read at all, so the error path stays cheap.
-        return Err(status_error(code));
+        // No body is read at all, so the error path stays cheap. A numeric
+        // `Retry-After` on 429 / 5xx is carried to the poll as bounded data.
+        return Err(status_error_with_headers(code, response.headers()));
     }
 
     // Earliest possible abort: a declared oversized body is rejected from
@@ -914,7 +980,10 @@ where
     .await?;
     let status = response.status();
     if !status.is_success() {
-        return Err(status_error(status.as_u16()));
+        return Err(status_error_with_headers(
+            status.as_u16(),
+            response.headers(),
+        ));
     }
     // A long-lived stream normally has no Content-Length; if one is declared
     // and already over the cap, reject it before pulling any bytes.
@@ -1095,6 +1164,82 @@ mod tests {
         );
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("***"));
+    }
+
+    #[test]
+    fn retry_after_header_parses_only_bounded_delta_seconds() {
+        let cases = [
+            ("10", Some(10)),
+            (" 7 ", Some(7)),
+            ("30", Some(30)),
+            ("3600", Some(MAX_RETRY_AFTER_SECS)),
+            ("0", None),
+            ("-5", None),
+            ("10.5", None),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", None),
+            ("", None),
+            ("abc", None),
+        ];
+        for (raw, expected) in cases {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::RETRY_AFTER,
+                gpui::http_client::http::HeaderValue::from_str(raw).unwrap(),
+            );
+            assert_eq!(
+                retry_after_secs(&headers),
+                expected,
+                "header {raw:?} must be classified consistently"
+            );
+        }
+        assert_eq!(retry_after_secs(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn transient_status_with_retry_after_carries_only_bounded_data() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::RETRY_AFTER,
+            gpui::http_client::http::HeaderValue::from_static("10"),
+        );
+
+        let busy = status_error_with_headers(503, &headers);
+        assert_eq!(
+            busy,
+            FetchError::HttpRetryAfter {
+                status: 503,
+                retry_after_secs: 10,
+            }
+        );
+        assert_eq!(fetch_retry_after(&busy), Some(Duration::from_secs(10)));
+        // Fixed wording and redaction contract stay identical to plain 503.
+        assert_eq!(busy.to_string(), status_error(503).to_string());
+        assert!(!requires_reconnect(&busy));
+        assert_eq!(
+            redact_token(&busy.to_string(), Some("super-secret-agent-token")),
+            busy.to_string()
+        );
+
+        let throttled = status_error_with_headers(429, &headers);
+        assert!(throttled.to_string().contains("HTTP 429"));
+        assert_eq!(fetch_retry_after(&throttled), Some(Duration::from_secs(10)));
+
+        // 401 / 403, non-transient statuses and missing headers are unchanged.
+        for code in [401, 403, 400, 404] {
+            assert_eq!(
+                status_error_with_headers(code, &headers),
+                status_error(code)
+            );
+        }
+        assert_eq!(
+            status_error_with_headers(200, &headers),
+            FetchError::Http(200)
+        );
+        assert_eq!(
+            status_error_with_headers(503, &HeaderMap::new()),
+            FetchError::Http(503)
+        );
+        assert_eq!(fetch_retry_after(&FetchError::Http(503)), None);
     }
 
     #[test]
@@ -2114,6 +2259,7 @@ mod tests {
         calls: Arc<std::sync::Mutex<Vec<RecordedFetch>>>,
         status: u16,
         content_length: Option<String>,
+        retry_after: Option<String>,
         body: Vec<u8>,
         chunk: usize,
         expected_auth: Option<String>,
@@ -2148,6 +2294,7 @@ mod tests {
             });
             let status = self.status;
             let content_length = self.content_length.clone();
+            let retry_after = self.retry_after.clone();
             let body = self.body.clone();
             let chunk = self.chunk;
             let reads = Arc::clone(&self.reads);
@@ -2167,6 +2314,9 @@ mod tests {
                 let mut builder = gpui::http_client::http::Response::builder().status(status);
                 if let Some(length) = content_length {
                     builder = builder.header(header::CONTENT_LENGTH, length);
+                }
+                if let Some(hint) = retry_after {
+                    builder = builder.header(header::RETRY_AFTER, hint);
                 }
                 builder
                     .body(AsyncBody::from_reader(reader))
@@ -2189,6 +2339,7 @@ mod tests {
             calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             status,
             content_length: None,
+            retry_after: None,
             body,
             chunk: 8,
             expected_auth: token.map(|token| format!("Bearer {token}")),
@@ -2309,6 +2460,28 @@ mod tests {
             assert!(calls[0].uri_is_snapshot);
             assert!(calls[0].bearer_matches);
         }
+    }
+
+    #[test]
+    fn polling_retry_after_header_reaches_the_typed_error() {
+        let (config, mut client, reads) =
+            fake_fetch_client(Some("secret-agent-token"), 503, Vec::new());
+        client.retry_after = Some("10".to_string());
+        let error = run_fetch(&config, &client).expect_err("503 must be an error");
+        assert_eq!(
+            error,
+            FetchError::HttpRetryAfter {
+                status: 503,
+                retry_after_secs: 10,
+            }
+        );
+        assert_eq!(fetch_retry_after(&error), Some(Duration::from_secs(10)));
+        assert_eq!(error.to_string(), status_error(503).to_string());
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "the error path must not read the body"
+        );
     }
 
     #[test]
