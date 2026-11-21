@@ -46,10 +46,17 @@ pub fn strip_bom(text: &str) -> &str {
 /// [`Settings::normalized`] always forces the current version; storage must not
 /// do that or a newer document would be downgraded on the next save (R2-D01).
 pub fn clamp_interval_only(mut settings: Settings) -> Settings {
-    settings.interval_ms = settings.interval_ms.clamp(
-        MIN_REFRESH_INTERVAL.as_millis() as u64,
-        MAX_REFRESH_INTERVAL.as_millis() as u64,
-    );
+    // A document from a future schema may legitimately use a wider interval
+    // range. Clamping it to this build's bounds and then saving would persist a
+    // version:N file whose value no longer means what N expects (R1-FWDCOMPAT).
+    // Leave future-version values untouched; the current build treats them as
+    // opaque for this field only.
+    if settings.version <= SETTINGS_VERSION {
+        settings.interval_ms = settings.interval_ms.clamp(
+            MIN_REFRESH_INTERVAL.as_millis() as u64,
+            MAX_REFRESH_INTERVAL.as_millis() as u64,
+        );
+    }
     settings
 }
 
@@ -419,23 +426,35 @@ mod tests {
 
     #[test]
     fn golden_clamp_interval_only_preserves_the_stored_version() {
+        // Current-schema values are clamped into the supported range.
         let low = Settings {
-            version: 9,
+            version: SETTINGS_VERSION,
             interval_ms: 1,
             ..Settings::default()
         };
         let clamped = clamp_interval_only(low);
-        assert_eq!(clamped.version, 9);
+        assert_eq!(clamped.version, SETTINGS_VERSION);
         assert_eq!(clamped.interval_ms, MIN_REFRESH_INTERVAL.as_millis() as u64);
 
         let high = Settings {
-            version: 9,
+            version: SETTINGS_VERSION,
             interval_ms: u64::MAX,
             ..Settings::default()
         };
         let clamped = clamp_interval_only(high);
-        assert_eq!(clamped.version, 9);
+        assert_eq!(clamped.version, SETTINGS_VERSION);
         assert_eq!(clamped.interval_ms, MAX_REFRESH_INTERVAL.as_millis() as u64);
+
+        // A future schema may define a wider range: leave its value verbatim
+        // so saving does not silently reinterpret it under v2 bounds.
+        let future = Settings {
+            version: 9,
+            interval_ms: 20_000,
+            ..Settings::default()
+        };
+        let kept = clamp_interval_only(future);
+        assert_eq!(kept.version, 9);
+        assert_eq!(kept.interval_ms, 20_000);
     }
 
     #[test]
