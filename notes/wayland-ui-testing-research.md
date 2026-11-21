@@ -83,7 +83,7 @@ unsafe 禁止規約と互換。zbus の `OwnedFd` は 2 段で `UnixStream` に�
 libei/ポータル経由、KWin Scripting backend、`prime` による常駐化）と `eitype` 0.2.2 も存在する。
 
 - 出典（一次）: https://crates.io/api/v1/crates/reis/0.7.1 、https://docs.rs/crate/reis/0.7.1/source/src/lib.rs:19 、https://docs.rs/zbus/6.5.0/zbus/struct.OwnedFd.html （取得 2026-11-22T00:47:01+09:00）
-- 出典（コミュニティ）: https://raw.githubusercontent.com/cushycush/wdotool/main/README.md 、https://raw.githubusercontent.com/Adam-D-Lewis/eitype/main/README.md （取得 2026-11-22T00:40:00+09:00）
+- 出典（コミュニティ）: `https://raw.githubusercontent.com/cushycush/wdotool/main/README.md` 、`https://raw.githubusercontent.com/Adam-D-Lewis/eitype/main/README.md` （取得 2026-11-22T00:40:00+09:00）
 
 ### 6. 画面取得は KWin ScreenShot2 または spectacle
 
@@ -122,7 +122,7 @@ v1.0.0 以降 is mandatory な `ydotoold` が `/dev/uinput` への書き込み�
 本環境の `/dev/uinput` は `crw------- root root` で、ユーザー `koppe` は `input` グループに
 属していない。apt 候補は 1.0.4-3。導入には権限昇格／udev 設定が必要。
 
-- 出典（一次）: https://raw.githubusercontent.com/ReimuNotMoe/ydotool/master/README.md#L77,L83,L91 （取得 2026-11-22T00:34:45+09:00）
+- 出典（一次）: `https://raw.githubusercontent.com/ReimuNotMoe/ydotool/master/README.md#L77,L83,L91` （取得 2026-11-22T00:34:45+09:00）
 - 出典（ローカル）: `ls -l /dev/uinput`, `id`, `apt-cache policy ydotool`（取得 2026-11-22T00:34:44+09:00）
 
 ## 推奨される次の一手（優先順）
