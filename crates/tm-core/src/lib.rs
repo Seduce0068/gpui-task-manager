@@ -54,7 +54,10 @@ pub use query::{
     filter_and_sort, flatten_process_tree, normalise_percent, Filter, ProcessTreeRow,
     SortDirection, SortKey, SortSpec,
 };
-pub use wire::{SnapshotEnvelope, DEFAULT_PORT, FORBIDDEN_GUIDANCE, MAX_RETRY_AFTER_SECS};
+pub use wire::{
+    SnapshotEnvelope, DEFAULT_PORT, FORBIDDEN_GUIDANCE, MAX_RETRY_AFTER_SECS,
+    SERVICE_UNAVAILABLE_REASON,
+};
 
 /// Version of the JSON wire schema used between the native agent and the
 /// browser shell. Bump it whenever a field is removed or its meaning changes.

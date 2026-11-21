@@ -1406,27 +1406,27 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       DEFAULT_SNAPSHOT_LIMIT=500 / MAX_SNAPSHOT_LIMIT / DEFAULT_PORT=8787）が
       agent・USAGE・web・テストで手書き複製され、片側変更が他側で 404／
       案内乖離を招く。tm_core::wire へ追加し re-export。根拠 R1-RESIDUAL。
-- [ ] ErrorCode::as_str と全 variant 一覧が agent/src/main.rs と
+- [x] ErrorCode::as_str と全 variant 一覧が agent/src/main.rs と（a9b4ea4 で実装済み）
       args::USAGE とそのテストの三方で手動同期。variant 追加時に片方を
       忘れても全テストが通る。wire へ移し USAGE を同じ配列から生成、
       または交叉検証テスト。根拠 R1-RESIDUAL。
-- [ ] Web の RECONNECT_GUIDANCE / ONBOARDING_STEPS が「既定は XDG state
+- [x] Web の RECONNECT_GUIDANCE / ONBOARDING_STEPS が「既定は XDG state（a9b4ea4 で実装済み）
       配下」と無条件に案内し、Windows の自動生成例外（auth.rs:51）と
       矛盾。Windows 利用者が存在しない場所を探す。「--token-file で指定
       した場所（Unix 自動生成時は XDG state）」等へ。根拠 R1-RESIDUAL。
 
 ### 優先度: 低 — バックログ補充コンボ R6 2026-11-21
 
-- [ ] private_dir が agent/app で逐語複製（意図済みだがドリフト検出が
+- [x] private_dir が agent/app で逐語複製（意図済みだがドリフト検出が（a9b4ea4 で実装済み）
       コピー内部に閉じている）。tm-platform へ一本化するか、両ファイルを
       比較する CI ガードを追加し意図を明文化。根拠 R1-RESIDUAL。
-- [ ] tm_core::wire / tm_viewmodel::settings_policy が DESIGN §2.2 の
+- [x] tm_core::wire / tm_viewmodel::settings_policy が DESIGN §2.2 の（a9b4ea4 で実装済み）
       crate 役割表と §12.1 の AC-12 マトリクスに未反映。単一起源を
       ドキュメント化し、将来の再複製を防止。根拠 R1-RESIDUAL。
-- [ ] notes/current-state.md:135 が strings 開発パス検査を「未導入」と
+- [x] notes/current-state.md:135 が strings 開発パス検査を「未導入」と（a9b4ea4 で実装済み）
       記載するが、ci.yml に 3 箇所実装済み。「実装済み」へ更新し
       SHA256SUMS 未同梱のみ未着手として残す。根拠 R1-RESIDUAL。
-- [ ] 503 ビジー文言が agent 2 箇所（通常/SSE）と web 固定案内で
+- [x] 503 ビジー文言が agent 2 箇所（通常/SSE）と web 固定案内で（SERVICE_UNAVAILABLE_REASON を wire 化し交叉検証）
       手動同期。SERVICE_UNAVAILABLE_GUIDANCE を wire へ移すか、
       共通定数から導出＋cross-crate pin テスト。根拠 R1-RESIDUAL。
 

@@ -1476,7 +1476,7 @@ mod tests {
         // 503 names the real cause (the agent's concurrent-connection cap) and
         // promises the automatic retry the sampler actually performs.
         let busy = status_error(503).to_string();
-        assert!(busy.contains("同時接続数が上限に達しました"), "{busy}");
+        assert!(busy.contains(tm_core::SERVICE_UNAVAILABLE_REASON), "{busy}");
         assert!(busy.contains("自動で再試行します"), "{busy}");
         assert!(busy.contains("再起動してください"), "{busy}");
 

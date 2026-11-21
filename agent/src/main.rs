@@ -1466,7 +1466,7 @@ fn spawn_connection(
         let mut response = http::Response::json(
             503,
             "Service Unavailable",
-            error_body(ErrorCode::Busy, "同時接続数が上限に達しました"),
+            error_body(ErrorCode::Busy, tm_core::SERVICE_UNAVAILABLE_REASON),
         );
         // This rejection happens before the request head is read, so there is
         // no Origin to reflect (no Access-Control-Allow-Origin here). The
@@ -2045,7 +2045,10 @@ where
         let mut response = http::Response::json(
             503,
             "Service Unavailable",
-            error_body(ErrorCode::Busy, "ストリーミング接続数が上限に達しました"),
+            error_body(
+                ErrorCode::Busy,
+                "ストリーミング同時接続数が上限に達しました",
+            ),
         );
         // Same busy-hint contract as the MAX_CONNECTIONS 503: the numeric
         // `Retry-After` is emitted even without an Origin, and its CORS
@@ -4718,6 +4721,27 @@ mod tests {
         let outcome = workers.join_all(TEST_JOIN_TIMEOUT);
         assert!(!outcome.timed_out && outcome.panicked == 0, "{outcome:?}");
         assert_eq!(outcome.joined, expected_workers);
+    }
+
+    #[test]
+    fn busy_bodies_share_the_wire_reason() {
+        // Both 503 call sites must agree with the single wire reason that the
+        // browser hint also quotes. `concat!` cannot expand a const, so this
+        // cross-check is the drift guard instead of duplicating the literal.
+        let ordinary = serde_json::from_slice::<serde_json::Value>(&error_body(
+            ErrorCode::Busy,
+            tm_core::SERVICE_UNAVAILABLE_REASON,
+        ))
+        .expect("ordinary busy body");
+        assert_eq!(ordinary["message"], tm_core::SERVICE_UNAVAILABLE_REASON);
+        let stream = serde_json::from_slice::<serde_json::Value>(&error_body(
+            ErrorCode::Busy,
+            "ストリーミング同時接続数が上限に達しました",
+        ))
+        .expect("stream busy body");
+        assert!(stream["message"]
+            .as_str()
+            .is_some_and(|text| text.ends_with(tm_core::SERVICE_UNAVAILABLE_REASON)));
     }
 
     #[test]
