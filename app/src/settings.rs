@@ -65,32 +65,20 @@ use std::sync::Mutex;
 
 pub use tm_viewmodel::SETTINGS_VERSION as CURRENT_VERSION;
 // Re-exported so callers can use one canonical type from this module.
-pub use tm_viewmodel::Settings;
+pub use tm_viewmodel::{Settings, SettingsNotice};
+// The schema policy (size cap, backup limit, BOM handling, clamping, version
+// interpretation, parsing, three-way merge and notice shape) has one definition
+// in `tm_viewmodel::settings_policy`, shared with the browser shell. This module
+// keeps only the I/O medium, the fixed notice wording and the storage guards.
+use tm_viewmodel::{
+    merged_map_with_baseline, parse_document, strip_bom, SettingsDocument, CORRUPT_BACKUP_LIMIT,
+    MAX_SETTINGS_BYTES,
+};
 
 /// Directory name used under the platform configuration root.
 const APP_DIR: &str = "gpui-task-manager";
 /// Settings file name.
 const FILE_NAME: &str = "settings.json";
-/// Maximum number of corrupt backups kept on disk. Older ones are pruned after
-/// a successful backup (H1-BACKUP).
-const CORRUPT_BACKUP_LIMIT: usize = 5;
-/// Largest settings document this build will read (4 MiB).
-///
-/// A valid settings file is a handful of keys (well under 1 KiB). Refusing a
-/// much larger file keeps a corrupt or hostile document from being loaded into
-/// memory unbounded; it is classified as corrupt, backed up and replaced by
-/// defaults exactly like malformed JSON (PC-CSVBOM).
-const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
-
-/// Removes one leading UTF-8 BOM (EF BB BF, decoded as U+FEFF).
-///
-/// Windows editors commonly prepend a BOM to JSON files. `serde_json` rejects a
-/// leading U+FEFF, which would make an otherwise valid settings file look
-/// corrupt and get backed up and replaced by defaults (PC-CSVBOM). Strip exactly
-/// one BOM at the start; a BOM anywhere else stays a parse error.
-fn strip_bom(text: &str) -> &str {
-    text.strip_prefix('\u{feff}').unwrap_or(text)
-}
 
 /// Reads at most [`MAX_SETTINGS_BYTES`] + 1 bytes and validates UTF-8.
 ///
@@ -127,47 +115,12 @@ pub const NOTICE_UNREADABLE: &str = "保存された設定を読み込めませ�
 pub const NOTICE_SAVE_FAILED: &str =
     "設定を保存できませんでした。表示設定はこのセッション中のみ有効です。";
 
-/// A configuration notice safe to pass to `Dashboard::set_persistent_status`.
-///
-/// `text` is one of the fixed constants above: it never contains a file path,
-/// host name, token or raw parser error, so it can also be copied into the DOM
-/// without weakening the redaction contract.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SettingsNotice {
-    /// Redacted status-bar text.
-    pub text: String,
-    /// Always `true`: a settings problem is an error.
-    pub is_error: bool,
-    /// Always `true`: a startup notice must survive the next sample.
-    pub persistent: bool,
-}
-
-impl SettingsNotice {
-    fn new(text: &'static str) -> Self {
-        Self {
-            text: text.to_string(),
-            is_error: true,
-            persistent: true,
-        }
-    }
-}
-
 fn corruption_notice(backed_up: bool) -> SettingsNotice {
     SettingsNotice::new(if backed_up {
         NOTICE_BACKED_UP
     } else {
         NOTICE_BACKUP_FAILED
     })
-}
-
-/// Parsed settings plus the untouched JSON object they came from.
-///
-/// Keeping `raw` is what makes unknown fields and a future `version` survive a
-/// later save instead of being dropped by the older shell (R2-D01 / R5-D02).
-#[derive(Clone, Debug)]
-pub(crate) struct SettingsDocument {
-    pub(crate) settings: Settings,
-    pub(crate) raw: serde_json::Map<String, serde_json::Value>,
 }
 
 // Process-wide state for the load -> save sequence performed at startup. The
@@ -287,106 +240,6 @@ fn config_dir_from(
     }
 
     usable_config_root(home).map(|home| home.join(".config").join(APP_DIR))
-}
-
-/// Clamps into the supported range without rewriting the schema `version`.
-///
-/// `Settings::normalized()` always forces the current version; storage must not
-/// do that or a newer file would be downgraded on the next save (R2-D01).
-fn clamped(mut settings: Settings) -> Settings {
-    settings.interval_ms = settings.interval_ms.clamp(
-        tm_viewmodel::MIN_REFRESH_INTERVAL.as_millis() as u64,
-        tm_viewmodel::MAX_REFRESH_INTERVAL.as_millis() as u64,
-    );
-    settings
-}
-
-/// Interprets a persisted `version` under the compatibility policy.
-///
-/// Only a non-negative integer that fits in `u32` is comparable here. Other
-/// JSON forms are opaque: they stay in `raw` and [`merged_map_with_baseline`] writes them back
-/// verbatim rather than replacing them with a version this build understands
-/// (R2X-D3).
-fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
-    value
-        .and_then(|value| value.as_u64())
-        .and_then(|version| u32::try_from(version).ok())
-}
-
-/// Parses a persisted JSON document, keeping its raw object for round-tripping.
-///
-/// An older `version` is upgraded to the current schema, a newer one is kept.
-/// Unknown fields stay in `raw` and are re-emitted by [`merged_map_with_baseline`].
-fn parse_document(text: &str) -> Option<SettingsDocument> {
-    let mut value: serde_json::Value = serde_json::from_str(strip_bom(text)).ok()?;
-    let raw = value.as_object()?.clone();
-    let stored_version = interpretable_version(raw.get("version"));
-
-    // `Settings` cannot represent a version it does not know (e.g. a u64 from a
-    // future schema), but that must not make the whole file look corrupt.
-    if let Some(object) = value.as_object_mut() {
-        object.insert("version".to_string(), serde_json::json!(CURRENT_VERSION));
-    }
-    let mut settings: Settings = serde_json::from_value(value).ok()?;
-    settings = clamped(settings);
-    settings.version = stored_version
-        .unwrap_or(CURRENT_VERSION)
-        .max(CURRENT_VERSION);
-    Some(SettingsDocument { settings, raw })
-}
-
-/// Three-way merge of the JSON object to save.
-///
-/// `baseline` is the raw object observed at this instance's last load/save,
-/// `settings` is the caller's current view ("ours") and `raw` is the freshest
-/// object read from the destination ("theirs"). A known field whose value still
-/// equals the baseline was not edited here, so the concurrent value on disk is
-/// kept; a field that differs is written from `settings` (a same-field conflict
-/// is last-writer-wins). Unknown fields come from `raw`, and `version` keeps its
-/// existing max/verbatim policy.
-fn merged_map_with_baseline(
-    settings: &Settings,
-    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
-    raw: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut map = raw.cloned().unwrap_or_default();
-    let known = serde_json::to_value(clamped(settings.clone()))
-        .expect("Settings always serializes to a JSON object");
-    let serde_json::Value::Object(known) = known else {
-        return map;
-    };
-    // No earlier load/save means there is nothing to diff against: treat every
-    // known field as edited, which reproduces the old overwrite-all behaviour.
-    let empty = serde_json::Map::new();
-    let base = baseline.unwrap_or(&empty);
-    for (key, value) in known {
-        if key == "version" {
-            match interpretable_version(map.get(&key)) {
-                // Comparable numeric version: upgrade older values, never
-                // downgrade newer ones.
-                Some(stored) => {
-                    let current = value.as_u64().unwrap_or(0);
-                    map.insert(key, serde_json::json!((stored as u64).max(current)));
-                }
-                // No version at all: record the version this build writes.
-                None if !map.contains_key(&key) => {
-                    map.insert(key, value);
-                }
-                // Opaque or out-of-u32-range value: keep it verbatim so a newer
-                // shell still recognises its own schema (R2X-D3).
-                None => {}
-            }
-            continue;
-        }
-        // Unchanged relative to our base: keep what another instance wrote.
-        // If the destination lost the field entirely, write ours so a newer
-        // field is not dropped when migrating an older file.
-        if base.get(&key).is_some_and(|old| old == &value) && map.contains_key(&key) {
-            continue;
-        }
-        map.insert(key, value);
-    }
-    map
 }
 
 /// Test-only shorthand for the overwrite-all case (no baseline available).
@@ -1634,6 +1487,34 @@ mod tests {
             reloaded.raw.get("future_flag"),
             Some(&serde_json::json!({"nested": [1, 2]}))
         );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn save_restores_a_known_field_dropped_by_the_destination() {
+        // The shared merge writes our value back when a known field disappears
+        // from the destination and still equals our last observed baseline
+        // (C2-SETTINGSSHARE). Exercise it through the real writer.
+        let path = temporary_path("missing-field-restore");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        let initial = r#"{"version":9,"interval_ms":1500,"theme":"Light","future_flag":1}"#;
+        fs::write(&path, initial).expect("write settings");
+        let document = load_document_from(&path).expect("load document");
+
+        let mut dropped: serde_json::Value = serde_json::from_str(initial).expect("parse");
+        dropped.as_object_mut().expect("object").remove("theme");
+        fs::write(&path, dropped.to_string()).expect("write document with dropped field");
+
+        // This instance never edited `theme`, so the dropped key is restored
+        // from ours rather than silently resetting to the default.
+        let saved = save_to_path_with_baseline(&path, &document.settings, Some(&document.raw))
+            .expect("save merged settings");
+        assert_eq!(saved.get("theme"), Some(&serde_json::json!("Light")));
+
+        let reloaded = load_document_from(&path).expect("reload document");
+        assert_eq!(reloaded.settings.theme, tm_viewmodel::Theme::Light);
+        assert_eq!(reloaded.settings.version, 9);
+        assert_eq!(reloaded.raw.get("future_flag"), Some(&serde_json::json!(1)));
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }

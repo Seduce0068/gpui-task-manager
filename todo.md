@@ -1301,10 +1301,10 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] web クレートの MSRV 宣言 (rust-version 1.95) が CI で検証されていない。（R6 coding で実装済み: 521e294）
       msrv-1-95 ジョブは workspace のみ。web の wasm check を 1.95 で追加
       するか、宣言から検証済みの主張を削除。根拠 R1-CF01。
-- [ ] ワイヤ型/エラー契約 (SnapshotEnvelope, ErrorCode, 固定ガイダンス) が
+- [x] ワイヤ型/エラー契約 (SnapshotEnvelope, ErrorCode, 固定ガイダンス) が（tm-core::wire / tm-viewmodel::settings_policy へ集約）
       agent と web で手作業複製され共有クレートが無い。tm-core に wire
       モジュールを設け単一定義化。根拠 R1-AR01。
-- [ ] 設定永続化ポリシー (version互換/rawマージ/破損隔離/4MiB/BOM/保持5)
+- [x] 設定永続化ポリシー (version互換/rawマージ/破損隔離/4MiB/BOM/保持5)（tm-core::wire / tm-viewmodel::settings_policy へ集約）
       が app と web で再実装され契約が分離しうる。共有 policy へ抽出。
       根拠 R1-AR01。
 

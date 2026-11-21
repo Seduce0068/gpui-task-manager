@@ -21,9 +21,15 @@ use tm_core::{
 
 pub mod filter_input;
 pub mod settings;
+pub mod settings_policy;
 
 pub use filter_input::{EditOutcome, FilterInput};
 pub use settings::{Settings, Theme, SETTINGS_VERSION};
+pub use settings_policy::{
+    clamp_interval_only, interpretable_version, merge_version, merged_map_with_baseline,
+    parse_document, strip_bom, SettingsDocument, SettingsNotice, CORRUPT_BACKUP_LIMIT,
+    MAX_SETTINGS_BYTES,
+};
 
 /// Lowest refresh interval the UI accepts (250 ms).
 pub const MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(250);

@@ -40,6 +40,7 @@ use serde_json::json;
 use tm_core::demo::DemoProbe;
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
+use tm_core::FORBIDDEN_GUIDANCE;
 use tm_platform::NativeProbe;
 
 use telemetry::{AgentError, ExitCategory, Level, Metrics, RequestTrace};
@@ -138,17 +139,6 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// consecutive accept errors (the first one is always logged).
 const ACCEPT_LOG_EVERY: u32 = 16;
 
-/// User-facing body for every `403`, byte-identical to the Web shell's
-/// `FORBIDDEN_GUIDANCE` (R2-AUTHMSG).
-///
-/// The old per-branch strings ("Host ヘッダがループバックではありません",
-/// "許可されていない Origin です", ...) described internal request checks a
-/// browser user cannot act on. One static string also guarantees no request-
-/// derived Host/Origin value is ever echoed back into the body. The wire
-/// contract is unchanged: `code` stays `forbidden`.
-const FORBIDDEN_GUIDANCE: &str =
-    "別ホスト／別オリジンからのアクセスはサポートしていません。アプリとブラウザを同一ホストで起動してください";
-
 /// Warning emitted whenever `--token` is present on the command line.
 ///
 /// `/proc/<pid>/cmdline` is world-readable by default, so the credential is
@@ -243,13 +233,12 @@ fn emit_auth_denied(request_id: u64, reason: &'static str, path: &str) {
 }
 
 /// Wire envelope returned by `/api/v1/snapshot` and by `--once`.
-#[derive(Serialize)]
-struct SnapshotEnvelope<'a> {
-    schema_version: u32,
-    /// Number of processes in the machine, before `?limit=` truncation.
-    total_process_count: usize,
-    snapshot: &'a SystemSnapshot,
-}
+///
+/// The wire shape lives once in [`tm_core::wire::SnapshotEnvelope`]; the agent
+/// only picks the borrowed `S = &SystemSnapshot` instantiation so a snapshot is
+/// never cloned on its way to the response body. All construction sites and
+/// `serde` derive behaviour are unchanged.
+type SnapshotEnvelope<'a> = tm_core::wire::SnapshotEnvelope<&'a SystemSnapshot>;
 
 /// Wire body returned by `/healthz`.
 #[derive(Serialize)]

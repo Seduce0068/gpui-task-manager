@@ -38,7 +38,7 @@ use gpui::BackgroundExecutor;
 use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
-use tm_core::{SystemSnapshot, WIRE_SCHEMA_VERSION};
+use tm_core::{MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION};
 
 /// Number of processes requested from the agent.
 ///
@@ -84,8 +84,9 @@ const SIZE_LIMIT_ERROR: &str = "エージェント応答がサイズ上限を超
 /// text with no token, endpoint, hostname or agent-supplied data. The agent's
 /// allowed origins are hard-coded to loopback with no user-facing setting, so
 /// the text describes the actual constraint instead of asking for a change
-/// the user cannot make.
-pub const FORBIDDEN_GUIDANCE: &str = "別ホスト／別オリジンからのアクセスはサポートしていません。アプリとブラウザを同一ホストで起動してください";
+/// the user cannot make. Defined once in `tm_core::wire` and shared with the
+/// agent; re-exported here because the shell asserts on this path.
+pub use tm_core::FORBIDDEN_GUIDANCE;
 
 /// Fixed, redact-safe guidance for an authentication failure (`401`).
 ///
@@ -117,13 +118,6 @@ const TRANSIENT_RETRY_GUIDANCE: &str =
 /// is exactly the `body.message` cause. Kept static instead of echoing the body:
 /// the error path reads no body, so no request-derived text can reach the UI.
 const SERVICE_UNAVAILABLE_GUIDANCE: &str = "エージェントの同時接続数が上限に達しました。自動で再試行します。解消しない場合はエージェントを再起動してください";
-
-/// Largest `Retry-After` delta-seconds honoured from an agent response.
-///
-/// A numeric hint is bounded here so a broken agent cannot park the poll
-/// indefinitely. Only a parsed number is ever carried forward; the raw header
-/// text never reaches the UI, the DOM proof or a log line (WA-RETRY).
-const MAX_RETRY_AFTER_SECS: u64 = 30;
 
 /// Fixed guidance for a non-loopback endpoint.
 const INVALID_ENDPOINT_ERROR: &str = "エージェントの接続先は loopback の http URL のみ許可されます";
@@ -314,11 +308,25 @@ impl AgentConfig {
 }
 
 /// Wire envelope returned by `/api/v1/snapshot` and by SSE `snapshot` events.
+///
+/// The wire shape is defined once in [`tm_core::wire::SnapshotEnvelope`]. This
+/// thin newtype only attaches the Web-side `into_response` behaviour without
+/// changing the shell's call sites (which are outside this module's scope);
+/// `#[serde(transparent)]` delegates deserialisation to the shared type, so the
+/// accepted JSON bytes are unchanged. [`std::ops::Deref`] keeps field reads such
+/// as `envelope.schema_version` identical to the old local struct.
 #[derive(Debug, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct SnapshotEnvelope {
-    schema_version: u32,
-    total_process_count: usize,
-    snapshot: SystemSnapshot,
+    inner: tm_core::wire::SnapshotEnvelope,
+}
+
+impl std::ops::Deref for SnapshotEnvelope {
+    type Target = tm_core::wire::SnapshotEnvelope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl SnapshotEnvelope {
@@ -333,10 +341,10 @@ impl SnapshotEnvelope {
     /// helper re-derives identifiers from the raw snapshot on entry and is
     /// idempotent, so no separate `OwnedIdentifiers` argument is required.
     pub(crate) fn into_response(mut self) -> SnapshotResponse {
-        crate::redaction::redact_and_sanitize_wire_snapshot(&mut self.snapshot);
+        crate::redaction::redact_and_sanitize_wire_snapshot(&mut self.inner.snapshot);
         SnapshotResponse {
-            snapshot: self.snapshot,
-            total_process_count: self.total_process_count,
+            snapshot: self.inner.snapshot,
+            total_process_count: self.inner.total_process_count,
         }
     }
 }
@@ -2065,9 +2073,11 @@ mod tests {
         // The shell's SSE callback calls `into_response` on every frame. An
         // unredacted agent payload must be masked there, not just on polling.
         let envelope = SnapshotEnvelope {
-            schema_version: WIRE_SCHEMA_VERSION,
-            total_process_count: 9,
-            snapshot: dirty_wire_snapshot(),
+            inner: tm_core::wire::SnapshotEnvelope {
+                schema_version: WIRE_SCHEMA_VERSION,
+                total_process_count: 9,
+                snapshot: dirty_wire_snapshot(),
+            },
         };
         let response = envelope.into_response();
         assert_eq!(response.total_process_count, 9);

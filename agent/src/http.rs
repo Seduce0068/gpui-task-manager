@@ -389,10 +389,12 @@ pub const EXPOSED_RESPONSE_HEADERS: &str = RETRY_AFTER_HEADER;
 
 /// Upper bound for a numeric `Retry-After` delta-seconds hint emitted here.
 ///
-/// The Web shell clamps the same value at `MAX_RETRY_AFTER_SECS` (30). Clamping
-/// on the agent too means a misconfigured hint can never park the poll even
-/// with an older shell; `0` is normalised to `1` to avoid a hot retry loop.
-pub const MAX_RETRY_AFTER_SECS: u64 = 30;
+/// Defined once in [`tm_core::MAX_RETRY_AFTER_SECS`] and re-exported so the
+/// existing `http::MAX_RETRY_AFTER_SECS` path (used by the agent and its tests)
+/// keeps working. Clamping on the agent too means a misconfigured hint can
+/// never park the poll even with an older shell; `0` is normalised to `1` to
+/// avoid a hot retry loop.
+pub use tm_core::MAX_RETRY_AFTER_SECS;
 
 /// Adds the `Access-Control-Expose-Headers` header shared by every CORS path.
 ///
