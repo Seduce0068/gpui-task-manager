@@ -129,10 +129,15 @@ pub fn parse_document(text: &str) -> Option<SettingsDocument> {
         object.insert("version".to_string(), Value::from(SETTINGS_VERSION));
     }
     let mut settings: Settings = serde_json::from_value(value).ok()?;
-    settings = clamp_interval_only(settings);
+    // Restore the effective version *before* clamping: a future schema may
+    // define a wider interval range, and clamp_interval_only deliberately
+    // leaves those values untouched. Clamping while the temporary current
+    // version is still set would silently reinterpret the future value and
+    // then persist it under that future version (R1-CHAIN).
     settings.version = stored_version
         .unwrap_or(SETTINGS_VERSION)
         .max(SETTINGS_VERSION);
+    settings = clamp_interval_only(settings);
     Some(SettingsDocument { settings, raw })
 }
 
@@ -285,6 +290,24 @@ mod tests {
             final_document.raw.get("future_nested"),
             Some(&serde_json::json!({"a": [1, 2]}))
         );
+    }
+
+    #[test]
+    fn golden_future_version_keeps_an_out_of_range_interval_through_a_round_trip() {
+        // Regression for the production path: parse_document used to clamp
+        // while the temporary current version was still set, then persist the
+        // narrowed value under the future version (R1-CHAIN).
+        let document = parse_document(r#"{"version":9,"interval_ms":20000}"#)
+            .expect("future version must load");
+        assert_eq!(document.settings.version, 9);
+        assert_eq!(document.settings.interval_ms, 20_000);
+        let saved = merged_map_with_baseline(&document.settings, None, Some(&document.raw));
+        assert_eq!(saved.get("version"), Some(&serde_json::json!(9)));
+        assert_eq!(saved.get("interval_ms"), Some(&serde_json::json!(20_000)));
+        let reloaded = parse_document(&serde_json::to_string(&saved).expect("serialize"))
+            .expect("round-trip must load");
+        assert_eq!(reloaded.settings.version, 9);
+        assert_eq!(reloaded.settings.interval_ms, 20_000);
     }
 
     #[test]

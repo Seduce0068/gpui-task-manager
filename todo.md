@@ -1505,6 +1505,32 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   復元、export のトークン・識別子非露出を通しで実動検証し、発見なし
   （findings: []）。直近の変更は実旅程で成立している。
 
+### 優先度: 中 — バックログ補充コンボ R6 2026-11-21（第5巡・最終）
+
+- [x] パーセント符号化された #token キー（#tok%65n / #%74oken）が
+      Reader ではデコードされるが Writer のリテラル比較ですり抜け、
+      URL にトークンが残る。decode_component を共有し回帰テスト追加。
+      根拠 R1-CHAIN。
+- [x] 将来 version の interval 据え置きが parse_document の version
+      差し替えで無効化。version 復元後に clamp するよう修正し、
+      parse→save→reload 往復の golden テストを追加。根拠 R1-CHAIN。
+
+### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第5巡・最終）
+
+- [ ] 永続設定破損通知が SSE 障害通知を恒久抑圧（likely）。認証案内が
+      別タブの設定同期通知で上書き（likely）。循環依存は低リスク。
+      根拠 R1-CHAIN。
+- [ ] 無認証 /metrics + トークン再利用 + ポーリング周期によるセッション
+      追跡（speculative）。loopback Origin 反射の固定化を検討。
+      根拠 R1-CHAIN。
+
+### メモ — 停止宣言 2026-11-21
+
+- バックログ補充コンボを第1〜5巡まで実行。第5巡の新規指摘は上記2件の
+  実バグ（対応済み）と低/speculative のみ。連続イテレーション上限
+  （swarm-coding 既定 5）に達したため、自律イテレーションを停止する。
+  残る低/speculative 項目は将来対応として todo に保持する。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

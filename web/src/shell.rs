@@ -5310,6 +5310,43 @@ fn resolve_agent_config(
 /// Returns `href` with the fragment's `token` key removed, or `None` when
 /// nothing needs scrubbing. Other fragment keys are preserved verbatim and an
 /// empty remaining fragment drops the `#` entirely.
+/// Percent-decodes a URL component for key comparison only.
+///
+/// `UrlSearchParams` (used when *reading* the token) decodes keys, so the URL
+/// scrubber must decode them too: `#tok%65n=SECRET` and `#%74oken=SECRET` are
+/// both read as `token` but would otherwise survive in the address bar and
+/// session history (R1-CHAIN). Only ASCII hex escapes are needed for a key
+/// name; malformed escapes are kept verbatim rather than rejected.
+fn decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
+        {
+            let hi = (bytes[index + 1] as char).to_digit(16).expect("hex digit");
+            let lo = (bytes[index + 2] as char).to_digit(16).expect("hex digit");
+            let byte = ((hi << 4) | lo) as u8;
+            // A percent-encoded UTF-8 sequence is decoded byte-wise and pushed
+            // as a char only when ASCII; non-ASCII bytes are appended via
+            // `from_utf8_lossy` below by keeping the raw escape instead.
+            if byte.is_ascii() {
+                out.push(byte as char);
+                index += 3;
+                continue;
+            }
+        }
+        let rest = &value[index..];
+        let ch = rest.chars().next().expect("index in bounds");
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
 #[cfg(any(target_family = "wasm", test))]
 fn href_without_token(href: &str) -> Option<String> {
     let (base, fragment) = href.split_once('#')?;
@@ -5320,7 +5357,7 @@ fn href_without_token(href: &str) -> Option<String> {
             continue;
         }
         let key = pair.split_once('=').map_or(pair, |(key, _)| key);
-        if key == "token" {
+        if decode_component(key) == "token" {
             had_token = true;
         } else {
             if !kept.is_empty() {
@@ -5652,6 +5689,30 @@ mod tests {
         );
         assert_eq!(href_without_token(&format!("{base}#view=list")), None);
         assert_eq!(href_without_token(base), None);
+    }
+
+    #[test]
+    fn percent_encoded_token_keys_are_scrubbed_too() {
+        // UrlSearchParams decodes keys when reading the token, so the scrubber
+        // must decode them as well or the secret stays in history (R1-CHAIN).
+        let base = "http://127.0.0.1:8091/?agent=http%3A%2F%2F127.0.0.1%3A8787";
+        assert_eq!(
+            href_without_token(&format!("{base}#tok%65n=abc&view=list")),
+            Some(format!("{base}#view=list"))
+        );
+        assert_eq!(
+            href_without_token(&format!("{base}#%74oken=abc")),
+            Some(base.to_string())
+        );
+        assert_eq!(
+            href_without_token(&format!("{base}#%74ok%65n=abc")),
+            Some(base.to_string())
+        );
+        // An unrelated percent-encoded key stays untouched.
+        assert_eq!(
+            href_without_token(&format!("{base}#v%69ew=list&tok%65n=abc")),
+            Some(format!("{base}#v%69ew=list"))
+        );
     }
 
     #[test]
