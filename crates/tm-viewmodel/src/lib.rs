@@ -18,8 +18,8 @@ use tm_core::format;
 use tm_core::model::app_group_key;
 use tm_core::{
     filter_and_sort, flatten_process_tree, group_by_app, normalise_percent, Filter, MetricHistory,
-    NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
-    RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
+    NetworkCounters, PlatformInfo, ProcessGroup, ProcessKey, ProcessSnapshot, ProcessStatus,
+    ProcessTreeRow, RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
 };
 
 pub mod filter_input;
@@ -41,6 +41,31 @@ pub const MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_millis(1_000);
 /// Number of chart samples kept (two minutes at the default cadence).
 pub const HISTORY_CAPACITY: usize = 120;
+
+/// Reserved expansion key for the collapsed "other applications" row (C1-COLLAPSE).
+///
+/// A canonical application key from [`app_group_key`] can never start with a
+/// control character: the executable-name validator rejects them, and a
+/// process `comm` is NUL-terminated. The leading NUL therefore keeps this bucket
+/// key disjoint from every real application key, including keys that reach
+/// [`app_group_key`] through its `ProcessSnapshot::name` fallback. Shells must
+/// pass this value back unchanged to [`Command::ToggleAppGroup`]; it is an
+/// identity token, not display text, so it must never be written to the DOM.
+pub const OTHERS_APP_GROUP_KEY: &str = "\0others";
+
+/// Fixed, already-redacted label for the "others" bucket row (C1-COLLAPSE).
+///
+/// Shells render their own localised text (e.g. `その他 N アプリ`) from
+/// [`AppGroupRow::process_count`]; this value is only a stable, non-sensitive
+/// fallback for consumers that need a label string.
+pub const OTHERS_APP_GROUP_LABEL: &str = "others";
+
+/// Fewest single-process application groups needed to form an "others" bucket.
+///
+/// Two or more one-process apps are replaced by one summary row, but only when
+/// at least one multi-process group remains visible: folding every app would
+/// leave a lone "others" row and erase the ordinary list (C1-COLLAPSE).
+pub const OTHERS_MIN_GROUP_COUNT: usize = 2;
 
 /// Text marker prepended to informational status messages (R3-U04).
 ///
@@ -515,15 +540,23 @@ pub enum AppRowKind {
     Group,
     /// One individual process revealed by expanding a group.
     Process,
+    /// A single row summarising several one-process applications (C1-COLLAPSE).
+    ///
+    /// The row carries the aggregate CPU/memory of those applications and the
+    /// count in [`AppGroupRow::process_count`]. Expanding it reveals the original
+    /// one-process group rows as `Group` rows at `depth = 1`.
+    Others,
 }
 
 /// One row of the application-grouped process table (R1-GROUP).
 ///
 /// With no groups expanded, [`Dashboard::app_group_rows`] returns group rows
 /// only; expanding a group inserts its members as `depth = 1` process rows
-/// immediately after it. This is an *additive* view model: existing
-/// [`ProcessTreeRow`] consumers keep the flat/tree process list unchanged, so
-/// the export and wire contracts are untouched.
+/// immediately after it. Several one-process applications are compacted into a
+/// single [`AppRowKind::Others`] row; expanding that row reveals the original
+/// one-process group rows at `depth = 1` (C1-COLLAPSE). This is an *additive*
+/// view model: existing [`ProcessTreeRow`] consumers keep the flat/tree process
+/// list unchanged, so the export and wire contracts are untouched.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppGroupRow {
     /// Whether this row is a group summary or an expanded process.
@@ -531,7 +564,8 @@ pub struct AppGroupRow {
     /// Stable identity used for expansion state; the group's redacted app key
     /// derived from the executable ([`app_group_key`]).
     ///
-    /// Empty for individual process rows.
+    /// Empty for individual process rows; [`OTHERS_APP_GROUP_KEY`] for the
+    /// compacted "others" row (C1-COLLAPSE).
     pub key: String,
     /// Display text: the app name for a group row (identical to `key`), or the
     /// process name for an expanded member row (e.g. `Isolated Web Co`).
@@ -550,11 +584,13 @@ pub struct AppGroupRow {
     /// Lets a shell highlight the group when one of its hidden members is the
     /// current selection.
     pub member_keys: Vec<ProcessKey>,
-    /// `0` for group rows, `1` for expanded process rows.
+    /// `0` for group and "others" rows, `1` for expanded process rows and for
+    /// the one-process group rows revealed by expanding "others".
     pub depth: usize,
     /// Whether activating this row can reveal children.
     ///
-    /// Always `false` for a single-member group and for process rows.
+    /// Always `false` for a single-member group and for process rows; always
+    /// `true` for the "others" row while at least two candidates exist.
     pub has_children: bool,
     /// Whether this group is currently expanded (`false` for process rows).
     pub expanded: bool,
@@ -562,8 +598,111 @@ pub struct AppGroupRow {
     pub cpu_percent: f32,
     /// Group memory sum, or the individual process memory reading.
     pub memory_bytes: u64,
-    /// Number of grouped processes (`1` for individual process rows).
+    /// Number of grouped processes (`1` for individual process rows), or the
+    /// number of compacted applications for the "others" row.
     pub process_count: usize,
+}
+
+/// Orders application groups with the same comparator as the flat table.
+///
+/// Shared with the "others" representative path so both resolve the same first
+/// row for a given filter and sort spec (C1-COLLAPSE).
+fn sort_app_groups(groups: &mut [ProcessGroup], sort: SortSpec, filtered: &[ProcessSnapshot]) {
+    groups.sort_by(|left, right| {
+        let ordering = match sort.key {
+            SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
+            SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
+            SortKey::Pid => filtered[left.members[0]]
+                .key
+                .pid
+                .cmp(&filtered[right.members[0]].key.pid),
+            // The remaining columns have no aggregate equivalent; keep the
+            // stable BTreeMap key order for them.
+            SortKey::Name
+            | SortKey::User
+            | SortKey::Status
+            | SortKey::Threads
+            | SortKey::StartTime
+            | SortKey::VirtualMemory => left.key.cmp(&right.key),
+        };
+        let ordering = match sort.direction {
+            tm_core::SortDirection::Ascending => ordering,
+            tm_core::SortDirection::Descending => ordering.reverse(),
+        };
+        ordering.then_with(|| left.key.cmp(&right.key))
+    });
+}
+
+/// Builds the one summary row that replaces several one-process applications.
+///
+/// The representative is the first group in display order; its process identity
+/// is the row's `process_key`/`index`, so selection, signal confirmation and the
+/// PID-reuse guard keep operating on a real process (C1-COLLAPSE).
+fn others_row(
+    singles: &[ProcessGroup],
+    filtered: &[ProcessSnapshot],
+    base: &[usize],
+    expanded: bool,
+) -> AppGroupRow {
+    let representative = &singles[0];
+    let process = &filtered[representative.members[0]];
+    // Each input is already a display-normalised group total; sum in f64 and
+    // narrow once, mirroring `group_by_app`'s accumulation rules.
+    let cpu_total = singles.iter().fold(0.0_f64, |sum, group| {
+        sum + f64::from(group.cpu_percent.max(0.0))
+    });
+    let cpu_percent = if cpu_total.is_finite() {
+        cpu_total as f32
+    } else {
+        0.0
+    };
+    let memory_bytes = singles
+        .iter()
+        .fold(0_u64, |sum, group| sum.saturating_add(group.memory_bytes));
+    AppGroupRow {
+        kind: AppRowKind::Others,
+        key: OTHERS_APP_GROUP_KEY.to_string(),
+        label: OTHERS_APP_GROUP_LABEL.to_string(),
+        index: base[representative.members[0]],
+        process_key: process.key,
+        member_keys: singles
+            .iter()
+            .map(|group| filtered[group.members[0]].key)
+            .collect(),
+        depth: 0,
+        has_children: true,
+        expanded,
+        cpu_percent,
+        memory_bytes,
+        process_count: singles.len(),
+    }
+}
+
+/// One original one-process group revealed by expanding the "others" row.
+///
+/// It keeps `kind = Group` and `process_count = 1`; only `depth = 1` marks it as
+/// a child of the summary row (C1-COLLAPSE).
+fn single_group_row(
+    group: &ProcessGroup,
+    filtered: &[ProcessSnapshot],
+    base: &[usize],
+    depth: usize,
+) -> AppGroupRow {
+    let process = &filtered[group.members[0]];
+    AppGroupRow {
+        kind: AppRowKind::Group,
+        key: group.key.clone(),
+        label: group.label.clone(),
+        index: base[group.members[0]],
+        process_key: process.key,
+        member_keys: vec![process.key],
+        depth,
+        has_children: false,
+        expanded: false,
+        cpu_percent: group.cpu_percent,
+        memory_bytes: group.memory_bytes,
+        process_count: 1,
+    }
 }
 
 /// Presentation state for one dashboard window.
@@ -845,12 +984,16 @@ impl Dashboard {
     ///
     /// By default this returns one row per redacted app key (see
     /// [`app_group_key`]), with the members' CPU/memory totals already computed
-    /// by [`group_by_app`]. A group
-    /// added to the expansion set through [`Command::ToggleAppGroup`] is followed
-    /// by its individual processes at `depth = 1`; collapsing it removes them
-    /// again. The current filter is applied first and the active sort spec
-    /// orders the group rows (`Cpu`, `Memory` and `Pid` use their totals, other
-    /// columns fall back to the deterministic group key).
+    /// by [`group_by_app`]. One-process applications are compacted into a single
+    /// [`AppRowKind::Others`] row when at least [`OTHERS_MIN_GROUP_COUNT`] of
+    /// them exist and a multi-process group remains visible; expanding that
+    /// reserved key reveals the original rows at `depth = 1`. A multi-process
+    /// group added to the expansion set through
+    /// [`Command::ToggleAppGroup`] is likewise followed by its individual
+    /// processes at `depth = 1`; collapsing it removes them again. The current
+    /// filter is applied first and the active sort spec orders the group rows
+    /// (`Cpu`, `Memory` and `Pid` use their totals, other columns fall back to
+    /// the deterministic group key).
     ///
     /// No snapshot yields an empty vector. Export and wire code keep receiving
     /// `snapshot.processes` directly and never see these rows.
@@ -866,32 +1009,43 @@ impl Dashboard {
             .map(|&index| snapshot.processes[index].clone())
             .collect();
         let mut groups = group_by_app(&filtered);
-        groups.sort_by(|left, right| {
-            let ordering = match self.sort.key {
-                SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
-                SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
-                SortKey::Pid => filtered[left.members[0]]
-                    .key
-                    .pid
-                    .cmp(&filtered[right.members[0]].key.pid),
-                // The remaining columns have no aggregate equivalent; keep the
-                // stable BTreeMap key order for them.
-                SortKey::Name
-                | SortKey::User
-                | SortKey::Status
-                | SortKey::Threads
-                | SortKey::StartTime
-                | SortKey::VirtualMemory => left.key.cmp(&right.key),
-            };
-            let ordering = match self.sort.direction {
-                tm_core::SortDirection::Ascending => ordering,
-                tm_core::SortDirection::Descending => ordering.reverse(),
-            };
-            ordering.then_with(|| left.key.cmp(&right.key))
-        });
+        sort_app_groups(&mut groups, self.sort, &filtered);
+
+        // Snapshot the one-process groups before consuming `groups`: they are
+        // shown either as a single "others" row or, when expanded, as a run of
+        // one-process `Group` rows directly beneath it (C1-COLLAPSE).
+        let singles: Vec<ProcessGroup> = groups
+            .iter()
+            .filter(|group| group.process_count == 1)
+            .cloned()
+            .collect();
+        // Keep at least one real group row beside the summary: when every app
+        // has a single process, folding them all would leave a lone "others"
+        // row with nothing to contrast against and destroy the existing list
+        // (e.g. the demo data). The compacted view is only useful when a
+        // multi-process app remains individually visible (C1-COLLAPSE).
+        let has_multi_process_group = groups.iter().any(|group| group.process_count > 1);
+        let fold_others = singles.len() >= OTHERS_MIN_GROUP_COUNT && has_multi_process_group;
+        let others_expanded =
+            fold_others && self.expanded_app_groups.contains(OTHERS_APP_GROUP_KEY);
 
         let mut rows = Vec::new();
+        let mut others_emitted = false;
         for group in groups {
+            if fold_others && group.process_count == 1 {
+                if !others_emitted {
+                    rows.push(others_row(&singles, &filtered, &base, others_expanded));
+                    if others_expanded {
+                        rows.extend(
+                            singles
+                                .iter()
+                                .map(|single| single_group_row(single, &filtered, &base, 1)),
+                        );
+                    }
+                    others_emitted = true;
+                }
+                continue;
+            }
             let member_keys: Vec<ProcessKey> = group
                 .members
                 .iter()
@@ -950,7 +1104,8 @@ impl Dashboard {
             .position(|row| row.process_key == selected)
             .or_else(|| {
                 rows.iter().position(|row| {
-                    row.kind == AppRowKind::Group && row.member_keys.contains(&selected)
+                    matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
+                        && row.member_keys.contains(&selected)
                 })
             })
     }
@@ -987,20 +1142,45 @@ impl Dashboard {
         }
         let snapshot = self.snapshot.as_ref()?;
         let app_key = app_group_key(snapshot.process(key)?);
-        if self.expanded_app_groups.contains(app_key) {
+        let first = self.first_app_group_key(app_key)?;
+        if first != key {
+            // An expanded member has its own row; only a hidden member of a
+            // collapsed multi-process group needs the representative.
+            return (!self.expanded_app_groups.contains(app_key)).then_some(first);
+        }
+        // A one-process app folded into "others" has no row of its own while
+        // the bucket is collapsed. Keep its selection on the bucket's
+        // representative, mirroring the hidden-member rule above (C1-COLLAPSE).
+        if self.expanded_app_groups.contains(OTHERS_APP_GROUP_KEY) {
             return None;
         }
-        let first = self.first_app_group_key(app_key)?;
-        (first != key).then_some(first)
+        self.app_group_rows()
+            .into_iter()
+            .find(|row| row.kind == AppRowKind::Others)
+            .and_then(|row| {
+                (row.member_keys.contains(&key) && row.process_key != key)
+                    .then_some(row.process_key)
+            })
     }
 
     /// Drops expansion keys whose application no longer exists in a new sample.
+    ///
+    /// The reserved "others" key has no real application behind it, so it is
+    /// retained only while an "others" row would still be shown; otherwise a
+    /// stale expansion entry would survive forever (C1-COLLAPSE).
     fn prune_expanded_app_groups(&mut self) {
         let Some(snapshot) = &self.snapshot else {
             self.expanded_app_groups.clear();
             return;
         };
+        let others_available = self
+            .app_group_rows()
+            .iter()
+            .any(|row| row.kind == AppRowKind::Others);
         self.expanded_app_groups.retain(|key| {
+            if key == OTHERS_APP_GROUP_KEY {
+                return others_available;
+            }
             snapshot
                 .processes
                 .iter()
@@ -1269,7 +1449,17 @@ impl Dashboard {
                 // A group row has no identity of its own: selecting it selects
                 // its first member, which keeps the existing detail panel,
                 // signal confirmation and PID-reuse protection unchanged.
-                if let Some(first) = self.first_app_group_key(&key) {
+                // The "others" bucket resolves to its representative the same
+                // way (C1-COLLAPSE).
+                let first = if key == OTHERS_APP_GROUP_KEY {
+                    self.app_group_rows()
+                        .into_iter()
+                        .find(|row| row.kind == AppRowKind::Others)
+                        .map(|row| row.process_key)
+                } else {
+                    self.first_app_group_key(&key)
+                };
+                if let Some(first) = first {
                     self.selected = Some(first);
                     self.sync_selection_hint();
                     self.sync_selected_cpu_history();
@@ -1285,10 +1475,11 @@ impl Dashboard {
                 // single-member groups and expanded process rows have no
                 // children to reveal (R1-VISIBLE). This also ignores stale keys
                 // so the set cannot grow from clicks on removed groups.
-                let expandable = self
-                    .app_group_rows()
-                    .iter()
-                    .any(|row| row.kind == AppRowKind::Group && row.key == key && row.has_children);
+                let expandable = self.app_group_rows().iter().any(|row| {
+                    matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
+                        && row.key == key
+                        && row.has_children
+                });
                 if !expandable {
                     if self.expanded_app_groups.remove(&key) {
                         self.recompute_visible();
@@ -1296,9 +1487,25 @@ impl Dashboard {
                     return Vec::new();
                 }
                 if self.expanded_app_groups.remove(&key) {
-                    // Collapsing a group must not leave a hidden member as the
-                    // selection: move it to the group's first member instead.
-                    if self.selected.is_some_and(|selected| {
+                    // Collapsing a row must not leave a hidden member as the
+                    // selection: move it to that row's representative instead.
+                    if key == OTHERS_APP_GROUP_KEY {
+                        // The bucket holds real processes from several apps, so
+                        // it needs its own lookup (C1-COLLAPSE).
+                        let others = self
+                            .app_group_rows()
+                            .into_iter()
+                            .find(|row| row.kind == AppRowKind::Others);
+                        if let Some(others) = others {
+                            if self.selected.is_some_and(|selected| {
+                                others.member_keys.contains(&selected)
+                                    && others.process_key != selected
+                            }) {
+                                self.selected = Some(others.process_key);
+                                self.sync_selected_cpu_history();
+                            }
+                        }
+                    } else if self.selected.is_some_and(|selected| {
                         self.is_member_of_app_group(selected, &key)
                             && self.first_app_group_key(&key) != self.selected
                     }) {
@@ -3473,6 +3680,8 @@ mod tests {
         for command in [
             Command::SelectAppGroup("firefox".into()),
             Command::ToggleAppGroup("firefox".into()),
+            Command::SelectAppGroup(OTHERS_APP_GROUP_KEY.into()),
+            Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()),
         ] {
             assert!(command.is_effect_free(), "{command:?}");
             let mut fresh = dashboard();
@@ -3730,6 +3939,256 @@ mod tests {
             grouped_csv, flat_csv,
             "exports read snapshot.processes only"
         );
+    }
+
+    // --- C1-COLLAPSE: one row for single-process applications ----------------
+
+    fn others_snapshot() -> tm_core::SystemSnapshot {
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(11, 1),
+                name: "alpha".into(),
+                command: "/usr/bin/alpha".into(),
+                cpu_percent: 1.0,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(22, 2),
+                name: "beta".into(),
+                command: "/usr/bin/beta".into(),
+                cpu_percent: 2.0,
+                memory_bytes: 200,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(33, 3),
+                name: "gamma".into(),
+                command: "/usr/bin/gamma".into(),
+                cpu_percent: 3.0,
+                memory_bytes: 300,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(44, 4),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox".into(),
+                cpu_percent: 10.0,
+                memory_bytes: 1_000,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(55, 5),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --type=renderer".into(),
+                cpu_percent: 5.0,
+                memory_bytes: 500,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        snapshot
+    }
+
+    #[test]
+    fn others_row_compacts_single_process_apps_and_keeps_multi_process_group() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 2, "three single apps collapse into one row");
+        assert_eq!(rows[0].kind, AppRowKind::Group);
+        assert_eq!(rows[0].key, "firefox");
+        assert_eq!(rows[0].process_count, 2);
+        assert!(rows[0].has_children);
+        assert_eq!(rows[0].depth, 0);
+
+        let others = &rows[1];
+        assert_eq!(others.kind, AppRowKind::Others);
+        assert_eq!(others.key, OTHERS_APP_GROUP_KEY);
+        assert_eq!(others.label, OTHERS_APP_GROUP_LABEL);
+        assert_eq!(others.depth, 0);
+        assert!(others.has_children);
+        assert!(!others.expanded);
+        assert_eq!(others.process_count, OTHERS_MIN_GROUP_COUNT + 1);
+        assert_eq!(others.cpu_percent, 6.0);
+        assert_eq!(others.memory_bytes, 600);
+        assert_eq!(
+            others.index, 2,
+            "representative is the first sorted single app"
+        );
+        assert_eq!(others.process_key, ProcessKey::new(33, 3));
+        assert_eq!(
+            others.member_keys,
+            vec![
+                ProcessKey::new(33, 3),
+                ProcessKey::new(22, 2),
+                ProcessKey::new(11, 1),
+            ]
+        );
+        assert_eq!(dashboard.visible_count(), 2);
+        assert_eq!(dashboard.visible_depths(), &[0, 0]);
+        assert_eq!(dashboard.visible_has_children(), &[true, true]);
+    }
+
+    #[test]
+    fn expanding_others_reveals_one_process_group_rows_at_depth_one() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        assert!(dashboard.is_app_group_expanded(OTHERS_APP_GROUP_KEY));
+
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[1].kind, AppRowKind::Others);
+        assert!(rows[1].expanded);
+        assert_eq!(
+            rows[2..5]
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["gamma", "beta", "alpha"]
+        );
+        assert!(rows[2..5].iter().all(|row| {
+            row.kind == AppRowKind::Group
+                && row.depth == 1
+                && row.process_count == 1
+                && !row.has_children
+        }));
+        assert_eq!(
+            rows[2..5]
+                .iter()
+                .map(|row| row.process_key)
+                .collect::<Vec<_>>(),
+            vec![
+                ProcessKey::new(33, 3),
+                ProcessKey::new(22, 2),
+                ProcessKey::new(11, 1),
+            ]
+        );
+        assert_eq!(dashboard.visible_depths(), &[0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn collapsing_others_moves_a_non_first_selection_to_the_representative() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        dashboard.apply(Command::Select(Some(ProcessKey::new(22, 2))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(22, 2)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(3));
+
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(33, 3)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(1));
+        assert_eq!(dashboard.app_group_rows().len(), 2);
+    }
+
+    #[test]
+    fn selecting_a_folded_app_maps_to_the_others_representative() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+        dashboard.apply(Command::Select(Some(ProcessKey::new(22, 2))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(33, 3)));
+        assert_eq!(dashboard.selected_visible_index(), Some(1));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(1));
+    }
+
+    #[test]
+    fn others_follows_filter_and_sort() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+
+        // One surviving single app keeps its own row instead of a bucket.
+        dashboard.apply(Command::SetFilterText("alpha".into()));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, AppRowKind::Group);
+        assert_eq!(rows[0].key, "alpha");
+        assert!(rows.iter().all(|row| row.kind != AppRowKind::Others));
+
+        dashboard.apply(Command::ClearFilter);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        }));
+        let rows = dashboard.app_group_rows();
+        // Name ascending puts `alpha` first, so it becomes the representative
+        // and the bucket takes the first single app's display position.
+        assert_eq!(rows[0].kind, AppRowKind::Others);
+        assert_eq!(rows[0].process_key, ProcessKey::new(11, 1));
+        assert_eq!(
+            rows[0].member_keys,
+            vec![
+                ProcessKey::new(11, 1),
+                ProcessKey::new(22, 2),
+                ProcessKey::new(33, 3),
+            ]
+        );
+
+        // CPU descending (the default) puts `gamma` first instead.
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Descending,
+        }));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows[1].kind, AppRowKind::Others);
+        assert_eq!(rows[1].process_key, ProcessKey::new(33, 3));
+
+        // Hiding the only multi-process app also removes the bucket: the
+        // remaining single apps keep their own rows rather than becoming a
+        // lone "others" entry.
+        dashboard.apply(Command::SetFilterText("a".into()));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.kind == AppRowKind::Group));
+        assert!(rows.iter().all(|row| row.key != OTHERS_APP_GROUP_KEY));
+    }
+
+    #[test]
+    fn others_is_not_created_without_a_multi_process_group() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(demo_snapshot(0));
+        let rows = dashboard.app_group_rows();
+        assert!(rows.len() > 1, "demo still shows the ordinary app list");
+        assert!(
+            rows.iter().all(|row| row.kind == AppRowKind::Group),
+            "an all-single-process snapshot must not gain an Others row"
+        );
+        assert_eq!(dashboard.visible_count(), rows.len());
+    }
+
+    #[test]
+    fn others_expansion_is_pruned_when_the_bucket_disappears() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_snapshot());
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        assert!(dashboard.is_app_group_expanded(OTHERS_APP_GROUP_KEY));
+
+        let mut next = others_snapshot();
+        next.processes
+            .retain(|process| process.name != "alpha" && process.name != "beta");
+        dashboard.ingest(next);
+        assert!(!dashboard.is_app_group_expanded(OTHERS_APP_GROUP_KEY));
+        assert!(dashboard
+            .app_group_rows()
+            .iter()
+            .all(|row| row.kind != AppRowKind::Others));
+    }
+
+    #[test]
+    fn others_reserved_key_cannot_match_a_canonical_app_key() {
+        assert!(OTHERS_APP_GROUP_KEY.starts_with('\0'));
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![ProcessSnapshot {
+            key: ProcessKey::new(99, 9),
+            name: "_others".into(),
+            command: "_others --token=***".into(),
+            ..ProcessSnapshot::default()
+        }];
+        // Even the tempting `_others` spelling is a legal canonical key, which
+        // is why the reserved value carries a leading NUL instead.
+        assert_eq!(app_group_key(&snapshot.processes[0]), "_others");
+        assert_ne!(app_group_key(&snapshot.processes[0]), OTHERS_APP_GROUP_KEY);
     }
 
     #[test]

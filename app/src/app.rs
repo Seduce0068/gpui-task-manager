@@ -97,16 +97,16 @@ fn status_dot(color: u32) -> Div {
     div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(color))
 }
 
-/// Values rendered by one row of the process table (R1-APPDRAW).
+/// Values rendered by one row of the process table (R1-APPDRAW, R1-OTHERS).
 ///
-/// A group row takes its name and its CPU/memory *totals* from the view model's
-/// `AppGroupRow`. Columns that have no aggregate (command, PID, user, status,
-/// threads) carry fixed text, so a group never shows one representative
-/// process's identity as if it described the whole group.
+/// A group or Others row takes its totals from the view model's `AppGroupRow`.
+/// Columns that have no aggregate (command, PID, user, status, threads) carry
+/// fixed text, so an aggregate row never shows one representative process's
+/// identity as if it described the whole row.
 #[derive(Clone, Debug, PartialEq)]
 struct ProcessRowView {
     key: ProcessKey,
-    /// Set only for a group row; the shell passes it to `ToggleAppGroup`.
+    /// Set for Group and Others rows; the shell passes it to `ToggleAppGroup`.
     group_key: Option<String>,
     name: String,
     command: String,
@@ -121,15 +121,25 @@ struct ProcessRowView {
     depth: usize,
     has_children: bool,
     is_group: bool,
+    /// True only for the synthetic "その他 N アプリ" summary row. It is a
+    /// group row for activation purposes but has no app icon of its own.
+    is_others: bool,
+    /// Multi-process group counts (and the Others expand hint) are emphasised
+    /// so one-process rows stay visually distinct (R1-OTHERS).
+    command_emphasis: bool,
     process_count: usize,
 }
 
 /// Resolves a visible row's display values without touching GPUI (R1-APPDRAW).
 ///
-/// `group` is supplied only in the default grouped view and only for a row
-/// whose view-model kind is [`AppRowKind::Group`]. Expanded member rows and all
-/// flat/tree rows deliberately keep their original `ProcessSnapshot` values,
-/// so their command/PID/user/status/threads rendering is unchanged.
+/// `group` is supplied only in the default grouped view, for a row whose
+/// view-model kind is [`AppRowKind::Group`] or [`AppRowKind::Others`]. Flat/tree
+/// rows deliberately keep their original `ProcessSnapshot` values, so their
+/// command/PID/user/status/threads rendering is unchanged.
+///
+/// Both aggregate kinds are activated with `ToggleAppGroup`, but the Others
+/// row is labelled from its app count (not the reserved `"others"` key) and
+/// advertises its expand affordance in the command column.
 fn process_row_values(
     group: Option<&AppGroupRow>,
     process: &ProcessSnapshot,
@@ -154,6 +164,34 @@ fn process_row_values(
             depth,
             has_children,
             is_group: true,
+            is_others: false,
+            // A single-process group reads like a normal row; only a real
+            // multi-process count is highlighted (R1-OTHERS).
+            command_emphasis: group.process_count > 1,
+            process_count: group.process_count,
+        },
+        Some(group) if group.kind == AppRowKind::Others => ProcessRowView {
+            key: group.process_key,
+            group_key: Some(group.key.clone()),
+            // The view-model label is the reserved "others" key; the visible
+            // and accessible text is derived from the aggregated app count.
+            name: format!("その他 {} アプリ", group.process_count),
+            command: "クリックで展開".to_string(),
+            cpu_percent: group.cpu_percent,
+            memory_bytes: group.memory_bytes,
+            pid: "—".to_string(),
+            user: "—".to_string(),
+            status: ProcessStatus::Unknown,
+            status_text: "—".to_string(),
+            threads: "—".to_string(),
+            selected,
+            depth,
+            // Others is always expandable when it is present; force the
+            // affordance even if a caller supplies has_children = false.
+            has_children: true,
+            is_group: true,
+            is_others: true,
+            command_emphasis: true,
             process_count: group.process_count,
         },
         _ => ProcessRowView {
@@ -175,6 +213,8 @@ fn process_row_values(
             depth,
             has_children,
             is_group: false,
+            is_others: false,
+            command_emphasis: false,
             process_count: 1,
         },
     }
@@ -1896,15 +1936,17 @@ impl TaskManagerApp {
                 .unwrap_or(false);
             let process = snapshot.processes.get(row_index)?;
             // In the grouped view `app_group_rows()` is aligned with
-            // `visible_indices()`. Only a Group row takes its values from the
-            // aggregate; an expanded member and every flat/tree row keep the
-            // original `snapshot.processes[row_index]` values (R1-APPDRAW).
+            // `visible_indices()`. Both Group and Others rows take their values
+            // from the aggregate; every flat/tree row keeps the original
+            // `snapshot.processes[row_index]` values (R1-APPDRAW, R1-OTHERS).
             let group = if self.dashboard.app_group_view() {
                 self.dashboard.app_group_rows().get(index).cloned()
             } else {
                 None
             };
-            let group = group.as_ref().filter(|row| row.kind == AppRowKind::Group);
+            let group = group
+                .as_ref()
+                .filter(|row| row.kind == AppRowKind::Group || row.kind == AppRowKind::Others);
             let selected = if group.is_some() {
                 self.dashboard.selected_app_group_row_index() == Some(index)
             } else {
@@ -1942,13 +1984,20 @@ impl TaskManagerApp {
         let pid = view.pid.clone();
         let process_count = view.process_count;
         let is_group = view.is_group;
+        let is_others = view.is_others;
+        let command_emphasis = view.command_emphasis;
         let collapsed = !expanded;
         // Group rows show the app's native icon when a .desktop entry resolves;
         // every other row (and an unresolved group) keeps the status dot. The
-        // icon is decorative: `aria_label` below stays the existing group label.
-        let app_icon = group_key
-            .as_deref()
-            .and_then(|key| self.icon_resolver.resolve(key));
+        // Others summary is not an application, so it never gets an app icon.
+        // The icon is decorative: `aria_label` below stays the group label.
+        let app_icon = if is_others {
+            None
+        } else {
+            group_key
+                .as_deref()
+                .and_then(|key| self.icon_resolver.resolve(key))
+        };
         let dot_color = status_color(status);
         // All process users collapse to "user" under --redact, matching the
         // agent snapshot (not just the login account) — R41 audit. Group rows
@@ -1960,7 +2009,7 @@ impl TaskManagerApp {
         };
         let command = self.display(&view.command);
         let name = self.display(&view.name);
-        let marker = if is_group && has_children {
+        let marker = if (is_group && has_children) || is_others {
             if expanded {
                 "▾ "
             } else {
@@ -1983,7 +2032,7 @@ impl TaskManagerApp {
             format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
         };
         let aria_label = if is_group {
-            a11y_group_row_label(&name, cpu, memory, process_count, selected)
+            a11y_group_row_label(&name, cpu, memory, process_count, selected, is_others)
         } else {
             a11y_row_label(&name, status, cpu, memory, key.pid, selected)
         };
@@ -2001,7 +2050,9 @@ impl TaskManagerApp {
                 .aria_row_index(index + 1)
                 // Group rows advertise the same expansion state as tree nodes;
                 // both use `has_children` from the visible row arrays.
-                .when(has_children, |this| this.aria_expanded(expanded))
+                .when(has_children || is_others, |this| {
+                    this.aria_expanded(expanded)
+                })
                 .track_focus(&row_focus)
                 .aria_keyshortcuts("Enter, Space")
                 .flex()
@@ -2063,7 +2114,16 @@ impl TaskManagerApp {
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(palette().dim))
+                                // A real multi-process count (and the Others
+                                // expand hint) uses a bold accent colour so
+                                // it stands out; single-process rows keep the
+                                // muted default (R1-OTHERS).
+                                .text_color(rgb(if command_emphasis {
+                                    palette().blue
+                                } else {
+                                    palette().dim
+                                }))
+                                .when(command_emphasis, |this| this.font_weight(FontWeight::BOLD))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -3167,21 +3227,30 @@ fn a11y_row_label(
     )
 }
 
-/// Accessible name of an application-group row (R1-APPDRAW).
+/// Accessible name of an application-group row (R1-APPDRAW, R1-OTHERS).
 ///
 /// Announces the same totals and member count the visible row shows and no
 /// representative process's PID/user/status, which are not meaningful for a
 /// group. `name` is already redacted by the caller like `a11y_row_label`.
+/// For the synthetic Others row the headline is built from `process_count`
+/// instead of the reserved view-model label, so the accessible name always
+/// contains the visible `その他 N アプリ` text.
 fn a11y_group_row_label(
     name: &str,
     cpu: f32,
     memory_bytes: u64,
     process_count: usize,
     selected: bool,
+    is_others: bool,
 ) -> String {
     let suffix = if selected { "、選択中" } else { "" };
+    let headline = if is_others {
+        format!("その他 {process_count} アプリ")
+    } else {
+        format!("アプリ {name}")
+    };
     format!(
-        "アプリ {name}、{count} プロセス、CPU 合計 {cpu_label}（{severity}）、メモリ合計 {memory_label}{suffix}",
+        "{headline}、{count} プロセス、CPU 合計 {cpu_label}（{severity}）、メモリ合計 {memory_label}{suffix}",
         count = process_count,
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
@@ -4371,6 +4440,77 @@ mod tests {
         }
     }
 
+    fn sample_others(app_count: usize) -> AppGroupRow {
+        let first = ProcessKey::new(200, 1_700_000_000);
+        AppGroupRow {
+            kind: AppRowKind::Others,
+            key: "\0others".to_string(),
+            label: "others".to_string(),
+            index: 0,
+            process_key: first,
+            member_keys: vec![first, ProcessKey::new(201, 1_700_000_000)],
+            depth: 0,
+            has_children: true,
+            expanded: false,
+            cpu_percent: 20.0,
+            memory_bytes: 4 * 1_024 * 1_024,
+            process_count: app_count,
+        }
+    }
+
+    #[test]
+    fn multi_process_group_command_is_emphasised_but_single_is_not() {
+        let representative = sample_process(100, "firefox");
+        let multi = process_row_values(Some(&sample_group()), &representative, false, 0, true);
+        assert!(multi.command_emphasis, "3 プロセス must stand out");
+        assert_eq!(multi.command, "3 プロセス");
+        assert!(multi.is_group);
+        assert!(!multi.is_others);
+
+        let mut single = sample_group();
+        single.process_count = 1;
+        single.has_children = false;
+        single.member_keys = vec![single.process_key];
+        let one = process_row_values(Some(&single), &representative, false, 0, false);
+        assert!(!one.command_emphasis, "one process keeps the normal style");
+        assert_eq!(one.command, "1 プロセス");
+
+        let flat = process_row_values(None, &representative, false, 0, false);
+        assert!(!flat.command_emphasis);
+        assert_eq!(flat.command, representative.command);
+    }
+
+    #[test]
+    fn others_row_shows_app_count_expand_hint_and_toggle_key() {
+        let others = sample_others(4);
+        let representative = sample_process(200, "firefox");
+        let before = representative.clone();
+        let view = process_row_values(Some(&others), &representative, false, 0, true);
+
+        assert!(
+            view.is_group,
+            "Others activates via ToggleAppGroup like a group"
+        );
+        assert!(view.is_others);
+        assert_eq!(view.group_key.as_deref(), Some("\0others"));
+        assert_eq!(view.name, "その他 4 アプリ");
+        assert_eq!(view.command, "クリックで展開");
+        assert_eq!(view.process_count, 4);
+        assert!(view.command_emphasis, "the expand hint stands out");
+        assert!(
+            view.has_children,
+            "Others always offers the expand affordance"
+        );
+        assert_eq!(view.cpu_percent, others.cpu_percent);
+        assert_eq!(view.memory_bytes, others.memory_bytes);
+        // No representative process identity leaks into an aggregate row.
+        assert_eq!(view.pid, "—");
+        assert_eq!(view.user, "—");
+        assert_eq!(view.status_text, "—");
+        // Display-only construction must not mutate the snapshot (export contract).
+        assert_eq!(representative, before);
+    }
+
     #[test]
     fn grouped_row_shows_totals_and_fixed_non_aggregatable_columns() {
         let group = sample_group();
@@ -4445,12 +4585,23 @@ mod tests {
 
     #[test]
     fn group_accessible_name_states_totals_without_a_member_identity() {
-        let label = a11y_group_row_label("firefox", 12.5, 3 * 1_024 * 1_024, 3, true);
+        let label = a11y_group_row_label("firefox", 12.5, 3 * 1_024 * 1_024, 3, true, false);
         assert!(
             label.starts_with("アプリ firefox、3 プロセス、CPU 合計 12.5%"),
             "{label}"
         );
         assert!(label.contains("メモリ合計 3.0 MiB"), "{label}");
+        assert!(label.ends_with("、選択中"), "{label}");
+        assert!(!label.contains("PID"), "{label}");
+        assert!(!label.contains("--flag"), "{label}");
+    }
+
+    #[test]
+    fn others_accessible_name_includes_app_count_from_process_count() {
+        let label = a11y_group_row_label("others", 20.0, 4 * 1_024 * 1_024, 4, true, true);
+        assert!(label.starts_with("その他 4 アプリ"), "{label}");
+        assert!(label.contains("CPU 合計 20.0%"), "{label}");
+        assert!(label.contains("メモリ合計 4.0 MiB"), "{label}");
         assert!(label.ends_with("、選択中"), "{label}");
         assert!(!label.contains("PID"), "{label}");
         assert!(!label.contains("--flag"), "{label}");
@@ -4515,6 +4666,35 @@ mod tests {
         assert!(row.contains(concat!(".aria_keyshortcuts(", "\"Enter, Space\")")));
         // Tree nodes keep their original select + toggle behaviour.
         assert!(row.contains(concat!("Command::Toggle", "TreeNode(key)")));
+    }
+
+    #[test]
+    fn process_row_styles_multi_process_count_and_wires_others() {
+        let source = include_str!("app.rs");
+        let row = source
+            .split("fn process_row(")
+            .nth(1)
+            .expect("process_row must exist")
+            .split("fn details_panel(")
+            .next()
+            .expect("process_row slice must end at details_panel");
+        // Both aggregate kinds reach process_row_values, so Others also gets
+        // the totals, the reserved toggle key and the expand affordance.
+        assert!(row.contains(concat!("AppRowKind::", "Others")));
+        assert!(row.contains(concat!("process_row_values(", "group")));
+        // Emphasis is data-driven and applies both weight and accent colour.
+        assert!(row.contains("command_emphasis"));
+        assert!(row.contains("FontWeight::BOLD"));
+        assert!(row.contains(".text_color(rgb(if command_emphasis {"));
+        assert!(row.contains("palette().blue"));
+        // Accessible name and expansion state distinguish the Others row;
+        // it never borrows an application icon.
+        assert!(row.contains(
+            "a11y_group_row_label(&name, cpu, memory, process_count, selected, is_others)"
+        ));
+        assert!(row.contains(".when(has_children || is_others, |this| {"));
+        assert!(row.contains("this.aria_expanded(expanded)"));
+        assert!(row.contains("let app_icon = if is_others {"));
     }
 
     #[test]

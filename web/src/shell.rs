@@ -38,7 +38,7 @@ use tm_core::{
 use tm_viewmodel::{
     AppGroupRow, AppRowKind, Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect,
     FILTER_PRESETS, FilterInput, FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL,
-    StatusMessage,
+    OTHERS_APP_GROUP_KEY, StatusMessage,
 };
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::JsCast;
@@ -549,7 +549,14 @@ struct ProcessRowView {
     has_children: bool,
     expanded: bool,
     is_group: bool,
+    /// 表示専用の「その他 N アプリ」行（C1-GROUP）。集計行として扱い、
+    /// 活性化で `ToggleAppGroup` を発火する。
+    is_others: bool,
     process_count: usize,
+    /// `Group` 行の `×N` を強調描画するための末尾文字列。`process_count > 1`
+    /// のときだけ `Some(" ×N")`。`name` は従来どおり完全文本を保持し、
+    /// DOM proof / AX / テストの契約を変えない。
+    count_emphasis: Option<String>,
     row_a11y_label: String,
 }
 
@@ -573,6 +580,22 @@ fn row_activation(view: &ProcessRowView, tree_view: bool) -> RowActivation {
     }
 }
 
+/// Plain display text shared by the canvas and the AX mirror for every row of
+/// the application-grouped view.
+///
+/// `Others` is a fixed redacted label plus its numeric app count (never the
+/// reserved NUL-prefixed key). A multi-process group shows `×N`; the newly
+/// revealed one-member groups keep the ordinary label with no `×1` suffix.
+fn grouped_row_display_name(row: &AppGroupRow) -> String {
+    match row.kind {
+        AppRowKind::Others => format!("その他 {} アプリ", row.process_count),
+        AppRowKind::Group if row.process_count > 1 => {
+            format!("{} ×{}", row.label, row.process_count)
+        }
+        AppRowKind::Group | AppRowKind::Process => row.label.clone(),
+    }
+}
+
 /// Resolves one visible row without touching GPUI state, so the grouped and
 /// flat/tree data paths can be asserted in native unit tests.
 ///
@@ -592,19 +615,34 @@ fn resolve_process_row(
     if let Some(row) = app_row {
         let process = snapshot.processes.get(row.index)?;
         let is_group = row.kind == AppRowKind::Group;
-        // A hidden member of a collapsed group highlights the group row;
-        // an expanded member has its own row and is matched exactly.
-        let selected = if is_group {
+        let is_others = row.kind == AppRowKind::Others;
+        let is_aggregate = is_group || is_others;
+        // A hidden member of a collapsed group (or of the Others summary)
+        // highlights the aggregate row; an expanded member has its own row and
+        // is matched exactly.
+        let selected = if is_aggregate {
             selected.is_some_and(|key| row.process_key == key || row.member_keys.contains(&key))
         } else {
             selected == Some(row.process_key)
         };
-        let name = if is_group {
-            format!("{} ×{}", row.label, row.process_count)
-        } else {
-            row.label.clone()
-        };
-        let row_a11y_label = if is_group {
+        // The Others row uses only a fixed, already-redacted label plus the
+        // numeric count; no raw process name can reach the canvas or AX mirror.
+        // A one-member group (including the rows revealed under Others) keeps
+        // its plain label; only multi-process groups carry the `×N` marker.
+        let name = grouped_row_display_name(row);
+        // Only multi-process group rows emphasise their `×N`; a single-member
+        // group, the Others summary and process rows keep the plain style.
+        let count_emphasis =
+            (is_group && row.process_count > 1).then(|| format!(" ×{}", row.process_count));
+        let row_a11y_label = if is_others {
+            a11y_others_row_label(
+                row.process_count,
+                row.cpu_percent,
+                row.memory_bytes,
+                row.expanded,
+                selected,
+            )
+        } else if is_group {
             a11y_group_row_label(
                 &row.label,
                 row.cpu_percent,
@@ -625,16 +663,18 @@ fn resolve_process_row(
         };
         return Some(ProcessRowView {
             key: row.process_key,
-            group_key: is_group.then(|| row.key.clone()),
+            group_key: is_aggregate.then(|| row.key.clone()),
             name,
-            command: if is_group {
+            command: if is_others {
+                "クリックで展開".to_string()
+            } else if is_group {
                 fixed.clone()
             } else {
                 process.command.clone()
             },
             cpu: row.cpu_percent,
             memory: row.memory_bytes,
-            pid_text: if is_group {
+            pid_text: if is_aggregate {
                 fixed.clone()
             } else {
                 process.key.pid.to_string()
@@ -660,7 +700,9 @@ fn resolve_process_row(
             has_children: row.has_children,
             expanded: row.expanded,
             is_group,
+            is_others,
             process_count: row.process_count,
+            count_emphasis,
             row_a11y_label,
         });
     }
@@ -700,7 +742,9 @@ fn resolve_process_row(
         has_children,
         expanded: !dashboard.is_collapsed(process.key),
         is_group: false,
+        is_others: false,
         process_count: 1,
+        count_emphasis: None,
         row_a11y_label,
     })
 }
@@ -3094,10 +3138,13 @@ impl TaskManagerApp {
         let has_children = view.has_children;
         let expanded = view.expanded;
         let is_group = view.is_group;
+        let is_aggregate = is_group || view.is_others;
         let activation = row_activation(&view, tree_view);
         // Group rows show the agent-provided PNG when one has been fetched;
         // every miss (404 / timeout / unsafe key) keeps the original dot.
-        let dot_color = if is_group {
+        // Others is an aggregate too: it never borrows a member's status colour
+        // and never resolves an icon from its reserved NUL-prefixed key.
+        let dot_color = if is_aggregate {
             palette().muted
         } else {
             status_color(view.status)
@@ -3128,15 +3175,46 @@ impl TaskManagerApp {
         } else {
             ""
         };
-        let display_name = if depth == 0 {
-            format!("{marker}{}", view.name)
+        let name_prefix = if depth == 0 {
+            marker.to_string()
         } else {
-            format!(
-                "{}{}{}",
-                "  ".repeat(depth.saturating_sub(1)),
-                marker,
-                view.name
-            )
+            format!("{}{}", "  ".repeat(depth.saturating_sub(1)), marker)
+        };
+        let display_name = format!("{name_prefix}{}", view.name);
+        // Multi-process group rows draw `×N` as a bold accent-coloured run so
+        // the process count stands out on the canvas. The plain text is kept
+        // byte-for-byte (AX mirror / DOM proof / export contracts unchanged).
+        let name_text_color = if selected {
+            palette().text
+        } else {
+            palette().subtext
+        };
+        let name_element = if let Some(emphasis) = view.count_emphasis.as_deref() {
+            let base = view.name.strip_suffix(emphasis).unwrap_or(&view.name);
+            div()
+                .min_w_0()
+                .text_sm()
+                .text_color(rgb(name_text_color))
+                .truncate()
+                .flex()
+                .items_center()
+                .child(format!("{name_prefix}{base}"))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(rgb(palette().blue))
+                        .child(emphasis.to_string()),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .min_w_0()
+                .text_sm()
+                .text_color(rgb(name_text_color))
+                .truncate()
+                .child(display_name)
+                .into_any_element()
         };
 
         Some(
@@ -3202,18 +3280,7 @@ impl TaskManagerApp {
                         } else {
                             row_status_dot(dot_color).into_any_element()
                         })
-                        .child(
-                            div()
-                                .min_w_0()
-                                .text_sm()
-                                .text_color(rgb(if selected {
-                                    palette().text
-                                } else {
-                                    palette().subtext
-                                }))
-                                .truncate()
-                                .child(display_name),
-                        ),
+                        .child(name_element),
                 )
                 .child(
                     div()
@@ -4346,6 +4413,28 @@ fn a11y_group_row_label(
     )
 }
 
+/// Accessible name for the synthetic "その他 N アプリ" summary row (C1-GROUP).
+///
+/// Uses a fixed label plus the numeric app count, so no raw process name can
+/// enter the AX tree. The hint and expansion state are spelled out because the
+/// canvas only draws a disclosure marker.
+fn a11y_others_row_label(
+    others_count: usize,
+    cpu: f32,
+    memory_bytes: u64,
+    expanded: bool,
+    selected: bool,
+) -> String {
+    let suffix = if selected { "、選択中" } else { "" };
+    let state = if expanded { "、展開済み" } else { "" };
+    format!(
+        "その他 {others_count} アプリ、クリックで展開、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}{state}{suffix}",
+        cpu_label = format::format_cpu_percent(cpu),
+        severity = usage_severity(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+    )
+}
+
 /// Text announced by the status live region (AccessKit + DOM mirror).
 ///
 /// Error and freshness states are spelled out instead of relying on the red /
@@ -4610,9 +4699,10 @@ fn a11y_mirror_rows_html(
 /// Body rowgroup for the application-grouped view (C2-WEBDRAW).
 ///
 /// Mirrors the exact rows the canvas draws: a group row publishes its totals,
-/// process count and `aria-expanded`, while an expanded member uses the ordinary
-/// process-row markup. The AX tree therefore never reports a first-member value
-/// in place of an aggregate.
+/// process count and `aria-expanded`, the `Others` summary publishes its
+/// redacted app count plus a click hint, and an expanded member uses the
+/// ordinary process-row markup. The AX tree therefore never reports a
+/// first-member value in place of an aggregate, nor the reserved row key.
 fn a11y_mirror_group_rows_html(
     snapshot: Option<&SystemSnapshot>,
     rows: &[AppGroupRow],
@@ -4621,18 +4711,20 @@ fn a11y_mirror_group_rows_html(
     let mut html = String::from("<div role=\"rowgroup\">");
     for (index, row) in rows.iter().enumerate() {
         let is_group = row.kind == AppRowKind::Group;
-        let row_selected = if is_group {
+        let is_others = row.kind == AppRowKind::Others;
+        let is_aggregate = is_group || is_others;
+        let row_selected = if is_aggregate {
             selected.is_some_and(|key| row.process_key == key || row.member_keys.contains(&key))
         } else {
             selected == Some(row.process_key)
         };
-        if !is_group {
+        if !is_aggregate {
             let status = snapshot
                 .and_then(|snapshot| snapshot.processes.get(row.index))
                 .map(|process| process.status)
                 .unwrap_or(ProcessStatus::Unknown);
             html.push_str(&a11y_mirror_row_html(
-                &row.label,
+                &grouped_row_display_name(row),
                 status,
                 row.cpu_percent,
                 row.memory_bytes,
@@ -4655,15 +4747,25 @@ fn a11y_mirror_group_rows_html(
         } else {
             String::new()
         };
-        let label = a11y_group_row_label(
-            &row.label,
-            row.cpu_percent,
-            row.memory_bytes,
-            row.process_count,
-            row.expanded,
-            row_selected,
-        );
-        let name_text = format!("{} ×{}", row.label, row.process_count);
+        let label = if is_others {
+            a11y_others_row_label(
+                row.process_count,
+                row.cpu_percent,
+                row.memory_bytes,
+                row.expanded,
+                row_selected,
+            )
+        } else {
+            a11y_group_row_label(
+                &row.label,
+                row.cpu_percent,
+                row.memory_bytes,
+                row.process_count,
+                row.expanded,
+                row_selected,
+            )
+        };
+        let name_text = grouped_row_display_name(row);
         html.push_str(&format!(
             "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected_value}\"{current_attribute}{expanded_attribute} \
              aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
@@ -8800,5 +8902,209 @@ mod tests {
         // Three raw process rows are exported; no aggregate row / count marker.
         assert_eq!(csv.matches("/usr/bin/firefox --pid=").count(), 3, "{csv}");
         assert!(!csv.contains('×'), "{csv}");
+    }
+
+    // ------------------------------------------- C3-WEBVIEW: count / Others rows
+
+    /// Snapshot with several distinct one-process apps plus one real
+    /// multi-process group. C1-GROUP folds the singles into an `Others` row
+    /// only when at least one multi-process group remains visible, so the
+    /// second part of the fixture is required for the summary to appear.
+    fn many_apps_snapshot(app_count: usize) -> SystemSnapshot {
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        let mut processes: Vec<ProcessSnapshot> = (0..app_count)
+            .map(|i| ProcessSnapshot {
+                key: ProcessKey::new((i + 1) as u32, (i + 1) as u64),
+                name: format!("app{i:02}"),
+                command: format!("/usr/bin/app{i:02} --pid={}", i + 1),
+                user: Some("user".into()),
+                status: ProcessStatus::Running,
+                threads: Some(2),
+                cpu_percent: 1.0,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            })
+            .collect();
+        processes.extend((0..2).map(|i| ProcessSnapshot {
+            key: ProcessKey::new((app_count + i + 1) as u32, (app_count + i + 1) as u64),
+            name: "browser".into(),
+            command: format!("/usr/bin/browser --pid={}", app_count + i + 1),
+            user: Some("user".into()),
+            status: ProcessStatus::Running,
+            threads: Some(4),
+            cpu_percent: 2.0,
+            memory_bytes: 200,
+            ..ProcessSnapshot::default()
+        }));
+        snapshot.processes = processes;
+        snapshot
+    }
+
+    fn many_apps_dashboard(app_count: usize) -> Dashboard {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(many_apps_snapshot(app_count));
+        dashboard
+    }
+
+    #[test]
+    fn multi_process_group_count_is_emphasised_and_single_rows_stay_plain() {
+        let dashboard = grouped_dashboard();
+        let rows = dashboard.app_group_rows();
+        let group = &rows[0];
+        assert_eq!(group.kind, AppRowKind::Group);
+        assert!(group.process_count > 1);
+        let view = resolve_process_row(&dashboard, 0, Some(group)).expect("group row");
+        assert_eq!(view.name, "firefox ×3");
+        assert_eq!(view.count_emphasis.as_deref(), Some(" ×3"));
+        assert!(view.name.ends_with(view.count_emphasis.as_deref().unwrap()));
+
+        // C1-GROUP reveals folded apps as one-member Group rows: no `×1`.
+        let one_member = AppGroupRow {
+            kind: AppRowKind::Group,
+            key: "solo".into(),
+            label: "solo".into(),
+            index: 3,
+            process_key: ProcessKey::new(50, 5),
+            member_keys: vec![ProcessKey::new(50, 5)],
+            depth: 1,
+            has_children: false,
+            expanded: false,
+            cpu_percent: 3.0,
+            memory_bytes: 42,
+            process_count: 1,
+        };
+        assert_eq!(grouped_row_display_name(&one_member), "solo");
+        let solo_view = resolve_process_row(&dashboard, 0, Some(&one_member)).expect("solo row");
+        assert_eq!(solo_view.count_emphasis, None);
+        assert_eq!(solo_view.name, "solo");
+
+        // Flat / tree rows are byte-for-byte unchanged.
+        let mut flat = grouped_dashboard();
+        flat.apply(Command::ToggleAppGrouping);
+        let flat_view = resolve_process_row(&flat, 0, None).expect("flat row");
+        assert_eq!(flat_view.count_emphasis, None);
+    }
+
+    #[test]
+    fn others_row_shows_redacted_count_hint_and_toggles_to_member_rows() {
+        let mut dashboard = many_apps_dashboard(6);
+        let rows = dashboard.app_group_rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == AppRowKind::Group && row.process_count > 1),
+            "fixture keeps a real multi-process group so Others can be folded"
+        );
+        let others_pos = rows
+            .iter()
+            .position(|row| row.kind == AppRowKind::Others)
+            .expect("Others summary row");
+        let others = &rows[others_pos];
+        assert_eq!(others.key, OTHERS_APP_GROUP_KEY);
+        assert!(others.process_count >= 2);
+        assert_eq!(others.label, "others", "fixed redacted label");
+        assert_eq!(dashboard.visible_count(), rows.len());
+
+        let view = resolve_process_row(&dashboard, others_pos, Some(others)).expect("Others view");
+        assert!(view.is_others);
+        assert!(!view.is_group);
+        assert_eq!(view.name, format!("その他 {} アプリ", others.process_count));
+        assert_eq!(view.command, "クリックで展開");
+        assert_eq!(view.count_emphasis, None);
+        assert_eq!(view.pid_text, "—");
+        assert_eq!(view.group_key.as_deref(), Some(OTHERS_APP_GROUP_KEY));
+        assert_eq!(
+            row_activation(&view, false),
+            RowActivation::ToggleGroup(OTHERS_APP_GROUP_KEY.into())
+        );
+        assert!(view.row_a11y_label.contains("クリックで展開"));
+        assert!(
+            view.row_a11y_label
+                .contains(&format!("その他 {} アプリ", others.process_count))
+        );
+        assert!(
+            !view.row_a11y_label.contains('\0'),
+            "reserved key must never reach the AX tree"
+        );
+
+        let before = rows.len();
+        dashboard.apply(Command::ToggleAppGroup(others.key.clone()));
+        assert!(dashboard.is_app_group_expanded(OTHERS_APP_GROUP_KEY));
+        let expanded = dashboard.app_group_rows();
+        assert!(expanded.len() > before, "expansion reveals the folded apps");
+        assert_eq!(dashboard.visible_count(), expanded.len());
+        let revealed: Vec<&AppGroupRow> = expanded
+            .iter()
+            .filter(|row| row.kind == AppRowKind::Group && row.depth == 1)
+            .collect();
+        assert!(!revealed.is_empty());
+        for child in revealed {
+            assert_eq!(child.process_count, 1);
+            let child_view = resolve_process_row(&dashboard, 0, Some(child)).expect("revealed row");
+            assert!(!child_view.name.contains('×'), "no ×1 on revealed rows");
+            assert_eq!(child_view.count_emphasis, None);
+        }
+    }
+
+    #[test]
+    fn ax_mirror_exposes_others_count_hint_and_expansion_without_raw_key() {
+        let dashboard = many_apps_dashboard(6);
+        let snapshot = dashboard.snapshot().cloned();
+        let rows = dashboard.app_group_rows();
+        let others = rows
+            .iter()
+            .find(|row| row.kind == AppRowKind::Others)
+            .expect("Others row");
+        let html =
+            a11y_mirror_grouped_data_html(snapshot.as_ref(), &rows, None, SortSpec::default());
+        assert_eq!(html.matches("role=\"row\"").count(), rows.len() + 1);
+        assert!(
+            html.contains(&format!("その他 {} アプリ", others.process_count)),
+            "{html}"
+        );
+        assert!(html.contains("クリックで展開"), "{html}");
+        assert!(html.contains("aria-expanded=\"false\""), "{html}");
+        assert!(
+            !html.contains('\0'),
+            "reserved key must never reach the DOM"
+        );
+        assert!(
+            !grouped_row_display_name(others).contains("app"),
+            "Others uses the fixed redacted label, never a process name"
+        );
+    }
+
+    #[test]
+    fn others_rows_keep_dom_proof_rows_export_and_redact_contracts() {
+        let snapshot = many_apps_snapshot(6);
+        let dashboard = many_apps_dashboard(6);
+        let rows = dashboard.app_group_rows();
+        assert!(rows.iter().any(|row| row.kind == AppRowKind::Others));
+
+        let (_, _, _, proof) = run_sse_steps(|app| {
+            app.dashboard.ingest(many_apps_snapshot(6));
+        });
+        let rows_field = proof
+            .split(';')
+            .find(|field| field.starts_with("rows="))
+            .expect("rows field must be present");
+        assert_eq!(rows_field, format!("rows={}", rows.len()));
+        assert!(
+            !proof.contains('\0'),
+            "reserved key must never reach DOM proof"
+        );
+        assert!(
+            !proof.contains("Others"),
+            "no internal kind name in DOM proof"
+        );
+
+        // Export still receives `snapshot.processes` directly: one raw row per
+        // process, no aggregate row and no `×N` marker.
+        let csv = export_document_with_token(&snapshot, ExportFormat::Csv, None, None);
+        let json = export_document_with_token(&snapshot, ExportFormat::Json, None, None);
+        assert_eq!(csv.matches("/usr/bin/app").count(), 6, "{csv}");
+        assert!(!csv.contains('×'), "{csv}");
+        assert!(!csv.contains("その他"), "{csv}");
+        assert!(!json.contains("その他"), "{json}");
+        assert!(!json.contains(OTHERS_APP_GROUP_KEY), "{json}");
     }
 }
