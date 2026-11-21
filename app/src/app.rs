@@ -74,9 +74,11 @@ impl tm_core::icon::IconFs for NativeIconFs {
             .into_iter()
             .flatten()
             .filter_map(Result::ok)
-            // `.desktop` files are regular files at depth 1; this also follows
-            // symlinked entries, which `DirEntry::file_type()` would not.
-            .filter(|entry| entry.path().is_file())
+            // Callers use this for both `.desktop` files and icon theme
+            // directories, so keep regular files *and* directories. Following
+            // `path().is_file()`/`is_dir()` also covers symlinked entries,
+            // which `DirEntry::file_type()` would not.
+            .filter(|entry| entry.path().is_file() || entry.path().is_dir())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect()
     }
@@ -446,7 +448,7 @@ impl TaskManagerApp {
                 data_dirs.as_deref(),
                 &[],
             ),
-            NativeIconFs,
+            crate::app::NativeIconFs,
         );
         Self {
             dashboard,
@@ -4596,6 +4598,35 @@ mod tests {
         let csv = tm_core::export::snapshot_to_csv(&snapshot, &ids);
         for line in csv.lines() {
             assert_eq!(line.matches(',').count(), 11, "12 columns: {line}");
+        }
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn real_xdg_icons_resolve_for_firefox_and_chrome() {
+        // Runtime proof against the live host: the group-key → .desktop → PNG
+        // chain must produce a real file, otherwise the UI silently falls back
+        // to the status dot (which the user reported as "no icon").
+        let mut resolver = tm_core::icon::AppIconResolver::new(
+            tm_core::icon::icon_search_env(
+                std::env::var("HOME").ok().as_deref(),
+                std::env::var("XDG_DATA_HOME").ok().as_deref(),
+                std::env::var("XDG_DATA_DIRS").ok().as_deref(),
+                &[],
+            ),
+            crate::app::NativeIconFs,
+        );
+        for key in ["firefox", "chrome"] {
+            let path = resolver.resolve(key);
+            assert!(path.is_some(), "no icon resolved for {key}");
+            let path = path.expect("icon path");
+            assert!(path.is_file(), "resolved path is not a file: {path:?}");
+            assert_eq!(
+                path.extension()
+                    .and_then(|v| v.to_str())
+                    .map(|v| v.eq_ignore_ascii_case("png")),
+                Some(true),
+                "expected a PNG icon, got {path:?}"
+            );
         }
     }
 }
