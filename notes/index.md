@@ -23,6 +23,7 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 - [agent-runtime-verification.md](agent-runtime-verification.md) — `tm-agent` 実動検証（TCP ソケット経由の主要エンドポイント、loopback / 認証の Runtime Proof と制約）
 - [native-runtime-verification.md](native-runtime-verification.md) — ネイティブ GPUI アプリの Wayland 実起動（ウィンドウ生成の Runtime Proof）
 - [environment-verification.md](environment-verification.md) — 実機環境・証跡の確認記録（HiDPI / スクリーンショット鮮度 / ローカルブランチ整理、事実と未確認事項）
+- [operations.md](operations.md) — 運用 Runbook（/metrics 一覧と推奨アラート、リリース時バージョン更新、破損設定の復元）
 - [hidpi-verification.md](hidpi-verification.md) — Web シェルの HiDPI（DPR 1 / DPR 2）描画をヘッドレス Chrome + CDP で確認した証跡（古い `tick=0` 記録には解消注記あり）
 - [web-ime-runtime-verification.md](web-ime-runtime-verification.md) — ブラウザ版日本語 IME の実ヘッドレス Chrome 検証（composition / 確定 / Escape 破棄、32 チェック成功）
 - [web-settings-runtime-verification.md](web-settings-runtime-verification.md) — Web 設定永続化の Runtime Proof（localStorage 保存・再読込・破損退避・復元）

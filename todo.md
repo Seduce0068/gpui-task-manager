@@ -1453,10 +1453,10 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第2次）
 
-- [ ] /metrics のメトリクス意味・エラー率算出式・SSE 枠アラート閾値が
+- [x] /metrics のメトリクス意味・エラー率算出式・SSE 枠アラート閾値が（notes/operations.md を作成）
       未文書化。loopback 限定のため外部監視基盤から直接取得できない
       制約と relay 手順も Runbook に記載。根拠 R1-OPSGAP。
-- [ ] リリース時のバージョン更新チェックリスト／Runbook が無い
+- [x] リリース時のバージョン更新チェックリスト／Runbook が無い（notes/operations.md を作成）
       （Cargo.toml×2 / README:17 / DEB 検証 / 差し戻し）。根拠 R1-OPSGAP。
 
 ## 完了
