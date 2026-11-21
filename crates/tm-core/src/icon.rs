@@ -367,7 +367,10 @@ fn is_png(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
 }
 
-#[cfg(test)]
+// The resolver targets the freedesktop/XDG layout, whose fixtures use POSIX
+// paths. Keep these host-specific tests on Linux; Windows CI only type-checks
+// and exercises the portable crates (AGENTS §5).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
