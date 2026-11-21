@@ -136,7 +136,8 @@ TM_REDACT=1 ./target/debug/gpui-task-manager
 
 ```bash
 # Kubuntu / Linux: 最新の退避物を settings.json へ戻して起動
-backup=$(ls -1t ~/.config/gpui-task-manager/settings.json.corrupt-* | head -n 1)
+# 「最新」は退避ファイル名末尾の 16 桁 hex タイムスタンプ順（mtime ではない）
+backup=$(ls -1 ~/.config/gpui-task-manager/settings.json.corrupt-* | sort | tail -n 1)
 cp -- "$backup" ~/.config/gpui-task-manager/settings.json
 ./target/debug/gpui-task-manager
 ```

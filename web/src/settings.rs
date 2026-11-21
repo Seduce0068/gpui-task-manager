@@ -525,6 +525,13 @@ pub fn save(settings: &Settings) -> Result<(), String> {
     })();
     if result.is_err() {
         record_save_failure();
+    } else {
+        // A later successful save supersedes the earlier failure notice.
+        // Leaving PENDING_NOTICE queued would make the next persist_settings
+        // re-set the same persistent status even though storage now works, and
+        // the DOM notice node would survive until a page reload (R1-FRESH).
+        *lock(&PENDING_NOTICE) = None;
+        clear_notice_dom();
     }
     result
 }

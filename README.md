@@ -119,6 +119,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 . "$HOME/.cargo/env"
 rustc --version   # 1.95.0 以降であることを確認
 cargo --version
+
+# ブラウザ版をビルド／実動確認する場合のみ（wasm ターゲットと trunk 0.22.1）
+rustup target add wasm32-unknown-unknown
+cargo install trunk --version 0.22.1 --locked
 ```
 
 ### まず試す（最短）
@@ -146,8 +150,9 @@ bash scripts/check.sh        # fmt + clippy + test + wasm + web clippy/test + de
 前提パッケージ（Ubuntu 系）:
 
 ```bash
-sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
-  libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
+sudo apt install -y gcc g++ clang pkg-config libfontconfig-dev libfreetype-dev \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+  libssl-dev libzstd-dev libvulkan1
 ```
 
 Vulkan 対応 GPU ドライバが必要です（GTX 1660 SUPER + NVIDIA proprietary で検証）。
@@ -346,14 +351,22 @@ http://127.0.0.1:8092/?agent=http://127.0.0.1:18788#token=<token>
 
 ```bash
 # Kubuntu / Linux: 最新の退避物を settings.json へ戻して起動
-backup=$(ls -1t ~/.config/gpui-task-manager/settings.json.corrupt-* | head -n 1)
+# 退避ファイル名末尾の 16 桁 hex タイムスタンプ順が「最新」の定義（mtime ではない）
+backup=$(ls -1 ~/.config/gpui-task-manager/settings.json.corrupt-* | sort | tail -n 1)
 cp -- "$backup" ~/.config/gpui-task-manager/settings.json
 ./target/debug/gpui-task-manager
 ```
 
+退避物は「破損を検出した値そのもの」です。正常だった設定のスナップショットでは
+ないため、そのままコピーすると再読込時に再度 corrupt 経路へ送られ既定値に縮退
+します。必要なフィールドだけを抽出し、型が不正なフィールドは既定値へ置き換えて
+から現行 JSON へマージしてください。
+
 - ブラウザ版: DevTools（Edge なら F12 →「アプリ」→「ローカルストレージ」）で
-  `gpui-task-manager.settings.corrupt.<timestamp>` の値をコピーし、
-  `gpui-task-manager.settings` の値へ貼り付けて上書きし、ページを再読込します。
+  `gpui-task-manager.settings.corrupt.<timestamp>` の値をコピーし、型不正な
+  フィールドを修正したうえで `gpui-task-manager.settings` の値へ貼り付けて
+  上書きし、ページを再読込します。最新の退避物はキー末尾の `<timestamp>`
+  （16 桁 hex）が最大のものを選びます（mtime 順ではありません）。
 
 ```text
 gpui-task-manager.settings.corrupt.<timestamp>  →  gpui-task-manager.settings
@@ -416,8 +429,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **614 passed / 0 failed**（core 176 / viewmodel 94 / platform 44 / agent 153 / app 120、2026-11-20 実測） |
-| web ユニットテスト | **208 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
+| `cargo test --workspace` | **615 passed / 0 failed**（core 176 / viewmodel 94 / platform 44 / agent 153 / app 120、2026-11-20 実測） |
+| web ユニットテスト | **209 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |

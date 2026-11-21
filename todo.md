@@ -1437,6 +1437,28 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
   制約、Retry-After/403 バイト不変の 4 観点を実コードで確認し、
   新規問題なし（findings: []）。共有化リファクタは採用を確定。
 
+### 優先度: 中 — バックログ補充コンボ R6 2026-11-21（第2次）
+
+- [x] SSE error フレーム連続でポーリングが無期限停止。Connecting 中も
+      watchdog でガードを解放（sse_connect_started_at と純粋ヘルパ＋
+      回帰テスト）。根拠 R1-FRESH。
+- [x] 保存失敗通知が再保存成功後も残存。save() 成功時に PENDING_NOTICE
+      と DOM ノードをクリア。根拠 R1-FRESH。
+- [x] 破損設定の「最新の退避物」判定がコード（ファイル名 hex 順）と
+      手順（mtime 順）で不一致。README/SECURITY をファイル名順へ修正
+      し、退避物は破損値そのものなので型修正してマージする旨を追記。
+      根拠 R1-OPSGAP。
+- [x] README クイックスタートに wasm target と trunk 0.22.1 の導入が
+      欠落、apt 依存が CI と不一致。両方を追記／整合。根拠 R1-OPSGAP。
+
+### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第2次）
+
+- [ ] /metrics のメトリクス意味・エラー率算出式・SSE 枠アラート閾値が
+      未文書化。loopback 限定のため外部監視基盤から直接取得できない
+      制約と relay 手順も Runbook に記載。根拠 R1-OPSGAP。
+- [ ] リリース時のバージョン更新チェックリスト／Runbook が無い
+      （Cargo.toml×2 / README:17 / DEB 検証 / 差し戻し）。根拠 R1-OPSGAP。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）
