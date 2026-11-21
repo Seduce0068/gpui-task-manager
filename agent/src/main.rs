@@ -94,6 +94,10 @@ const MAX_STREAMS: usize = 2;
 /// The value is a fixed constant: no request-derived data reaches the header.
 const RETRY_AFTER_SECS: u64 = 5;
 
+/// `/api/v1/stream` busy body: the shared reason with a stream-specific prefix.
+/// Defined once so the handler and its cross-check test cannot drift apart.
+const STREAM_BUSY_REASON: &str = "ストリーミング同時接続数が上限に達しました";
+
 /// Delay between two `snapshot` events on [`STREAM_PATH`].
 const STREAM_INTERVAL: Duration = Duration::from_millis(1000);
 
@@ -2045,10 +2049,7 @@ where
         let mut response = http::Response::json(
             503,
             "Service Unavailable",
-            error_body(
-                ErrorCode::Busy,
-                "ストリーミング同時接続数が上限に達しました",
-            ),
+            error_body(ErrorCode::Busy, STREAM_BUSY_REASON),
         );
         // Same busy-hint contract as the MAX_CONNECTIONS 503: the numeric
         // `Retry-After` is emitted even without an Origin, and its CORS
@@ -4717,14 +4718,13 @@ mod tests {
         ))
         .expect("ordinary busy body");
         assert_eq!(ordinary["message"], tm_core::SERVICE_UNAVAILABLE_REASON);
+        assert!(STREAM_BUSY_REASON.ends_with(tm_core::SERVICE_UNAVAILABLE_REASON));
         let stream = serde_json::from_slice::<serde_json::Value>(&error_body(
             ErrorCode::Busy,
-            "ストリーミング同時接続数が上限に達しました",
+            STREAM_BUSY_REASON,
         ))
         .expect("stream busy body");
-        assert!(stream["message"]
-            .as_str()
-            .is_some_and(|text| text.ends_with(tm_core::SERVICE_UNAVAILABLE_REASON)));
+        assert_eq!(stream["message"], STREAM_BUSY_REASON);
     }
 
     #[test]

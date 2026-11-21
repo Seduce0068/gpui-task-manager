@@ -1487,6 +1487,24 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       クランプ値が version:9 のまま保存され将来ビルドの意味が壊れる
       （speculative）。根拠 R1-FWDCOMPAT。
 
+### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第4次）
+
+- [x] wire.rs の doc が SSE 503 本文の単一起源を主張するが実態は別リテラル。
+      doc を「SSE は接頭辞付き派生」へ訂正し、STREAM_BUSY_REASON を定数化して
+      ハンドラとテストを接続。根拠 R1-APIDRIFT。
+- [x] web::agent::SNAPSHOT_LIMIT の pub alias が自己言及的テストのみ。alias
+      を URL 生成へ接続し自己言及テストを削除。根拠 R1-APIDRIFT。
+- [x] settings_policy の clamp_interval_only / interpretable_version /
+      merge_version が外部未使用で re-export されていた。pub(crate) へ格下げ。
+      根拠 R1-APIDRIFT。
+
+### メモ — ドッグフード 2026-11-21
+
+- R1-E2E は tm-agent の --once / SSE / /healthz / /api/v1/snapshot /
+  /api/v1/stream / /metrics、Retry-After と CORS expose、設定の破損→退避→
+  復元、export のトークン・識別子非露出を通しで実動検証し、発見なし
+  （findings: []）。直近の変更は実旅程で成立している。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

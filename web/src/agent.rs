@@ -38,15 +38,8 @@ use gpui::BackgroundExecutor;
 use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
-use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT, SNAPSHOT_PATH};
+use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, SNAPSHOT_PATH};
 use tm_core::{MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION};
-
-/// Number of processes requested from the agent.
-///
-/// The agent clamps this to its own hard upper bound, and it sorts by CPU before
-/// truncating, so the table always receives the busiest processes first. Defined
-/// once in `tm_core::wire` and shared with the agent's truncation default.
-pub use tm_core::wire::DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT;
 
 /// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
 /// heap from a broken or malicious loopback agent.
@@ -983,7 +976,7 @@ fn check_schema_version(version: u32) -> Result<(), FetchError> {
 /// Both the path and the limit come from the single `tm_core::wire` contract,
 /// so a change on the agent side cannot leave this builder behind.
 fn snapshot_url(endpoint: &str) -> String {
-    format!("{endpoint}{SNAPSHOT_PATH}?limit={DEFAULT_SNAPSHOT_LIMIT}")
+    format!("{endpoint}{SNAPSHOT_PATH}?limit={SNAPSHOT_LIMIT}")
 }
 
 /// Path of the agent's long-lived server-sent-events endpoint (R1-I14).
@@ -1634,9 +1627,8 @@ mod tests {
         // Path and limit come from the shared wire constants, not literals.
         assert_eq!(
             url,
-            format!("http://127.0.0.1:18787{SNAPSHOT_PATH}?limit={DEFAULT_SNAPSHOT_LIMIT}")
+            format!("http://127.0.0.1:18787{SNAPSHOT_PATH}?limit={SNAPSHOT_LIMIT}")
         );
-        assert_eq!(SNAPSHOT_LIMIT, DEFAULT_SNAPSHOT_LIMIT);
         assert!(!url.contains("token"));
     }
 

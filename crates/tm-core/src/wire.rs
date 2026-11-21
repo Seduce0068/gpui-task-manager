@@ -16,10 +16,12 @@ use crate::SystemSnapshot;
 
 /// Shared reason for a `503 Busy` response when a connection limit is reached.
 ///
-/// The agent uses this as the body message for both the ordinary-connection
-/// and SSE-stream caps; the browser shows the same fixed, actionable guidance
-/// because it deliberately never echoes the server body. Keeping the phrase in
-/// one place prevents the two agent call sites and the web hint from drifting.
+/// The ordinary-connection cap uses this verbatim as its body message; the
+/// SSE-stream cap derives a prefixed variant (`ストリーミング<reason>`) in the
+/// agent because `concat!` cannot expand a `const`. The browser shows fixed
+/// actionable guidance from this phrase and deliberately never echoes the
+/// server body. Keeping the shared phrase here lets both agent call sites and
+/// the web hint be cross-checked against one definition.
 pub const SERVICE_UNAVAILABLE_REASON: &str = "同時接続数が上限に達しました";
 
 /// Path of the snapshot endpoint (GET, bearer token required).
