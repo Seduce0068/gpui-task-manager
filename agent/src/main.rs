@@ -28,8 +28,11 @@ mod http;
 mod private_dir;
 mod telemetry;
 
+use std::cell::RefCell;
+use std::fs;
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -38,10 +41,11 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::json;
 use tm_core::demo::DemoProbe;
+use tm_core::icon::{icon_search_env, AppIconResolver, IconFs};
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
 use tm_core::wire::{
-    ErrorCode, DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH, STREAM_PATH,
+    ErrorCode, DEFAULT_SNAPSHOT_LIMIT, ICON_PATH, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH, STREAM_PATH,
 };
 use tm_core::FORBIDDEN_GUIDANCE;
 use tm_platform::NativeProbe;
@@ -61,6 +65,22 @@ macro_rules! eprintln_safe {
 const HEALTH_PATH: &str = "/healthz";
 /// Metrics endpoint (no authentication; counters/gauges only, no machine data).
 const METRICS_PATH: &str = "/metrics";
+
+/// Hard cap on a single icon response body (256 KiB).
+///
+/// Icon files are read from the local filesystem by `[ICON_PATH]`; the cap
+/// protects the wasm heap through the whole loopback path. A file that exceeds
+/// it is treated exactly like a missing icon, never echoed to the client.
+const MAX_ICON_BYTES: u64 = 256 * 1024;
+
+/// Fixed error text for an icon request without a `key` parameter.
+const ICON_KEY_REQUIRED_MESSAGE: &str = "key を指定してください";
+/// Fixed error text for a malformed or unsafe `key` parameter.
+const ICON_KEY_INVALID_MESSAGE: &str = "指定された key は利用できません";
+/// Fixed error text when a well-formed key has no resolvable PNG.
+const ICON_NOT_FOUND_MESSAGE: &str = "アプリアイコンが見つかりません";
+/// Fixed error text for an internal icon-resolution failure.
+const ICON_INTERNAL_MESSAGE: &str = "アイコンを取得できませんでした";
 
 // `SNAPSHOT_PATH` / `STREAM_PATH`, `DEFAULT_SNAPSHOT_LIMIT` /
 // `MAX_SNAPSHOT_LIMIT` and `ErrorCode` are defined once in `tm_core::wire` and
@@ -1211,6 +1231,69 @@ fn once_json(
     serde_json::to_string(&envelope).map_err(|err| format!("JSON への変換に失敗しました: {err}"))
 }
 
+/// Filesystem adapter for [`AppIconResolver`].
+///
+/// `tm-core`'s resolver is deliberately I/O-free so it stays wasm-portable;
+/// the real `std::fs` observation lives here. Every path handed to these
+/// methods originates from a validated group key or an XDG search root, never
+/// from raw process arguments or an unchecked request parameter.
+struct AgentIconFs;
+
+impl IconFs for AgentIconFs {
+    fn list_dir(&self, dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            // `.desktop` entries are regular files at depth 1. Following
+            // symlinks here matches `Path::is_file()` used by the resolver.
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn read_to_string(&self, path: &Path) -> Option<String> {
+        fs::read_to_string(path).ok()
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        fs::metadata(path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+    }
+}
+
+/// Builds the icon resolver once, from XDG-style environment inputs.
+///
+/// Only absolute search roots reach [`AppIconResolver`]; a missing variable
+/// falls back to the XDG default inside `icon_search_env`. The filesystem is
+/// touched only through [`AgentIconFs`].
+fn build_icon_resolver() -> AppIconResolver {
+    let home = std::env::var("HOME").ok();
+    let data_home = std::env::var("XDG_DATA_HOME").ok();
+    let data_dirs = std::env::var("XDG_DATA_DIRS").ok();
+    AppIconResolver::new(
+        icon_search_env(
+            home.as_deref(),
+            data_home.as_deref(),
+            data_dirs.as_deref(),
+            &[],
+        ),
+        AgentIconFs,
+    )
+}
+
+thread_local! {
+    /// Per-connection-thread icon resolver.
+    ///
+    /// `tm_core::icon::IconFs` is deliberately not `Send`, so `AppIconResolver`
+    /// cannot live in the shared `Arc<SharedState>` that worker threads carry.
+    /// A thread-local keeps its positive/negative path cache for the lifetime of
+    /// the connection thread; the Web client caches PNG bytes per key as well,
+    /// so a fresh resolver on a new thread costs at most one directory scan.
+    static ICON_RESOLVER: RefCell<AppIconResolver> = RefCell::new(build_icon_resolver());
+}
+
 /// State shared by connection threads.
 ///
 /// `SystemProbe` is `Send`, so one probe can be shared behind a mutex. Sampling
@@ -1510,7 +1593,11 @@ fn spawn_connection(
                     // for a slow sample (including the 250 ms warm-up sleep) — R40 audit.
                     // The SSE path samples the shared probe inside its own loop and
                     // never invokes this closure.
-                    let needs_probe = request.path == SNAPSHOT_PATH;
+                    // The icon endpoint samples the live snapshot too, so it
+                    // can reject keys that are not present right now. Both
+                    // paths share the one serial probe behind this mutex.
+                    let needs_probe =
+                        request.path == SNAPSHOT_PATH || request.path == ICON_PATH;
                     let mut guard = if needs_probe {
                         // Rust の Mutex はパニックで poison する可能性があるが、
                         // プローブ側の致命的失敗でエージェント全体を止めないよう
@@ -1813,6 +1900,16 @@ fn route(
             ),
         },
         METRICS_PATH => metrics_response(context.metrics, context.active, context.streams),
+        ICON_PATH => match probe {
+            Some(probe) => icon_response(request, probe, token, context.request_id),
+            // The caller acquires the probe for both snapshot and icon paths;
+            // reaching here means the lock was not passed through.
+            None => http::Response::json(
+                500,
+                "Internal Server Error",
+                error_body(ErrorCode::Internal, ICON_INTERNAL_MESSAGE),
+            ),
+        },
         _ => http::Response::json(
             404,
             "Not Found",
@@ -2414,6 +2511,112 @@ fn snapshot_response(
     }
 }
 
+/// `/api/v1/icon`: authenticated PNG bytes for one redacted group key.
+///
+/// The key is checked three times before any filesystem observation: the
+/// bearer token (same path as `/api/v1/snapshot`), the safe-component rules in
+/// [`tm_core::icon::canonical_key`], and membership in the *current* snapshot's
+/// `app_group_key` set. A key that fails any check gets a fixed error body; no
+/// request-derived string and no local path is ever logged or echoed back.
+fn icon_response(
+    request: &http::Request,
+    probe: &mut dyn SystemProbe,
+    token: &str,
+    request_id: u64,
+) -> http::Response {
+    let Some(supplied) = auth::request_token(request) else {
+        emit_auth_denied(request_id, "missing_token", &request.path);
+        return unauthorized_response();
+    };
+    if !auth::constant_time_eq(token, &supplied) {
+        emit_auth_denied(request_id, "invalid_token", &request.path);
+        return unauthorized_response();
+    }
+
+    let Some(raw_key) = http::query_param(request.query.as_deref(), "key") else {
+        return http::Response::json(
+            400,
+            "Bad Request",
+            error_body(ErrorCode::BadRequest, ICON_KEY_REQUIRED_MESSAGE),
+        );
+    };
+    // Canonicalisation rejects unsafe components (`/`, `..`, controls, …) and
+    // applies the small desktop-name alias table. The browser's validated key
+    // therefore never reaches `AppIconResolver` as a raw path component.
+    let Some(canonical_key) = tm_core::icon::canonical_key(&raw_key) else {
+        return http::Response::json(
+            400,
+            "Bad Request",
+            error_body(ErrorCode::BadRequest, ICON_KEY_INVALID_MESSAGE),
+        );
+    };
+
+    // Only keys that exist in the live snapshot may be looked up. Sampling is
+    // serial behind the probe mutex held by the caller, so this is the same
+    // snapshot the UI is about to display (no stale or invented key).
+    let snapshot = match probe.sample() {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            // The probe error detail can contain host paths: never log it.
+            emit(
+                Level::Error,
+                "probe.sample_failed",
+                request_error_fields(request_id, json!({ "phase": "icon" })),
+            );
+            return http::Response::json(
+                500,
+                "Internal Server Error",
+                error_body(ErrorCode::Internal, ICON_INTERNAL_MESSAGE),
+            );
+        }
+    };
+    let key = raw_key.trim();
+    if !snapshot
+        .processes
+        .iter()
+        .any(|process| tm_core::model::app_group_key(process).eq_ignore_ascii_case(key))
+    {
+        return icon_not_found();
+    }
+
+    let path = ICON_RESOLVER.with(|cell| cell.borrow_mut().resolve(&canonical_key));
+    let Some(path) = path else {
+        return icon_not_found();
+    };
+
+    // Size-check before reading, then again on the bytes: a concurrent file
+    // replacement cannot make this response exceed the shared body budget.
+    let readable = fs::metadata(&path)
+        .map(|metadata| metadata.is_file() && metadata.len() <= MAX_ICON_BYTES)
+        .unwrap_or(false);
+    let bytes = readable
+        .then(|| fs::read(&path).ok())
+        .flatten()
+        .filter(|bytes| !bytes.is_empty() && bytes.len() as u64 <= MAX_ICON_BYTES);
+    let Some(bytes) = bytes else {
+        // Fixed event only: the path and the key are both omitted.
+        emit(
+            Level::Warn,
+            "icon.unavailable",
+            request_error_fields(request_id, json!({})),
+        );
+        return icon_not_found();
+    };
+
+    let mut response = http::Response::json(200, "OK", bytes);
+    response.content_type = "image/png";
+    response
+}
+
+/// Fixed `404` body for every icon miss (unknown key, no PNG, unreadable file).
+fn icon_not_found() -> http::Response {
+    http::Response::json(
+        404,
+        "Not Found",
+        error_body(ErrorCode::NotFound, ICON_NOT_FOUND_MESSAGE),
+    )
+}
+
 /// Removes local identifiers from a snapshot before it is serialised.
 ///
 /// Used by `--redact` so screenshots and JSON evidence can be published without
@@ -2809,6 +3012,116 @@ mod tests {
         let body = parse_body(&response);
         assert_eq!(body["ok"], true);
         assert_eq!(body["schema_version"], 1);
+    }
+
+    #[test]
+    fn icon_endpoint_requires_the_bearer_token() {
+        let (address, handle) = spawn_demo_server(1);
+        let response = send_request(
+            address,
+            "GET /api/v1/icon?key=firefox HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        );
+        join_demo_server(handle);
+
+        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        assert!(response.contains("WWW-Authenticate: Bearer"));
+        // Neither the key nor its value reaches a fixed error body.
+        let body = parse_body(&response);
+        assert_eq!(body["code"], "unauthorized");
+        assert!(!response.contains("firefox"));
+    }
+
+    #[test]
+    fn icon_rejects_missing_and_unsafe_keys_without_echoing_them() {
+        let (address, handle) = spawn_demo_server(3);
+        let missing = send_request(
+            address,
+            "GET /api/v1/icon HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let traversal = send_request(
+            address,
+            "GET /api/v1/icon?key=..%2Fetc%2Fpasswd HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let unknown = send_request(
+            address,
+            "GET /api/v1/icon?key=no-such-app HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        join_demo_server(handle);
+
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+        assert_eq!(parse_body(&missing)["code"], "bad_request");
+        assert!(traversal.starts_with("HTTP/1.1 400"), "{traversal}");
+        assert_eq!(parse_body(&traversal)["code"], "bad_request");
+        // A safe but absent key is a plain 404, never a path or host hint.
+        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
+        assert_eq!(parse_body(&unknown)["code"], "not_found");
+        assert!(!unknown.to_lowercase().contains("passwd"));
+    }
+
+    #[test]
+    fn icon_serves_png_bytes_for_a_key_present_in_the_snapshot() {
+        // A test-owned file under the system temp dir: no repository path is
+        // touched and the file is removed before the assertion ends.
+        let path = std::env::temp_dir().join(format!(
+            "tm-agent-icon-test-{}-{}.png",
+            std::process::id(),
+            "firefox"
+        ));
+        let png = b"\x89PNG\r\n\x1a\nfixture";
+        fs::write(&path, png).expect("temp PNG fixture");
+
+        struct FixtureFs {
+            desktop_dir: std::path::PathBuf,
+            desktop: String,
+            icon_path: std::path::PathBuf,
+        }
+        impl IconFs for FixtureFs {
+            fn list_dir(&self, dir: &Path) -> Vec<String> {
+                if dir == self.desktop_dir {
+                    vec!["firefox.desktop".to_string()]
+                } else {
+                    Vec::new()
+                }
+            }
+            fn read_to_string(&self, path: &Path) -> Option<String> {
+                (path == self.desktop_dir.join("firefox.desktop")).then(|| self.desktop.clone())
+            }
+            fn is_file(&self, path: &Path) -> bool {
+                path == self.icon_path
+            }
+        }
+
+        let desktop_dir = std::path::PathBuf::from("/opt/test/applications");
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nIcon={}\n",
+            path.to_string_lossy()
+        );
+        // The resolver is thread-local; this unit test owns its test thread,
+        // so installing a fixture resolver cannot affect another test.
+        ICON_RESOLVER.with(|cell| {
+            *cell.borrow_mut() = AppIconResolver::new(
+                tm_core::icon::IconSearchEnv {
+                    applications_dirs: vec![desktop_dir.clone()],
+                    data_dirs: Vec::new(),
+                },
+                FixtureFs {
+                    desktop_dir,
+                    desktop,
+                    icon_path: path.clone(),
+                },
+            );
+        });
+        let request = http::parse_request(
+            b"GET /api/v1/icon?key=firefox HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        )
+        .expect("request head must parse");
+        let mut probe = DemoProbe::new();
+        let response = icon_response(&request, &mut probe, TEST_TOKEN, 42);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "image/png");
+        assert_eq!(response.body.as_slice(), png, "PNG bytes must be verbatim");
     }
 
     #[test]

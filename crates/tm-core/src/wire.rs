@@ -33,6 +33,13 @@ pub const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
 /// Path of the long-lived SSE endpoint (GET, bearer token required).
 pub const STREAM_PATH: &str = "/api/v1/stream";
 
+/// Path of the application-icon endpoint (GET, bearer token required).
+///
+/// Returns raw PNG bytes for a redacted application group key that is present
+/// in the agent's current snapshot. Both ends import this constant so the
+/// browser's URL builder and the agent's router cannot drift.
+pub const ICON_PATH: &str = "/api/v1/icon";
+
 /// Number of processes returned when `?limit=` is absent.
 ///
 /// The agent truncates to this many busiest processes; the browser asks for
@@ -171,6 +178,7 @@ mod tests {
     fn endpoint_paths_and_limits_are_the_single_wire_contract() {
         assert_eq!(SNAPSHOT_PATH, "/api/v1/snapshot");
         assert_eq!(STREAM_PATH, "/api/v1/stream");
+        assert_eq!(ICON_PATH, "/api/v1/icon");
         assert_eq!(DEFAULT_SNAPSHOT_LIMIT, 500);
         assert_eq!(MAX_SNAPSHOT_LIMIT, 2000);
         const { assert!(DEFAULT_SNAPSHOT_LIMIT <= MAX_SNAPSHOT_LIMIT) };

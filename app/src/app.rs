@@ -7,6 +7,7 @@
 //! executor, so the UI thread never blocks on `/proc` reads.
 
 use std::ops::Range;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -57,6 +58,41 @@ fn power_summary_text(snapshot: Option<&tm_core::SystemSnapshot>) -> String {
 /// Read-only cgroup grouping row: normalised label plus member count (R1-I12).
 fn cgroup_group_text(label: &str, members: usize) -> String {
     format!("{label} — {members} 件")
+}
+
+/// Filesystem adapter for `tm_core::icon::AppIconResolver`.
+///
+/// The resolver in `tm-core` is deliberately I/O-free (it keeps the native
+/// shell wasm-portable), so the real `std::fs` observation lives here. Every
+/// path originates from a validated group key or an XDG root, never from raw
+/// process arguments.
+struct NativeIconFs;
+
+impl tm_core::icon::IconFs for NativeIconFs {
+    fn list_dir(&self, dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            // `.desktop` files are regular files at depth 1; this also follows
+            // symlinked entries, which `DirEntry::file_type()` would not.
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn read_to_string(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+    }
+}
+
+/// The pre-existing status indicator, reused when no app icon is available.
+fn status_dot(color: u32) -> Div {
+    div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(color))
 }
 
 /// Values rendered by one row of the process table (R1-APPDRAW).
@@ -310,6 +346,9 @@ pub struct TaskManagerApp {
     dialog_confirm_focus: FocusHandle,
     /// ヘルプの「閉じる」ボタンのフォーカス先。
     help_close_focus: FocusHandle,
+    /// グループ行の装飾用ネイティブアプリアイコン。解決結果はキー単位でキャッシュされ、
+    /// 毎フレームの描画では `HashMap` 参照だけを行う（a11y ラベルには影響しない）。
+    icon_resolver: tm_core::icon::AppIconResolver,
     /// 前フレームのオーバーレイ状態。表示/非表示の遷移でフォーカスを移送・復帰する。
     last_overlay: OverlayKind,
     /// オーバーレイ表示前にフォーカスされていた要素（閉じたら復帰する）。
@@ -395,8 +434,23 @@ impl TaskManagerApp {
         }
         // Apply persisted theme.
         crate::theme::set_theme(settings.theme);
+        // XDG roots are read once at startup; the resolver keeps them fixed and
+        // caches per-group lookups so virtualised rows do not rescan every frame.
+        let home = std::env::var("HOME").ok();
+        let data_home = std::env::var("XDG_DATA_HOME").ok();
+        let data_dirs = std::env::var("XDG_DATA_DIRS").ok();
+        let icon_resolver = tm_core::icon::AppIconResolver::new(
+            tm_core::icon::icon_search_env(
+                home.as_deref(),
+                data_home.as_deref(),
+                data_dirs.as_deref(),
+                &[],
+            ),
+            NativeIconFs,
+        );
         Self {
             dashboard,
+            icon_resolver,
             probe: Arc::new(Mutex::new(probe)),
             sampling_in_flight: false,
             filter_editing: false,
@@ -1887,6 +1941,13 @@ impl TaskManagerApp {
         let process_count = view.process_count;
         let is_group = view.is_group;
         let collapsed = !expanded;
+        // Group rows show the app's native icon when a .desktop entry resolves;
+        // every other row (and an unresolved group) keeps the status dot. The
+        // icon is decorative: `aria_label` below stays the existing group label.
+        let app_icon = group_key
+            .as_deref()
+            .and_then(|key| self.icon_resolver.resolve(key));
+        let dot_color = status_color(status);
         // All process users collapse to "user" under --redact, matching the
         // agent snapshot (not just the login account) — R41 audit. Group rows
         // already carry the fixed "—" and are left untouched.
@@ -1973,13 +2034,18 @@ impl TaskManagerApp {
                         .items_center()
                         .gap_2()
                         .overflow_hidden()
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h(px(6.0))
-                                .rounded_full()
-                                .bg(rgb(status_color(status))),
-                        )
+                        .child(if let Some(path) = app_icon {
+                            // `img(PathBuf)` loads via GPUI's global image cache;
+                            // if the PNG still fails to decode, fall back to the
+                            // same status dot instead of an empty hole.
+                            img(path)
+                                .w(px(16.0))
+                                .h(px(16.0))
+                                .with_fallback(move || status_dot(dot_color).into_any_element())
+                                .into_any_element()
+                        } else {
+                            status_dot(dot_color).into_any_element()
+                        })
                         .child(
                             div()
                                 .text_sm()
@@ -4447,6 +4513,27 @@ mod tests {
         assert!(row.contains(concat!(".aria_keyshortcuts(", "\"Enter, Space\")")));
         // Tree nodes keep their original select + toggle behaviour.
         assert!(row.contains(concat!("Command::Toggle", "TreeNode(key)")));
+    }
+
+    #[test]
+    fn group_row_icon_is_optional_decorative_and_keeps_a11y_label() {
+        // GPUI's element internals are private here, so lock the wiring at the
+        // source level alongside the existing row-semantics test.
+        let source = include_str!("app.rs");
+        let row = source
+            .split("fn process_row(")
+            .nth(1)
+            .expect("process_row must exist")
+            .split("fn details_panel(")
+            .next()
+            .expect("process_row slice must end at details_panel");
+        assert!(row.contains(".as_deref()"));
+        assert!(row.contains("img(path)"));
+        assert!(row.contains(".w(px(16.0))"));
+        assert!(row.contains(".h(px(16.0))"));
+        assert!(row.contains(".with_fallback("));
+        assert!(row.contains("status_dot(dot_color)"));
+        assert!(row.contains("a11y_group_row_label("));
     }
 
     #[test]

@@ -26,6 +26,7 @@
 //!   exceeds the cap), so a superseded fetch cannot keep pinning up to 8 MiB
 //!   of the wasm heap (R4-A02).
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -38,12 +39,25 @@ use gpui::BackgroundExecutor;
 use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
-use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, SNAPSHOT_PATH};
+use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, ICON_PATH, SNAPSHOT_PATH};
 use tm_core::{MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION};
+use web_time::Instant;
 
 /// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
 /// heap from a broken or malicious loopback agent.
 pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Hard cap on one application-icon PNG (256 KiB), mirrored by the agent.
+pub const MAX_ICON_BYTES: u64 = 256 * 1024;
+
+/// Cooldown after a transient icon failure. Missing icons are cached as absent
+/// indefinitely (they cannot change without an install), but a timeout or a
+/// busy agent is retried no more often than this so the sampler cannot turn a
+/// stalled icon endpoint into one request per tick.
+const ICON_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
+/// Shorter cooldown for a request rejected by the dedicated single-flight gate:
+/// another caller may finish it within a frame or two.
+const ICON_BUSY_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Deadline for one whole snapshot fetch (request headers **and** body read).
 ///
@@ -480,6 +494,34 @@ impl Drop for FetchGuard {
     }
 }
 
+/// Per-key icon cache plus a dedicated single-flight gate.
+///
+/// Snapshot polling and icon loading are independent traffic: giving icons
+/// their own gate means a stalled icon request can never make the sampler's
+/// next poll fail with [`FetchError::Busy`] (and vice versa). The cache stores
+/// only redaction-safe group keys and PNG bytes — no endpoint, token or agent
+/// text — so it cannot widen the DOM-proof / redaction boundary.
+#[derive(Debug, Default)]
+struct IconCacheState {
+    entries: RwLock<HashMap<String, IconCacheEntry>>,
+    gate: FetchGate,
+}
+
+#[derive(Clone, Debug)]
+enum IconCacheEntry {
+    /// PNG bytes already fetched for this key.
+    Found(Arc<Vec<u8>>),
+    /// A definitive miss (unsafe key or `400`/`404`): keep the status dot.
+    Absent,
+    /// A transient failure is not retried until this instant.
+    RetryAt(Instant),
+}
+
+/// Whether a cache entry may still be used at `now` (pure, testable).
+fn icon_entry_is_live(entry: &IconCacheEntry, now: Instant) -> bool {
+    !matches!(entry, IconCacheEntry::RetryAt(at) if now >= *at)
+}
+
 /// Monotonic epoch that invalidates poll snapshots superseded by SSE.
 ///
 /// Distinct from [`SharedConfig::generation`]: a token/endpoint reload changes
@@ -567,6 +609,8 @@ pub struct AgentClient {
     poll_generation: PollGeneration,
     /// Number of live [`PollSuspendGuard`]s held against this client.
     poll_suspensions: Arc<AtomicUsize>,
+    /// Independent cache and single-flight permit for `/api/v1/icon`.
+    icons: IconCacheState,
 }
 
 impl AgentClient {
@@ -583,6 +627,7 @@ impl AgentClient {
             gate: FetchGate::default(),
             poll_generation: PollGeneration::new(),
             poll_suspensions: Arc::new(AtomicUsize::new(0)),
+            icons: IconCacheState::default(),
         }
     }
 
@@ -711,6 +756,101 @@ impl AgentClient {
             || self.config.generation() != generation,
         )
         .await
+    }
+
+    /// Fetches one application icon as PNG bytes, with a per-key cache.
+    ///
+    /// `Ok(Some(bytes))` means the agent served a PNG; `Ok(None)` covers every
+    /// case where the caller should keep the existing status dot (invalid key,
+    /// `400`/`404`, or a transient failure inside its cooldown). Errors are
+    /// still typed for callers that want diagnostics, but the shell deliberately
+    /// ignores them — an icon is decorative and must never affect the DOM proof.
+    /// The dedicated [`FetchGate`] in [`IconCacheState`] keeps this request off
+    /// the snapshot poller's single-flight permit.
+    pub async fn fetch_app_icon(&self, key: &str) -> Result<Option<Arc<Vec<u8>>>, FetchError> {
+        // Reuse the resolver's validation instead of a second charset table;
+        // aliases are deliberately NOT applied here because the agent checks
+        // membership against the *original* redacted group key.
+        if tm_core::icon::canonical_key(key).is_none() {
+            return Ok(None);
+        }
+        match self.cached_icon(key) {
+            Some(IconCacheEntry::Found(bytes)) => return Ok(Some(bytes)),
+            Some(IconCacheEntry::Absent) | Some(IconCacheEntry::RetryAt(_)) => return Ok(None),
+            None => {}
+        }
+        let _permit = match self.icons.gate.try_acquire() {
+            Some(permit) => permit,
+            None => return Err(FetchError::Busy),
+        };
+        // A second caller for the same key may have filled the cache while we
+        // waited for the permit (the gate is non-blocking).
+        match self.cached_icon(key) {
+            Some(IconCacheEntry::Found(bytes)) => return Ok(Some(bytes)),
+            Some(IconCacheEntry::Absent) | Some(IconCacheEntry::RetryAt(_)) => return Ok(None),
+            None => {}
+        }
+
+        let config = self.config.snapshot();
+        let deadline = self.executor.timer(FETCH_TIMEOUT);
+        let result = with_deadline(fetch_icon_once(&config, &*self.http, key), deadline).await;
+        match result {
+            Ok(Some(shared)) => {
+                self.record_icon(key, IconCacheEntry::Found(Arc::clone(&shared)));
+                Ok(Some(shared))
+            }
+            Ok(None) => {
+                self.record_icon(key, IconCacheEntry::Absent);
+                Ok(None)
+            }
+            Err(error) => {
+                let cooldown = if error == FetchError::Busy {
+                    ICON_BUSY_COOLDOWN
+                } else {
+                    ICON_RETRY_COOLDOWN
+                };
+                self.record_icon(key, IconCacheEntry::RetryAt(Instant::now() + cooldown));
+                Err(error)
+            }
+        }
+    }
+
+    /// Cached entry for `key`, dropping expired cooldowns in place.
+    fn cached_icon(&self, key: &str) -> Option<IconCacheEntry> {
+        let mut entries = self
+            .icons
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let expired = entries
+            .get(key)
+            .is_some_and(|entry| !icon_entry_is_live(entry, Instant::now()));
+        if expired {
+            entries.remove(key);
+            None
+        } else {
+            entries.get(key).cloned()
+        }
+    }
+
+    fn record_icon(&self, key: &str, entry: IconCacheEntry) {
+        self.icons
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.to_string(), entry);
+    }
+
+    /// Drops every cached icon after the endpoint / token changed.
+    ///
+    /// A restarted agent may resolve different PNG bytes for the same key, so
+    /// the shell must not keep showing an icon fetched under old credentials.
+    pub fn clear_icon_cache(&self) {
+        self.icons
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     /// Subscribes to the agent's long-lived `GET /api/v1/stream` endpoint.
@@ -888,9 +1028,87 @@ fn body_exceeds_cap(used: u64, limit: u64) -> bool {
 /// wasm heap. Missing, malformed or small values are left to the streaming
 /// reader, which enforces the same cap incrementally.
 fn content_length_exceeds_cap(declared: Option<&str>) -> bool {
+    content_length_exceeds_limit(declared, MAX_SNAPSHOT_BYTES)
+}
+
+/// Same declared-length precheck with an explicit limit, shared by icons.
+fn content_length_exceeds_limit(declared: Option<&str>, limit: u64) -> bool {
     declared
         .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|len| body_exceeds_cap(len, MAX_SNAPSHOT_BYTES))
+        .is_some_and(|len| body_exceeds_cap(len, limit))
+}
+
+/// Builds the icon request URL. The token stays in the Bearer header, never in
+/// the URL or query string, and the path comes from the shared wire contract.
+fn icon_url(endpoint: &str, key: &str) -> String {
+    format!("{endpoint}{ICON_PATH}?key={}", encode_query_value(key))
+}
+
+/// Cheap PNG signature check before a byte buffer is handed to the decoder.
+fn is_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
+/// One icon request/response pipeline, with the transport injected.
+///
+/// Mirrors [`fetch_snapshot_once`]'s safety rules: loopback-only destination
+/// checked *before* the Bearer token is attached, no token in the URL, a
+/// declared-and-streamed 256 KiB body cap and fixed error strings. A `400` or
+/// `404` is a normal "no icon" result (`Ok(None)`), never a UI error.
+async fn fetch_icon_once(
+    config: &AgentConfig,
+    http: &dyn HttpClient,
+    key: &str,
+) -> Result<Option<Arc<Vec<u8>>>, FetchError> {
+    if !is_loopback_http_endpoint(&config.endpoint) {
+        return Err(FetchError::InvalidEndpoint);
+    }
+    let url = icon_url(&config.endpoint, key);
+    let mut builder = Request::builder().method("GET").uri(&url);
+    if let Some(token) = &config.token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = builder.body(AsyncBody::empty()).map_err(|error| {
+        FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
+    })?;
+    let response = http.send(request).await.map_err(|error| {
+        log::warn!(
+            "アプリアイコンの取得に失敗: {}",
+            redact_token(&format!("{error:#}"), config.token.as_deref())
+        );
+        FetchError::Connect
+    })?;
+    let status = response.status();
+    if status.as_u16() == 400 || status.as_u16() == 404 {
+        // No body is read: a fixed "no icon" result stays redaction-safe.
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(status_error_with_headers(
+            status.as_u16(),
+            response.headers(),
+        ));
+    }
+    let declared = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok());
+    if content_length_exceeds_limit(declared, MAX_ICON_BYTES) {
+        return Err(FetchError::SizeLimit);
+    }
+    let mut buffer = Vec::new();
+    read_body_abortable(
+        response.into_body(),
+        &mut buffer,
+        MAX_ICON_BYTES,
+        config.token.as_deref(),
+        || false,
+    )
+    .await?;
+    if !is_png(&buffer) {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(buffer)))
 }
 
 /// Reads `body` into `out`, stopping as soon as `aborted()` turns true or the
@@ -1630,6 +1848,90 @@ mod tests {
             format!("http://127.0.0.1:18787{SNAPSHOT_PATH}?limit={SNAPSHOT_LIMIT}")
         );
         assert!(!url.contains("token"));
+    }
+
+    #[test]
+    fn icon_url_has_no_token_and_uses_the_wire_constant() {
+        let url = icon_url("http://127.0.0.1:18787", "google-chrome");
+        assert_eq!(
+            url,
+            format!("http://127.0.0.1:18787{ICON_PATH}?key=google-chrome")
+        );
+        assert!(!url.contains("token"));
+        // Percent-encoding keeps a validated key from changing the query shape.
+        assert_eq!(
+            icon_url("http://127.0.0.1:18787", "a b"),
+            format!("http://127.0.0.1:18787{ICON_PATH}?key=a%20b")
+        );
+    }
+
+    #[test]
+    fn icon_png_signature_is_checked_before_decoding() {
+        assert!(is_png(b"\x89PNG\r\n\x1a\nrest"));
+        assert!(!is_png(b"<html>not a png</html>"));
+        assert!(!is_png(b""));
+    }
+
+    #[test]
+    fn icon_entry_cooldown_expires_but_success_and_miss_do_not() {
+        let now = Instant::now();
+        assert!(icon_entry_is_live(
+            &IconCacheEntry::Found(Arc::new(vec![1])),
+            now
+        ));
+        assert!(icon_entry_is_live(&IconCacheEntry::Absent, now));
+        assert!(!icon_entry_is_live(&IconCacheEntry::RetryAt(now), now));
+        assert!(icon_entry_is_live(
+            &IconCacheEntry::RetryAt(now + Duration::from_secs(30)),
+            now
+        ));
+    }
+
+    #[test]
+    fn icon_fetch_uses_bearer_header_and_returns_raw_png() {
+        let png = b"\x89PNG\r\n\x1a\nfixture".to_vec();
+        let (config, client, _reads) =
+            fake_fetch_client(Some("secret-agent-token"), 200, png.clone());
+        let result = futures::executor::block_on(fetch_icon_once(&config, &client, "firefox"))
+            .expect("a 200 PNG must be accepted")
+            .expect("a PNG body must be returned");
+        assert_eq!(result.as_slice(), png.as_slice());
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].uri, icon_url(TEST_ENDPOINT, "firefox"));
+        assert!(calls[0].bearer_matches);
+        assert!(!calls[0].uri.contains("secret"));
+    }
+
+    #[test]
+    fn icon_fetch_maps_404_to_absent_and_401_to_auth_error() {
+        let (config, client, _) = fake_fetch_client(None, 404, b"SECRET-PATH".to_vec());
+        let result = futures::executor::block_on(fetch_icon_once(&config, &client, "no-such-app"));
+        assert_eq!(result, Ok(None));
+        assert!(
+            !format!("{result:?}").contains("SECRET-PATH"),
+            "no body text may leak from a miss"
+        );
+
+        let (config, client, _) = fake_fetch_client(None, 401, Vec::new());
+        let result = futures::executor::block_on(fetch_icon_once(&config, &client, "firefox"));
+        assert_eq!(result, Err(FetchError::Auth));
+    }
+
+    #[test]
+    fn icon_fetch_rejects_a_non_loopback_endpoint_before_attaching_the_token() {
+        let (mut config, client, _) = fake_fetch_client(
+            Some("secret-agent-token"),
+            200,
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+        );
+        config.endpoint = "https://agent.example".to_string();
+        let result = futures::executor::block_on(fetch_icon_once(&config, &client, "firefox"));
+        assert_eq!(result, Err(FetchError::InvalidEndpoint));
+        assert!(
+            client.calls.lock().unwrap().is_empty(),
+            "no request may be sent to a non-loopback endpoint"
+        );
     }
 
     #[test]
@@ -2498,6 +2800,7 @@ mod tests {
     /// bearer token or a request URI into test output.
     #[derive(Clone, Debug, Default)]
     struct RecordedFetch {
+        uri: String,
         uri_is_snapshot: bool,
         bearer_matches: bool,
     }
@@ -2570,8 +2873,10 @@ mod tests {
                 .headers()
                 .get(header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok());
+            let uri = request.uri().to_string();
             self.calls.lock().unwrap().push(RecordedFetch {
-                uri_is_snapshot: request.uri().to_string() == snapshot_url(TEST_ENDPOINT),
+                uri_is_snapshot: uri == snapshot_url(TEST_ENDPOINT),
+                uri: uri.clone(),
                 bearer_matches: authorization == self.expected_auth.as_deref(),
             });
             let status = self.status;
