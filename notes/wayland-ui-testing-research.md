@@ -32,7 +32,7 @@ R2 の 3 観点並列調査、R3 の 2 観点深掘り、R4 の敵対的検証�
 KDE Plasma 6 専用ツールである。
 
 - 出典（ローカル）: `kdotool --version`, `kdotool -n key a`, `kdotool --help`（取得 2026-11-22T00:33:59+09:00）
-- 出典（一次）: kdotool 0.3.0 README 139-144 行、https://raw.githubusercontent.com/jinliu/kdotool/master/README.md#L139-L144 （取得 2026-11-22T00:34:30+09:00）
+- 出典（一次）: kdotool 0.3.0 README 139-144 行、`https://raw.githubusercontent.com/jinliu/kdotool/master/README.md#L139-L144` （取得 2026-11-22T00:34:30+09:00）
 
 ### 2. xdotool / wtype / wsend はこの環境で使えない
 
@@ -42,8 +42,8 @@ for the purposes of xdotool, many things do not work correctly`）。wtype は
 `zwp_virtual_keyboard_v1` に依存し、KWin が当該 unstable プロトコルを実装していないため
 KDE で失敗する（issue #45 が 2026-05 時点で open）。wsend は apt 候補なし。
 
-- 出典（一次）: https://raw.githubusercontent.com/jordansissel/xdotool/master/README.md#L3,L70 （取得 2026-11-22T00:35:10+09:00）
-- 出典（一次/コミュニティ）: https://raw.githubusercontent.com/atx/wtype/master/man/wtype.1#L15-L18 、https://github.com/atx/wtype/issues/45 （取得 2026-11-22T00:35:40+09:00）
+- 出典（一次）: `https://raw.githubusercontent.com/jordansissel/xdotool/master/README.md#L3,L70` （取得 2026-11-22T00:35:10+09:00）
+- 出典（一次/コミュニティ）: `https://raw.githubusercontent.com/atx/wtype/master/man/wtype.1#L15-L18` 、`https://github.com/atx/wtype/issues/45` （取得 2026-11-22T00:35:40+09:00）
 - 出典（ローカル）: `command -v ydotool/wtype/wsend` → すべて exit 1、`apt-cache policy wsend` → 候補なし
 
 ### 3. KWin の EIS / libei が最も有望な入力経路
@@ -61,7 +61,7 @@ D-Bus `org.kde.KWin.EIS.RemoteDesktop.connectToEIS(int capabilities, int& cookie
 したがって承認ダイアログは XDG Desktop Portal の `RemoteDesktop.Start()` や
 Xwayland の EIS ソケット経由で初めて現れる。
 
-- 出典（一次、v6.6.7）: https://raw.githubusercontent.com/KDE/kwin/v6.6.7/src/plugins/eis/eisbackend.cpp:connectToEIS 、https://raw.githubusercontent.com/KDE/kwin/v6.6.7/src/plugins/eis/eiscontext.h:32-35 （取得 2026-11-22T00:47:01+09:00）
+- 出典（一次、v6.6.7）: `https://raw.githubusercontent.com/KDE/kwin/v6.6.7/src/plugins/eis/eisbackend.cpp:connectToEIS` 、`https://raw.githubusercontent.com/KDE/kwin/v6.6.7/src/plugins/eis/eiscontext.h:32-35` （取得 2026-11-22T00:47:01+09:00）
 - 出典（一次、ローカル D-Bus）: `qdbus6 org.kde.KWin /org/kde/KWin/EIS/RemoteDesktop` → `connectToEIS`（取得 2026-11-22T00:34:27+09:00）
 
 ### 4. libei は短命 CLI に不向きで、常駐デーモンが必要
@@ -71,7 +71,7 @@ libei の README は `not designed for short-lived fire-and-forget-type applicat
 デバイスネゴシエーション完了までクライアントプロセスの生存が必要なため、
 EIS 接続を保持する常駐デーモン＋CLI からの IPC という構成が妥当。
 
-- 出典（一次）: https://gitlab.freedesktop.org/libinput/libei/-/raw/main/README.md （取得 2026-11-22T00:39:00+09:00）
+- 出典（一次）: `https://gitlab.freedesktop.org/libinput/libei/-/raw/main/README.md` （取得 2026-11-22T00:39:00+09:00）
 
 ### 5. Rust から libei を扱う手段は存在する
 
@@ -82,7 +82,7 @@ unsafe 禁止規約と互換。zbus の `OwnedFd` は 2 段で `UnixStream` に�
 車輪の再発明を避ける候補として `wdotool` 0.5.3（xdotool 互換の Wayland 自動化 CLI＋ライブラリ、
 libei/ポータル経由、KWin Scripting backend、`prime` による常駐化）と `eitype` 0.2.2 も存在する。
 
-- 出典（一次）: https://crates.io/api/v1/crates/reis/0.7.1 、https://docs.rs/crate/reis/0.7.1/source/src/lib.rs:19 、https://docs.rs/zbus/6.5.0/zbus/struct.OwnedFd.html （取得 2026-11-22T00:47:01+09:00）
+- 出典（一次）: `https://crates.io/api/v1/crates/reis/0.7.1` 、`https://docs.rs/crate/reis/0.7.1/source/src/lib.rs:19` 、`https://docs.rs/zbus/6.5.0/zbus/struct.OwnedFd.html` （取得 2026-11-22T00:47:01+09:00）
 - 出典（コミュニティ）: `https://raw.githubusercontent.com/cushycush/wdotool/main/README.md` 、`https://raw.githubusercontent.com/Adam-D-Lewis/eitype/main/README.md` （取得 2026-11-22T00:40:00+09:00）
 
 ### 6. 画面取得は KWin ScreenShot2 または spectacle
