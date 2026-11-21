@@ -1459,6 +1459,34 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] リリース時のバージョン更新チェックリスト／Runbook が無い（notes/operations.md を作成）
       （Cargo.toml×2 / README:17 / DEB 検証 / 差し戻し）。根拠 R1-OPSGAP。
 
+### 優先度: 中 — バックログ補充コンボ R6 2026-11-21（第3次）
+
+- [x] --token 起動のトークン値が export CSV/JSON に残る。tm-core::redact
+      へ scrub_token_from_snapshot / scrub_token_flags_from_snapshot を
+      追加し native/web export へ接続。実動 Runtime Proof で平文 0 を確認。
+      根拠 R1-PRIVACY。
+- [x] #token= がブラウザ session history に残る。history.replaceState で
+      URL から除去し、OnceLock メモリへ移して再接続を維持（endpoint 束縛、
+      新トークン上書き、空値クリア）。根拠 R1-PRIVACY。
+
+### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第3次）
+
+- [ ] WIRE_SCHEMA_VERSION 引き上げが非対称（旧 web は新 agent の全フレーム
+      を拒否）。更新順を「web 先→agent 後」と明記するか、拒否時に版番号を
+      UI へ。将来の schema_version 型変更が Parse エラーに化ける可能性も
+      併せて対応。根拠 R1-FWDCOMPAT。
+- [ ] 検疫キーの hex が 16 桁固定前提で epoch nanos 桁あふれ時に保持兜が
+      効かない（speculative、2554 年）。wire の usize が wasm32 で 32bit
+      のため将来 u64 超え値が Parse エラーになる可能性も併記。
+      根拠 R1-FWDCOMPAT。
+- [ ] /metrics が無認証で uptime・カウンタ・active/stream ゲージを公開。
+      同一ホスト他プロセスが利用リズムを推測しうる（low/likely）。
+      破損設定の隔離バックアップが生 JSON を永続化する点も併記。
+      根拠 R1-PRIVACY。
+- [ ] 将来スキーマ version 9 で interval_ms 範囲が変わった場合、現在の
+      クランプ値が version:9 のまま保存され将来ビルドの意味が壊れる
+      （speculative）。根拠 R1-FWDCOMPAT。
+
 ## 完了
 
 - [x] `todo.md` をプロジェクト内へ配置（2026-11-17）

@@ -439,6 +439,14 @@ fn parse_export_format(value: &str) -> Result<ExportFormat, String> {
 
 /// Renders one snapshot with the pure `tm_core::export` functions.
 ///
+/// `TM_AGENT_TOKEN` is the only token source available here: unlike `tm-agent`,
+/// the native shell has no `--token` CLI flag. When the agent was started with
+/// `--token <value>` the native probe copies that value verbatim into
+/// `process.command` from `/proc/<pid>/cmdline`, so the export must scrub it.
+/// The exact value is masked via [`tm_core::redact::scrub_token_from_snapshot`];
+/// [`tm_core::redact::scrub_token_flags_from_snapshot`] additionally covers the
+/// argv form in case the shell's environment does not carry the secret.
+///
 /// The identifiers used for masking are captured **before** any redaction:
 /// the host name comes from the snapshot and home/user come from the
 /// environment. `tm_core::export` re-applies redaction to a private clone, so
@@ -450,6 +458,17 @@ fn parse_export_format(value: &str) -> Result<ExportFormat, String> {
 /// before. Only the web shell, which owns the agent's `SnapshotEnvelope`, can
 /// supply an explicit total.
 fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> String {
+    let token = std::env::var("TM_AGENT_TOKEN").ok();
+    render_export_with_token(snapshot, format, token.as_deref())
+}
+
+/// Token-aware core of [`render_export`], kept separate so tests can supply the
+/// exact value without mutating process-wide environment variables.
+fn render_export_with_token(
+    snapshot: &tm_core::SystemSnapshot,
+    format: ExportFormat,
+    token: Option<&str>,
+) -> String {
     let hostname = snapshot.hostname.clone().unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     let user = std::env::var("USER")
@@ -460,9 +479,18 @@ fn render_export(snapshot: &tm_core::SystemSnapshot, format: ExportFormat) -> St
         user: &user,
         hostname: &hostname,
     };
+    // Mask the token on a private clone: the caller's snapshot (and the
+    // dashboard still rendering it) must stay untouched. Both passes are
+    // literal and idempotent, so re-applying identifier redaction inside the
+    // exporter cannot reintroduce the credential.
+    let mut masked = snapshot.clone();
+    if let Some(token) = token {
+        tm_core::redact::scrub_token_from_snapshot(&mut masked, token);
+    }
+    tm_core::redact::scrub_token_flags_from_snapshot(&mut masked);
     match format {
-        ExportFormat::Csv => tm_core::export::snapshot_to_csv_with_total(snapshot, &ids, None),
-        ExportFormat::Json => tm_core::export::snapshot_to_json_with_total(snapshot, &ids, None),
+        ExportFormat::Csv => tm_core::export::snapshot_to_csv_with_total(&masked, &ids, None),
+        ExportFormat::Json => tm_core::export::snapshot_to_json_with_total(&masked, &ids, None),
     }
 }
 
@@ -1020,6 +1048,40 @@ mod tests {
             if !user.is_empty() {
                 assert!(!output.contains(&user), "{format:?} leaked user: {output}");
             }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn render_export_does_not_emit_the_agent_token() {
+        let token = "TM-AGENT-SECRET-123";
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        // The exact-value scrub must catch the token both after `--token` and
+        // in an unrelated part of the command that the argv helper cannot see.
+        snapshot.processes[0].command =
+            format!("tm-agent --token {token} --once --header Bearer-{token}");
+        snapshot.processes[0].name = "tm-agent".into();
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let output = render_export_with_token(&snapshot, format, Some(token));
+            assert!(!output.contains(token), "{format:?} leaked token: {output}");
+            assert!(output.contains("***"), "{format:?}: {output}");
+            assert!(
+                snapshot.processes[0].command.contains(token),
+                "export must not mutate the caller's snapshot"
+            );
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn render_export_scrubs_agent_argv_token_without_an_env_value() {
+        let token = "ARGV-ONLY-SECRET";
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.processes[0].command = format!("tm-agent --token {token} --once");
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let output = render_export_with_token(&snapshot, format, None);
+            assert!(
+                !output.contains(token),
+                "{format:?} leaked argv token: {output}"
+            );
         }
     }
 
