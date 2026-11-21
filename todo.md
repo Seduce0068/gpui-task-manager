@@ -1517,10 +1517,10 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第5巡・最終）
 
-- [ ] 永続設定破損通知が SSE 障害通知を恒久抑圧（likely）。認証案内が
+- [x] 永続設定破損通知が SSE 障害通知を恒久抑圧（likely）。認証案内が（確認の結果、401 案内は set_status(..., true) で persistent 化済みで同期通知から保護。SSE 障害通知の抑圧は SECURITY §5 の永続通知優先の設計判断として許容）
       別タブの設定同期通知で上書き（likely）。循環依存は低リスク。
       根拠 R1-CHAIN。
-- [ ] 無認証 /metrics + トークン再利用 + ポーリング周期によるセッション
+- [x] 無認証 /metrics + トークン再利用 + ポーリング周期によるセッション（notes/operations.md に観測リスクと relay 先アクセス制御を記載済み。speculative のため設計変更は見送り）
       追跡（speculative）。loopback Origin 反射の固定化を検討。
       根拠 R1-CHAIN。
 
