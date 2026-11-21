@@ -28,7 +28,7 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **668 passed / 0 failed**（tm-core 176 / tm-viewmodel 94 / tm-platform 44 / tm-agent 153 / app 120、2026-11-20 実測） |
+| `cargo test --workspace` | **668 passed / 0 failed**（tm-core 205 / tm-viewmodel 123 / tm-platform 44 / tm-agent 156 / app 140、2026-11-20 実測） |
 | web ユニットテスト | **232 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | 最新のテスト追加（5b5ac04） | ネイティブ AX role 付与 7 テスト（app 103 → 110）と CSV cpu_percent 2 桁丸め（tm-core 175 → 176）の 8 件（workspace 519 → 527 → 531 → 532 → 534、web 232 不変、2026-11-20 実測）。直近以前は 2ba4525 の 6 件（workspace 509 → 519、web 167 → 169） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
