@@ -19,6 +19,11 @@ Ubuntu 系デスクトップ向けの**システムタスクマネージャー**
 > 設定スキーマの `SETTINGS_VERSION=2`（`tm_viewmodel::SETTINGS_VERSION`）、
 > そして文書メタデータの OKF `verified`（RFC 3339 日時）とは**別概念**であり、
 > それぞれ独立に更新されます。混同しないでください。
+>
+> `WIRE_SCHEMA_VERSION` を上げる場合は**ブラウザ版を先に更新し、tm-agent を後に
+> 更新してください**。ブラウザ版は自身の版以下のスナップショットだけを受理する
+> ため、新版エージェントを先に起動すると旧ブラウザ版が全フレームを拒否し、
+> 表示が停止します（更新後はブラウザのキャッシュもリロードしてください）。
 
 ## GitHub
 
@@ -430,7 +435,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | 項目 | 結果 |
 | --- | --- |
 | `cargo test --workspace` | **619 passed / 0 failed**（core 176 / viewmodel 94 / platform 44 / agent 153 / app 120、2026-11-20 実測） |
-| web ユニットテスト | **217 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
+| web ユニットテスト | **218 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |

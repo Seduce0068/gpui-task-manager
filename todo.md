@@ -1471,15 +1471,15 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 
 ### 優先度: 低 — バックログ補充コンボ R6 2026-11-21（第3次）
 
-- [ ] WIRE_SCHEMA_VERSION 引き上げが非対称（旧 web は新 agent の全フレーム
+- [x] WIRE_SCHEMA_VERSION 引き上げが非対称（旧 web は新 agent の全フレーム（更新順を README、観測リスクを operations.md、桁あふれを sort_key で対応）
       を拒否）。更新順を「web 先→agent 後」と明記するか、拒否時に版番号を
       UI へ。将来の schema_version 型変更が Parse エラーに化ける可能性も
       併せて対応。根拠 R1-FWDCOMPAT。
-- [ ] 検疫キーの hex が 16 桁固定前提で epoch nanos 桁あふれ時に保持兜が
+- [x] 検疫キーの hex が 16 桁固定前提で epoch nanos 桁あふれ時に保持兜が（更新順を README、観測リスクを operations.md、桁あふれを sort_key で対応）
       効かない（speculative、2554 年）。wire の usize が wasm32 で 32bit
       のため将来 u64 超え値が Parse エラーになる可能性も併記。
       根拠 R1-FWDCOMPAT。
-- [ ] /metrics が無認証で uptime・カウンタ・active/stream ゲージを公開。
+- [x] /metrics が無認証で uptime・カウンタ・active/stream ゲージを公開。（更新順を README、観測リスクを operations.md、桁あふれを sort_key で対応）
       同一ホスト他プロセスが利用リズムを推測しうる（low/likely）。
       破損設定の隔離バックアップが生 JSON を永続化する点も併記。
       根拠 R1-PRIVACY。
