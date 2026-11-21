@@ -71,6 +71,12 @@ jobs:
         # Disclosure gate: fail if development paths / account identifiers leak
         # back into published docs (regression guard for the publication review).
         bash scripts/check-public-docs.sh
+        # Private-directory drift guard: agent/src/private_dir.rs and
+        # app/src/private_dir.rs duplicate the logic on purpose; compare the
+        # normalised bodies (comments and #[cfg(test)] modules excluded) so a
+        # one-sided fix cannot pass the other crate's copy silently. Mirrors
+        # scripts/check.sh so local and CI enforcement stay identical.
+        bash scripts/check-private-dir-drift.sh
         # Secret scanning with gitleaks (both working tree and git history).
         # R4-CI01: 旧来は tarball と checksums.txt を同じ GitHub release から
         # 取得していたため、配布元侵害時に改ざんバイナリと一致するチェックサム

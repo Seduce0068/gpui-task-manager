@@ -38,13 +38,15 @@ use gpui::BackgroundExecutor;
 use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
+use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT, SNAPSHOT_PATH};
 use tm_core::{MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION};
 
 /// Number of processes requested from the agent.
 ///
 /// The agent clamps this to its own hard upper bound, and it sorts by CPU before
-/// truncating, so the table always receives the busiest processes first.
-pub const SNAPSHOT_LIMIT: usize = 500;
+/// truncating, so the table always receives the busiest processes first. Defined
+/// once in `tm_core::wire` and shared with the agent's truncation default.
+pub use tm_core::wire::DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT;
 
 /// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
 /// heap from a broken or malicious loopback agent.
@@ -94,11 +96,13 @@ pub use tm_core::FORBIDDEN_GUIDANCE;
 /// text, so it can flow into the status bar, the `aria-live` mirror and the DOM
 /// proof unchanged. The token itself is never echoed. The user is directed to
 /// the token file's contents instead of hunting for a "new" token (R2-AUTHMSG).
-/// The "unchanged on restart" claim is conditional: it holds only for the
-/// auto-generated file path (`--token` / `TM_AGENT_TOKEN` can change between
-/// starts), so the wording says so explicitly instead of promising it for
-/// every token source.
-pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。トークンファイル（既定は XDG state 配下）の内容を #token= に貼り付けてください。あるいは --token-file を指定して再起動してください。自動生成トークンファイル利用時は再起動でも同じトークンが再利用されます";
+/// Both claims are deliberately conditional: the XDG-state location applies
+/// only to the Unix auto-generated file (Windows does not auto-generate a token
+/// at all — `agent/src/auth.rs` fails fast), and "unchanged on restart" holds
+/// only for that file (`--token` / `TM_AGENT_TOKEN` can change between starts).
+/// Stating the location unconditionally would send a Windows user to a path
+/// that was never created, so the guidance names `--token-file` first.
+pub const RECONNECT_GUIDANCE: &str = "認証に失敗しました。--token-file で指定した場所のトークンファイル内容を #token= に貼り付けてください（Unix の自動生成時は XDG state 配下）。Unix の自動生成トークンファイル利用時は再起動でも同じトークンが再利用されます。Windows では自動生成しませんので --token-file / TM_AGENT_TOKEN / --token を明示してください";
 
 /// Fixed guidance for a transport failure. The underlying error detail is
 /// written to `console` after redaction; only this summary reaches the UI.
@@ -975,20 +979,26 @@ fn check_schema_version(version: u32) -> Result<(), FetchError> {
 }
 
 /// Builds the request URL. The token is **not** part of the URL.
+///
+/// Both the path and the limit come from the single `tm_core::wire` contract,
+/// so a change on the agent side cannot leave this builder behind.
 fn snapshot_url(endpoint: &str) -> String {
-    format!("{endpoint}/api/v1/snapshot?limit={SNAPSHOT_LIMIT}")
+    format!("{endpoint}{SNAPSHOT_PATH}?limit={DEFAULT_SNAPSHOT_LIMIT}")
 }
 
 /// Path of the agent's long-lived server-sent-events endpoint (R1-I14).
-pub const STREAM_PATH: &str = "/api/v1/stream";
+///
+/// Defined once in `tm_core::wire` and shared with the agent's SSE router.
+pub use tm_core::wire::STREAM_PATH;
 
 /// Fixed, redaction-safe first-run instructions shown by the browser shell
 /// (R1-I16). No token, hostname, endpoint or agent-supplied text appears here;
 /// the strings also avoid `;` and newlines so they could be mirrored into the
-/// `key=value;` DOM proof without changing its grammar.
+/// `key=value;` DOM proof without changing its grammar. The XDG-state path is
+/// described as Unix-only because Windows has no auto-generated token file.
 const ONBOARDING_STEPS: &[&str] = &[
     "1. ローカルで tm-agent を起動します（トークンは --token-file 推奨）。",
-    "2. 表示された 127.0.0.1 の URL に、トークンファイル（既定は XDG state 配下）の内容を #token= として付けてください。",
+    "2. 表示された 127.0.0.1 の URL に、--token-file で指定したトークンファイルの内容を #token= として付けてください（Unix の自動生成時は XDG state 配下、Windows では自動生成なし）。",
     "3. このページの URL に ?agent=<エンドポイント> と #token=<トークン> を付けて再読込します。",
     "4. 接続後は自動更新されます。行を右クリックすると行メニューが開きます。",
 ];
@@ -1531,7 +1541,10 @@ mod tests {
         // TM_AGENT_TOKEN values may differ between starts.
         assert!(RECONNECT_GUIDANCE.contains("#token="));
         assert!(RECONNECT_GUIDANCE.contains("トークンファイル"));
-        assert!(RECONNECT_GUIDANCE.contains("XDG state"));
+        // The XDG-state path is pinned to the Unix auto-generation case, not
+        // to every token source: Windows never auto-generates a token file.
+        assert!(RECONNECT_GUIDANCE.contains("Unix の自動生成時は XDG state 配下"));
+        assert!(RECONNECT_GUIDANCE.contains("Windows では自動生成しません"));
         assert!(RECONNECT_GUIDANCE.contains("--token-file"));
         assert!(RECONNECT_GUIDANCE.contains("貼り付けて"));
         assert!(RECONNECT_GUIDANCE.contains("自動生成トークンファイル"));
@@ -1618,7 +1631,12 @@ mod tests {
     #[test]
     fn snapshot_url_has_no_token() {
         let url = snapshot_url("http://127.0.0.1:18787");
-        assert_eq!(url, "http://127.0.0.1:18787/api/v1/snapshot?limit=500");
+        // Path and limit come from the shared wire constants, not literals.
+        assert_eq!(
+            url,
+            format!("http://127.0.0.1:18787{SNAPSHOT_PATH}?limit={DEFAULT_SNAPSHOT_LIMIT}")
+        );
+        assert_eq!(SNAPSHOT_LIMIT, DEFAULT_SNAPSHOT_LIMIT);
         assert!(!url.contains("token"));
     }
 
@@ -1912,6 +1930,18 @@ mod tests {
         assert!(steps.iter().any(|step| step.contains("?agent=")));
         assert!(steps.iter().any(|step| step.contains("#token=")));
         assert!(steps.iter().any(|step| step.contains("右クリック")));
+        // The XDG-state hint is conditional on Unix auto-generation; Windows
+        // users must be told to pass --token-file explicitly instead.
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.contains("Unix の自動生成時は XDG state 配下"))
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.contains("Windows では自動生成なし"))
+        );
     }
 
     #[test]
@@ -1921,7 +1951,7 @@ mod tests {
             Some("secret-agent-token".to_string()),
         );
         let url = stream_url(&config.endpoint);
-        assert_eq!(url, "http://127.0.0.1:18787/api/v1/stream");
+        assert_eq!(url, format!("http://127.0.0.1:18787{STREAM_PATH}"));
         assert!(!url.contains("secret"));
         assert!(!url.contains("token="));
     }
@@ -2269,7 +2299,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
         );
         let uri = params.request.uri().to_string();
-        assert_eq!(uri, "http://127.0.0.1:18787/api/v1/stream");
+        assert_eq!(uri, format!("http://127.0.0.1:18787{STREAM_PATH}"));
         assert!(!uri.contains("secret"), "{uri}");
         assert_eq!(
             params
@@ -2338,7 +2368,10 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), vec![11, 22]);
         let recorded = requests.lock().unwrap();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].uri, "http://127.0.0.1:18787/api/v1/stream");
+        assert_eq!(
+            recorded[0].uri,
+            format!("http://127.0.0.1:18787{STREAM_PATH}")
+        );
     }
 
     #[test]

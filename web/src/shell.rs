@@ -5739,9 +5739,11 @@ mod tests {
         assert!(DEMO_MODE_NOTICE.contains("--redact"));
         assert!(DEMO_MODE_NOTICE.contains("?agent="));
         assert!(DEMO_MODE_NOTICE.contains("#token="));
-        // 既定の待受ポートは 8787。README の「--listen 18787 明示例」は別担当が
-        // 残すので、ソース内の既定案内だけを確認する（C2-WEB）。
-        assert!(DEMO_MODE_NOTICE.contains("127.0.0.1:8787"));
+        // 既定の待受ポートは wire 契約の単一起源（tm_core::DEFAULT_PORT）と
+        // 交叉検証する。concat! は数値 const を展開できないため、文字列側は
+        // リテラルのまま期待値を wire 定数から組み立ててドリフトを検出する。
+        let expected = format!("127.0.0.1:{}", tm_core::DEFAULT_PORT);
+        assert!(DEMO_MODE_NOTICE.contains(&expected));
         assert!(!DEMO_MODE_NOTICE.contains("18787"));
         // 固定文言なので `;` / 改行 / トークンは入らず、DOM hook と redact
         // 契約を壊さない。

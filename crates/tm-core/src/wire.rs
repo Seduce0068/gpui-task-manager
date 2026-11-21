@@ -1,8 +1,10 @@
 //! Wire contract shared by the native agent and the browser shell.
 //!
-//! Both ends of the loopback protocol need the same three things: the fixed
-//! `403` guidance text, the ceiling for a numeric `Retry-After` hint, and the
-//! JSON envelope that carries a snapshot. Defining them here makes agreement
+//! Both ends of the loopback protocol need one definition of each of these:
+//! the fixed `403` guidance text, the ceiling for a numeric `Retry-After` hint,
+//! the JSON envelope that carries a snapshot, the two endpoint paths, the
+//! default and maximum `?limit=` values, the default listen port, and the set
+//! of machine-readable error codes. Defining them here makes agreement
 //! structural instead of a matter of mirrored comments.
 //!
 //! [`SnapshotEnvelope`]'s field order and spelling are part of the wire
@@ -11,6 +13,91 @@
 //! change here changes the JSON bytes on the wire.
 
 use crate::SystemSnapshot;
+
+/// Path of the snapshot endpoint (GET, bearer token required).
+///
+/// The agent routes on this exact string and the browser builds its poll URL
+/// from the same constant, so a rename cannot desynchronise the two sides.
+pub const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
+
+/// Path of the long-lived SSE endpoint (GET, bearer token required).
+pub const STREAM_PATH: &str = "/api/v1/stream";
+
+/// Number of processes returned when `?limit=` is absent.
+///
+/// The agent truncates to this many busiest processes; the browser asks for
+/// exactly this number so the two sides cannot silently drift (500 today).
+pub const DEFAULT_SNAPSHOT_LIMIT: usize = 500;
+
+/// Hard upper bound for `?limit=`. A larger value is clamped, not rejected.
+pub const MAX_SNAPSHOT_LIMIT: usize = 2000;
+
+/// Default loopback TCP port of `tm-agent`; the listen address is
+/// `127.0.0.1:<DEFAULT_PORT>`.
+pub const DEFAULT_PORT: u16 = 8787;
+
+/// Stable, machine-readable codes carried by every HTTP error body.
+///
+/// The enum, [`ErrorCode::ALL`] and [`ErrorCode::as_str`] are the single wire
+/// table. The agent's help text is cross-checked against `ALL` in both
+/// directions (every variant documented, every documented code a variant), so
+/// adding a code without documenting it — or documenting one that does not
+/// exist — fails a test instead of silently diverging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorCode {
+    /// Malformed request (e.g. an unparsable HTTP head).
+    BadRequest,
+    /// `?limit=` was present but not a number.
+    InvalidLimit,
+    /// Missing or invalid bearer token (`401`).
+    Unauthorized,
+    /// Rejected Host/Origin (`403`).
+    Forbidden,
+    /// Unknown endpoint (`404`).
+    NotFound,
+    /// Method other than GET/OPTIONS (`405`).
+    MethodNotAllowed,
+    /// Request head exceeded the size cap (`413`).
+    RequestTooLarge,
+    /// Request head read timed out (`408`).
+    RequestTimeout,
+    /// Internal failure (`500`).
+    Internal,
+    /// Concurrent connection/stream cap reached (`503`).
+    Busy,
+}
+
+impl ErrorCode {
+    /// All variants in wire order — the one table used for cross-validation.
+    pub const ALL: [Self; 10] = [
+        Self::BadRequest,
+        Self::InvalidLimit,
+        Self::Unauthorized,
+        Self::Forbidden,
+        Self::NotFound,
+        Self::MethodNotAllowed,
+        Self::RequestTooLarge,
+        Self::RequestTimeout,
+        Self::Internal,
+        Self::Busy,
+    ];
+
+    /// Stable spelling emitted in the `code` field of an error body.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BadRequest => "bad_request",
+            Self::InvalidLimit => "invalid_limit",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not_found",
+            Self::MethodNotAllowed => "method_not_allowed",
+            Self::RequestTooLarge => "request_too_large",
+            Self::RequestTimeout => "request_timeout",
+            Self::Internal => "internal",
+            Self::Busy => "busy",
+        }
+    }
+}
 
 /// User-facing body for every `403` response, byte-identical on both sides.
 ///
@@ -68,6 +155,51 @@ mod tests {
     #[test]
     fn retry_after_ceiling_is_thirty_seconds() {
         assert_eq!(MAX_RETRY_AFTER_SECS, 30);
+    }
+
+    #[test]
+    fn endpoint_paths_and_limits_are_the_single_wire_contract() {
+        assert_eq!(SNAPSHOT_PATH, "/api/v1/snapshot");
+        assert_eq!(STREAM_PATH, "/api/v1/stream");
+        assert_eq!(DEFAULT_SNAPSHOT_LIMIT, 500);
+        assert_eq!(MAX_SNAPSHOT_LIMIT, 2000);
+        const { assert!(DEFAULT_SNAPSHOT_LIMIT <= MAX_SNAPSHOT_LIMIT) };
+        assert_eq!(DEFAULT_PORT, 8787);
+    }
+
+    #[test]
+    fn error_code_table_is_complete_and_distinct() {
+        // Canonical spellings, asserted once here where the table is defined.
+        // `args::USAGE` cross-checks the same `ALL` table from the other side.
+        let expected = [
+            (ErrorCode::BadRequest, "bad_request"),
+            (ErrorCode::InvalidLimit, "invalid_limit"),
+            (ErrorCode::Unauthorized, "unauthorized"),
+            (ErrorCode::Forbidden, "forbidden"),
+            (ErrorCode::NotFound, "not_found"),
+            (ErrorCode::MethodNotAllowed, "method_not_allowed"),
+            (ErrorCode::RequestTooLarge, "request_too_large"),
+            (ErrorCode::RequestTimeout, "request_timeout"),
+            (ErrorCode::Internal, "internal"),
+            (ErrorCode::Busy, "busy"),
+        ];
+        assert_eq!(ErrorCode::ALL.len(), expected.len());
+        for (variant, spelling) in expected {
+            assert!(
+                ErrorCode::ALL.contains(&variant),
+                "ALL is missing {variant:?}"
+            );
+            assert_eq!(variant.as_str(), spelling);
+        }
+        let mut spellings: Vec<_> = ErrorCode::ALL.iter().map(|code| code.as_str()).collect();
+        spellings.sort_unstable();
+        let count = spellings.len();
+        spellings.dedup();
+        assert_eq!(
+            spellings.len(),
+            count,
+            "error code spellings must be unique"
+        );
     }
 
     #[cfg(feature = "serde")]

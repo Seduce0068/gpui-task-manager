@@ -40,6 +40,9 @@ use serde_json::json;
 use tm_core::demo::DemoProbe;
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
+use tm_core::wire::{
+    ErrorCode, DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH, STREAM_PATH,
+};
 use tm_core::FORBIDDEN_GUIDANCE;
 use tm_platform::NativeProbe;
 
@@ -56,27 +59,20 @@ macro_rules! eprintln_safe {
 
 /// Health endpoint (no authentication, reveals nothing sensitive).
 const HEALTH_PATH: &str = "/healthz";
-/// Snapshot endpoint (bearer token required).
-const SNAPSHOT_PATH: &str = "/api/v1/snapshot";
-/// Long-lived SSE endpoint (bearer token required, read-only like `/api/v1/snapshot`).
-const STREAM_PATH: &str = "/api/v1/stream";
 /// Metrics endpoint (no authentication; counters/gauges only, no machine data).
 const METRICS_PATH: &str = "/metrics";
 
-/// Number of processes returned when the client does not ask for a limit.
-///
-/// A desktop can easily run 3,000+ processes; sending all of them once per
-/// second would produce multi-megabyte responses in the browser. The UI only
-/// renders a table page, so the agent truncates by default and reports the
-/// full count alongside the list.
-const DEFAULT_PROCESS_LIMIT: usize = 500;
+// `SNAPSHOT_PATH` / `STREAM_PATH`, `DEFAULT_SNAPSHOT_LIMIT` /
+// `MAX_SNAPSHOT_LIMIT` and `ErrorCode` are defined once in `tm_core::wire` and
+// imported above. The browser shell uses the same constants, so a rename or a
+// limit change cannot desynchronise the two ends of the loopback protocol.
+// A desktop can easily run 3,000+ processes; the default limit keeps each
+// response small enough for the browser's table page while the full count is
+// reported alongside the truncated list.
 
 /// Delay between the discarded warm-up sample and the first published sample.
 /// Must exceed sysinfo's `MINIMUM_CPU_UPDATE_INTERVAL` (~200 ms).
 const WARMUP_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Hard upper bound for `?limit=` (a larger value is clamped, not rejected).
-const MAX_PROCESS_LIMIT: usize = 2000;
 
 /// Maximum concurrent connections. The extra ones get an immediate 503 instead
 /// of waiting behind idle peers; the agent is loopback-only, but an unbounded
@@ -247,41 +243,10 @@ struct HealthBody {
     schema_version: u32,
 }
 
-/// Stable, machine-readable codes carried by every HTTP error body.
-///
-/// Keep this list in sync with the `HTTP エラーコード` section of `args::USAGE`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ErrorCode {
-    BadRequest,
-    InvalidLimit,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    RequestTooLarge,
-    RequestTimeout,
-    Internal,
-    Busy,
-}
-
-impl ErrorCode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::BadRequest => "bad_request",
-            Self::InvalidLimit => "invalid_limit",
-            Self::Unauthorized => "unauthorized",
-            Self::Forbidden => "forbidden",
-            Self::NotFound => "not_found",
-            Self::MethodNotAllowed => "method_not_allowed",
-            Self::RequestTooLarge => "request_too_large",
-            Self::RequestTimeout => "request_timeout",
-            Self::Internal => "internal",
-            Self::Busy => "busy",
-        }
-    }
-}
-
 /// Wire body returned for error responses.
+///
+/// The `code` values come from the single [`ErrorCode`] table in
+/// `tm_core::wire`; `args.rs` cross-checks that table against `USAGE`.
 ///
 /// `code` is the stable machine-readable contract; `message` is its canonical
 /// human-readable companion. `error` is a deprecated alias of `message` kept
@@ -1233,7 +1198,7 @@ fn once_json(
         // into `process.command`/`process.name`; scrub it unconditionally.
         scrub_argv_token(&mut snapshot, token);
     }
-    let total = apply_process_limit(&mut snapshot, DEFAULT_PROCESS_LIMIT);
+    let total = apply_process_limit(&mut snapshot, DEFAULT_SNAPSHOT_LIMIT);
     let envelope = SnapshotEnvelope {
         schema_version: tm_core::WIRE_SCHEMA_VERSION,
         total_process_count: total,
@@ -2222,7 +2187,7 @@ where
                     // either (same contract as the HTTP/--once paths).
                     scrub_argv_token(&mut snapshot, &state.token);
                 }
-                let total = apply_process_limit(&mut snapshot, DEFAULT_PROCESS_LIMIT);
+                let total = apply_process_limit(&mut snapshot, DEFAULT_SNAPSHOT_LIMIT);
                 let envelope = SnapshotEnvelope {
                     schema_version: tm_core::WIRE_SCHEMA_VERSION,
                     total_process_count: total,
@@ -2493,14 +2458,14 @@ fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
 /// because it may contain a credential or other client-controlled identifier.
 const INVALID_LIMIT_MESSAGE: &str = "limit には 1 以上の整数を指定してください";
 
-/// Parses `?limit=`: default [`DEFAULT_PROCESS_LIMIT`], clamped to
-/// [`MAX_PROCESS_LIMIT`].
+/// Parses `?limit=`: default [`DEFAULT_SNAPSHOT_LIMIT`], clamped to
+/// [`MAX_SNAPSHOT_LIMIT`].
 ///
 /// `limit=0` and non-numeric values are rejected instead of being silently
 /// coerced, so a client bug shows up as `400` rather than as an empty table.
 fn parse_process_limit(query: Option<&str>) -> Result<usize, String> {
     let Some(raw) = http::query_param(query, "limit") else {
-        return Ok(DEFAULT_PROCESS_LIMIT);
+        return Ok(DEFAULT_SNAPSHOT_LIMIT);
     };
     let parsed = raw
         .trim()
@@ -2510,8 +2475,8 @@ fn parse_process_limit(query: Option<&str>) -> Result<usize, String> {
         return Err(INVALID_LIMIT_MESSAGE.to_string());
     }
     Ok(usize::try_from(parsed)
-        .unwrap_or(MAX_PROCESS_LIMIT)
-        .min(MAX_PROCESS_LIMIT))
+        .unwrap_or(MAX_SNAPSHOT_LIMIT)
+        .min(MAX_SNAPSHOT_LIMIT))
 }
 
 /// Sorts processes by CPU (descending) then PID, truncates to `limit`, and
@@ -3138,19 +3103,11 @@ mod tests {
 
     #[test]
     fn error_bodies_keep_the_legacy_error_field_alongside_code() {
-        for (code, expected) in [
-            (ErrorCode::BadRequest, "bad_request"),
-            (ErrorCode::InvalidLimit, "invalid_limit"),
-            (ErrorCode::Unauthorized, "unauthorized"),
-            (ErrorCode::Forbidden, "forbidden"),
-            (ErrorCode::NotFound, "not_found"),
-            (ErrorCode::MethodNotAllowed, "method_not_allowed"),
-            (ErrorCode::RequestTooLarge, "request_too_large"),
-            (ErrorCode::RequestTimeout, "request_timeout"),
-            (ErrorCode::Internal, "internal"),
-            (ErrorCode::Busy, "busy"),
-        ] {
-            assert_eq!(code.as_str(), expected);
+        // Drive the body check from the one `ErrorCode::ALL` table in `wire`;
+        // its spellings are asserted there, and cross-checked against `USAGE`
+        // in `args`. No second enum→string mapping lives in this test.
+        for code in ErrorCode::ALL {
+            let expected = code.as_str();
             let body: serde_json::Value =
                 serde_json::from_slice(&error_body(code, "message")).expect("error body");
             assert_eq!(body["code"], expected);
@@ -3369,7 +3326,7 @@ mod tests {
     fn process_limit_defaults_and_clamps() {
         assert_eq!(
             parse_process_limit(None).expect("default limit"),
-            DEFAULT_PROCESS_LIMIT
+            DEFAULT_SNAPSHOT_LIMIT
         );
         assert_eq!(
             parse_process_limit(Some("limit=10")).expect("explicit limit"),
@@ -3377,11 +3334,11 @@ mod tests {
         );
         assert_eq!(
             parse_process_limit(Some("foo=1&limit=2000")).expect("max limit"),
-            MAX_PROCESS_LIMIT
+            MAX_SNAPSHOT_LIMIT
         );
         assert_eq!(
             parse_process_limit(Some("limit=99999")).expect("clamped limit"),
-            MAX_PROCESS_LIMIT
+            MAX_SNAPSHOT_LIMIT
         );
         assert!(parse_process_limit(Some("limit=0")).is_err());
         assert!(parse_process_limit(Some("limit=abc")).is_err());
@@ -3397,7 +3354,7 @@ mod tests {
         // future parser change cannot silently alter the response size.
         assert_eq!(
             parse_process_limit(Some("limit=%zz")).expect("malformed escape -> default"),
-            DEFAULT_PROCESS_LIMIT
+            DEFAULT_SNAPSHOT_LIMIT
         );
     }
 
