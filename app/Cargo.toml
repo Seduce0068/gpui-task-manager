@@ -12,6 +12,11 @@ name = "gpui-task-manager"
 path = "src/main.rs"
 
 [dependencies]
+# Window icon for the X11/Xwayland backend (GPUI's `WindowOptions.icon` is
+# `Option<Arc<image::RgbaImage>>`). Pinned to the same 0.25 line already in
+# Cargo.lock via gpui; only the PNG decoder is needed here. On Wayland GPUI
+# ignores this field and keeps using `app_id` / `StartupWMClass` instead.
+image = { version = "0.25", default-features = false, features = ["png"] }
 gpui-kit = "=0.9.1"
 tm-core = { workspace = true, features = ["serde"] }
 tm-viewmodel = { workspace = true }

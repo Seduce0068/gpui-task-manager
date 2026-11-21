@@ -93,6 +93,32 @@ fn write_stdout(content: &str) -> std::io::Result<()> {
     write_stdout_ignoring_broken_pipe(&mut locked, content)
 }
 
+/// Bundled window icon for the X11 / Xwayland backend.
+///
+/// GPUI 0.3.12 writes `WindowOptions::icon` to `_NET_WM_ICON`, which is what
+/// gives the window a dedicated taskbar and alt-tab icon under X11. The
+/// Wayland backend never reads this field (it has no window-icon protocol),
+/// so native Wayland keeps its identity from `app_id` plus the `.desktop`
+/// `StartupWMClass=gpui-task-manager` pair — neither is changed here.
+///
+/// The PNG is decoded to 8-bit RGBA (`RgbaImage` is what GPUI expects). A
+/// decode failure degrades to `None` instead of panicking: the shell still
+/// opens with the platform's default window icon. The bytes are embedded at
+/// compile time, so there is no runtime file dependency.
+fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    #[cfg(target_os = "linux")]
+    {
+        let png = include_bytes!("../../packaging/linux/gpui-task-manager.png");
+        image::load_from_memory(png)
+            .ok()
+            .map(|image| std::sync::Arc::new(image.to_rgba8()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 fn main() {
     // `args()` panics on non-UTF-8 arguments; use `args_os()` so a stray byte
     // in argv cannot abort the GUI before it starts (flags are plain ASCII).
@@ -175,6 +201,9 @@ fn main() {
             focus: true,
             show: true,
             app_id: Some("gpui-task-manager".to_string()),
+            // X11/Xwayland taskbar + alt-tab icon; ignored natively on Wayland
+            // (app_id / StartupWMClass remain the identity there).
+            icon: window_icon(),
             ..Default::default()
         };
 
@@ -672,6 +701,17 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
         values.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// The value fed to `WindowOptions::icon` must decode on Linux so X11 /
+    /// Xwayland gets a dedicated taskbar and alt-tab icon. The bundled PNG is
+    /// 256x256 RGBA; `to_rgba8()` must yield 4 bytes per pixel.
+    #[::core::prelude::v1::test]
+    #[cfg(target_os = "linux")]
+    fn window_icon_is_some_on_linux() {
+        let icon = window_icon().expect("bundled icon must decode on Linux");
+        assert_eq!((icon.width(), icon.height()), (256, 256));
+        assert_eq!(icon.as_raw().len(), 256 * 256 * 4);
     }
 
     /// A closed stdout (e.g. `| head -c 1`) fails every write with

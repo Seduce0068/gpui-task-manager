@@ -2613,6 +2613,7 @@ name = "gpui-task-manager"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "image",
  "serde_json",
  "tm-core",
  "tm-platform",

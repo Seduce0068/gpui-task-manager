@@ -35,8 +35,9 @@ use tm_core::{
     SystemProbe, SystemSnapshot,
 };
 use tm_viewmodel::{
-    Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FILTER_PRESETS, FilterInput,
-    FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, StatusMessage,
+    AppGroupRow, AppRowKind, Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect,
+    FILTER_PRESETS, FilterInput, FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL,
+    StatusMessage,
 };
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::JsCast;
@@ -442,6 +443,13 @@ pub struct TaskManagerApp {
     /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
     /// フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
     sort_header_focus: [FocusHandle; 7],
+    /// アプリ別グループ表示の行フォーカスハンドル（C2-WEBDRAW）。
+    ///
+    /// 行を Tab で到達可能にし、Enter/Space を GPUI の組み込み活性化から
+    /// 既存の `on_click`（Group 行は `ToggleAppGroup` / Process 行は `Select`）
+    /// へ渡す。側が不同而なるよう row index ごとに保持し、flat/tree 表示では
+    /// 使わない（既存の Tab 順序を変えないため）。
+    grouped_row_focus: Vec<FocusHandle>,
     /// 行メニューをキーボードで開いたときに最初へ移す項目のフォーカスハンドル。
     row_menu_item_focus: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -511,6 +519,182 @@ pub struct TaskManagerApp {
     dom_help_previous_focus: Option<web_sys::HtmlElement>,
 }
 
+/// Values drawn in one process-table row, resolved from either the additive
+/// application-group rows (C2-WEBDRAW) or the unchanged flat/tree list.
+#[derive(Clone, Debug, PartialEq)]
+struct ProcessRowView {
+    key: ProcessKey,
+    group_key: Option<String>,
+    name: String,
+    command: String,
+    cpu: f32,
+    memory: u64,
+    pid_text: String,
+    user: String,
+    status: ProcessStatus,
+    status_text: String,
+    threads_text: String,
+    selected: bool,
+    depth: usize,
+    has_children: bool,
+    expanded: bool,
+    is_group: bool,
+    process_count: usize,
+    row_a11y_label: String,
+}
+
+/// Which command a row activation (click or Enter/Space) dispatches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RowActivation {
+    ToggleGroup(String),
+    Select(ProcessKey),
+    SelectAndToggleNode(ProcessKey),
+}
+
+/// Pure mapping from row data to its activation command (C2-WEBDRAW).
+/// Group rows expand/collapse; process rows keep the existing selection.
+fn row_activation(view: &ProcessRowView, tree_view: bool) -> RowActivation {
+    if let Some(group) = &view.group_key {
+        RowActivation::ToggleGroup(group.clone())
+    } else if tree_view && view.has_children {
+        RowActivation::SelectAndToggleNode(view.key)
+    } else {
+        RowActivation::Select(view.key)
+    }
+}
+
+/// Resolves one visible row without touching GPUI state, so the grouped and
+/// flat/tree data paths can be asserted in native unit tests.
+///
+/// `app_row` is `Some` only in the default application-grouped view and is
+/// aligned by index with `visible_indices()`. Group rows take label, CPU,
+/// memory and process count from the view model; command / PID / user /
+/// status / threads have no aggregate meaning and stay fixed to "—".
+fn resolve_process_row(
+    dashboard: &Dashboard,
+    index: usize,
+    app_row: Option<&AppGroupRow>,
+) -> Option<ProcessRowView> {
+    let snapshot = dashboard.snapshot()?;
+    let selected = dashboard.selected_key();
+    let fixed = "—".to_string();
+
+    if let Some(row) = app_row {
+        let process = snapshot.processes.get(row.index)?;
+        let is_group = row.kind == AppRowKind::Group;
+        // A hidden member of a collapsed group highlights the group row;
+        // an expanded member has its own row and is matched exactly.
+        let selected = if is_group {
+            selected.is_some_and(|key| row.process_key == key || row.member_keys.contains(&key))
+        } else {
+            selected == Some(row.process_key)
+        };
+        let name = if is_group {
+            format!("{} ×{}", row.label, row.process_count)
+        } else {
+            row.label.clone()
+        };
+        let row_a11y_label = if is_group {
+            a11y_group_row_label(
+                &row.label,
+                row.cpu_percent,
+                row.memory_bytes,
+                row.process_count,
+                row.expanded,
+                selected,
+            )
+        } else {
+            a11y_row_label(
+                &row.label,
+                process.status,
+                row.cpu_percent,
+                row.memory_bytes,
+                process.key.pid,
+                selected,
+            )
+        };
+        return Some(ProcessRowView {
+            key: row.process_key,
+            group_key: is_group.then(|| row.key.clone()),
+            name,
+            command: if is_group {
+                fixed.clone()
+            } else {
+                process.command.clone()
+            },
+            cpu: row.cpu_percent,
+            memory: row.memory_bytes,
+            pid_text: if is_group {
+                fixed.clone()
+            } else {
+                process.key.pid.to_string()
+            },
+            user: if is_group {
+                fixed.clone()
+            } else {
+                process.user.clone().unwrap_or_else(|| fixed.clone())
+            },
+            status: process.status,
+            status_text: if is_group {
+                fixed.clone()
+            } else {
+                process.status.label().to_string()
+            },
+            threads_text: if is_group {
+                fixed
+            } else {
+                process.threads.unwrap_or(0).to_string()
+            },
+            selected,
+            depth: row.depth,
+            has_children: row.has_children,
+            expanded: row.expanded,
+            is_group,
+            process_count: row.process_count,
+            row_a11y_label,
+        });
+    }
+
+    // Flat / tree view: byte-for-byte the previous data path.
+    let row_index = *dashboard.visible_indices().get(index)?;
+    let depth = dashboard.visible_depths().get(index).copied().unwrap_or(0);
+    let has_children = dashboard
+        .visible_has_children()
+        .get(index)
+        .copied()
+        .unwrap_or(false);
+    let process = snapshot.processes.get(row_index)?;
+    let selected = selected == Some(process.key);
+    let row_a11y_label = a11y_row_label(
+        &process.name,
+        process.status,
+        process.cpu_percent,
+        process.memory_bytes,
+        process.key.pid,
+        selected,
+    );
+    Some(ProcessRowView {
+        key: process.key,
+        group_key: None,
+        name: process.name.clone(),
+        command: process.command.clone(),
+        cpu: process.cpu_percent,
+        memory: process.memory_bytes,
+        pid_text: process.key.pid.to_string(),
+        user: process.user.clone().unwrap_or_else(|| fixed.clone()),
+        status: process.status,
+        status_text: process.status.label().to_string(),
+        threads_text: process.threads.unwrap_or(0).to_string(),
+        selected,
+        depth,
+        has_children,
+        expanded: !dashboard.is_collapsed(process.key),
+        is_group: false,
+        process_count: 1,
+        row_a11y_label,
+    })
+}
+
 impl TaskManagerApp {
     /// Creates the shell. Live mode is selected by `?agent=` in the page URL.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -558,6 +742,7 @@ impl TaskManagerApp {
             proof_token,
             focus_handle,
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
+            grouped_row_focus: Vec::new(),
             row_menu_item_focus: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
@@ -1302,6 +1487,25 @@ impl TaskManagerApp {
         if is_sort_key_activation(&key, modifiers, self.filter_editing)
             && self
                 .sort_header_focus
+                .iter()
+                .any(|handle| handle.is_focused(window))
+        {
+            cx.stop_propagation();
+            return;
+        }
+
+        // WCAG 2.1.1 (C2-WEBDRAW): フォーカス中のアプリ別グループ行は
+        // Enter/Space を自分の活性化に使う。focusable div が keyup で同じ
+        // `on_click`（Group は ToggleAppGroup / Process は Select）を発火する
+        // ため、ここでは keydown の既定（Space=一時停止 / Enter=改行）だけを
+        // 止める。行にフォーカスが無ければ従来の resolver がそのまま働く。
+        if is_sort_key_activation(
+            &key,
+            modifiers,
+            self.filter_editing || self.filter_input.is_composing(),
+        ) && self.row_menu.is_none()
+            && self
+                .grouped_row_focus
                 .iter()
                 .any(|handle| handle.is_focused(window))
         {
@@ -2591,12 +2795,20 @@ impl TaskManagerApp {
 
     fn table(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let count = self.dashboard.visible_count();
+        // Resolve group rows once per frame: they are aligned by index with
+        // `visible_indices()` and already carry totals / counts / expansion.
+        // Export still receives `snapshot.processes` untouched (C2-WEBDRAW).
+        let app_rows = if self.dashboard.app_group_view() {
+            self.dashboard.app_group_rows()
+        } else {
+            Vec::new()
+        };
         let list = uniform_list(
             "process-list",
             count,
             cx.processor(move |this: &mut Self, range: Range<usize>, _window, cx| {
                 range
-                    .filter_map(|index| this.process_row(index, cx))
+                    .filter_map(|index| this.process_row(index, app_rows.get(index), cx))
                     .collect::<Vec<_>>()
             }),
         )
@@ -2798,77 +3010,62 @@ impl TaskManagerApp {
             .child(text)
     }
 
-    fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (
-            key,
-            name,
-            command,
-            cpu,
-            memory,
-            pid,
-            user,
-            status,
-            threads,
-            selected,
-            depth,
-            has_children,
-        ) = {
-            let snapshot = self.dashboard.snapshot()?;
-            let row_index = *self.dashboard.visible_indices().get(index)?;
-            let depth = self
-                .dashboard
-                .visible_depths()
-                .get(index)
-                .copied()
-                .unwrap_or(0);
-            let has_children = self
-                .dashboard
-                .visible_has_children()
-                .get(index)
-                .copied()
-                .unwrap_or(false);
-            let process = snapshot.processes.get(row_index)?;
-            (
-                process.key,
-                process.name.clone(),
-                process.command.clone(),
-                process.cpu_percent,
-                process.memory_bytes,
-                process.key.pid,
-                process.user.clone().unwrap_or_else(|| "—".to_string()),
-                process.status,
-                process.threads.unwrap_or(0),
-                self.dashboard.selected_key() == Some(process.key),
-                depth,
-                has_children,
-            )
-        };
+    fn process_row(
+        &mut self,
+        index: usize,
+        app_row: Option<&AppGroupRow>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let tree_view = self.dashboard.tree_view();
-        let collapsed = self.dashboard.is_collapsed(key);
-        let marker = if tree_view && has_children {
-            if collapsed { "▸ " } else { "▾ " }
-        } else if tree_view && depth > 0 {
+        let grouped = self.dashboard.app_group_view();
+        let view = resolve_process_row(&self.dashboard, index, app_row)?;
+        let key = view.key;
+        let selected = view.selected;
+        let depth = view.depth;
+        let has_children = view.has_children;
+        let expanded = view.expanded;
+        let is_group = view.is_group;
+        let activation = row_activation(&view, tree_view);
+
+        // Keep a stable handle per row so Tab + Enter/Space reaches the same
+        // `on_click` that a mouse activation uses (WCAG 2.1.1). Flat/tree rows
+        // are deliberately left non-focusable to preserve the existing Tab order.
+        if grouped && self.grouped_row_focus.len() <= index {
+            let extra = index + 1 - self.grouped_row_focus.len();
+            self.grouped_row_focus
+                .extend(std::iter::repeat_with(|| cx.focus_handle()).take(extra));
+        }
+        let row_focus = grouped.then(|| self.grouped_row_focus[index].clone());
+
+        let marker = if has_children {
+            if expanded { "▾ " } else { "▸ " }
+        } else if depth > 0 {
             "  "
         } else {
             ""
         };
         let display_name = if depth == 0 {
-            format!("{marker}{name}")
+            format!("{marker}{}", view.name)
         } else {
-            format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
+            format!(
+                "{}{}{}",
+                "  ".repeat(depth.saturating_sub(1)),
+                marker,
+                view.name
+            )
         };
-
-        let row_a11y_label = a11y_row_label(&name, status, cpu, memory, pid, selected);
 
         Some(
             div()
                 .id(("proc-row", index))
                 .role(Role::Row)
-                .aria_label(row_a11y_label)
+                .aria_label(view.row_a11y_label)
                 .aria_selected(selected)
                 .aria_row_index(index + 1)
-                .when(tree_view && has_children, |this| {
-                    this.aria_expanded(!collapsed)
+                .when(has_children, |this| this.aria_expanded(expanded))
+                .when(grouped, |this| {
+                    this.track_focus(row_focus.as_ref().expect("grouped row focus"))
+                        .aria_keyshortcuts("Enter, Space")
                 })
                 .flex()
                 .items_center()
@@ -2881,11 +3078,17 @@ impl TaskManagerApp {
                 .hover(|style| style.bg(rgb(palette().mantle)))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
-                    if tree_view && has_children {
-                        this.handle_command(Command::Select(Some(key)), cx);
-                        this.handle_command(Command::ToggleTreeNode(key), cx);
-                    } else {
-                        this.handle_command(Command::Select(Some(key)), cx);
+                    match &activation {
+                        RowActivation::ToggleGroup(group) => {
+                            this.handle_command(Command::ToggleAppGroup(group.clone()), cx);
+                        }
+                        RowActivation::Select(process) => {
+                            this.handle_command(Command::Select(Some(*process)), cx);
+                        }
+                        RowActivation::SelectAndToggleNode(process) => {
+                            this.handle_command(Command::Select(Some(*process)), cx);
+                            this.handle_command(Command::ToggleTreeNode(*process), cx);
+                        }
                     }
                 }))
                 .on_mouse_down(
@@ -2909,7 +3112,11 @@ impl TaskManagerApp {
                                 .h(px(6.0))
                                 .flex_shrink_0()
                                 .rounded_full()
-                                .bg(rgb(status_color(status))),
+                                .bg(rgb(if is_group {
+                                    palette().muted
+                                } else {
+                                    status_color(view.status)
+                                })),
                         )
                         .child(
                             div()
@@ -2931,15 +3138,15 @@ impl TaskManagerApp {
                         .text_xs()
                         .text_color(rgb(palette().dim))
                         .truncate()
-                        .child(command),
+                        .child(view.command),
                 )
                 .child(
                     div()
                         .w(px(COL_CPU))
                         .flex_shrink_0()
                         .text_sm()
-                        .text_color(rgb(usage_color(cpu.min(100.0))))
-                        .child(format::format_cpu_percent(cpu)),
+                        .text_color(rgb(usage_color(view.cpu.min(100.0))))
+                        .child(format::format_cpu_percent(view.cpu)),
                 )
                 .child(
                     div()
@@ -2947,7 +3154,7 @@ impl TaskManagerApp {
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(rgb(palette().subtext))
-                        .child(format::format_bytes(memory)),
+                        .child(format::format_bytes(view.memory)),
                 )
                 .child(
                     div()
@@ -2955,7 +3162,7 @@ impl TaskManagerApp {
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(rgb(palette().muted))
-                        .child(pid.to_string()),
+                        .child(view.pid_text),
                 )
                 .child(
                     div()
@@ -2964,7 +3171,7 @@ impl TaskManagerApp {
                         .text_xs()
                         .text_color(rgb(palette().subtext))
                         .truncate()
-                        .child(user),
+                        .child(view.user),
                 )
                 .child(
                     div()
@@ -2972,10 +3179,14 @@ impl TaskManagerApp {
                         .flex_shrink_0()
                         .child(accessible_pill(
                             ("row-status", index),
-                            status.label(),
-                            status_color(status),
+                            view.status_text.clone(),
+                            if is_group {
+                                palette().muted
+                            } else {
+                                status_color(view.status)
+                            },
                             palette().surface,
-                            format!("状態: {}", status.label()),
+                            format!("状態: {}", view.status_text),
                         )),
                 )
                 .child(
@@ -2984,7 +3195,7 @@ impl TaskManagerApp {
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(rgb(palette().muted))
-                        .child(threads.to_string()),
+                        .child(view.threads_text),
                 )
                 .into_any_element(),
         )
@@ -3514,12 +3725,21 @@ impl TaskManagerApp {
         let Some(data) = hidden_child_node(document, &mirror, A11Y_MIRROR_DATA_DOM_ID) else {
             return;
         };
-        let data_html = a11y_mirror_data_html(
-            self.dashboard.snapshot(),
-            self.dashboard.visible_indices(),
-            self.dashboard.selected_key(),
-            self.dashboard.sort_spec(),
-        );
+        let data_html = if self.dashboard.app_group_view() {
+            a11y_mirror_grouped_data_html(
+                self.dashboard.snapshot(),
+                &self.dashboard.app_group_rows(),
+                self.dashboard.selected_key(),
+                self.dashboard.sort_spec(),
+            )
+        } else {
+            a11y_mirror_data_html(
+                self.dashboard.snapshot(),
+                self.dashboard.visible_indices(),
+                self.dashboard.selected_key(),
+                self.dashboard.sort_spec(),
+            )
+        };
         if data.inner_html() != data_html {
             data.set_inner_html(&data_html);
         }
@@ -4019,6 +4239,29 @@ fn a11y_row_label(
     )
 }
 
+/// Accessible name for an application-group row (C2-WEBDRAW).
+///
+/// The count and the CPU/memory totals already drawn in the row are repeated in
+/// text, together with the expansion state, so the aggregate is available to
+/// screen readers without relying on colour or glyphs.
+fn a11y_group_row_label(
+    name: &str,
+    cpu: f32,
+    memory_bytes: u64,
+    process_count: usize,
+    expanded: bool,
+    selected: bool,
+) -> String {
+    let suffix = if selected { "、選択中" } else { "" };
+    let state = if expanded { "、展開済み" } else { "" };
+    format!(
+        "アプリグループ {name}、{process_count} プロセス、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}{state}{suffix}",
+        cpu_label = format::format_cpu_percent(cpu),
+        severity = usage_severity(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+    )
+}
+
 /// Text announced by the status live region (AccessKit + DOM mirror).
 ///
 /// Error and freshness states are spelled out instead of relying on the red /
@@ -4277,6 +4520,97 @@ fn a11y_mirror_rows_html(
         }
     }
     html.push_str("</div>");
+    html
+}
+
+/// Body rowgroup for the application-grouped view (C2-WEBDRAW).
+///
+/// Mirrors the exact rows the canvas draws: a group row publishes its totals,
+/// process count and `aria-expanded`, while an expanded member uses the ordinary
+/// process-row markup. The AX tree therefore never reports a first-member value
+/// in place of an aggregate.
+fn a11y_mirror_group_rows_html(
+    snapshot: Option<&SystemSnapshot>,
+    rows: &[AppGroupRow],
+    selected: Option<ProcessKey>,
+) -> String {
+    let mut html = String::from("<div role=\"rowgroup\">");
+    for (index, row) in rows.iter().enumerate() {
+        let is_group = row.kind == AppRowKind::Group;
+        let row_selected = if is_group {
+            selected.is_some_and(|key| row.process_key == key || row.member_keys.contains(&key))
+        } else {
+            selected == Some(row.process_key)
+        };
+        if !is_group {
+            let status = snapshot
+                .and_then(|snapshot| snapshot.processes.get(row.index))
+                .map(|process| process.status)
+                .unwrap_or(ProcessStatus::Unknown);
+            html.push_str(&a11y_mirror_row_html(
+                &row.label,
+                status,
+                row.cpu_percent,
+                row.memory_bytes,
+                snapshot
+                    .and_then(|snapshot| snapshot.processes.get(row.index))
+                    .map(|process| process.key.pid)
+                    .unwrap_or(0),
+                row_selected,
+                index + 1,
+            ));
+            continue;
+        }
+        let (selected_value, current_attribute) = if row_selected {
+            ("true", " aria-current=\"true\"")
+        } else {
+            ("false", "")
+        };
+        let expanded_attribute = if row.has_children {
+            format!(" aria-expanded=\"{}\"", row.expanded)
+        } else {
+            String::new()
+        };
+        let label = a11y_group_row_label(
+            &row.label,
+            row.cpu_percent,
+            row.memory_bytes,
+            row.process_count,
+            row.expanded,
+            row_selected,
+        );
+        let name_text = format!("{} ×{}", row.label, row.process_count);
+        html.push_str(&format!(
+            "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected_value}\"{current_attribute}{expanded_attribute} \
+             aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
+             <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div></div>",
+            escape_html(&label),
+            escape_html(&name_text),
+            escape_html(&usage_value_text(row.cpu_percent)),
+            escape_html(&format::format_bytes(row.memory_bytes)),
+            row_index = index + 1,
+        ));
+    }
+    html.push_str("</div>");
+    html
+}
+
+/// Data part of the hidden subtree when the table shows application groups.
+/// Kept separate from [`a11y_mirror_data_html`] so the existing flat/tree
+/// contract and its tests stay byte-for-byte unchanged.
+fn a11y_mirror_grouped_data_html(
+    snapshot: Option<&SystemSnapshot>,
+    rows: &[AppGroupRow],
+    selected: Option<ProcessKey>,
+    sort: SortSpec,
+) -> String {
+    let mut html = String::from("<div role=\"grid\" aria-label=\"プロセス一覧\">");
+    html.push_str("<div role=\"rowgroup\">");
+    html.push_str(&a11y_mirror_header_html(sort));
+    html.push_str("</div>");
+    html.push_str(&a11y_mirror_group_rows_html(snapshot, rows, selected));
+    html.push_str("</div>");
+    html.push_str(&a11y_mirror_metrics_html(snapshot));
     html
 }
 
@@ -5421,6 +5755,7 @@ mod tests {
                 proof_token: None,
                 focus_handle: cx.focus_handle(),
                 sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
+                grouped_row_focus: Vec::new(),
                 row_menu_item_focus: cx.focus_handle(),
                 scroll_handle: UniformListScrollHandle::new(),
                 live_total: None,
@@ -5523,6 +5858,7 @@ mod tests {
                         proof_token: None,
                         focus_handle: test_cx.focus_handle(),
                         sort_header_focus: std::array::from_fn(|_| test_cx.focus_handle()),
+                        grouped_row_focus: Vec::new(),
                         row_menu_item_focus: test_cx.focus_handle(),
                         scroll_handle: UniformListScrollHandle::new(),
                         live_total: None,
@@ -8139,5 +8475,189 @@ mod tests {
             web_key_action("f5", plain, false),
             Some(WebKeyAction::Refresh)
         );
+    }
+
+    // ------------------------------------------------ C2-WEBDRAW: grouped rows
+
+    /// Snapshot with a three-member group (CPU 4.0% / 600 B) and a solo process.
+    fn grouped_snapshot() -> SystemSnapshot {
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(30, 3),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=30".into(),
+                user: Some("user".into()),
+                status: ProcessStatus::Running,
+                threads: Some(4),
+                cpu_percent: 0.25,
+                memory_bytes: 300,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 1),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=10".into(),
+                cpu_percent: 1.5,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 2),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=20".into(),
+                cpu_percent: 2.25,
+                memory_bytes: 200,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(50, 5),
+                name: "solo".into(),
+                command: "solo".into(),
+                cpu_percent: 3.0,
+                memory_bytes: 42,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        snapshot
+    }
+
+    fn grouped_dashboard() -> Dashboard {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(grouped_snapshot());
+        dashboard
+    }
+
+    #[test]
+    fn group_row_shows_totals_count_and_fixed_placeholder_columns() {
+        let dashboard = grouped_dashboard();
+        assert!(dashboard.app_group_view(), "grouping is on by default");
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(dashboard.visible_count(), rows.len());
+        let group = &rows[0];
+        assert_eq!(group.kind, AppRowKind::Group);
+        let view = resolve_process_row(&dashboard, 0, Some(group)).expect("group row");
+        assert!(view.is_group);
+        assert_eq!(view.group_key.as_deref(), Some("firefox"));
+        assert_eq!(view.cpu, 4.0);
+        assert_eq!(view.memory, 600);
+        assert!(view.name.contains("firefox") && view.name.contains('3'));
+        // Aggregates have no single-process command / PID / user / status / threads.
+        assert_eq!(view.command, "—");
+        assert_eq!(view.pid_text, "—");
+        assert_eq!(view.user, "—");
+        assert_eq!(view.status_text, "—");
+        assert_eq!(view.threads_text, "—");
+        assert!(view.row_a11y_label.contains("3 プロセス"));
+        assert!(view.row_a11y_label.contains("4.0%"));
+        assert!(view.row_a11y_label.contains("600 B"));
+        assert_eq!(
+            row_activation(&view, false),
+            RowActivation::ToggleGroup("firefox".into())
+        );
+    }
+
+    #[test]
+    fn expanded_group_members_keep_individual_values_and_selection() {
+        let mut dashboard = grouped_dashboard();
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert!(dashboard.is_app_group_expanded("firefox"));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 5, "one group + three members + solo");
+        assert_eq!(dashboard.visible_count(), rows.len());
+        let member = &rows[1];
+        assert_eq!(member.kind, AppRowKind::Process);
+        assert_eq!(member.depth, 1);
+        let view = resolve_process_row(&dashboard, 1, Some(member)).expect("member row");
+        assert!(!view.is_group);
+        assert_eq!(view.group_key, None);
+        assert_eq!(view.cpu, member.cpu_percent);
+        assert_eq!(view.memory, member.memory_bytes);
+        assert_eq!(view.pid_text, member.process_key.pid.to_string());
+        assert_ne!(view.command, "—");
+        assert_eq!(
+            row_activation(&view, false),
+            RowActivation::Select(view.key)
+        );
+    }
+
+    #[test]
+    fn flat_and_tree_rows_keep_the_legacy_values() {
+        let mut dashboard = grouped_dashboard();
+        dashboard.apply(Command::ToggleAppGrouping);
+        assert!(!dashboard.app_group_view());
+
+        let snapshot = dashboard.snapshot().cloned().expect("snapshot");
+        let index = *dashboard
+            .visible_indices()
+            .first()
+            .expect("at least one visible row");
+        let process = &snapshot.processes[index];
+        let view = resolve_process_row(&dashboard, 0, None).expect("flat row");
+        assert_eq!(view.name, process.name);
+        assert_eq!(view.cpu, process.cpu_percent);
+        assert_eq!(view.memory, process.memory_bytes);
+        assert_eq!(view.pid_text, process.key.pid.to_string());
+        assert_eq!(view.command, process.command);
+        assert_eq!(view.group_key, None);
+        assert_eq!(
+            row_activation(&view, false),
+            RowActivation::Select(process.key)
+        );
+
+        dashboard.apply(Command::ToggleTreeView);
+        assert!(dashboard.tree_view());
+        let view = resolve_process_row(&dashboard, 0, None).expect("tree row");
+        assert!(!view.is_group);
+        assert_eq!(view.name, process.name);
+        assert_eq!(view.group_key, None);
+    }
+
+    #[test]
+    fn ax_mirror_group_rows_expose_totals_count_and_expansion() {
+        let mut dashboard = grouped_dashboard();
+        let snapshot = dashboard.snapshot().cloned();
+        let rows = dashboard.app_group_rows();
+        let html =
+            a11y_mirror_grouped_data_html(snapshot.as_ref(), &rows, None, SortSpec::default());
+        assert_eq!(
+            html.matches("role=\"row\"").count(),
+            rows.len() + 1,
+            "header plus one row per visible group"
+        );
+        assert!(html.contains("firefox ×3"), "{html}");
+        assert!(html.contains("4.0%"), "{html}");
+        assert!(html.contains("600 B"), "{html}");
+        assert!(html.contains("3 プロセス"), "{html}");
+        assert!(html.contains("aria-expanded=\"false\""), "{html}");
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        let rows = dashboard.app_group_rows();
+        let html =
+            a11y_mirror_grouped_data_html(snapshot.as_ref(), &rows, None, SortSpec::default());
+        assert!(html.contains("aria-expanded=\"true\""), "{html}");
+        assert_eq!(html.matches("role=\"row\"").count(), rows.len() + 1);
+    }
+
+    #[test]
+    fn grouped_view_keeps_dom_proof_rows_and_export_contract() {
+        let (_, _, _, proof) = run_sse_steps(|app| {
+            app.dashboard.ingest(grouped_snapshot());
+        });
+        let rows_field = proof
+            .split(';')
+            .find(|field| field.starts_with("rows="))
+            .expect("rows field must be present");
+        assert_eq!(rows_field, "rows=2", "{proof}");
+
+        // Export still receives `snapshot.processes` directly: raw process rows
+        // only, no group aggregate and no group count marker.
+        let snapshot = grouped_snapshot();
+        assert_eq!(snapshot.processes.len(), 4);
+        let csv = export_document_with_token(&snapshot, ExportFormat::Csv, None, None);
+        // Three raw process rows are exported; no aggregate row / count marker.
+        assert_eq!(csv.matches("/usr/bin/firefox --pid=").count(), 3, "{csv}");
+        assert!(!csv.contains('×'), "{csv}");
     }
 }

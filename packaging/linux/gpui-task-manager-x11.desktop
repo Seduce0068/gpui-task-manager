@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+# Xwayland fallback entry. Clearing WAYLAND_DISPLAY (GPUI 0.3.12 filters out an
+# empty value) forces the X11 backend, where WindowOptions.icon is written to
+# _NET_WM_ICON and produces a dedicated taskbar / alt-tab window icon.
+# The primary gpui-task-manager.desktop is intentionally left unchanged: native
+# Wayland keeps its IME/HiDPI benefits, and app_id + StartupWMClass remain the
+# window identity there. Exec uses the PATH-resolved command (as in the primary
+# entry) so this works with the .deb (/usr/bin) and a ~/.local/bin install alike.
+Name=GPUI Task Manager (X11)
+Name[ja]=GPUI タスクマネージャー (X11)
+Comment=System task manager (X11/Xwayland session with a dedicated window icon)
+Comment[ja]=専用ウィンドウアイコン付きの X11/Xwayland セッションで起動します
+Exec=env WAYLAND_DISPLAY= gpui-task-manager
+Icon=gpui-task-manager
+Terminal=false
+Categories=System;Monitor;
+Keywords=task;process;cpu;memory;network;system;
+StartupWMClass=gpui-task-manager

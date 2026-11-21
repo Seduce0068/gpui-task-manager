@@ -18,10 +18,12 @@ use gpui_kit::*;
 use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{
-    PlatformInfo, ProcessKey, ProcessStatus, Signal, SortDirection, SortKey, SystemProbe, Timestamp,
+    PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, Signal, SortDirection, SortKey,
+    SystemProbe, Timestamp,
 };
 use tm_viewmodel::{
-    Command, Dashboard, EditOutcome, Effect, FilterInput, DEFAULT_REFRESH_INTERVAL,
+    AppGroupRow, AppRowKind, Command, Dashboard, EditOutcome, Effect, FilterInput,
+    DEFAULT_REFRESH_INTERVAL,
 };
 
 use crate::settings::Settings;
@@ -55,6 +57,89 @@ fn power_summary_text(snapshot: Option<&tm_core::SystemSnapshot>) -> String {
 /// Read-only cgroup grouping row: normalised label plus member count (R1-I12).
 fn cgroup_group_text(label: &str, members: usize) -> String {
     format!("{label} — {members} 件")
+}
+
+/// Values rendered by one row of the process table (R1-APPDRAW).
+///
+/// A group row takes its name and its CPU/memory *totals* from the view model's
+/// `AppGroupRow`. Columns that have no aggregate (command, PID, user, status,
+/// threads) carry fixed text, so a group never shows one representative
+/// process's identity as if it described the whole group.
+#[derive(Clone, Debug, PartialEq)]
+struct ProcessRowView {
+    key: ProcessKey,
+    /// Set only for a group row; the shell passes it to `ToggleAppGroup`.
+    group_key: Option<String>,
+    name: String,
+    command: String,
+    cpu_percent: f32,
+    memory_bytes: u64,
+    pid: String,
+    user: String,
+    status: ProcessStatus,
+    status_text: String,
+    threads: String,
+    selected: bool,
+    depth: usize,
+    has_children: bool,
+    is_group: bool,
+    process_count: usize,
+}
+
+/// Resolves a visible row's display values without touching GPUI (R1-APPDRAW).
+///
+/// `group` is supplied only in the default grouped view and only for a row
+/// whose view-model kind is [`AppRowKind::Group`]. Expanded member rows and all
+/// flat/tree rows deliberately keep their original `ProcessSnapshot` values,
+/// so their command/PID/user/status/threads rendering is unchanged.
+fn process_row_values(
+    group: Option<&AppGroupRow>,
+    process: &ProcessSnapshot,
+    selected: bool,
+    depth: usize,
+    has_children: bool,
+) -> ProcessRowView {
+    match group {
+        Some(group) if group.kind == AppRowKind::Group => ProcessRowView {
+            key: group.process_key,
+            group_key: Some(group.key.clone()),
+            name: group.label.clone(),
+            command: format!("{} プロセス", group.process_count),
+            cpu_percent: group.cpu_percent,
+            memory_bytes: group.memory_bytes,
+            pid: "—".to_string(),
+            user: "—".to_string(),
+            status: ProcessStatus::Unknown,
+            status_text: "—".to_string(),
+            threads: "—".to_string(),
+            selected,
+            depth,
+            has_children,
+            is_group: true,
+            process_count: group.process_count,
+        },
+        _ => ProcessRowView {
+            key: process.key,
+            group_key: None,
+            name: process.name.clone(),
+            command: process.command.clone(),
+            cpu_percent: process.cpu_percent,
+            memory_bytes: process.memory_bytes,
+            pid: process.key.pid.to_string(),
+            user: process.user.clone().unwrap_or_else(|| "—".to_string()),
+            status: process.status,
+            status_text: process.status.label().to_string(),
+            threads: process
+                .threads
+                .map(|threads| threads.to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            selected,
+            depth,
+            has_children,
+            is_group: false,
+            process_count: 1,
+        },
+    }
 }
 
 type SharedProbe = Arc<Mutex<Option<Box<dyn SystemProbe>>>>;
@@ -215,6 +300,10 @@ pub struct TaskManagerApp {
     /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
     /// フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
     sort_header_focus: [FocusHandle; 7],
+    /// 表示行のフォーカスハンドル（visible index 対応）。Enter/Space で行の
+    /// `on_click`（Group 行は `ToggleAppGroup`、他は `Select`）を発火させる。
+    /// 行は仮想リストで再利用されるため index をキーにハンドルを保持する。
+    row_focus: Vec<FocusHandle>,
     /// 確認ダイアログの安全側ボタン（キャンセル）のフォーカス先。
     dialog_cancel_focus: FocusHandle,
     /// 確認ダイアログの実行ボタンのフォーカス先。
@@ -312,6 +401,7 @@ impl TaskManagerApp {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
+            row_focus: Vec::new(),
             dialog_cancel_focus: cx.focus_handle(),
             dialog_confirm_focus: cx.focus_handle(),
             help_close_focus: cx.focus_handle(),
@@ -746,6 +836,21 @@ impl TaskManagerApp {
             return;
         }
 
+        // A focused process row owns Enter/Space for its existing `on_click`
+        // (ToggleAppGroup on a group row, Select otherwise), exactly like a
+        // focused column header. Consume the key here so the global Space=pause
+        // and filter-edit paths never fire underneath row activation.
+        if is_row_activation(&key, modifiers, self.filter_editing)
+            && self
+                .row_focus
+                .iter()
+                .take(self.dashboard.visible_count())
+                .any(|handle| handle.is_focused(window))
+        {
+            cx.stop_propagation();
+            return;
+        }
+
         // Single resolution point for every other keystroke. `key_action`
         // suppresses navigation and shell shortcuts while the filter is being
         // edited (IME candidate selection included), which is the native half
@@ -793,7 +898,22 @@ impl TaskManagerApp {
                 }
             }
             KeyAction::SelectRelative(delta) => {
+                // Arrow navigation keeps the selected row and the keyboard
+                // focus in sync when a row was focused, so a following Enter or
+                // Space activates the row the user just moved to.
+                let row_focused = self
+                    .row_focus
+                    .iter()
+                    .take(self.dashboard.visible_count())
+                    .any(|handle| handle.is_focused(window));
                 self.handle_command(Command::SelectRelative(delta), cx);
+                if row_focused {
+                    if let Some(index) = self.dashboard.selected_visible_index() {
+                        if let Some(handle) = self.row_focus.get(index) {
+                            handle.focus(window, cx);
+                        }
+                    }
+                }
             }
             KeyAction::TogglePaused => {
                 let paused = !self.dashboard.paused();
@@ -1699,20 +1819,7 @@ impl TaskManagerApp {
     }
 
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (
-            key,
-            name,
-            command,
-            cpu,
-            memory,
-            pid,
-            user,
-            status,
-            threads,
-            selected,
-            depth,
-            has_children,
-        ) = {
+        let (view, expanded) = {
             let snapshot = self.dashboard.snapshot()?;
             let row_index = *self.dashboard.visible_indices().get(index)?;
             let depth = self
@@ -1728,39 +1835,77 @@ impl TaskManagerApp {
                 .copied()
                 .unwrap_or(false);
             let process = snapshot.processes.get(row_index)?;
+            // In the grouped view `app_group_rows()` is aligned with
+            // `visible_indices()`. Only a Group row takes its values from the
+            // aggregate; an expanded member and every flat/tree row keep the
+            // original `snapshot.processes[row_index]` values (R1-APPDRAW).
+            let group = if self.dashboard.app_group_view() {
+                self.dashboard.app_group_rows().get(index).cloned()
+            } else {
+                None
+            };
+            let group = group.as_ref().filter(|row| row.kind == AppRowKind::Group);
+            let selected = if group.is_some() {
+                self.dashboard.selected_app_group_row_index() == Some(index)
+            } else {
+                self.dashboard.selected_key() == Some(process.key)
+            };
+            let expanded = group
+                .map(|row| row.expanded)
+                .unwrap_or_else(|| !self.dashboard.is_collapsed(process.key));
             (
-                process.key,
-                self.display(&process.name),
-                process.command.clone(),
-                process.cpu_percent,
-                process.memory_bytes,
-                process.key.pid,
-                process.user.clone().unwrap_or_else(|| "—".to_string()),
-                process.status,
-                process.threads,
-                self.dashboard.selected_key() == Some(process.key),
-                depth,
-                has_children,
+                process_row_values(group, process, selected, depth, has_children),
+                expanded,
             )
         };
 
+        // Stable per-index focus handle: GPUI synthesises the `on_click` below
+        // on Enter/Space while this row is focused (WCAG 2.1.1), the same path
+        // already used by the sortable column headers.
+        while self.row_focus.len() <= index {
+            self.row_focus.push(cx.focus_handle());
+        }
+        let row_focus = self.row_focus[index].clone();
+
         let tree_view = self.dashboard.tree_view();
-        let collapsed = self.dashboard.is_collapsed(key);
+        let group_view = self.dashboard.app_group_view();
+        let key = view.key;
+        let group_key = view.group_key.clone();
+        let has_children = view.has_children;
+        let depth = view.depth;
+        let selected = view.selected;
+        let status = view.status;
+        let status_text = view.status_text.clone();
+        let threads = view.threads.clone();
+        let cpu = view.cpu_percent;
+        let memory = view.memory_bytes;
+        let pid = view.pid.clone();
+        let process_count = view.process_count;
+        let is_group = view.is_group;
+        let collapsed = !expanded;
         // All process users collapse to "user" under --redact, matching the
-        // agent snapshot (not just the login account) — R41 audit.
-        let user = if self.redact && user != "—" {
+        // agent snapshot (not just the login account) — R41 audit. Group rows
+        // already carry the fixed "—" and are left untouched.
+        let user = if self.redact && view.user != "—" {
             "user".to_string()
         } else {
-            self.display(&user)
+            self.display(&view.user)
         };
-        let command = self.display(&command);
-        let marker = if tree_view && has_children {
+        let command = self.display(&view.command);
+        let name = self.display(&view.name);
+        let marker = if is_group && has_children {
+            if expanded {
+                "▾ "
+            } else {
+                "▸ "
+            }
+        } else if tree_view && has_children {
             if collapsed {
                 "▸ "
             } else {
                 "▾ "
             }
-        } else if tree_view && depth > 0 {
+        } else if (tree_view || group_view) && depth > 0 {
             "  "
         } else {
             ""
@@ -1769,6 +1914,11 @@ impl TaskManagerApp {
             format!("{marker}{name}")
         } else {
             format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
+        };
+        let aria_label = if is_group {
+            a11y_group_row_label(&name, cpu, memory, process_count, selected)
+        } else {
+            a11y_row_label(&name, status, cpu, memory, key.pid, selected)
         };
 
         Some(
@@ -1779,12 +1929,14 @@ impl TaskManagerApp {
                 // describe the row without relying on the colour-only status
                 // dot. `name` is the already-displayed (possibly redacted) value.
                 .role(Role::Row)
-                .aria_label(a11y_row_label(&name, status, cpu, memory, pid, selected))
+                .aria_label(aria_label)
                 .aria_selected(selected)
                 .aria_row_index(index + 1)
-                .when(tree_view && has_children, |this| {
-                    this.aria_expanded(!collapsed)
-                })
+                // Group rows advertise the same expansion state as tree nodes;
+                // both use `has_children` from the visible row arrays.
+                .when(has_children, |this| this.aria_expanded(expanded))
+                .track_focus(&row_focus)
+                .aria_keyshortcuts("Enter, Space")
                 .flex()
                 .items_center()
                 .w_full()
@@ -1797,8 +1949,12 @@ impl TaskManagerApp {
                     this.hover(|style| style.bg(rgb(palette().mantle)))
                 })
                 .on_click(cx.listener(move |this, _event, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    if tree_view && has_children {
+                    row_focus.focus(window, cx);
+                    if let Some(group_key) = group_key.clone() {
+                        // A group has no process identity of its own: activation
+                        // toggles the expansion set instead of selecting a member.
+                        this.handle_command(Command::ToggleAppGroup(group_key), cx);
+                    } else if tree_view && has_children {
                         this.handle_command(Command::Select(Some(key)), cx);
                         this.handle_command(Command::ToggleTreeNode(key), cx);
                     } else {
@@ -1863,7 +2019,7 @@ impl TaskManagerApp {
                         .w(px(COL_PID))
                         .text_xs()
                         .text_color(rgb(palette().muted))
-                        .child(pid.to_string()),
+                        .child(pid),
                 )
                 .child(
                     div()
@@ -1874,7 +2030,7 @@ impl TaskManagerApp {
                         .child(user),
                 )
                 .child(div().w(px(COL_STATUS)).child(pill(
-                    status.label(),
+                    status_text,
                     status_color(status),
                     palette().surface,
                 )))
@@ -1883,11 +2039,7 @@ impl TaskManagerApp {
                         .w(px(COL_THREADS))
                         .text_xs()
                         .text_color(rgb(palette().muted))
-                        .child(
-                            threads
-                                .map(|threads| threads.to_string())
-                                .unwrap_or_else(|| "—".to_string()),
-                        ),
+                        .child(threads),
                 )
                 .into_any_element(),
         )
@@ -2844,6 +2996,13 @@ fn is_sort_key_activation(key: &str, modifiers: Modifiers, editing: bool) -> boo
     !editing && !modifiers.modified() && matches!(key, "enter" | "space")
 }
 
+/// Enter/Space on a focused process row is reserved for that row's `on_click`
+/// (WCAG 2.1.1). Same unmodified-key predicate as the sortable header, so a
+/// focused row never triggers Space=pause or filter editing underneath it.
+fn is_row_activation(key: &str, modifiers: Modifiers, editing: bool) -> bool {
+    is_sort_key_activation(key, modifiers, editing)
+}
+
 /// Textual severity for a colour-coded value (no colour dependency).
 ///
 /// Mirrors the browser shell and the 60/85 thresholds of `theme::usage_color`,
@@ -2930,6 +3089,28 @@ fn a11y_row_label(
     format!(
         "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、PID {pid}{suffix}",
         status_label = status.label(),
+        cpu_label = format::format_cpu_percent(cpu),
+        severity = usage_severity(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+    )
+}
+
+/// Accessible name of an application-group row (R1-APPDRAW).
+///
+/// Announces the same totals and member count the visible row shows and no
+/// representative process's PID/user/status, which are not meaningful for a
+/// group. `name` is already redacted by the caller like `a11y_row_label`.
+fn a11y_group_row_label(
+    name: &str,
+    cpu: f32,
+    memory_bytes: u64,
+    process_count: usize,
+    selected: bool,
+) -> String {
+    let suffix = if selected { "、選択中" } else { "" };
+    format!(
+        "アプリ {name}、{count} プロセス、CPU 合計 {cpu_label}（{severity}）、メモリ合計 {memory_label}{suffix}",
+        count = process_count,
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
@@ -3079,7 +3260,7 @@ fn key_action(key: &str, modifiers: Modifiers, editing_text: bool) -> Option<Key
 /// with the priority dialog > help > filter, so while the help overlay is open a
 /// bare `Esc` only closes the help (it never clears the filter). F1 is a plain
 /// toggle and no longer shares a row with `Esc`.
-fn help_shortcuts() -> [(&'static str, &'static str); 12] {
+fn help_shortcuts() -> [(&'static str, &'static str); 13] {
     [
         ("↑ / ↓", "行の選択"),
         ("PgUp / PgDn", "10 行移動"),
@@ -3091,6 +3272,10 @@ fn help_shortcuts() -> [(&'static str, &'static str); 12] {
         ("F5", "今すぐ更新"),
         ("F1", "このヘルプを開く / 閉じる"),
         ("Enter", "確認ダイアログをキャンセル（安全側）"),
+        (
+            "Enter / Space",
+            "行のグループ展開/折りたたみ（行フォーカス時）",
+        ),
         ("Ctrl/Cmd+Enter", "確認ダイアログでシグナルを実行"),
         (
             "Esc",
@@ -3146,17 +3331,22 @@ mod tests {
     // attribute macro that would shadow the built-in `#[test]` if `super::*`
     // were imported here.
     use super::{
-        a11y_filter_hint, a11y_filter_label, a11y_live_text, a11y_row_label, a11y_sort_accesskit,
-        a11y_sort_direction, a11y_temperature_label, a11y_usage_label, apply_retry_status,
-        cgroup_group_text, dialog_command, help_shortcuts, is_sort_key_activation, key_action,
-        power_summary_text, report_save_result, resolve_probe_retry, signal_enabled,
-        sort_header_label, sort_header_text, temperature_severity_label, truncate_label,
-        usage_severity, AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
+        a11y_filter_hint, a11y_filter_label, a11y_group_row_label, a11y_live_text, a11y_row_label,
+        a11y_sort_accesskit, a11y_sort_direction, a11y_temperature_label, a11y_usage_label,
+        apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, is_row_activation,
+        is_sort_key_activation, key_action, power_summary_text, process_row_values,
+        report_save_result, resolve_probe_retry, signal_enabled, sort_header_label,
+        sort_header_text, temperature_severity_label, truncate_label, usage_severity,
+        AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
-    use tm_core::{PlatformInfo, ProcessStatus, Signal, SortDirection};
-    use tm_viewmodel::{Command, Dashboard, StatusMessage, DEFAULT_REFRESH_INTERVAL};
+    use tm_core::{
+        PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, Signal, SortDirection,
+    };
+    use tm_viewmodel::{
+        AppGroupRow, AppRowKind, Command, Dashboard, StatusMessage, DEFAULT_REFRESH_INTERVAL,
+    };
 
     fn plain() -> Modifiers {
         Modifiers::default()
@@ -4074,5 +4264,243 @@ mod tests {
         let none = super::TaskManagerApp::config_file_label(None);
         assert_eq!(none, "<unknown>");
         assert!(!none.contains('/'));
+    }
+
+    fn sample_process(pid: u32, name: &str) -> ProcessSnapshot {
+        ProcessSnapshot {
+            key: ProcessKey::new(pid, 1_700_000_000),
+            name: name.to_string(),
+            command: format!("/usr/bin/{name} --flag"),
+            user: Some("alice".to_string()),
+            status: ProcessStatus::Sleeping,
+            cpu_percent: 1.0,
+            memory_bytes: 1_024,
+            virtual_memory_bytes: 4_096,
+            threads: Some(7),
+            parent_pid: Some(1),
+        }
+    }
+
+    fn sample_group() -> AppGroupRow {
+        let first = ProcessKey::new(100, 1_700_000_000);
+        AppGroupRow {
+            kind: AppRowKind::Group,
+            key: "firefox".to_string(),
+            label: "firefox".to_string(),
+            index: 0,
+            process_key: first,
+            member_keys: vec![first, ProcessKey::new(101, 1_700_000_000)],
+            depth: 0,
+            has_children: true,
+            expanded: false,
+            cpu_percent: 12.5,
+            memory_bytes: 3 * 1_024 * 1_024,
+            process_count: 3,
+        }
+    }
+
+    #[test]
+    fn grouped_row_shows_totals_and_fixed_non_aggregatable_columns() {
+        let group = sample_group();
+        let representative = sample_process(100, "firefox");
+        let view = process_row_values(Some(&group), &representative, false, 0, true);
+
+        assert!(view.is_group);
+        assert_eq!(view.group_key.as_deref(), Some("firefox"));
+        assert_eq!(view.name, "firefox");
+        assert_eq!(view.command, "3 プロセス");
+        assert_eq!(view.cpu_percent, group.cpu_percent);
+        assert_eq!(view.memory_bytes, group.memory_bytes);
+        // The representative's single-process numbers never stand in for the sum.
+        assert_ne!(view.cpu_percent, representative.cpu_percent);
+        assert_ne!(view.memory_bytes, representative.memory_bytes);
+        // No single member's identity reaches a group column.
+        assert_eq!(view.pid, "—");
+        assert_eq!(view.user, "—");
+        assert_eq!(view.status_text, "—");
+        assert_eq!(view.threads, "—");
+        assert!(!view.command.contains("--flag"));
+        assert!(!view.user.contains("alice"));
+        assert_eq!(view.status, ProcessStatus::Unknown);
+    }
+
+    #[test]
+    fn flat_tree_and_expanded_member_rows_keep_snapshot_values() {
+        let process = sample_process(42, "emacs");
+        let flat = process_row_values(None, &process, true, 0, false);
+        let tree = process_row_values(None, &process, false, 1, true);
+        for view in [&flat, &tree] {
+            assert!(!view.is_group);
+            assert_eq!(view.group_key, None);
+            assert_eq!(view.name, process.name);
+            assert_eq!(view.command, process.command);
+            assert_eq!(view.cpu_percent, process.cpu_percent);
+            assert_eq!(view.memory_bytes, process.memory_bytes);
+            assert_eq!(view.pid, "42");
+            assert_eq!(view.user, "alice");
+            assert_eq!(view.status_text, "待機");
+            assert_eq!(view.threads, "7");
+            assert_eq!(view.status, process.status);
+        }
+        assert!(flat.selected);
+        assert_eq!(tree.depth, 1);
+        assert!(tree.has_children);
+
+        // An expanded member has `kind = Process`: even when a group row is
+        // supplied it must fall back to the snapshot, never to group totals.
+        let member = AppGroupRow {
+            kind: AppRowKind::Process,
+            key: "firefox".to_string(),
+            label: process.name.clone(),
+            index: 7,
+            process_key: process.key,
+            member_keys: Vec::new(),
+            depth: 1,
+            has_children: false,
+            expanded: false,
+            cpu_percent: 99.0,
+            memory_bytes: 9_999,
+            process_count: 1,
+        };
+        let view = process_row_values(Some(&member), &process, false, 1, false);
+        assert!(!view.is_group);
+        assert_eq!(view.group_key, None);
+        assert_eq!(view.cpu_percent, process.cpu_percent);
+        assert_eq!(view.memory_bytes, process.memory_bytes);
+        assert_eq!(view.command, process.command);
+        assert_eq!(view.pid, "42");
+    }
+
+    #[test]
+    fn group_accessible_name_states_totals_without_a_member_identity() {
+        let label = a11y_group_row_label("firefox", 12.5, 3 * 1_024 * 1_024, 3, true);
+        assert!(
+            label.starts_with("アプリ firefox、3 プロセス、CPU 合計 12.5%"),
+            "{label}"
+        );
+        assert!(label.contains("メモリ合計 3.0 MiB"), "{label}");
+        assert!(label.ends_with("、選択中"), "{label}");
+        assert!(!label.contains("PID"), "{label}");
+        assert!(!label.contains("--flag"), "{label}");
+    }
+
+    #[test]
+    fn focused_row_owns_enter_space_without_breaking_global_key_contracts() {
+        assert!(is_row_activation("enter", plain(), false));
+        assert!(is_row_activation("space", plain(), false));
+        assert!(!is_row_activation("enter", plain(), true));
+        assert!(!is_row_activation("space", ctrl(), false));
+        assert!(!is_row_activation("space", cmd(), false));
+        // Outside a focused row the old keys still mean exactly what they did.
+        assert_eq!(
+            key_action("space", plain(), false),
+            Some(KeyAction::TogglePaused)
+        );
+        assert_eq!(
+            key_action("down", plain(), false),
+            Some(KeyAction::SelectRelative(1))
+        );
+        assert_eq!(dialog_command("enter", plain()), Some(Command::CancelKill));
+    }
+
+    #[test]
+    fn help_advertises_group_expansion_and_keeps_existing_shortcuts() {
+        let shortcuts = help_shortcuts();
+        assert!(
+            shortcuts.iter().any(|(key, description)| {
+                key.contains("Enter") && description.contains("グループ展開/折りたたみ")
+            }),
+            "help must document group expansion: {shortcuts:?}"
+        );
+        assert!(shortcuts
+            .iter()
+            .any(|(key, description)| *key == "Space" && description.contains("一時停止")));
+        assert!(shortcuts
+            .iter()
+            .any(|(key, description)| *key == "Enter" && description.contains("キャンセル")));
+        assert!(shortcuts
+            .iter()
+            .any(|(key, _description)| *key == "Ctrl/Cmd+Enter"));
+    }
+
+    #[test]
+    fn process_row_wires_group_activation_and_accesskit_semantics() {
+        let source = include_str!("app.rs");
+        let row = source
+            .split("fn process_row(")
+            .nth(1)
+            .expect("process_row must exist")
+            .split("fn details_panel(")
+            .next()
+            .expect("process_row slice must end at details_panel");
+        assert!(row.contains(concat!("Command::Toggle", "AppGroup(group_key)")));
+        assert!(row.contains(concat!("app_group_", "rows().get(index)")));
+        assert!(row.contains(concat!("AppRowKind::", "Group")));
+        assert!(row.contains(concat!("process_row_values(", "group")));
+        assert!(row.contains(concat!(".aria_label(", "aria_label)")));
+        assert!(row.contains(concat!(".aria_expanded(", "expanded)")));
+        assert!(row.contains(concat!(".track_focus(&", "row_focus)")));
+        assert!(row.contains(concat!(".aria_keyshortcuts(", "\"Enter, Space\")")));
+        // Tree nodes keep their original select + toggle behaviour.
+        assert!(row.contains(concat!("Command::Toggle", "TreeNode(key)")));
+    }
+
+    #[test]
+    fn toggle_app_group_command_expands_and_collapses_group_members() {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        assert!(
+            snapshot.processes.len() >= 2,
+            "demo snapshot needs two processes"
+        );
+        let first = snapshot.processes[0].clone();
+        snapshot.processes[1].name = first.name.clone();
+        dashboard.ingest(snapshot);
+
+        let group = dashboard
+            .app_group_rows()
+            .into_iter()
+            .find(|row| row.kind == AppRowKind::Group && row.has_children)
+            .expect("a multi-member group in demo data");
+        let key = group.key.clone();
+        let collapsed_count = dashboard.app_group_rows().len();
+        dashboard.apply(Command::ToggleAppGroup(key.clone()));
+        assert!(dashboard.is_app_group_expanded(&key));
+        assert!(
+            dashboard.app_group_rows().len() > collapsed_count,
+            "expanding must reveal member rows"
+        );
+        dashboard.apply(Command::ToggleAppGroup(key.clone()));
+        assert!(!dashboard.is_app_group_expanded(&key));
+        assert_eq!(dashboard.app_group_rows().len(), collapsed_count);
+    }
+
+    #[test]
+    fn grouped_display_does_not_change_the_export_twelve_column_contract() {
+        use tm_core::redact::RedactionIdentifiers;
+
+        let mut snapshot = tm_core::SystemSnapshot::default();
+        for pid in [10, 20, 30] {
+            snapshot.processes.push(ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                name: "firefox".to_string(),
+                ..ProcessSnapshot::default()
+            });
+        }
+        let before = snapshot.processes.clone();
+        let group = sample_group();
+        // Building an aggregate display row only borrows the snapshot.
+        let _ = process_row_values(Some(&group), &snapshot.processes[0], false, 0, true);
+        assert_eq!(snapshot.processes, before);
+
+        let ids = RedactionIdentifiers {
+            home: "<home>",
+            user: "<user>",
+            hostname: "<host>",
+        };
+        let csv = tm_core::export::snapshot_to_csv(&snapshot, &ids);
+        for line in csv.lines() {
+            assert_eq!(line.matches(',').count(), 11, "12 columns: {line}");
+        }
     }
 }
