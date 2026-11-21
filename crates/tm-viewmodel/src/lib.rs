@@ -13,6 +13,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use tm_core::format;
+// `app_group_key` lives in `tm_core::model`; importing through the module keeps
+// this change inside the assigned files (no core `lib.rs` re-export needed).
+use tm_core::model::app_group_key;
 use tm_core::{
     filter_and_sort, flatten_process_tree, group_by_app, normalise_percent, Filter, MetricHistory,
     NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
@@ -364,12 +367,12 @@ pub enum Command {
     ToggleAppGrouping,
     /// Set application grouping explicitly (R1-VISIBLE).
     SetAppGrouping(bool),
-    /// Select an application group row by its redacted name (R1-GROUP).
+    /// Select an application group row by its redacted app key (R1-GROUP).
     ///
     /// Resolves to the first member (smallest PID) and reuses the ordinary
     /// selection path, so details, signals and PID-reuse protection are intact.
     SelectAppGroup(String),
-    /// Expand or collapse an application group row by its redacted name (R1-GROUP).
+    /// Expand or collapse an application group row by its redacted app key (R1-GROUP).
     ToggleAppGroup(String),
     /// Open the confirmation dialog for a signal.
     RequestSignal {
@@ -525,11 +528,13 @@ pub enum AppRowKind {
 pub struct AppGroupRow {
     /// Whether this row is a group summary or an expanded process.
     pub kind: AppRowKind,
-    /// Stable identity used for expansion state; the group's redacted name.
+    /// Stable identity used for expansion state; the group's redacted app key
+    /// derived from the executable ([`app_group_key`]).
     ///
     /// Empty for individual process rows.
     pub key: String,
-    /// Display text: the group name, or the process name for a member row.
+    /// Display text: the app name for a group row (identical to `key`), or the
+    /// process name for an expanded member row (e.g. `Isolated Web Co`).
     pub label: String,
     /// Index into `snapshot.processes` of the represented process.
     ///
@@ -574,7 +579,7 @@ pub struct Dashboard {
     /// or shell change; mutually exclusive with `tree_view` at the setter.
     app_group_view: bool,
     collapsed: HashSet<ProcessKey>,
-    /// Redacted application names whose group rows are expanded (R1-GROUP).
+    /// Redacted app keys whose group rows are expanded (R1-GROUP).
     ///
     /// A `HashSet` keyed by `String` keeps the tree-view `ProcessKey` collapse
     /// set untouched; the two views are independent and both remain available.
@@ -838,8 +843,9 @@ impl Dashboard {
 
     /// Rows of the application-grouped process table, in display order (R1-GROUP).
     ///
-    /// By default this returns one row per redacted `process.name`, with the
-    /// members' CPU/memory totals already computed by [`group_by_app`]. A group
+    /// By default this returns one row per redacted app key (see
+    /// [`app_group_key`]), with the members' CPU/memory totals already computed
+    /// by [`group_by_app`]. A group
     /// added to the expansion set through [`Command::ToggleAppGroup`] is followed
     /// by its individual processes at `depth = 1`; collapsing it removes them
     /// again. The current filter is applied first and the active sort spec
@@ -949,13 +955,13 @@ impl Dashboard {
             })
     }
 
-    /// First member (smallest [`ProcessKey`]) of a named, currently visible group.
+    /// First member (smallest [`ProcessKey`]) of a keyed, visible group.
     fn first_app_group_key(&self, key: &str) -> Option<ProcessKey> {
         self.snapshot.as_ref().and_then(|snapshot| {
             snapshot
                 .processes
                 .iter()
-                .filter(|process| process.name == key && self.filter.matches(process))
+                .filter(|process| app_group_key(process) == key && self.filter.matches(process))
                 .map(|process| process.key)
                 .min()
         })
@@ -965,7 +971,7 @@ impl Dashboard {
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.process(member))
-            .is_some_and(|process| process.name == key)
+            .is_some_and(|process| app_group_key(process) == key)
     }
 
     /// Group-row representative for a selection that has no row of its own.
@@ -980,11 +986,11 @@ impl Dashboard {
             return None;
         }
         let snapshot = self.snapshot.as_ref()?;
-        let name = &snapshot.process(key)?.name;
-        if self.expanded_app_groups.contains(name) {
+        let app_key = app_group_key(snapshot.process(key)?);
+        if self.expanded_app_groups.contains(app_key) {
             return None;
         }
-        let first = self.first_app_group_key(name)?;
+        let first = self.first_app_group_key(app_key)?;
         (first != key).then_some(first)
     }
 
@@ -998,7 +1004,7 @@ impl Dashboard {
             snapshot
                 .processes
                 .iter()
-                .any(|process| &process.name == key)
+                .any(|process| app_group_key(process) == key.as_str())
         });
     }
 
@@ -3494,6 +3500,64 @@ mod tests {
             .app_group_rows()
             .iter()
             .all(|row| row.key != "firefox"));
+    }
+
+    #[test]
+    fn app_group_rows_follow_executable_keys_not_comm() {
+        // Firefox parent + two children with generic comm values. Only argv[0]
+        // identifies the application, so the group label must be the app name.
+        let mut snapshot = app_group_snapshot();
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(60, 6),
+                name: "firefox-bin".into(),
+                command: "/usr/lib/firefox/firefox-bin".into(),
+                cpu_percent: 1.0,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(70, 7),
+                name: "Isolated Web Co".into(),
+                command: "/usr/lib/firefox/firefox --type=renderer --token=***".into(),
+                cpu_percent: 2.0,
+                memory_bytes: 200,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(80, 8),
+                name: "solo".into(),
+                command: "solo".into(),
+                ..ProcessSnapshot::default()
+            },
+        ];
+        let mut dashboard = dashboard();
+        dashboard.ingest(snapshot);
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].key, "firefox");
+        assert_eq!(rows[0].label, "firefox");
+        assert_eq!(rows[0].process_count, 2);
+
+        // Expansion state and selection resolve by app key, not by comm.
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert!(dashboard.is_app_group_expanded("firefox"));
+        let rows = dashboard.app_group_rows();
+        // One expanded group row + its two members + the unrelated `solo` group.
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[1].label, "firefox-bin");
+        assert_eq!(rows[2].label, "Isolated Web Co");
+        assert_eq!(rows[2].key, "firefox");
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        dashboard.apply(Command::Select(Some(ProcessKey::new(70, 7))));
+        assert_eq!(
+            dashboard.selected_key(),
+            Some(ProcessKey::new(60, 6)),
+            "a hidden child must map to the group's first member"
+        );
+        dashboard.apply(Command::SelectAppGroup("firefox".into()));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(60, 6)));
     }
 
     // --- R1-VISIBLE: grouped rows through the existing visible arrays --------
