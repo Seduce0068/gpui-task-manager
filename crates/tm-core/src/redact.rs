@@ -258,6 +258,114 @@ pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers
     snapshot.cgroups = group_by_cgroup(&memberships);
 }
 
+/// Replaces a known token value with `***` in every process command and name.
+///
+/// A token passed to `tm-agent` as `--token <value>` lives in that process's
+/// argv, which a native probe copies verbatim into `process.command` (and,
+/// depending on the probe, `process.name`) from `/proc/<pid>/cmdline`. Callers
+/// that know the exact value — the agent itself, the native shell via
+/// `TM_AGENT_TOKEN`, the browser via its proof token — must scrub it before any
+/// snapshot is serialised. An empty `token` is a no-op so callers can pass an
+/// unset environment variable without special-casing it.
+///
+/// Matching is a literal, case-sensitive `str::replace`: unlike identifier
+/// redaction we deliberately do *not* lowercase or guess at token shapes. A
+/// partial or case-insensitive match would corrupt unrelated text and could
+/// still leave the real credential in the output.
+pub fn scrub_token_from_snapshot(snapshot: &mut SystemSnapshot, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    for process in &mut snapshot.processes {
+        if process.command.contains(token) {
+            process.command = process.command.replace(token, "***");
+        }
+        if process.name.contains(token) {
+            process.name = process.name.replace(token, "***");
+        }
+    }
+}
+
+/// Masks token-like values that follow a `--token` / `--token-file` flag in a
+/// process command.
+///
+/// The native shell has no `--token` CLI flag of its own, so it cannot always
+/// know the value handed to `tm-agent`. The value is nevertheless visible in
+/// the agent's argv as copied by [`crate::port::SystemProbe`]; this helper
+/// therefore recovers it from the command string itself and masks it even when
+/// `TM_AGENT_TOKEN` is absent from the shell's environment. Both the separated
+/// (`--token value`) and inline (`--token=value`) forms are covered, as is
+/// `--token-file <path>` (the path is not the credential, but masking it keeps
+/// the argv shape consistent with the already-masked inline form).
+///
+/// No regex is used: `tm-core` is dependency-light, must stay free of new
+/// dependencies and must compile for `wasm32`. All matching happens on ASCII
+/// byte boundaries, so slicing a command that contains multibyte characters
+/// cannot split a UTF-8 code point.
+pub fn scrub_token_flags_from_snapshot(snapshot: &mut SystemSnapshot) {
+    for process in &mut snapshot.processes {
+        process.command = scrub_token_flags_in_text(&process.command);
+        process.name = scrub_token_flags_in_text(&process.name);
+    }
+}
+
+/// Single-string implementation of [`scrub_token_flags_from_snapshot`].
+fn scrub_token_flags_in_text(command: &str) -> String {
+    const FLAGS: [&str; 2] = ["--token-file", "--token"];
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    loop {
+        // Locate the earliest occurrence of a flag used as a whole argument:
+        // it must start at a boundary and be followed by a delimiter. This
+        // avoids treating `--token-file` as a `--token` match or masking a
+        // longer unrelated word that merely contains the flag text.
+        let mut best: Option<(usize, &'static str)> = None;
+        for flag in FLAGS {
+            let mut search_from = 0usize;
+            while let Some(relative) = rest[search_from..].find(flag) {
+                let start = search_from + relative;
+                let end = start + flag.len();
+                let at_boundary = start == 0 || rest.as_bytes()[start - 1].is_ascii_whitespace();
+                let followed_by_value = matches!(
+                    rest.as_bytes().get(end),
+                    None | Some(b' ' | b'\t' | b'\n' | b'\r' | b'=' | b'"' | b'\'')
+                );
+                if at_boundary && followed_by_value {
+                    if best.is_none_or(|(position, _)| start < position) {
+                        best = Some((start, flag));
+                    }
+                    break;
+                }
+                search_from = end;
+            }
+        }
+        let Some((position, flag)) = best else {
+            break;
+        };
+        out.push_str(&rest[..position + flag.len()]);
+        let after_flag = &rest[position + flag.len()..];
+        let (value, remaining) = match after_flag.strip_prefix('=') {
+            Some(inline) => {
+                out.push('=');
+                (inline, inline)
+            }
+            None => {
+                let whitespace = after_flag.len() - after_flag.trim_start().len();
+                out.push_str(&after_flag[..whitespace]);
+                let value = &after_flag[whitespace..];
+                (value, value)
+            }
+        };
+        let value_len = value.split_whitespace().next().map_or(0, str::len);
+        if value_len > 0 {
+            out.push_str("***");
+        }
+        rest = &remaining[value_len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +716,91 @@ mod tests {
             format!("{snapshot:?}"),
             dump,
             "redact_snapshot must be idempotent"
+        );
+    }
+
+    #[test]
+    fn scrub_token_from_snapshot_masks_exact_value_and_ignores_empty() {
+        let mut snapshot = SystemSnapshot {
+            processes: vec![crate::model::ProcessSnapshot {
+                name: "supersecret123".into(),
+                command: "tm-agent --token supersecret123 --once".into(),
+                ..crate::model::ProcessSnapshot::default()
+            }],
+            ..SystemSnapshot::default()
+        };
+        let before = format!("{snapshot:?}");
+        scrub_token_from_snapshot(&mut snapshot, "");
+        assert_eq!(
+            format!("{snapshot:?}"),
+            before,
+            "empty token must be a no-op"
+        );
+
+        scrub_token_from_snapshot(&mut snapshot, "supersecret123");
+        assert_eq!(snapshot.processes[0].command, "tm-agent --token *** --once");
+        assert_eq!(snapshot.processes[0].name, "***");
+        assert!(!format!("{snapshot:?}").contains("supersecret123"));
+    }
+
+    #[test]
+    fn scrub_token_from_snapshot_does_not_guess_partial_matches() {
+        let mut snapshot = SystemSnapshot {
+            processes: vec![crate::model::ProcessSnapshot {
+                name: "worker".into(),
+                command: "worker --id=abc-secret-xyz".into(),
+                ..crate::model::ProcessSnapshot::default()
+            }],
+            ..SystemSnapshot::default()
+        };
+        // Only the exact value is replaced; an uppercase or partial match is
+        // left alone so unrelated text is never corrupted.
+        scrub_token_from_snapshot(&mut snapshot, "SECRET");
+        assert_eq!(snapshot.processes[0].command, "worker --id=abc-secret-xyz");
+        scrub_token_from_snapshot(&mut snapshot, "secret");
+        assert_eq!(snapshot.processes[0].command, "worker --id=abc-***-xyz");
+    }
+
+    #[test]
+    fn scrub_token_flags_masks_separated_and_inline_forms() {
+        let mut snapshot = SystemSnapshot {
+            processes: vec![
+                crate::model::ProcessSnapshot {
+                    name: "tm-agent".into(),
+                    command: "tm-agent --token supersecret123 --once".into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+                crate::model::ProcessSnapshot {
+                    name: "tm-agent".into(),
+                    command: "tm-agent --token=inline456 --listen 127.0.0.1".into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+                crate::model::ProcessSnapshot {
+                    name: "tm-agent".into(),
+                    command: "tm-agent --token-file /home/alice/token.txt --redact".into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+                crate::model::ProcessSnapshot {
+                    name: "worker".into(),
+                    command: "worker --tokenless --tokenish=value".into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+            ],
+            ..SystemSnapshot::default()
+        };
+        scrub_token_flags_from_snapshot(&mut snapshot);
+        assert_eq!(snapshot.processes[0].command, "tm-agent --token *** --once");
+        assert_eq!(
+            snapshot.processes[1].command,
+            "tm-agent --token=*** --listen 127.0.0.1"
+        );
+        assert_eq!(
+            snapshot.processes[2].command,
+            "tm-agent --token-file *** --redact"
+        );
+        assert_eq!(
+            snapshot.processes[3].command, "worker --tokenless --tokenish=value",
+            "flag-like substrings inside other words must stay untouched"
         );
     }
 }

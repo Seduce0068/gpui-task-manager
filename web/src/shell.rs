@@ -15,7 +15,7 @@
 //!   the data source) and never carries DOM proof fields or user input.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
@@ -1143,17 +1143,18 @@ impl TaskManagerApp {
     /// 識別子はスナップショット自身から導出する（[`crate::redaction`]）。
     /// ライブのスナップショットは HTTP 応答時に既に redact 済みで、エクスポート
     /// 関数はさらにプライベートな clone へ識別子非依存の redact（tailnet
-    /// ドメインなど）を適用する。エージェントのトークンは `AgentClient` 内に
-    /// 留まり、ここへは渡らない。
+    /// ドメインなど）を適用する。DOM proof と同じ `proof_token` 値を渡すことで、
+    /// ライブの `process.command` に `--token` の実値が残っていても平文で出力しない。
     /// ライブ由来のスナップショットは wire envelope の `total_process_count`
     /// を `live_total` に保持しているため、それを export へ渡して `?limit=`
     /// による切り詰め後もマシン全体の件数を残す。デモでは `None` となり、
     /// 従来どおり掲載行数を使う。
     fn export_snapshot(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
         let total_process_count = self.live_total.map(|total| total as u64);
+        let proof_token = self.proof_token.as_deref();
         let (content, rows) = match self.dashboard.snapshot() {
             Some(snapshot) => (
-                export_document_with_total(snapshot, format, total_process_count),
+                export_document_with_token(snapshot, format, total_process_count, proof_token),
                 snapshot.processes.len(),
             ),
             None => {
@@ -5007,6 +5008,29 @@ fn export_document_with_total(
     }
 }
 
+/// Token-aware export entry point used by the live shell.
+///
+/// `proof_token` is the exact value the DOM proof hook masks (`#token=` / the
+/// agent config). `tm-agent` scrubs its own argv before publishing a snapshot,
+/// but reusing the same value here gives the export an independent exact-match
+/// boundary; the argv-shape helper additionally covers a `--token <value>`
+/// fragment that reaches the browser from any other source. Both passes run on
+/// a private clone, so the dashboard snapshot is never mutated. Tools that do
+/// not own a token keep using [`export_document_with_total`] unchanged.
+fn export_document_with_token(
+    snapshot: &SystemSnapshot,
+    format: ExportFormat,
+    total_process_count: Option<u64>,
+    token: Option<&str>,
+) -> String {
+    let mut masked = snapshot.clone();
+    if let Some(token) = token {
+        tm_core::redact::scrub_token_from_snapshot(&mut masked, token);
+    }
+    tm_core::redact::scrub_token_flags_from_snapshot(&mut masked);
+    export_document_with_total(&masked, format, total_process_count)
+}
+
 /// Status text announced through the existing polite `aria-live` path.
 fn export_status_message(format: ExportFormat, rows: usize, bytes: usize) -> String {
     format!(
@@ -5097,8 +5121,12 @@ fn overlay_text(message: String, color: u32) -> Div {
 ///
 /// The endpoint comes from the query string; the token comes from the URL
 /// **fragment**, which browsers do not send to the server and do not include in
-/// the `Referer` header. The token is only kept in memory: it is never written
-/// to the DOM, the title, the console or the agent request URL.
+/// the `Referer` header. As soon as a token is read it is moved into
+/// [`REMEMBERED_TOKEN`] and the `#token=` pair is removed from the address bar
+/// and the current session-history entry with `history.replaceState`. Later
+/// sampler cycles therefore keep working from the in-memory copy even though
+/// the URL (and `location.hash`) no longer carries the secret. The token is
+/// never written to the DOM, the title, the console or the agent request URL.
 fn agent_config_from_url() -> Option<AgentConfig> {
     #[cfg(target_family = "wasm")]
     {
@@ -5108,26 +5136,229 @@ fn agent_config_from_url() -> Option<AgentConfig> {
             return None;
         }
         let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
-        let endpoint = params.get("agent")?;
-        let endpoint = endpoint.trim().to_string();
-        if endpoint.is_empty() {
-            return None;
+        let endpoint = params.get("agent");
+        let token = token_from_fragment(&location.hash().unwrap_or_default());
+        let remembered = remembered_token();
+        let resolved = resolve_agent_config(endpoint, token, remembered.as_ref());
+        apply_memory_action(resolved.memory);
+        if resolved.scrub_url {
+            if let Ok(href) = location.href() {
+                if let Some(clean) = href_without_token(&href) {
+                    // Best-effort: a failed replaceState still leaves the token
+                    // in memory, so reconnection keeps working either way.
+                    let _ = tm_strip_url_token(&clean);
+                }
+            }
         }
-        let token = location
-            .hash()
-            .ok()
-            .and_then(|hash| hash.strip_prefix('#').map(str::to_string))
-            .and_then(|fragment| {
-                web_sys::UrlSearchParams::new_with_str(&fragment)
-                    .ok()
-                    .and_then(|params| params.get("token"))
-            });
-        Some(AgentConfig::new(endpoint, token))
+        resolved.config
     }
     #[cfg(not(target_family = "wasm"))]
     {
         None
     }
+}
+
+/// `#token=` state observed in the current fragment.
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UrlToken {
+    /// No `token` key in the fragment.
+    Absent,
+    /// `#token=<non-empty value>`.
+    Value(String),
+    /// `#token=` with an empty value: an explicit request to forget the token.
+    ExplicitEmpty,
+}
+
+/// Effect of one URL read on the in-memory token copy.
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MemoryAction {
+    /// Reuse what is already held.
+    Keep,
+    /// Replace it with the freshly read token, bound to its endpoint.
+    Store { endpoint: String, token: String },
+    /// Forget it (explicit `#token=` clear).
+    Clear,
+}
+
+/// Pure result of merging the URL with the remembered token.
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedConfig {
+    config: Option<AgentConfig>,
+    memory: MemoryAction,
+    /// Whether the address bar still contains a `token` key to scrub.
+    scrub_url: bool,
+}
+
+/// In-memory token, paired with the endpoint it belongs to.
+///
+/// Keeping the endpoint prevents a token issued to one loopback agent from
+/// being reused if `?agent=` is later pointed at a different one. This is a
+/// process-local value only: it is never mirrored into the DOM, status text or
+/// logs, and it disappears on reload.
+#[cfg(any(target_family = "wasm", test))]
+static REMEMBERED_TOKEN: OnceLock<RwLock<Option<(String, String)>>> = OnceLock::new();
+
+/// Reads the remembered `(endpoint, token)` pair, if any.
+#[cfg(any(target_family = "wasm", test))]
+fn remembered_token() -> Option<(String, String)> {
+    REMEMBERED_TOKEN
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// Applies one memory transition from [`resolve_agent_config`].
+#[cfg(any(target_family = "wasm", test))]
+fn apply_memory_action(action: MemoryAction) {
+    let mut guard = REMEMBERED_TOKEN
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    match action {
+        MemoryAction::Keep => {}
+        MemoryAction::Store { endpoint, token } => *guard = Some((endpoint, token)),
+        MemoryAction::Clear => *guard = None,
+    }
+}
+
+/// Reads the `token` key from the fragment, distinguishing "absent" from an
+/// explicitly empty value; `UrlSearchParams` percent-decodes the value just as
+/// the old inline read did.
+#[cfg(target_family = "wasm")]
+fn token_from_fragment(hash: &str) -> UrlToken {
+    let fragment = hash.strip_prefix('#').unwrap_or(hash);
+    let Ok(params) = web_sys::UrlSearchParams::new_with_str(fragment) else {
+        return UrlToken::Absent;
+    };
+    match params.get("token") {
+        Some(value) if value.trim().is_empty() => UrlToken::ExplicitEmpty,
+        Some(value) => UrlToken::Value(value),
+        None => UrlToken::Absent,
+    }
+}
+
+/// Merges a URL read with the remembered token.
+///
+/// A token found in the fragment is stored (and the URL flagged for scrubbing);
+/// an absent token falls back to the memory copy *only* for the same endpoint;
+/// an explicitly empty `#token=` clears both memory and the emitted config.
+/// Without `?agent=` the previous behaviour is preserved (no config change).
+#[cfg(any(target_family = "wasm", test))]
+fn resolve_agent_config(
+    endpoint: Option<String>,
+    token: UrlToken,
+    remembered: Option<&(String, String)>,
+) -> ResolvedConfig {
+    let Some(endpoint) = endpoint else {
+        return ResolvedConfig {
+            config: None,
+            memory: MemoryAction::Keep,
+            scrub_url: false,
+        };
+    };
+    // Same normalisation as `AgentConfig::new`, so the memory key matches the
+    // endpoint the Bearer header will actually be sent to.
+    let endpoint = endpoint.trim().trim_end_matches('/').to_string();
+    if endpoint.is_empty() {
+        return ResolvedConfig {
+            config: None,
+            memory: MemoryAction::Keep,
+            scrub_url: false,
+        };
+    }
+    match token {
+        UrlToken::Value(value) => {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return ResolvedConfig {
+                    config: Some(AgentConfig::new(endpoint, None)),
+                    memory: MemoryAction::Clear,
+                    scrub_url: true,
+                };
+            }
+            ResolvedConfig {
+                config: Some(AgentConfig::new(endpoint.clone(), Some(value.clone()))),
+                memory: MemoryAction::Store {
+                    endpoint,
+                    token: value,
+                },
+                scrub_url: true,
+            }
+        }
+        UrlToken::ExplicitEmpty => ResolvedConfig {
+            config: Some(AgentConfig::new(endpoint, None)),
+            memory: MemoryAction::Clear,
+            scrub_url: true,
+        },
+        UrlToken::Absent => {
+            let token = remembered
+                .filter(|(saved_endpoint, _)| saved_endpoint == &endpoint)
+                .map(|(_, token)| token.clone());
+            ResolvedConfig {
+                config: Some(AgentConfig::new(endpoint, token)),
+                memory: MemoryAction::Keep,
+                scrub_url: false,
+            }
+        }
+    }
+}
+
+/// Returns `href` with the fragment's `token` key removed, or `None` when
+/// nothing needs scrubbing. Other fragment keys are preserved verbatim and an
+/// empty remaining fragment drops the `#` entirely.
+#[cfg(any(target_family = "wasm", test))]
+fn href_without_token(href: &str) -> Option<String> {
+    let (base, fragment) = href.split_once('#')?;
+    let mut kept = String::new();
+    let mut had_token = false;
+    for pair in fragment.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+        if key == "token" {
+            had_token = true;
+        } else {
+            if !kept.is_empty() {
+                kept.push('&');
+            }
+            kept.push_str(pair);
+        }
+    }
+    if !had_token {
+        return None;
+    }
+    Some(if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}#{kept}")
+    })
+}
+
+/// Replaces the current URL (and history entry) without a page reload.
+///
+/// `web/Cargo.toml` is out of scope here and does not enable the `History`
+/// feature, so the same inline-JS bridge pattern as the help/storage bridges
+/// is used. Only the already-sanitised URL crosses into JS: the token value is
+/// never passed as an argument, read back, or logged.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen(inline_js = r#"
+export function tmStripUrlToken(url) {
+  try {
+    window.history.replaceState(window.history.state, '', url);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = "tmStripUrlToken")]
+    fn tm_strip_url_token(url: &str) -> bool;
 }
 
 #[cfg(test)]
@@ -5301,6 +5532,147 @@ mod tests {
         receiver
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("headless callback must publish the live-guard snapshot")
+    }
+
+    #[test]
+    fn token_from_url_is_remembered_and_survives_url_removal() {
+        let endpoint = "http://127.0.0.1:8787";
+        let token = "s3cr3t-123";
+        let first = resolve_agent_config(
+            Some(format!("{endpoint}/")),
+            UrlToken::Value(token.to_string()),
+            None,
+        );
+        // A URL token is captured immediately and the address bar is flagged
+        // for scrubbing in the very same read.
+        assert!(first.scrub_url);
+        assert_eq!(
+            first.memory,
+            MemoryAction::Store {
+                endpoint: endpoint.to_string(),
+                token: token.to_string(),
+            }
+        );
+        let config = first.config.expect("live config");
+        assert_eq!(config.endpoint, endpoint);
+        assert_eq!(config.token.as_deref(), Some(token));
+
+        let remembered = match first.memory {
+            MemoryAction::Store { endpoint, token } => Some((endpoint, token)),
+            _ => unreachable!("a URL token must be stored"),
+        };
+        // The token has disappeared from the URL, but the sampler still gets a
+        // usable config from memory (this is what makes reconnect work).
+        let second = resolve_agent_config(
+            Some(endpoint.to_string()),
+            UrlToken::Absent,
+            remembered.as_ref(),
+        );
+        assert!(!second.scrub_url);
+        assert_eq!(second.memory, MemoryAction::Keep);
+        let reconnected = second.config.expect("live config");
+        assert_eq!(reconnected.token.as_deref(), Some(token));
+
+        // The exact-match proof mask is unchanged for a memory-sourced token:
+        // no plaintext value reaches the DOM proof.
+        let proof = proof_user_text(&format!("filter={token}"), reconnected.token.as_deref());
+        assert!(!proof.contains(token));
+        assert!(proof.contains("***"));
+    }
+
+    #[test]
+    fn a_new_url_token_overwrites_the_remembered_one() {
+        let endpoint = "http://127.0.0.1:8787";
+        let old = (endpoint.to_string(), "old-token".to_string());
+        let resolved = resolve_agent_config(
+            Some(endpoint.to_string()),
+            UrlToken::Value("fresh-token".to_string()),
+            Some(&old),
+        );
+        assert_eq!(
+            resolved.config.expect("live config").token.as_deref(),
+            Some("fresh-token")
+        );
+        assert_eq!(
+            resolved.memory,
+            MemoryAction::Store {
+                endpoint: endpoint.to_string(),
+                token: "fresh-token".to_string(),
+            }
+        );
+        assert!(resolved.scrub_url);
+    }
+
+    #[test]
+    fn explicit_empty_token_clears_memory_and_config() {
+        let endpoint = "http://127.0.0.1:8787";
+        let old = (endpoint.to_string(), "old-token".to_string());
+        for empty in [UrlToken::ExplicitEmpty, UrlToken::Value("   ".to_string())] {
+            let resolved = resolve_agent_config(Some(endpoint.to_string()), empty, Some(&old));
+            assert_eq!(resolved.config.expect("live config").token, None);
+            assert_eq!(resolved.memory, MemoryAction::Clear);
+            assert!(resolved.scrub_url);
+        }
+        // After an explicit clear, an absent token must not resurrect the old one.
+        let after = resolve_agent_config(Some(endpoint.to_string()), UrlToken::Absent, None);
+        assert_eq!(after.config.expect("live config").token, None);
+        assert_eq!(after.memory, MemoryAction::Keep);
+    }
+
+    #[test]
+    fn remembered_token_is_not_reused_for_a_different_endpoint() {
+        let token = "loopback-token".to_string();
+        let old = ("http://127.0.0.1:8787".to_string(), token.clone());
+        let resolved = resolve_agent_config(
+            Some("http://127.0.0.1:9999".to_string()),
+            UrlToken::Absent,
+            Some(&old),
+        );
+        // The SSRF gate still applies, but the old agent's bearer token must
+        // never be attached to a newly configured endpoint.
+        assert_eq!(resolved.config.expect("live config").token, None);
+        assert_eq!(resolved.memory, MemoryAction::Keep);
+        assert!(!resolved.scrub_url);
+    }
+
+    #[test]
+    fn only_the_token_fragment_key_is_scrubbed_from_the_url() {
+        let base = "http://127.0.0.1:8091/?agent=http%3A%2F%2F127.0.0.1%3A8787";
+        assert_eq!(
+            href_without_token(&format!("{base}#token=abc")),
+            Some(base.to_string())
+        );
+        assert_eq!(
+            href_without_token(&format!("{base}#token=abc&view=list")),
+            Some(format!("{base}#view=list"))
+        );
+        assert_eq!(
+            href_without_token(&format!("{base}#view=list&token=")),
+            Some(format!("{base}#view=list"))
+        );
+        assert_eq!(href_without_token(&format!("{base}#view=list")), None);
+        assert_eq!(href_without_token(base), None);
+    }
+
+    #[test]
+    fn in_memory_copy_can_be_stored_kept_and_cleared() {
+        // Only this test touches the process-local static, so the sequence is
+        // deterministic even though the harness runs tests in parallel.
+        apply_memory_action(MemoryAction::Clear);
+        assert_eq!(remembered_token(), None);
+        let pair = (
+            "http://127.0.0.1:8787".to_string(),
+            "s3cr3t-123".to_string(),
+        );
+        apply_memory_action(MemoryAction::Store {
+            endpoint: pair.0.clone(),
+            token: pair.1.clone(),
+        });
+        assert_eq!(remembered_token(), Some(pair.clone()));
+        apply_memory_action(MemoryAction::Keep);
+        assert_eq!(remembered_token(), Some(pair));
+        apply_memory_action(MemoryAction::Clear);
+        assert_eq!(remembered_token(), None);
     }
 
     #[test]
@@ -5707,6 +6079,47 @@ mod tests {
             assert!(text.contains("host"), "{format:?}: {text}");
             // トークンは AgentClient に留まり、エクスポート関数へ渡さない。
             assert!(!text.contains(token), "{format:?} leaked the token");
+        }
+    }
+
+    #[test]
+    fn export_document_with_token_masks_the_proof_token_everywhere() {
+        let token = "super-secret-agent-token";
+        let mut snapshot = export_sample_snapshot();
+        // Exact-value masking must cover both the argv position and an
+        // unrelated part of the command that the argv helper cannot see.
+        snapshot.processes[0].command =
+            format!("tm-agent --token {token} --once --header Bearer-{token}");
+        snapshot.processes[0].name = format!("tm-agent-{token}");
+        let before = format!("{snapshot:?}");
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let text = export_document_with_token(&snapshot, format, Some(30), Some(token));
+            assert!(!text.contains(token), "{format:?} leaked token: {text}");
+            assert!(text.contains("***"), "{format:?}: {text}");
+            // The wire total contract remains intact after masking.
+            if format == ExportFormat::Json {
+                let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+                assert_eq!(value["total_process_count"].as_u64(), Some(30));
+            }
+        }
+        assert_eq!(
+            format!("{snapshot:?}"),
+            before,
+            "export must not mutate the snapshot"
+        );
+    }
+
+    #[test]
+    fn export_document_with_token_scrubs_argv_token_without_an_exact_value() {
+        let token = "argv-only-secret";
+        let mut snapshot = export_sample_snapshot();
+        snapshot.processes[0].command = format!("tm-agent --token {token} --once");
+        for format in [ExportFormat::Csv, ExportFormat::Json] {
+            let text = export_document_with_token(&snapshot, format, None, None);
+            assert!(
+                !text.contains(token),
+                "{format:?} leaked argv token: {text}"
+            );
         }
     }
 

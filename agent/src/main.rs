@@ -1196,7 +1196,7 @@ fn once_json(
         // `--once --token <secret>` without `--redact` still publishes stdout
         // JSON. The token lives in this process's argv, which the probe copies
         // into `process.command`/`process.name`; scrub it unconditionally.
-        scrub_argv_token(&mut snapshot, token);
+        tm_core::redact::scrub_token_from_snapshot(&mut snapshot, token);
     }
     let total = apply_process_limit(&mut snapshot, DEFAULT_SNAPSHOT_LIMIT);
     let envelope = SnapshotEnvelope {
@@ -2188,7 +2188,7 @@ where
                     // The native probe copies this process's argv into the
                     // snapshot; a non-redacted stream must not carry --token
                     // either (same contract as the HTTP/--once paths).
-                    scrub_argv_token(&mut snapshot, &state.token);
+                    tm_core::redact::scrub_token_from_snapshot(&mut snapshot, &state.token);
                 }
                 let total = apply_process_limit(&mut snapshot, DEFAULT_SNAPSHOT_LIMIT);
                 let envelope = SnapshotEnvelope {
@@ -2378,7 +2378,7 @@ fn snapshot_response(
             } else {
                 // Same argv echo as `--once`: a non-redacted HTTP snapshot
                 // must not carry our own `--token` command line either.
-                scrub_argv_token(&mut snapshot, token);
+                tm_core::redact::scrub_token_from_snapshot(&mut snapshot, token);
             }
             let total = apply_process_limit(&mut snapshot, limit);
             let envelope = SnapshotEnvelope {
@@ -2413,34 +2413,17 @@ fn snapshot_response(
     }
 }
 
-/// Removes this process's `--token` value from the argv echo in a snapshot.
-///
-/// A token passed via `--token` lives in our own argv, which the native probe
-/// copies into `process.command` and `process.name`. `tm_core::redact` cannot
-/// know that value, so it must be scrubbed explicitly. This has to run even
-/// without `--redact`: `--once --token <secret>` still publishes stdout JSON.
-fn scrub_argv_token(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
-    if token.is_empty() {
-        return;
-    }
-    for process in &mut snapshot.processes {
-        if process.command.contains(token) {
-            process.command = process.command.replace(token, "***");
-        }
-        if process.name.contains(token) {
-            process.name = process.name.replace(token, "***");
-        }
-    }
-}
-
 /// Removes local identifiers from a snapshot before it is serialised.
 ///
 /// Used by `--redact` so screenshots and JSON evidence can be published without
 /// exposing the host name, user names or home directory layout.
 ///
-/// The rules live in `tm_core::redact` so the native shell (`--redact`) and
-/// this endpoint cannot drift. Values are captured before redaction and owned
-/// as Strings to avoid borrowing a snapshot we are about to mutate.
+/// The rules live in `tm_core::redact` so the native shell (`--redact`), both
+/// export paths and this endpoint cannot drift: `redact_snapshot` handles the
+/// local identifiers and [`tm_core::redact::scrub_token_from_snapshot`] applies
+/// the identical exact-value mask used by the native/web exporters. Values are
+/// captured before redaction and owned as Strings to avoid borrowing a snapshot
+/// we are about to mutate.
 fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
     let original_hostname = snapshot.hostname.clone().unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
@@ -2454,7 +2437,7 @@ fn redact_snapshot(snapshot: &mut tm_core::SystemSnapshot, token: &str) {
     };
     tm_core::redact::redact_snapshot(snapshot, &ids);
     // "Redacted" evidence must not leak the Bearer token either (R45).
-    scrub_argv_token(snapshot, token);
+    tm_core::redact::scrub_token_from_snapshot(snapshot, token);
 }
 
 /// Fixed message for an invalid `?limit=`; the raw input is never echoed
