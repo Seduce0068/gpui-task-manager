@@ -211,6 +211,14 @@ fi
 echo '==> public-doc disclosure scan'
 bash "${repo_root}/scripts/check-public-docs.sh"
 
+# Private-directory drift guard (always on, no external tool required).
+# agent/src/private_dir.rs and app/src/private_dir.rs intentionally duplicate
+# the same logic; only comments and #[cfg(test)] modules differ by design. The
+# normalising comparison lives in scripts/check-private-dir-drift.sh and is
+# mirrored in the `gates` job's extra_gates in .github/workflows/ci.yml.
+echo '==> private-dir drift guard'
+bash "${repo_root}/scripts/check-private-dir-drift.sh"
+
 if [ "${unexpected_skips}" -gt 0 ]; then
   printf '\nSKIPPED GATES (%d unexpected):\n' "${unexpected_skips}"
   for detail in "${skipped_unexpected[@]}"; do

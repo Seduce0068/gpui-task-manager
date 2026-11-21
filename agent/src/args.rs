@@ -8,6 +8,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 /// Default listen address (loopback only).
+///
+/// The literal cannot be built with `concat!` from a numeric const, so the port
+/// is cross-checked against [`tm_core::wire::DEFAULT_PORT`] in the tests below
+/// instead.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8787";
 
 /// Severity accepted by `--log-level` (same accept set in both binaries).
@@ -254,6 +258,10 @@ fn parse_log_level(value: &str) -> Result<LogLevel, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tm_core::wire::{
+        ErrorCode, DEFAULT_PORT, DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH,
+        STREAM_PATH,
+    };
 
     fn parse_args(args: &[&str]) -> Result<Config, String> {
         parse(args.iter().map(|argument| (*argument).to_string()))
@@ -432,7 +440,6 @@ mod tests {
             "--token-file",
             "推奨順",
             "/proc/<pid>/environ",
-            "/api/v1/stream",
             "text/event-stream",
             "1 秒間隔",
             "同時 2 接続まで",
@@ -442,16 +449,6 @@ mod tests {
             "HTTP エラー本文",
             "HTTP エラーコード",
             "後方互換の別名",
-            "bad_request",
-            "invalid_limit",
-            "unauthorized",
-            "forbidden",
-            "not_found",
-            "method_not_allowed",
-            "request_too_large",
-            "request_timeout",
-            "internal",
-            "busy",
             "-V, --version",
             "--redact",
             "--once",
@@ -467,5 +464,78 @@ mod tests {
         ] {
             assert!(USAGE.contains(fragment), "missing {fragment:?}");
         }
+        // Numeric/path values are read from the single wire table instead of
+        // being re-listed as literals here.
+        for fragment in [STREAM_PATH, SNAPSHOT_PATH] {
+            assert!(USAGE.contains(fragment), "missing {fragment:?}");
+        }
+        assert!(USAGE.contains(format!("127.0.0.1:{DEFAULT_PORT}").as_str()));
+        assert!(USAGE.contains(format!("既定 {DEFAULT_SNAPSHOT_LIMIT}").as_str()));
+        assert!(USAGE.contains(format!("最大 {MAX_SNAPSHOT_LIMIT}").as_str()));
+        // Every machine-readable code documented in the help text comes from
+        // the same wire table (see `usage_error_codes_match_the_wire_table`).
+        for code in ErrorCode::ALL {
+            assert!(
+                USAGE.contains(code.as_str()),
+                "USAGE is missing ErrorCode::{code:?}"
+            );
+        }
+    }
+
+    /// Extracts the `HTTP エラーコード` section of `USAGE` as whitespace tokens.
+    fn usage_error_codes() -> Vec<&'static str> {
+        let section = USAGE
+            .split_once("HTTP エラーコード:\n")
+            .expect("USAGE has an error-code section")
+            .1
+            .split_once("\n\n")
+            .expect("the error-code section ends with a blank line")
+            .0;
+        // Codes are separated by ` / ` in the help text; drop the separators.
+        section
+            .split_whitespace()
+            .filter(|token| *token != "/")
+            .collect()
+    }
+
+    #[test]
+    fn usage_error_codes_match_the_wire_table_in_both_directions() {
+        // `ErrorCode::ALL` is the one table in `tm_core::wire`. Checking both
+        // directions here means a new variant without help text, or a help-text
+        // typo that names a non-existent code, fails the same test.
+        let documented = usage_error_codes();
+        assert!(
+            !documented.is_empty(),
+            "error-code section must not be empty"
+        );
+        for code in ErrorCode::ALL {
+            assert!(
+                documented.contains(&code.as_str()),
+                "ErrorCode::{code:?} ({}) is missing from USAGE",
+                code.as_str()
+            );
+        }
+        for token in &documented {
+            assert!(
+                ErrorCode::ALL.iter().any(|code| code.as_str() == *token),
+                "USAGE documents unknown error code {token:?}"
+            );
+        }
+        assert_eq!(
+            documented.len(),
+            ErrorCode::ALL.len(),
+            "the help text and the wire table must have the same code count"
+        );
+    }
+
+    #[test]
+    fn default_listen_port_matches_the_wire_port() {
+        assert_eq!(
+            DEFAULT_LISTEN,
+            format!("127.0.0.1:{DEFAULT_PORT}"),
+            "DEFAULT_LISTEN and wire::DEFAULT_PORT drifted apart"
+        );
+        let default = parse_args(&[]).expect("defaults");
+        assert_eq!(default.listen, DEFAULT_LISTEN.parse().expect("addr"));
     }
 }

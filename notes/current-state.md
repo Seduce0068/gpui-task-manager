@@ -28,7 +28,7 @@ status: verified
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **608 passed / 0 failed**（tm-core 176 / tm-viewmodel 94 / tm-platform 44 / tm-agent 153 / app 120、2026-11-20 実測） |
+| `cargo test --workspace` | **612 passed / 0 failed**（tm-core 176 / tm-viewmodel 94 / tm-platform 44 / tm-agent 153 / app 120、2026-11-20 実測） |
 | web ユニットテスト | **208 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | 最新のテスト追加（5b5ac04） | ネイティブ AX role 付与 7 テスト（app 103 → 110）と CSV cpu_percent 2 桁丸め（tm-core 175 → 176）の 8 件（workspace 519 → 527 → 531 → 532 → 534、web 208 不変、2026-11-20 実測）。直近以前は 2ba4525 の 6 件（workspace 509 → 519、web 167 → 169） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
@@ -117,7 +117,14 @@ status: verified
 - **設定・依存**: 一時ファイル名に PID を付与して同時保存の競合を回避。
   未使用依存を削除し、`check.sh` に machete と `undocumented_unsafe_blocks` の
   ゲートを追加（root / web とも）。
-- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（履歴: 143 → 491 → 509 → 519 → 527 → 531 → 532 → 534、現在値は 608。件数は変動するため README.md「検証状況」を参照）。
+- **テスト**: レビュー指摘のテスト欠落を補い、回帰テストを継続追加（履歴: 143 → 491 → 509 → 519 → 527 → 531 → 532 → 534、現在値は 612。件数は変動するため README.md「検証状況」を参照）。
+- **成果物の `strings` 検査（開発パス混入検査）は実装済み**: `.github/workflows/ci.yml`
+  の `release-linux` ジョブ（`Gate - no development paths in release binary` と
+  `Gate - no development paths in DEB payload`）および `web-dist` ジョブ
+  （`Gate - no development paths in web dist`）の各 `strings -a` Gate が、
+  開発パス / アカウント識別子 / トークン様 hex を走査して一致時に失敗させる。
+  `--remap-path-prefix` で置換された内部 worktree パス（`.agents/worktrees` 等）も
+  検出対象（R1-RESIDUAL 反映）。
 
 ## 未解決・今後の候補
 
@@ -132,9 +139,6 @@ status: verified
 - 公開成果物（`.deb` / wasm dist / SBOM 等）に `SHA256SUMS` が未同梱。
   ダウンロード側で完全性を検証できるチェックサム manifest が生成・添付
   されていない（実装は本担当範囲外）。
-- 成果物の `strings` 検査（開発パス混入検査）が未導入。`--remap-path-prefix`
-  設定はあるが、リリースバイナリ / dist を走査して開発ホストのパス混入を
-  検出し失敗させるゲートが無い（実装は本担当範囲外）。
 
 ## 関連文書
 
