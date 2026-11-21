@@ -1283,7 +1283,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       → 完了（SA-WINDOC）: notes/cross-platform.md の現行構成節（§0）へ、
       `native-windows` は workspace 全体を型検査し、tm-agent の unit test は
       Linux `gates` ジョブが担当する旨を明記。履歴スナップショットは不改変。
-- [ ] reconsider（設計判断・SA-WINDOC 記録）: 共通ワークフローへの委譲は
+- [x] reconsider（設計判断・SA-WINDOC 記録）: 共通ワークフローへの委譲は（判断確定: 共通ワークフロー側の Windows サポート未確認かつ別リポジトリ変更は外部送信・公開操作を伴うため現状維持。tm-agent は workspace 型検査でカバー済みで機能欠落なし。要望があれば再開）
       AGENTS §5 の方針確認が必要（likely）なため、コード・CI 設定を変更せず
       記録のみとする。あわせて -D warnings の Windows/wasm 適用は
       tm-platform:86-88 の既存 unused imports で失敗（low）するため別途判断。
