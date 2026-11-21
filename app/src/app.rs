@@ -4453,8 +4453,12 @@ mod tests {
             snapshot.processes.len() >= 2,
             "demo snapshot needs two processes"
         );
+        // Group keys now derive from the executable in `command`, so copy
+        // both the display name and the command to form a real multi-member
+        // app group (R1-GROUPKEY).
         let first = snapshot.processes[0].clone();
         snapshot.processes[1].name = first.name.clone();
+        snapshot.processes[1].command = first.command.clone();
         dashboard.ingest(snapshot);
 
         let group = dashboard

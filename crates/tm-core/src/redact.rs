@@ -7,6 +7,10 @@
 //! here (rather than duplicating them in each shell) prevents the snapshot and
 //! export paths from drifting. Reading the environment is deliberately left to
 //! the callers: `tm-core` stays free of I/O and works on `wasm32`.
+//!
+//! This is also the boundary that keeps derived application group keys safe:
+//! [`crate::model::app_group_key`] only slices the already-redacted `name` and
+//! `command` fields, so it never introduces a new identifier into a key.
 
 use crate::model::{group_by_cgroup, ProcessCgroup, SystemSnapshot};
 
@@ -198,6 +202,10 @@ pub fn redact_text(value: &str, ids: &RedactionIdentifiers<'_>) -> String {
 /// [`crate::export::redact_for_export`] can safely re-apply it to a clone.
 /// Shells with an immutable view of the dashboard should use [`redact_text`]
 /// on individual strings instead.
+///
+/// Grouping reads `name` / `command` after this pass (see
+/// [`crate::model::app_group_key`]), so a group key can only contain redacted
+/// text; no separate group-key redaction step exists or is needed.
 pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers<'_>) {
     if snapshot.hostname.is_some() {
         snapshot.hostname = Some("host".to_string());
@@ -717,6 +725,46 @@ mod tests {
             dump,
             "redact_snapshot must be idempotent"
         );
+    }
+
+    #[test]
+    fn app_group_keys_are_redacted_and_exclude_token_arguments() {
+        use crate::model::{app_group_key, group_by_app};
+
+        let mut snapshot = SystemSnapshot {
+            processes: vec![
+                crate::model::ProcessSnapshot {
+                    name: "alice-worker".into(),
+                    command: "/home/alice/my-host-app --token=supersecret123 https://my-host.tail1234.ts.net"
+                        .into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+                crate::model::ProcessSnapshot {
+                    name: "Isolated Web Co".into(),
+                    command: "/usr/lib/firefox/firefox --token=supersecret123 --type=renderer"
+                        .into(),
+                    ..crate::model::ProcessSnapshot::default()
+                },
+            ],
+            ..SystemSnapshot::default()
+        };
+        let ids = secret_ids();
+        // The agent scrubs token flags before redacting the other identifiers.
+        scrub_token_flags_from_snapshot(&mut snapshot);
+        redact_snapshot(&mut snapshot, &ids);
+
+        let keys: Vec<_> = snapshot.processes.iter().map(app_group_key).collect();
+        assert_eq!(keys, ["host-app", "firefox"]);
+        for secret in SECRETS {
+            assert!(
+                !keys.iter().any(|key| key.contains(secret)),
+                "group key leaked {secret:?}: {keys:?}"
+            );
+        }
+        for group in group_by_app(&snapshot.processes) {
+            assert_eq!(group.key, group.label);
+            assert!(!SECRETS.iter().any(|secret| group.label.contains(secret)));
+        }
     }
 
     #[test]

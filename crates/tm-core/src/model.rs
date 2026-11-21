@@ -813,25 +813,143 @@ pub fn group_by_cgroup(memberships: &[ProcessCgroup]) -> Vec<CgroupGroup> {
         .collect()
 }
 
-// --- Application (process-name) grouping ------------------------------------
+// --- Application (executable-derived) grouping -------------------------------
 //
-// Additive read-only helper: it takes the already-redacted `process.name` as
-// the grouping key and never looks at `command`. Nothing is written back into
-// `SystemSnapshot`, so the JSON wire envelope, the CSV exporter and the redact
-// pass keep their exact byte contracts.
+// Additive read-only helper: the grouping key is derived from the executable
+// that actually launched the process (argv[0]'s basename, with wrapper commands
+// such as `sudo` unwrapped) and falls back to the already-redacted `name`.
+// Nothing is written back into `SystemSnapshot`, so the JSON wire envelope,
+// the CSV exporter and the redact pass keep their exact byte contracts.
+//
+// Both `name` and `command` are redacted at the snapshot boundary by
+// [`crate::redact::redact_snapshot`]; this function only slices those fields, so
+// it cannot introduce a new identifier into a key. Only the executable token is
+// inspected: token flags (`--token=…`) and URLs in later arguments never become
+// part of a key.
 
-/// Processes sharing one application name, with pre-computed totals (R1-GROUP).
+/// Upper bound for an app group key, aligned with the process-name display cap.
+const APP_GROUP_KEY_MAX_CHARS: usize = 64;
+
+/// Launcher/wrapper executables whose own name says nothing about the app run.
 ///
-/// `key` and `label` are both the redacted [`ProcessSnapshot::name`] used for
-/// grouping; they are kept as separate fields so a shell can use `key` as a
-/// stable identity for expansion state and `label` as display text without
-/// depending on the other's representation.
+/// Unwrapping them is what keeps many same-`comm` processes (`sudo` appears
+/// 112 times in the measured session) from collapsing into a single group.
+const EXEC_WRAPPERS: &[&str] = &[
+    "sudo", "doas", "su", "sh", "bash", "dash", "zsh", "ksh", "env", "nice", "renice", "nohup",
+    "setsid", "time", "ionice", "chrt", "taskset", "busybox",
+];
+
+/// Wrapper options whose next token is a value (user/group name), not an app.
+const WRAPPER_VALUE_OPTIONS: &[&str] = &["-u", "--user", "-g", "--group", "-C", "--close-from"];
+
+/// Extracts the basename of one argv token, ignoring optional shell quotes.
+fn executable_basename(token: &str) -> &str {
+    let token = token.trim_matches(|ch| ch == '"' || ch == '\'');
+    token.rsplit(['/', '\\']).next().unwrap_or(token)
+}
+
+/// Rejects tokens that cannot be an executable name.
+///
+/// Flags, redaction placeholders (`<home>`), scrubbed tokens (`***`) and
+/// URL-ish fragments are excluded so a grouping key can never carry an
+/// argument value such as `--token=secret` or `https://host/path`.
+fn is_usable_app_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= APP_GROUP_KEY_MAX_CHARS
+        && !name.starts_with('-')
+        && !name.starts_with('<')
+        && !name.starts_with('*')
+        && name.chars().all(|ch| {
+            !ch.is_whitespace()
+                && !ch.is_control()
+                && !matches!(ch, '=' | ':' | '?' | '\\' | '"' | '\'')
+        })
+}
+
+/// Maps binary-name variants onto the name their parent/children share.
+///
+/// Firefox ships its real executable as `firefox-bin` while content processes
+/// are launched through `firefox`; without this normalisation a parent and its
+/// `Isolated Web Co` children would land in two groups. The suffix is generic
+/// (any `name-bin`), so the rule does not hard-code one browser.
+fn normalise_app_name(basename: &str) -> &str {
+    basename
+        .strip_suffix("-bin")
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or(basename)
+}
+
+/// Derives a stable, already-redacted application key for one process.
+///
+/// Priority:
+///
+/// 1. the basename of `argv[0]` from [`ProcessSnapshot::command`];
+/// 2. when `argv[0]` is a launcher (`sudo`, `sh`, `env`, …), the basename of the
+///    first real executable token after its flags and assignments;
+/// 3. when `command` has no parseable executable, [`ProcessSnapshot::name`].
+///
+/// Both source fields have passed through [`crate::redact::redact_snapshot`] at
+/// the boundary, so the returned slice is redacted. Later arguments are never
+/// returned, which keeps `--token=…` values and URLs out of grouping keys and
+/// out of the SVG/CSV/wire contracts (the group rows are not serialised).
+/// A process with an empty `name` has no trustworthy identity and returns `""`,
+/// preserving the established "no group" behaviour for unidentifiable tasks.
+pub fn app_group_key(process: &ProcessSnapshot) -> &str {
+    if process.name.is_empty() {
+        return "";
+    }
+    let mut argv = process.command.split_whitespace();
+    let Some(argv0) = argv.next() else {
+        return &process.name;
+    };
+    let first = executable_basename(argv0);
+    if argv0.contains("://") || !is_usable_app_name(first) {
+        return &process.name;
+    }
+    if !EXEC_WRAPPERS.contains(&first) {
+        return normalise_app_name(first);
+    }
+    // Skip wrapper flags, `KEY=value` assignments, and the value consumed by
+    // options like `sudo -u root`; otherwise "root" would become the app name.
+    let mut skip_option_value = false;
+    for token in argv {
+        if skip_option_value {
+            skip_option_value = false;
+            continue;
+        }
+        let candidate = executable_basename(token);
+        if WRAPPER_VALUE_OPTIONS.contains(&candidate) {
+            skip_option_value = true;
+            continue;
+        }
+        if candidate.starts_with('-')
+            || candidate.starts_with('[')
+            || token.contains('=')
+            || token.contains("://")
+        {
+            continue;
+        }
+        if is_usable_app_name(candidate) {
+            return normalise_app_name(candidate);
+        }
+    }
+    // No executable in the wrapper's arguments: fall back to comm, never to a
+    // later token that might be a token value or URL.
+    &process.name
+}
+
+/// Processes sharing one application key, with pre-computed totals (R1-GROUP).
+///
+/// `key` and `label` are both the redacted [`app_group_key`] used for grouping;
+/// they are kept as separate fields so a shell can use `key` as a stable
+/// identity for expansion state and `label` as display text without depending
+/// on the other's representation.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcessGroup {
-    /// Exact redacted process name shared by every member.
+    /// Redacted [`app_group_key`] shared by every member.
     pub key: String,
-    /// Display label; identical to `key` (the name is already display-safe).
+    /// Display label; identical to `key` (the app name is already display-safe).
     pub label: String,
     /// Indices into the source process slice, ordered by [`ProcessKey`].
     ///
@@ -850,12 +968,14 @@ pub struct ProcessGroup {
     pub process_count: usize,
 }
 
-/// Groups processes by their exact, already-redacted `name` (R1-GROUP).
+/// Groups processes by their executable-derived app key (R1-GROUP).
 ///
-/// `command` is deliberately not consulted: command lines carry arguments,
-/// paths and quoted text, so they would split one application into many groups
-/// and could leak host-specific data into a grouping key. Processes with an
-/// empty name are skipped, mirroring [`group_by_cgroup`]'s empty-label rule.
+/// The key comes from [`app_group_key`]: the redacted `argv[0]` basename, with
+/// launcher wrappers unwrapped so browser children (`Isolated Web Co`,
+/// `MainThread`) join their parent's group. Only that one executable token is
+/// consulted — differing arguments (including token flags and URLs) neither
+/// split a group nor leak into its key. Processes without a usable key are
+/// skipped, mirroring [`group_by_cgroup`]'s empty-label rule.
 ///
 /// Groups are ordered by key via `BTreeMap`; members are sorted by [`ProcessKey`]
 /// (then by source index for the unlikely case of duplicate identities). CPU is
@@ -865,10 +985,11 @@ pub struct ProcessGroup {
 pub fn group_by_app(processes: &[ProcessSnapshot]) -> Vec<ProcessGroup> {
     let mut grouped = std::collections::BTreeMap::<String, Vec<usize>>::new();
     for (index, process) in processes.iter().enumerate() {
-        if process.name.is_empty() {
+        let key = app_group_key(process);
+        if key.is_empty() {
             continue;
         }
-        grouped.entry(process.name.clone()).or_default().push(index);
+        grouped.entry(key.to_string()).or_default().push(index);
     }
     grouped
         .into_iter()
@@ -1405,10 +1526,21 @@ mod tests {
         ProcessSnapshot {
             key: ProcessKey::new(pid, 1),
             name: name.to_string(),
-            // Command differences must not split a name-based group.
+            // The executable basename still equals `name`; only the trailing
+            // argument differs. This keeps the "command-ignoring bug" regression
+            // meaningful under the new argv[0]-derived key (R1-GROUP).
             command: format!("/usr/bin/{name} --pid={pid}"),
             cpu_percent: cpu,
             memory_bytes: memory,
+            ..ProcessSnapshot::default()
+        }
+    }
+
+    fn command_process(pid: u32, name: &str, command: &str) -> ProcessSnapshot {
+        ProcessSnapshot {
+            key: ProcessKey::new(pid, 1),
+            name: name.to_string(),
+            command: command.to_string(),
             ..ProcessSnapshot::default()
         }
     }
@@ -1519,6 +1651,124 @@ mod tests {
         assert_eq!(forward[1].members, vec![2, 0]);
         assert_eq!(processes[forward[0].members[0]].key.pid(), 2);
         assert_eq!(processes[forward[1].members[0]].key.pid(), 4);
+    }
+
+    // --- C1-GROUPKEY: executable-derived keys --------------------------------
+
+    #[test]
+    fn app_group_key_uses_argv0_basename_and_falls_back_to_name() {
+        // The browser's children have an unhelpful `comm`; the executable in
+        // argv[0] is what identifies their application.
+        assert_eq!(
+            app_group_key(&command_process(
+                1,
+                "Isolated Web Co",
+                "/usr/lib/firefox/firefox --type=renderer --user-data-dir=/tmp/x"
+            )),
+            "firefox"
+        );
+        assert_eq!(
+            app_group_key(&command_process(
+                2,
+                "MainThread",
+                "/usr/lib/chromium/chromium --type=renderer"
+            )),
+            "chromium"
+        );
+        // Empty/unparseable argv falls back to the redacted name.
+        assert_eq!(
+            app_group_key(&command_process(3, "worker", "   ")),
+            "worker"
+        );
+        assert_eq!(
+            app_group_key(&command_process(4, "worker", "--token=supersecret")),
+            "worker",
+            "a flag is not an executable"
+        );
+        assert_eq!(
+            app_group_key(&command_process(5, "worker", "https://host/path")),
+            "worker",
+            "a URL is not an executable"
+        );
+        // The established empty-comm rule is preserved.
+        assert_eq!(app_group_key(&command_process(6, "", "kernel-task")), "");
+    }
+
+    #[test]
+    fn app_group_key_normalises_the_firefox_binary_suffix() {
+        // Measured session: the parent's comm/command is `firefox-bin` while its
+        // children are launched through `firefox`. Both must be `firefox`.
+        assert_eq!(
+            app_group_key(&command_process(
+                1,
+                "firefox-bin",
+                "/usr/lib/firefox/firefox-bin"
+            )),
+            "firefox"
+        );
+        assert_eq!(
+            app_group_key(&command_process(
+                2,
+                "Isolated Web Co",
+                "/usr/lib/firefox/firefox --type=renderer"
+            )),
+            "firefox"
+        );
+    }
+
+    #[test]
+    fn browser_children_join_the_parent_app_group() {
+        // Fictional but realistic command strings: the child processes carry a
+        // generic comm and only argv[0] ties them to the parent application.
+        let processes = vec![
+            command_process(100, "firefox-bin", "/usr/lib/firefox/firefox-bin"),
+            command_process(
+                101,
+                "Isolated Web Co",
+                "/usr/lib/firefox/firefox --type=renderer --user-data-dir=/tmp/profile",
+            ),
+            command_process(
+                102,
+                "Isolated Web Co",
+                "/usr/lib/firefox/firefox --type=utility --token=supersecret",
+            ),
+            command_process(200, "chromium", "/usr/lib/chromium/chromium"),
+            command_process(
+                201,
+                "MainThread",
+                "/usr/lib/chromium/chromium --type=renderer",
+            ),
+        ];
+        let groups = group_by_app(&processes);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].key, "chromium");
+        assert_eq!(groups[0].process_count, 2);
+        assert_eq!(groups[1].key, "firefox");
+        assert_eq!(groups[1].label, "firefox");
+        assert_eq!(groups[1].process_count, 3);
+        assert_eq!(groups[1].members, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn launcher_wrappers_do_not_merge_distinct_apps() {
+        // Same `comm` (sudo/sh) but different argv must not collapse into one
+        // group: use the executable the wrapper actually launched.
+        let processes = vec![
+            command_process(1, "sudo", "sudo /usr/bin/apt update"),
+            command_process(2, "sudo", "sudo /usr/bin/systemctl restart service"),
+            command_process(3, "sudo", "sudo -u root /usr/bin/docker ps"),
+            command_process(4, "sh", "sh /etc/init.d/ssh start"),
+            command_process(5, "sh", "sh -c \"/usr/bin/rsync --daemon\""),
+        ];
+        let keys: Vec<_> = processes.iter().map(app_group_key).collect();
+        assert_eq!(keys, ["apt", "systemctl", "docker", "ssh", "rsync"]);
+        let groups = group_by_app(&processes);
+        assert_eq!(
+            groups.len(),
+            5,
+            "different argv must stay in separate groups"
+        );
+        assert!(groups.iter().all(|group| group.process_count == 1));
     }
 
     // --- R1-I10 / R1-I11 / R1-I12: snapshot integration -----------------------
