@@ -377,7 +377,11 @@ impl TaskManagerApp {
             Command::SetInterval(Duration::from_millis(settings.interval_ms)),
             Command::SetSortSpec(settings.sort),
             Command::SetDetailsVisible(settings.details_visible),
-            Command::SetTreeView(settings.tree_view),
+            // Launch into the application-grouped table regardless of a
+            // previously persisted tree_view. The user chose grouped-by-app
+            // as the default view (R1-GROUP); tree remains reachable via the
+            // toggle without being restored at startup.
+            Command::SetAppGrouping(true),
         ] {
             // Restoring settings only changes display state; these commands
             // return no effects today. Check explicitly so a future effect is
