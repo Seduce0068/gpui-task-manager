@@ -1483,7 +1483,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
       同一ホスト他プロセスが利用リズムを推測しうる（low/likely）。
       破損設定の隔離バックアップが生 JSON を永続化する点も併記。
       根拠 R1-PRIVACY。
-- [ ] 将来スキーマ version 9 で interval_ms 範囲が変わった場合、現在の
+- [x] 将来スキーマ version 9 で interval_ms 範囲が変わった場合、現在の（future version では clamp をスキップし raw 値を保持）
       クランプ値が version:9 のまま保存され将来ビルドの意味が壊れる
       （speculative）。根拠 R1-FWDCOMPAT。
 
