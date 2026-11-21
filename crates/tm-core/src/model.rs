@@ -859,6 +859,11 @@ fn is_usable_app_name(name: &str) -> bool {
         && !name.starts_with('-')
         && !name.starts_with('<')
         && !name.starts_with('*')
+        // Kernel threads and systemd internals show argv[0] like `(sd-pam)`
+        // or a bare number. Those are not application names; fall back to
+        // the process `comm` instead of showing a meaningless group label.
+        && !name.starts_with('(')
+        && !name.chars().all(|ch| ch.is_ascii_digit())
         && name.chars().all(|ch| {
             !ch.is_whitespace()
                 && !ch.is_control()
