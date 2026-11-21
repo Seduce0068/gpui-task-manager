@@ -19,7 +19,7 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 
 ## 検証
 
-- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 667 / web 232、件数は README.md「検証状況」と同期）
+- [current-state.md](current-state.md) — 2026-11-20 時点の到達点・検証結果・未解決事項の俯瞰（テスト実測 workspace 658 / web 232、件数は README.md「検証状況」と同期）
 - [agent-runtime-verification.md](agent-runtime-verification.md) — `tm-agent` 実動検証（TCP ソケット経由の主要エンドポイント、loopback / 認証の Runtime Proof と制約）
 - [native-runtime-verification.md](native-runtime-verification.md) — ネイティブ GPUI アプリの Wayland 実起動（ウィンドウ生成の Runtime Proof）
 - [environment-verification.md](environment-verification.md) — 実機環境・証跡の確認記録（HiDPI / スクリーンショット鮮度 / ローカルブランチ整理、事実と未確認事項）
