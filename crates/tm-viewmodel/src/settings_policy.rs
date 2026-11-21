@@ -45,7 +45,7 @@ pub fn strip_bom(text: &str) -> &str {
 ///
 /// [`Settings::normalized`] always forces the current version; storage must not
 /// do that or a newer document would be downgraded on the next save (R2-D01).
-pub fn clamp_interval_only(mut settings: Settings) -> Settings {
+pub(crate) fn clamp_interval_only(mut settings: Settings) -> Settings {
     // A document from a future schema may legitimately use a wider interval
     // range. Clamping it to this build's bounds and then saving would persist a
     // version:N file whose value no longer means what N expects (R1-FWDCOMPAT).
@@ -66,7 +66,7 @@ pub fn clamp_interval_only(mut settings: Settings) -> Settings {
 /// forms (string, fractional, negative, larger than `u32::MAX`) are opaque: they
 /// stay in the raw object and are written back verbatim instead of being
 /// replaced with a version this build understands (R2X-D3).
-pub fn interpretable_version(value: Option<&Value>) -> Option<u32> {
+pub(crate) fn interpretable_version(value: Option<&Value>) -> Option<u32> {
     value
         .and_then(|value| value.as_u64())
         .and_then(|version| u32::try_from(version).ok())
@@ -77,7 +77,7 @@ pub fn interpretable_version(value: Option<&Value>) -> Option<u32> {
 /// A comparable stored version is upgraded but never downgraded; a missing
 /// version is filled in with this build's version; an opaque or out-of-range
 /// value is left untouched so a newer shell still recognises its own document.
-pub fn merge_version(map: &mut Map<String, Value>, value: Value) {
+pub(crate) fn merge_version(map: &mut Map<String, Value>, value: Value) {
     match interpretable_version(map.get("version")) {
         Some(stored) => {
             let current = value.as_u64().unwrap_or(0);
