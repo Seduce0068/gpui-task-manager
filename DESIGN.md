@@ -575,9 +575,9 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
 | DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
 | DESIGN.md §6.3 / SECURITY.md §3 | SSE（`/api/v1/stream`）の実装 | Bearer 認証・Host 必須検証・loopback CORS・専用接続枠 `MAX_STREAMS`（2 枠）・読み取りタイムアウト非適用を実装 | `agent/src/main.rs:51,79,1187-1262` | 一致（R2-X03 反映） |
-| notes/current-state.md | 検証状況 | workspace 619 / web 217（core 176 / viewmodel 94 / platform 44 / agent 153 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
+| notes/current-state.md | 検証状況 | workspace 619 / web 218（core 176 / viewmodel 94 / platform 44 / agent 153 / app 120）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
-| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 619 / web 217（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
+| notes/index.md | current-state の日付・テスト件数 | 2026-11-20 / workspace 619 / web 218（README.md「検証状況」と同期） | 本文 | 一致（2026-11-20 実測を反映） |
 | RESEARCH.md §8 | 未確認事項 4 / 8 | IME とエージェント並列化は解消済みで本文にも反映済み（R1-D02、2026-11-18） | `notes/ime.md`、README.md | 一致（反映済み） |
 
 - 時系列ログ（`log.md`、`notes/verification.md` の個別記録、

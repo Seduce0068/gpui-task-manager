@@ -188,8 +188,11 @@ fn quarantine_writes(nanos: u128, existing: &[String]) -> (String, String) {
 /// Sort key for a quarantine key: fixed-width timestamp, then the numeric
 /// `-N` collision suffix.
 ///
-/// Only keys with the exact prefix and a 16-hex timestamp are eligible, so an
-/// unrelated `localStorage` entry is never removed by the retention sweep.
+/// Only keys with the exact prefix and a hex timestamp of at least 16 digits
+/// are eligible, so an unrelated `localStorage` entry is never removed by the
+/// retention sweep. The 16-digit minimum is the current epoch-nanos width;
+/// accepting longer hex strings keeps the retention cap effective if the
+/// clock ever yields a value beyond `u64` (R1-FWDCOMPAT).
 #[cfg(any(target_family = "wasm", test))]
 fn corrupt_backup_sort_key(key: &str) -> Option<(String, u64)> {
     let rest = key.strip_prefix(CORRUPT_BACKUP_KEY_PREFIX)?;
@@ -197,7 +200,7 @@ fn corrupt_backup_sort_key(key: &str) -> Option<(String, u64)> {
         Some((timestamp, suffix)) => (timestamp, suffix.parse::<u64>().ok()?),
         None => (rest, 0),
     };
-    if timestamp.len() != 16 || !timestamp.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if timestamp.len() < 16 || !timestamp.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     Some((timestamp.to_string(), suffix))
@@ -1076,6 +1079,19 @@ mod tests {
         let installed = failed.writes.borrow();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].0, STORAGE_KEY);
+    }
+
+    #[test]
+    fn corrupt_backup_sort_key_keeps_long_hex_timestamps_in_the_retention_sweep() {
+        // 16 digits is today's epoch-nanos width. A wider value (clock anomaly
+        // or a future epoch) must still be eligible for pruning, otherwise the
+        // five-backup cap stops applying and localStorage fills up (R1-FWDCOMPAT).
+        let wide = format!("{CORRUPT_BACKUP_KEY_PREFIX}10000000000000000");
+        assert!(corrupt_backup_sort_key(&wide).is_some());
+        let short = format!("{CORRUPT_BACKUP_KEY_PREFIX}1000");
+        assert!(corrupt_backup_sort_key(&short).is_none());
+        let non_hex = format!("{CORRUPT_BACKUP_KEY_PREFIX}zzzzzzzzzzzzzzzz");
+        assert!(corrupt_backup_sort_key(&non_hex).is_none());
     }
 
     #[test]
