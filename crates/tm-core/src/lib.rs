@@ -39,11 +39,11 @@ pub mod wire;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
-    cgroup_label, group_by_cgroup, normalise_temperature, recommended_sampling_plan,
+    cgroup_label, group_by_app, group_by_cgroup, normalise_temperature, recommended_sampling_plan,
     BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
     MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
-    ProcessCgroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SamplingProfile,
-    SystemSnapshot, Timestamp, WindowVisibility,
+    ProcessCgroup, ProcessGroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan,
+    SamplingProfile, SystemSnapshot, Timestamp, WindowVisibility,
 };
 pub use model::{
     BACKGROUND_INTERVAL_MS, BATTERY_INTERVAL_MS, BATTERY_SAVER_INTERVAL_MS, CGROUP_LABEL_MAX_CHARS,

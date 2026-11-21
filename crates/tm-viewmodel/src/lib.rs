@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use tm_core::format;
 use tm_core::{
-    filter_and_sort, flatten_process_tree, normalise_percent, Filter, MetricHistory,
+    filter_and_sort, flatten_process_tree, group_by_app, normalise_percent, Filter, MetricHistory,
     NetworkCounters, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, ProcessTreeRow,
     RingBuffer, Signal, SortKey, SortSpec, SystemSnapshot, Timestamp,
 };
@@ -348,11 +348,29 @@ pub enum Command {
     /// Set the details panel visibility explicitly (used when restoring settings).
     SetDetailsVisible(bool),
     /// Show or hide the process tree view.
+    ///
+    /// Turning the tree on leaves application grouping (R1-VISIBLE), so the two
+    /// presentation modes are mutually exclusive without a settings field.
     ToggleTreeView,
     /// Set the process tree view explicitly (used when restoring settings).
     SetTreeView(bool),
     /// Toggle collapse/expand state for a process node in tree view.
     ToggleTreeNode(ProcessKey),
+    /// Switch the process table between application-grouped rows and the flat
+    /// (or tree) process rows (R1-VISIBLE).
+    ///
+    /// Grouping is on by default; turning it on leaves the tree view. This is
+    /// transient dashboard state and is deliberately absent from `Settings`.
+    ToggleAppGrouping,
+    /// Set application grouping explicitly (R1-VISIBLE).
+    SetAppGrouping(bool),
+    /// Select an application group row by its redacted name (R1-GROUP).
+    ///
+    /// Resolves to the first member (smallest PID) and reuses the ordinary
+    /// selection path, so details, signals and PID-reuse protection are intact.
+    SelectAppGroup(String),
+    /// Expand or collapse an application group row by its redacted name (R1-GROUP).
+    ToggleAppGroup(String),
     /// Open the confirmation dialog for a signal.
     RequestSignal {
         /// Target process.
@@ -394,6 +412,10 @@ impl Command {
                 | Self::ToggleTreeView
                 | Self::SetTreeView(_)
                 | Self::ToggleTreeNode(_)
+                | Self::ToggleAppGrouping
+                | Self::SetAppGrouping(_)
+                | Self::SelectAppGroup(_)
+                | Self::ToggleAppGroup(_)
                 | Self::RequestSignal { .. }
                 | Self::CancelKill
         )
@@ -483,6 +505,62 @@ impl StatusMessage {
     }
 }
 
+/// Which kind of row an [`AppGroupRow`] represents (R1-GROUP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppRowKind {
+    /// An application group summarising one or more processes.
+    Group,
+    /// One individual process revealed by expanding a group.
+    Process,
+}
+
+/// One row of the application-grouped process table (R1-GROUP).
+///
+/// With no groups expanded, [`Dashboard::app_group_rows`] returns group rows
+/// only; expanding a group inserts its members as `depth = 1` process rows
+/// immediately after it. This is an *additive* view model: existing
+/// [`ProcessTreeRow`] consumers keep the flat/tree process list unchanged, so
+/// the export and wire contracts are untouched.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppGroupRow {
+    /// Whether this row is a group summary or an expanded process.
+    pub kind: AppRowKind,
+    /// Stable identity used for expansion state; the group's redacted name.
+    ///
+    /// Empty for individual process rows.
+    pub key: String,
+    /// Display text: the group name, or the process name for a member row.
+    pub label: String,
+    /// Index into `snapshot.processes` of the represented process.
+    ///
+    /// For a group row this is the first member (smallest [`ProcessKey`]).
+    pub index: usize,
+    /// Process identity a shell should pass to `Command::Select` when this row
+    /// is activated. For a group row it is the first member's identity, so the
+    /// existing details panel, signal confirmation and PID-reuse guard all keep
+    /// working on a real process.
+    pub process_key: ProcessKey,
+    /// Every member key of a group row; empty for individual process rows.
+    ///
+    /// Lets a shell highlight the group when one of its hidden members is the
+    /// current selection.
+    pub member_keys: Vec<ProcessKey>,
+    /// `0` for group rows, `1` for expanded process rows.
+    pub depth: usize,
+    /// Whether activating this row can reveal children.
+    ///
+    /// Always `false` for a single-member group and for process rows.
+    pub has_children: bool,
+    /// Whether this group is currently expanded (`false` for process rows).
+    pub expanded: bool,
+    /// Group CPU sum, or the individual process CPU reading.
+    pub cpu_percent: f32,
+    /// Group memory sum, or the individual process memory reading.
+    pub memory_bytes: u64,
+    /// Number of grouped processes (`1` for individual process rows).
+    pub process_count: usize,
+}
+
 /// Presentation state for one dashboard window.
 pub struct Dashboard {
     platform: PlatformInfo,
@@ -491,7 +569,16 @@ pub struct Dashboard {
     visible_depths: Vec<usize>,
     visible_has_children: Vec<bool>,
     tree_view: bool,
+    /// Whether the table shows one row per application instead of one row per
+    /// process (R1-VISIBLE). On by default so grouping needs no settings field
+    /// or shell change; mutually exclusive with `tree_view` at the setter.
+    app_group_view: bool,
     collapsed: HashSet<ProcessKey>,
+    /// Redacted application names whose group rows are expanded (R1-GROUP).
+    ///
+    /// A `HashSet` keyed by `String` keeps the tree-view `ProcessKey` collapse
+    /// set untouched; the two views are independent and both remain available.
+    expanded_app_groups: HashSet<String>,
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
@@ -544,7 +631,9 @@ impl Dashboard {
             visible_depths: Vec::new(),
             visible_has_children: Vec::new(),
             tree_view: false,
+            app_group_view: true,
             collapsed: HashSet::new(),
+            expanded_app_groups: HashSet::new(),
             history: MetricHistory::new(HISTORY_CAPACITY),
             sort: SortSpec::default(),
             filter: Filter::default(),
@@ -655,6 +744,25 @@ impl Dashboard {
         self.tree_view
     }
 
+    /// Whether the visible rows are application groups (R1-VISIBLE).
+    ///
+    /// `true` from construction; transient and intentionally not persisted.
+    pub fn app_group_view(&self) -> bool {
+        self.app_group_view
+    }
+
+    /// Enable grouping and leave the tree view (R1-VISIBLE).
+    fn show_app_groups(&mut self) {
+        self.app_group_view = true;
+        self.tree_view = false;
+    }
+
+    /// Enable the tree view and leave grouping (R1-VISIBLE).
+    fn show_tree_view(&mut self) {
+        self.tree_view = true;
+        self.app_group_view = false;
+    }
+
     /// Selected process identity.
     pub fn selected_key(&self) -> Option<ProcessKey> {
         self.selected
@@ -682,16 +790,26 @@ impl Dashboard {
     }
 
     /// Indices into `snapshot.processes` for the rows the table shows, in display order.
+    ///
+    /// In the default grouped view these are the group rows from
+    /// [`Self::app_group_rows`]: a group maps to its first (smallest
+    /// [`ProcessKey`]) member, and an expanded member maps to itself. The
+    /// existing native and web renderers therefore show grouped rows without
+    /// any drawing-side change (R1-VISIBLE).
     pub fn visible_indices(&self) -> &[usize] {
         &self.visible
     }
 
-    /// Nesting depth for each visible row (0 for flat view and tree roots).
+    /// Nesting depth for each visible row (0 for flat view, tree roots and
+    /// group rows; 1 for processes revealed by expanding a group).
     pub fn visible_depths(&self) -> &[usize] {
         &self.visible_depths
     }
 
     /// Returns visible child markers aligned with `visible_indices`.
+    ///
+    /// A group with more than one member exposes `true` here, which is the
+    /// existing expand affordance the renderers already understand.
     pub fn visible_has_children(&self) -> &[bool] {
         &self.visible_has_children
     }
@@ -713,7 +831,181 @@ impl Dashboard {
             })
     }
 
-    /// Number of rows after filtering.
+    /// Whether an application group is currently expanded (R1-GROUP).
+    pub fn is_app_group_expanded(&self, key: &str) -> bool {
+        self.expanded_app_groups.contains(key)
+    }
+
+    /// Rows of the application-grouped process table, in display order (R1-GROUP).
+    ///
+    /// By default this returns one row per redacted `process.name`, with the
+    /// members' CPU/memory totals already computed by [`group_by_app`]. A group
+    /// added to the expansion set through [`Command::ToggleAppGroup`] is followed
+    /// by its individual processes at `depth = 1`; collapsing it removes them
+    /// again. The current filter is applied first and the active sort spec
+    /// orders the group rows (`Cpu`, `Memory` and `Pid` use their totals, other
+    /// columns fall back to the deterministic group key).
+    ///
+    /// No snapshot yields an empty vector. Export and wire code keep receiving
+    /// `snapshot.processes` directly and never see these rows.
+    pub fn app_group_rows(&self) -> Vec<AppGroupRow> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        // Build the filtered subset so group totals describe exactly the rows
+        // the user can see; `base` maps filtered positions back to the snapshot.
+        let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        let filtered: Vec<ProcessSnapshot> = base
+            .iter()
+            .map(|&index| snapshot.processes[index].clone())
+            .collect();
+        let mut groups = group_by_app(&filtered);
+        groups.sort_by(|left, right| {
+            let ordering = match self.sort.key {
+                SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
+                SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
+                SortKey::Pid => filtered[left.members[0]]
+                    .key
+                    .pid
+                    .cmp(&filtered[right.members[0]].key.pid),
+                // The remaining columns have no aggregate equivalent; keep the
+                // stable BTreeMap key order for them.
+                SortKey::Name
+                | SortKey::User
+                | SortKey::Status
+                | SortKey::Threads
+                | SortKey::StartTime
+                | SortKey::VirtualMemory => left.key.cmp(&right.key),
+            };
+            let ordering = match self.sort.direction {
+                tm_core::SortDirection::Ascending => ordering,
+                tm_core::SortDirection::Descending => ordering.reverse(),
+            };
+            ordering.then_with(|| left.key.cmp(&right.key))
+        });
+
+        let mut rows = Vec::new();
+        for group in groups {
+            let member_keys: Vec<ProcessKey> = group
+                .members
+                .iter()
+                .map(|&member| filtered[member].key)
+                .collect();
+            let first_key = member_keys[0]; // groups always have one member
+            let has_children = group.members.len() > 1;
+            let expanded = has_children && self.expanded_app_groups.contains(&group.key);
+            rows.push(AppGroupRow {
+                kind: AppRowKind::Group,
+                key: group.key.clone(),
+                label: group.label,
+                index: base[group.members[0]],
+                process_key: first_key,
+                member_keys,
+                depth: 0,
+                has_children,
+                expanded,
+                cpu_percent: group.cpu_percent,
+                memory_bytes: group.memory_bytes,
+                process_count: group.process_count,
+            });
+            if expanded {
+                for &member in &group.members {
+                    let process = &filtered[member];
+                    rows.push(AppGroupRow {
+                        kind: AppRowKind::Process,
+                        key: group.key.clone(),
+                        label: process.name.clone(),
+                        index: base[member],
+                        process_key: process.key,
+                        member_keys: Vec::new(),
+                        depth: 1,
+                        has_children: false,
+                        expanded: false,
+                        cpu_percent: process.cpu_percent,
+                        memory_bytes: process.memory_bytes,
+                        process_count: 1,
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    /// Position of the selected process inside [`Self::app_group_rows`].
+    ///
+    /// A hidden member of a collapsed group highlights the group row, so the
+    /// selection never disappears from the application view.
+    pub fn selected_app_group_row_index(&self) -> Option<usize> {
+        let selected = self.selected?;
+        let rows = self.app_group_rows();
+        // An expanded member has its own row; the group row is only a fallback
+        // for a selection hidden inside a collapsed group.
+        rows.iter()
+            .position(|row| row.process_key == selected)
+            .or_else(|| {
+                rows.iter().position(|row| {
+                    row.kind == AppRowKind::Group && row.member_keys.contains(&selected)
+                })
+            })
+    }
+
+    /// First member (smallest [`ProcessKey`]) of a named, currently visible group.
+    fn first_app_group_key(&self, key: &str) -> Option<ProcessKey> {
+        self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .processes
+                .iter()
+                .filter(|process| process.name == key && self.filter.matches(process))
+                .map(|process| process.key)
+                .min()
+        })
+    }
+
+    fn is_member_of_app_group(&self, member: ProcessKey, key: &str) -> bool {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.process(member))
+            .is_some_and(|process| process.name == key)
+    }
+
+    /// Group-row representative for a selection that has no row of its own.
+    ///
+    /// In the default grouped view a collapsed group shows only its first
+    /// member. A selection on another (hidden) member is remapped to that first
+    /// member, keeping the existing `ProcessKey`-based highlight, signal target
+    /// and PID-reuse guard intact (R1-VISIBLE). An expanded member already has
+    /// its own row and is left unchanged.
+    fn grouped_representative(&self, key: ProcessKey) -> Option<ProcessKey> {
+        if !self.app_group_view {
+            return None;
+        }
+        let snapshot = self.snapshot.as_ref()?;
+        let name = &snapshot.process(key)?.name;
+        if self.expanded_app_groups.contains(name) {
+            return None;
+        }
+        let first = self.first_app_group_key(name)?;
+        (first != key).then_some(first)
+    }
+
+    /// Drops expansion keys whose application no longer exists in a new sample.
+    fn prune_expanded_app_groups(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            self.expanded_app_groups.clear();
+            return;
+        };
+        self.expanded_app_groups.retain(|key| {
+            snapshot
+                .processes
+                .iter()
+                .any(|process| &process.name == key)
+        });
+    }
+
+    /// Number of rows currently displayed (group rows in the default view).
+    ///
+    /// DOM/a11y row counts keep this "visible rows" meaning; the unfiltered
+    /// process count remains available from `snapshot.processes` for exports.
     pub fn visible_count(&self) -> usize {
         self.visible.len()
     }
@@ -817,11 +1109,15 @@ impl Dashboard {
                 }
             }
             Command::Select(key) => {
-                self.selected = key.filter(|key| {
+                let key = key.filter(|key| {
                     self.snapshot
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.process(*key).is_some())
                 });
+                // A member hidden inside a collapsed group has no row of its
+                // own; keep the ProcessKey-based selection on the group row's
+                // first member so the highlight and arrow keys stay in sync.
+                self.selected = key.map(|key| self.grouped_representative(key).unwrap_or(key));
                 self.sync_selection_hint();
                 self.sync_selected_cpu_history();
                 Vec::new()
@@ -907,12 +1203,38 @@ impl Dashboard {
                 Vec::new()
             }
             Command::ToggleTreeView => {
-                self.tree_view = !self.tree_view;
+                if self.tree_view {
+                    self.tree_view = false;
+                } else {
+                    self.show_tree_view();
+                }
                 self.recompute_visible();
                 Vec::new()
             }
             Command::SetTreeView(tree_view) => {
-                self.tree_view = tree_view;
+                if tree_view {
+                    self.show_tree_view();
+                } else {
+                    self.tree_view = false;
+                }
+                self.recompute_visible();
+                Vec::new()
+            }
+            Command::ToggleAppGrouping => {
+                if self.app_group_view {
+                    self.app_group_view = false;
+                } else {
+                    self.show_app_groups();
+                }
+                self.recompute_visible();
+                Vec::new()
+            }
+            Command::SetAppGrouping(enabled) => {
+                if enabled {
+                    self.show_app_groups();
+                } else {
+                    self.app_group_view = false;
+                }
                 self.recompute_visible();
                 Vec::new()
             }
@@ -935,6 +1257,54 @@ impl Dashboard {
                     }
                     self.recompute_visible();
                 }
+                Vec::new()
+            }
+            Command::SelectAppGroup(key) => {
+                // A group row has no identity of its own: selecting it selects
+                // its first member, which keeps the existing detail panel,
+                // signal confirmation and PID-reuse protection unchanged.
+                if let Some(first) = self.first_app_group_key(&key) {
+                    self.selected = Some(first);
+                    self.sync_selection_hint();
+                    self.sync_selected_cpu_history();
+                }
+                Vec::new()
+            }
+            Command::ToggleAppGroup(key) => {
+                // In flat/tree mode no visible row advertises group children.
+                if !self.app_group_view {
+                    return Vec::new();
+                }
+                // Only a row whose `has_children` marker is set can be toggled:
+                // single-member groups and expanded process rows have no
+                // children to reveal (R1-VISIBLE). This also ignores stale keys
+                // so the set cannot grow from clicks on removed groups.
+                let expandable = self
+                    .app_group_rows()
+                    .iter()
+                    .any(|row| row.kind == AppRowKind::Group && row.key == key && row.has_children);
+                if !expandable {
+                    if self.expanded_app_groups.remove(&key) {
+                        self.recompute_visible();
+                    }
+                    return Vec::new();
+                }
+                if self.expanded_app_groups.remove(&key) {
+                    // Collapsing a group must not leave a hidden member as the
+                    // selection: move it to the group's first member instead.
+                    if self.selected.is_some_and(|selected| {
+                        self.is_member_of_app_group(selected, &key)
+                            && self.first_app_group_key(&key) != self.selected
+                    }) {
+                        self.selected = self.first_app_group_key(&key);
+                        self.sync_selected_cpu_history();
+                    }
+                } else {
+                    self.expanded_app_groups.insert(key);
+                }
+                // The visible arrays mirror app_group_rows(), so expansion must
+                // refresh them (c1-group only rebuilt the rows on demand).
+                self.recompute_visible();
                 Vec::new()
             }
             Command::RequestSignal { key, signal } => {
@@ -1066,6 +1436,9 @@ impl Dashboard {
         // so preserve the previous row position for the disappearance fallback.
         let previous_hint = self.selection_hint;
         self.snapshot = Some(snapshot);
+        // Expansion state is keyed by the redacted app name; a new sample can
+        // remove a group entirely, so drop keys that no longer resolve.
+        self.prune_expanded_app_groups();
         self.recompute_visible();
         if !had_snapshot || (had_selection && !selected_still_exists) {
             let fallback_index = self
@@ -1298,7 +1671,17 @@ impl Dashboard {
             return;
         };
         let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
-        if self.tree_view {
+        if self.app_group_view {
+            // Grouping drives the *existing* visible arrays so the native and
+            // web renderers need no changes (R1-VISIBLE). `app_group_rows()`
+            // already applied the filter, sort and expansion state; a group's
+            // index is its first member, its depth is 0 and a group with more
+            // than one member advertises children.
+            let rows = self.app_group_rows();
+            self.visible = rows.iter().map(|row| row.index).collect();
+            self.visible_depths = rows.iter().map(|row| row.depth).collect();
+            self.visible_has_children = rows.iter().map(|row| row.has_children).collect();
+        } else if self.tree_view {
             let rows = flatten_process_tree(&snapshot.processes, &base, &self.collapsed);
             self.visible = rows.iter().map(|row| row.index).collect();
             self.visible_depths = rows.iter().map(|row| row.depth).collect();
@@ -1360,6 +1743,13 @@ impl Dashboard {
                 .iter()
                 .any(|&index| snapshot.processes[index].key == selected)
             {
+                return;
+            }
+            // A collapsed group hides all but its first member. Represent the
+            // hidden selection with that group row instead of jumping to an
+            // unrelated first row (R1-VISIBLE).
+            if let Some(representative) = self.grouped_representative(selected) {
+                self.selected = Some(representative);
                 return;
             }
         }
@@ -1439,6 +1829,17 @@ mod tests {
 
     fn dashboard() -> Dashboard {
         Dashboard::new(PlatformInfo::native("Linux"), DEFAULT_REFRESH_INTERVAL)
+    }
+
+    /// Dashboard pinned to the legacy flat rows for non-regression tests.
+    ///
+    /// The default is application grouping (R1-VISIBLE), so tests that check
+    /// one-row-per-process behaviour must opt out explicitly.
+    fn flat_dashboard() -> Dashboard {
+        let mut dashboard = dashboard();
+        assert!(dashboard.app_group_view());
+        dashboard.apply(Command::SetAppGrouping(false));
+        dashboard
     }
 
     fn ingest_ticks(dashboard: &mut Dashboard, ticks: u64) {
@@ -2145,7 +2546,7 @@ mod tests {
 
     #[test]
     fn default_sort_is_cpu_descending() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         let snapshot = dashboard.snapshot().expect("snapshot");
         let cpus: Vec<f32> = dashboard
@@ -2158,7 +2559,7 @@ mod tests {
 
     #[test]
     fn sorting_by_pid_is_ascending() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         dashboard.apply(Command::SetSortKey(SortKey::Pid));
         let snapshot = dashboard.snapshot().expect("snapshot");
@@ -2172,7 +2573,7 @@ mod tests {
 
     #[test]
     fn sorting_by_virtual_memory_defaults_to_descending() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         dashboard.apply(Command::SetSortKey(SortKey::VirtualMemory));
         let spec = dashboard.sort_spec();
@@ -2192,7 +2593,7 @@ mod tests {
 
     #[test]
     fn filter_reduces_visible_rows() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         dashboard.apply(Command::SetFilterText("firefox".to_string()));
         assert_eq!(dashboard.visible_count(), 1);
@@ -2207,7 +2608,7 @@ mod tests {
 
     #[test]
     fn virtual_memory_filter_limits_visible_rows_and_clears() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         let snapshot = dashboard.snapshot().expect("snapshot").clone();
         let max_vm = snapshot
@@ -2292,7 +2693,7 @@ mod tests {
 
     #[test]
     fn selection_falls_back_to_the_same_row_position() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         dashboard.ingest(demo_snapshot(0));
         dashboard.apply(Command::SelectRelative(2));
         let visible = dashboard.visible_indices().to_vec();
@@ -2551,6 +2952,8 @@ mod tests {
             Command::ToggleTreeView,
             Command::SetTreeView(false),
             Command::ToggleTreeNode(firefox_key()),
+            Command::ToggleAppGrouping,
+            Command::SetAppGrouping(true),
             Command::RequestSignal {
                 key: firefox_key(),
                 signal: Signal::Terminate,
@@ -2870,6 +3273,401 @@ mod tests {
         assert_eq!(dashboard.visible_indices(), &[0, 1]);
     }
 
+    // --- R1-GROUP: application-grouped rows ----------------------------------
+
+    fn app_group_snapshot() -> tm_core::SystemSnapshot {
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(30, 3),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=30".into(),
+                cpu_percent: 0.25,
+                memory_bytes: 300,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 1),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=10".into(),
+                cpu_percent: 1.5,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 2),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=20".into(),
+                cpu_percent: 2.25,
+                memory_bytes: 200,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(40, 4),
+                name: String::new(),
+                command: "kernel-task".into(),
+                cpu_percent: 9.0,
+                memory_bytes: 999,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(50, 5),
+                name: "solo".into(),
+                command: "solo".into(),
+                cpu_percent: 3.0,
+                memory_bytes: 42,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        snapshot
+    }
+
+    #[test]
+    fn app_group_rows_are_empty_without_a_snapshot() {
+        let dashboard = dashboard();
+        assert!(dashboard.app_group_rows().is_empty());
+        assert_eq!(dashboard.selected_app_group_row_index(), None);
+    }
+
+    #[test]
+    fn app_group_rows_sum_totals_and_skip_empty_names() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 2, "empty process names must not create a group");
+        let firefox = &rows[0];
+        assert_eq!(firefox.kind, AppRowKind::Group);
+        assert_eq!(firefox.depth, 0);
+        assert_eq!(firefox.key, "firefox");
+        assert_eq!(firefox.label, "firefox");
+        assert_eq!(firefox.process_count, 3);
+        assert_eq!(firefox.cpu_percent, 4.0);
+        assert_eq!(firefox.memory_bytes, 600);
+        assert!(firefox.has_children);
+        assert!(!firefox.expanded);
+        assert_eq!(firefox.process_key, ProcessKey::new(10, 1));
+        assert_eq!(
+            firefox.member_keys,
+            vec![
+                ProcessKey::new(10, 1),
+                ProcessKey::new(20, 2),
+                ProcessKey::new(30, 3)
+            ]
+        );
+        let solo = &rows[1];
+        assert_eq!(solo.key, "solo");
+        assert_eq!(solo.cpu_percent, 3.0);
+        assert!(!solo.has_children, "a single member is not expandable");
+        assert!(rows.iter().all(|row| !row.key.is_empty()));
+    }
+
+    #[test]
+    fn toggle_app_group_expands_depth_one_processes_then_collapses() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        assert!(dashboard
+            .app_group_rows()
+            .iter()
+            .all(|row| row.kind == AppRowKind::Group));
+        assert!(!dashboard.is_app_group_expanded("firefox"));
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert!(dashboard.is_app_group_expanded("firefox"));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 5); // 2 groups + 3 expanded firefox members
+        assert!(rows[0].expanded);
+        for row in &rows[1..4] {
+            assert_eq!(row.kind, AppRowKind::Process);
+            assert_eq!(row.depth, 1);
+            assert_eq!(row.key, "firefox");
+            assert!(!row.has_children);
+            assert!(!row.expanded);
+            assert_eq!(row.process_count, 1);
+        }
+        assert_eq!(rows[4].kind, AppRowKind::Group);
+        assert_eq!(rows[4].key, "solo");
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert!(!dashboard.is_app_group_expanded("firefox"));
+        assert_eq!(dashboard.app_group_rows().len(), 2);
+    }
+
+    #[test]
+    fn select_app_group_selects_smallest_pid_and_keeps_signal_identity() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::SelectAppGroup("firefox".into()));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+        assert_eq!(
+            dashboard
+                .selected_process()
+                .map(|process| process.name.as_str()),
+            Some("firefox")
+        );
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
+
+        dashboard.apply(Command::RequestSignal {
+            key: dashboard.selected_key().expect("selected member"),
+            signal: Signal::Terminate,
+        });
+        let pending = dashboard.pending_kill().expect("pending signal");
+        assert_eq!(pending.key, ProcessKey::new(10, 1));
+        assert_eq!(pending.name, "firefox");
+    }
+
+    #[test]
+    fn collapsing_app_group_moves_a_hidden_member_selection_to_first_member() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        dashboard.apply(Command::Select(Some(ProcessKey::new(20, 2))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 2)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(2));
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
+    }
+
+    #[test]
+    fn app_group_rows_follow_filter_and_sort() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::SetFilterText("solo".into()));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "solo");
+        assert_eq!(rows[0].memory_bytes, 42);
+
+        dashboard.apply(Command::ClearFilter);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        }));
+        let keys: Vec<_> = dashboard
+            .app_group_rows()
+            .iter()
+            .map(|row| row.key.clone())
+            .collect();
+        assert_eq!(keys, ["firefox", "solo"]);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Cpu,
+            direction: SortDirection::Ascending,
+        }));
+        let keys: Vec<_> = dashboard
+            .app_group_rows()
+            .iter()
+            .map(|row| row.key.clone())
+            .collect();
+        assert_eq!(keys, ["solo", "firefox"]);
+    }
+
+    #[test]
+    fn app_group_commands_are_effect_free_in_every_state() {
+        for command in [
+            Command::SelectAppGroup("firefox".into()),
+            Command::ToggleAppGroup("firefox".into()),
+        ] {
+            assert!(command.is_effect_free(), "{command:?}");
+            let mut fresh = dashboard();
+            assert!(fresh.apply(command.clone()).is_empty());
+            let mut loaded = dashboard();
+            loaded.ingest(app_group_snapshot());
+            assert!(loaded.apply(command.clone()).is_empty());
+            loaded.apply(Command::SetPaused(true));
+            assert!(loaded.apply(command).is_empty());
+        }
+    }
+
+    #[test]
+    fn app_group_expansion_is_pruned_when_the_group_disappears() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert!(dashboard.is_app_group_expanded("firefox"));
+
+        let mut next = app_group_snapshot();
+        next.processes.retain(|process| process.name != "firefox");
+        dashboard.ingest(next);
+        assert!(!dashboard.is_app_group_expanded("firefox"));
+        assert!(dashboard
+            .app_group_rows()
+            .iter()
+            .all(|row| row.key != "firefox"));
+    }
+
+    // --- R1-VISIBLE: grouped rows through the existing visible arrays --------
+
+    #[test]
+    fn grouping_is_default_and_visible_arrays_mirror_group_rows() {
+        let mut dashboard = dashboard();
+        assert!(dashboard.app_group_view(), "grouping must be on by default");
+        assert!(!dashboard.tree_view());
+        dashboard.ingest(app_group_snapshot());
+
+        let rows = dashboard.app_group_rows();
+        assert_eq!(dashboard.visible_count(), rows.len());
+        assert_eq!(dashboard.visible_count(), 2);
+        assert_eq!(dashboard.visible_indices(), &[1, 4]);
+        assert_eq!(dashboard.visible_depths(), &[0, 0]);
+        assert_eq!(dashboard.visible_has_children(), &[true, false]);
+        assert_eq!(
+            dashboard.selected_key(),
+            Some(ProcessKey::new(10, 1)),
+            "a group row selects its first member"
+        );
+    }
+
+    #[test]
+    fn toggling_app_grouping_switches_between_grouped_and_flat_rows() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        assert_eq!(dashboard.visible_count(), 2);
+
+        dashboard.apply(Command::ToggleAppGrouping);
+        assert!(!dashboard.app_group_view());
+        assert_eq!(
+            dashboard.visible_count(),
+            5,
+            "flat mode keeps every process"
+        );
+        assert_eq!(dashboard.visible_depths(), &[0; 5]);
+        assert!(dashboard.visible_rows().all(|row| !row.has_children));
+
+        dashboard.apply(Command::SetAppGrouping(true));
+        assert!(dashboard.app_group_view());
+        assert_eq!(dashboard.visible_count(), 2);
+        assert_eq!(dashboard.visible_has_children(), &[true, false]);
+    }
+
+    #[test]
+    fn grouping_and_tree_view_are_mutually_exclusive() {
+        let mut dashboard = dashboard();
+        dashboard.apply(Command::SetTreeView(true));
+        assert!(dashboard.tree_view());
+        assert!(!dashboard.app_group_view());
+
+        dashboard.apply(Command::ToggleAppGrouping);
+        assert!(dashboard.app_group_view());
+        assert!(!dashboard.tree_view());
+
+        dashboard.apply(Command::ToggleTreeView);
+        assert!(dashboard.tree_view());
+        assert!(!dashboard.app_group_view());
+    }
+
+    #[test]
+    fn expanding_a_group_rebuilds_visible_rows_and_navigation_targets_members() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+
+        assert_eq!(dashboard.visible_count(), 5);
+        assert_eq!(dashboard.visible_indices(), &[1, 1, 2, 0, 4]);
+        assert_eq!(dashboard.visible_depths(), &[0, 1, 1, 1, 0]);
+        assert_eq!(
+            dashboard.visible_has_children(),
+            &[true, false, false, false, false]
+        );
+
+        // Down / PageDown / End / Home all reduce to SelectRelative.
+        dashboard.apply(Command::SelectRelative(2));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 2)));
+        dashboard.apply(Command::SelectRelative(1_000_000));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(50, 5)));
+        dashboard.apply(Command::SelectRelative(-1_000_000));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+        dashboard.apply(Command::SelectRelative(-10));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+
+        // Collapsing a group with a member selected returns to the first member.
+        dashboard.apply(Command::SelectRelative(2));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 2)));
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        assert_eq!(dashboard.visible_count(), 2);
+        assert_eq!(dashboard.visible_depths(), &[0, 0]);
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+    }
+
+    #[test]
+    fn toggle_app_group_ignores_rows_without_children() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        // "solo" is a single-member group: has_children is false.
+        dashboard.apply(Command::ToggleAppGroup("solo".into()));
+        assert!(!dashboard.is_app_group_expanded("solo"));
+        assert_eq!(dashboard.visible_count(), 2);
+        // Unknown keys must not grow the expansion set either.
+        dashboard.apply(Command::ToggleAppGroup("missing".into()));
+        assert_eq!(dashboard.visible_count(), 2);
+    }
+
+    #[test]
+    fn grouped_selection_maps_hidden_members_to_the_group_row() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::Select(Some(ProcessKey::new(20, 2))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+        assert_eq!(dashboard.selected_visible_index(), Some(0));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
+
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        dashboard.apply(Command::Select(Some(ProcessKey::new(20, 2))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 2)));
+        assert_eq!(dashboard.selected_visible_index(), Some(2));
+    }
+
+    #[test]
+    fn grouped_visible_rows_follow_filter_and_sort() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        dashboard.apply(Command::SetFilterText("solo".into()));
+        assert_eq!(dashboard.visible_indices(), &[4]);
+        assert_eq!(dashboard.visible_depths(), &[0]);
+        assert_eq!(dashboard.visible_has_children(), &[false]);
+
+        dashboard.apply(Command::ClearFilter);
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Descending,
+        }));
+        assert_eq!(dashboard.visible_indices(), &[4, 1]);
+        assert_eq!(
+            dashboard
+                .app_group_rows()
+                .iter()
+                .map(|row| row.key.as_str())
+                .collect::<Vec<_>>(),
+            ["solo", "firefox"]
+        );
+    }
+
+    #[test]
+    fn grouping_does_not_change_snapshot_or_export_rows() {
+        use tm_core::export::snapshot_to_csv;
+        use tm_core::redact::RedactionIdentifiers;
+
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+        let snapshot = dashboard.snapshot().expect("snapshot").clone();
+        let ids = RedactionIdentifiers {
+            home: "",
+            user: "",
+            hostname: "",
+        };
+        let grouped_csv = snapshot_to_csv(&snapshot, &ids);
+        assert_eq!(grouped_csv.lines().count(), snapshot.processes.len() + 1);
+        assert_eq!(dashboard.visible_count(), 2);
+
+        dashboard.apply(Command::SetAppGrouping(false));
+        assert_eq!(dashboard.snapshot().expect("snapshot").processes.len(), 5);
+        let flat_csv = snapshot_to_csv(dashboard.snapshot().expect("snapshot"), &ids);
+        assert_eq!(
+            grouped_csv, flat_csv,
+            "exports read snapshot.processes only"
+        );
+    }
+
     #[test]
     fn trend_delta_reports_direction_amount_and_textual_cue() {
         let up = trend_delta(
@@ -3073,7 +3871,7 @@ mod tests {
 
     #[test]
     fn applying_a_preset_filters_the_table_and_marks_it_active() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         let all_count = dashboard.visible_count();
         assert_eq!(dashboard.active_filter_preset(), None);
@@ -3128,7 +3926,7 @@ mod tests {
 
     #[test]
     fn typing_after_a_preset_clears_its_structural_conditions() {
-        let mut dashboard = dashboard();
+        let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
         let (total, firefox_index) = {
             let snapshot = dashboard.snapshot().expect("snapshot");

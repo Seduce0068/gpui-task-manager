@@ -813,6 +813,105 @@ pub fn group_by_cgroup(memberships: &[ProcessCgroup]) -> Vec<CgroupGroup> {
         .collect()
 }
 
+// --- Application (process-name) grouping ------------------------------------
+//
+// Additive read-only helper: it takes the already-redacted `process.name` as
+// the grouping key and never looks at `command`. Nothing is written back into
+// `SystemSnapshot`, so the JSON wire envelope, the CSV exporter and the redact
+// pass keep their exact byte contracts.
+
+/// Processes sharing one application name, with pre-computed totals (R1-GROUP).
+///
+/// `key` and `label` are both the redacted [`ProcessSnapshot::name`] used for
+/// grouping; they are kept as separate fields so a shell can use `key` as a
+/// stable identity for expansion state and `label` as display text without
+/// depending on the other's representation.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProcessGroup {
+    /// Exact redacted process name shared by every member.
+    pub key: String,
+    /// Display label; identical to `key` (the name is already display-safe).
+    pub label: String,
+    /// Indices into the source process slice, ordered by [`ProcessKey`].
+    ///
+    /// The first index therefore belongs to the member with the smallest PID
+    /// (ties broken by start time), which is the identity a group row selects.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub members: Vec<usize>,
+    /// Sum of the members' CPU percentages, as `f64` then narrowed to `f32`.
+    ///
+    /// Non-finite and negative readings contribute zero. The value is *not*
+    /// clamped to 100: a multicore application can legitimately exceed it.
+    pub cpu_percent: f32,
+    /// Saturating sum of the members' resident memory in bytes.
+    pub memory_bytes: u64,
+    /// Number of grouped processes; always `members.len()`.
+    pub process_count: usize,
+}
+
+/// Groups processes by their exact, already-redacted `name` (R1-GROUP).
+///
+/// `command` is deliberately not consulted: command lines carry arguments,
+/// paths and quoted text, so they would split one application into many groups
+/// and could leak host-specific data into a grouping key. Processes with an
+/// empty name are skipped, mirroring [`group_by_cgroup`]'s empty-label rule.
+///
+/// Groups are ordered by key via `BTreeMap`; members are sorted by [`ProcessKey`]
+/// (then by source index for the unlikely case of duplicate identities). CPU is
+/// accumulated in `f64` and only then narrowed to `f32`, while memory uses
+/// `saturating_add`, so neither a NaN reading nor an overflowing counter can
+/// corrupt the totals. The function is pure and allocates only the result.
+pub fn group_by_app(processes: &[ProcessSnapshot]) -> Vec<ProcessGroup> {
+    let mut grouped = std::collections::BTreeMap::<String, Vec<usize>>::new();
+    for (index, process) in processes.iter().enumerate() {
+        if process.name.is_empty() {
+            continue;
+        }
+        grouped.entry(process.name.clone()).or_default().push(index);
+    }
+    grouped
+        .into_iter()
+        .map(|(key, mut members)| {
+            members.sort_unstable_by(|&left, &right| {
+                processes[left]
+                    .key
+                    .cmp(&processes[right].key)
+                    .then_with(|| left.cmp(&right))
+            });
+            let cpu_total = members.iter().fold(0.0_f64, |sum, &index| {
+                let value = processes[index].cpu_percent;
+                // Non-finite readings are display-normalised to zero at the
+                // same boundary used by `normalise_percent`; negative finite
+                // readings are displayed as zero too. No upper clamp: a
+                // multicore app can exceed 100%.
+                if value.is_finite() {
+                    sum + f64::from(value.max(0.0))
+                } else {
+                    sum
+                }
+            });
+            let cpu_percent = if cpu_total.is_finite() {
+                cpu_total as f32
+            } else {
+                0.0
+            };
+            let memory_bytes = members.iter().fold(0_u64, |sum, &index| {
+                sum.saturating_add(processes[index].memory_bytes)
+            });
+            let process_count = members.len();
+            ProcessGroup {
+                label: key.clone(),
+                key,
+                members,
+                cpu_percent,
+                memory_bytes,
+                process_count,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1298,6 +1397,128 @@ mod tests {
             groups.is_empty(),
             "an unreadable cgroup must not create a group"
         );
+    }
+
+    // --- R1-GROUP: application grouping --------------------------------------
+
+    fn named_process(pid: u32, name: &str, cpu: f32, memory: u64) -> ProcessSnapshot {
+        ProcessSnapshot {
+            key: ProcessKey::new(pid, 1),
+            name: name.to_string(),
+            // Command differences must not split a name-based group.
+            command: format!("/usr/bin/{name} --pid={pid}"),
+            cpu_percent: cpu,
+            memory_bytes: memory,
+            ..ProcessSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn app_group_sums_cpu_and_memory_and_ignores_command() {
+        let processes = vec![
+            named_process(30, "firefox", 0.25, 300),
+            named_process(10, "firefox", 1.5, 100),
+            named_process(20, "firefox", 2.25, 200),
+        ];
+        let groups = group_by_app(&processes);
+        assert_eq!(groups.len(), 1);
+        let group = &groups[0];
+        assert_eq!(group.key, "firefox");
+        assert_eq!(group.label, "firefox");
+        // Golden: 1.5 + 2.25 + 0.25 = exactly 4.0 in f32 as well.
+        assert_eq!(group.cpu_percent, 4.0);
+        assert_eq!(group.memory_bytes, 600);
+        assert_eq!(group.process_count, 3);
+        assert_eq!(group.members, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn app_group_handles_empty_and_single_member_inputs() {
+        assert!(group_by_app(&[]).is_empty());
+        let groups = group_by_app(&[named_process(1, "", 5.0, 10)]);
+        assert!(
+            groups.is_empty(),
+            "an empty process name must not create a group"
+        );
+        let groups = group_by_app(&[named_process(7, "solo", 12.5, 42)]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members, vec![0]);
+        assert_eq!(groups[0].process_count, 1);
+        assert_eq!(groups[0].cpu_percent, 12.5);
+        assert_eq!(groups[0].memory_bytes, 42);
+    }
+
+    #[test]
+    fn app_group_normalises_non_finite_cpu_and_saturates_memory() {
+        let nan = named_process(1, "mixed", f32::NAN, u64::MAX);
+        let positive_infinity = named_process(2, "mixed", f32::INFINITY, 1);
+        let negative_infinity = named_process(3, "mixed", f32::NEG_INFINITY, 1);
+        let negative = named_process(4, "mixed", -3.0, 2);
+        let groups = group_by_app(&[nan, positive_infinity, negative_infinity, negative]);
+        assert_eq!(
+            groups[0].cpu_percent, 0.0,
+            "NaN/±Inf and negative readings contribute zero"
+        );
+        assert_eq!(
+            groups[0].memory_bytes,
+            u64::MAX,
+            "memory additions must saturate, not wrap"
+        );
+    }
+
+    #[test]
+    fn app_group_does_not_clamp_cpu_at_one_hundred() {
+        let groups = group_by_app(&[
+            named_process(1, "render", 80.0, 1),
+            named_process(2, "render", 70.0, 1),
+        ]);
+        assert_eq!(groups[0].cpu_percent, 150.0);
+    }
+
+    #[test]
+    fn app_group_order_and_members_are_deterministic() {
+        // Reverse input order must still produce identical groups: BTreeMap for
+        // keys and ProcessKey for members, just like `group_by_cgroup`.
+        let processes = vec![
+            named_process(90, "zeta", 1.0, 1),
+            named_process(5, "alpha", 2.0, 2),
+            named_process(4, "zeta", 3.0, 3),
+            named_process(2, "alpha", 4.0, 4),
+        ];
+        let forward = group_by_app(&processes);
+        let reversed = group_by_app(&processes.clone().into_iter().rev().collect::<Vec<_>>());
+        // Group keys and aggregates are input-order independent; `members`
+        // holds indices into each input slice, so it necessarily differs.
+        assert_eq!(
+            forward
+                .iter()
+                .map(|g| (
+                    g.key.as_str(),
+                    g.cpu_percent,
+                    g.memory_bytes,
+                    g.process_count
+                ))
+                .collect::<Vec<_>>(),
+            reversed
+                .iter()
+                .map(|g| (
+                    g.key.as_str(),
+                    g.cpu_percent,
+                    g.memory_bytes,
+                    g.process_count
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            forward.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        // Members are ordered by ProcessKey (smallest PID first), so the first
+        // index of each group is the identity a group row selects.
+        assert_eq!(forward[0].members, vec![3, 1]);
+        assert_eq!(forward[1].members, vec![2, 0]);
+        assert_eq!(processes[forward[0].members[0]].key.pid(), 2);
+        assert_eq!(processes[forward[1].members[0]].key.pid(), 4);
     }
 
     // --- R1-I10 / R1-I11 / R1-I12: snapshot integration -----------------------
