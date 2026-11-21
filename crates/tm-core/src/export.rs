@@ -1137,15 +1137,34 @@ mod tests {
         assert!(json.contains("\"total_process_count\": 0"), "{json}");
     }
 
-    /// Local mirror of the agent's `SnapshotEnvelope` wire type
-    /// (`agent/src/main.rs`). Keeping it here lets the exporter be checked
-    /// against the exact shape serde produces from the model.
+    /// The exporter is checked against the one shared wire type instead of a
+    /// local mirror, so a field-order or serde-attribute change in `wire.rs`
+    /// cannot silently drift away from this test.
     #[cfg(feature = "serde")]
-    #[derive(serde::Serialize)]
-    struct SnapshotEnvelope<'a> {
-        schema_version: u32,
-        total_process_count: usize,
-        snapshot: &'a SystemSnapshot,
+    type SnapshotEnvelope<'a> = crate::wire::SnapshotEnvelope<&'a SystemSnapshot>;
+
+    /// Byte-invariance guard: FNV-1a of the serialised wire envelope.
+    ///
+    /// The value was captured from the pre-refactor local mirror; moving the
+    /// type to `tm_core::wire` must not change a single JSON byte.
+    #[test]
+    #[cfg(feature = "serde")]
+    fn wire_envelope_json_bytes_are_stable() {
+        let snapshot = SystemSnapshot::default();
+        let bytes = serde_json::to_string(&SnapshotEnvelope {
+            schema_version: crate::WIRE_SCHEMA_VERSION,
+            total_process_count: 0,
+            snapshot: &snapshot,
+        })
+        .expect("envelope must serialise");
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in bytes.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        eprintln!("WIRE_ENVELOPE_HASH {hash:016x} len={}", bytes.len());
+        assert_eq!(hash, 0x1265_fcb5_b2d4_e6f4, "wire bytes changed: {bytes}");
+        assert_eq!(bytes.len(), 595, "wire byte count changed");
     }
 
     /// Replaces every scalar with `null` while preserving object keys and array

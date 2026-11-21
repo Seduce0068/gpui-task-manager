@@ -35,6 +35,7 @@ pub mod port;
 pub mod query;
 pub mod redact;
 pub mod sanitize;
+pub mod wire;
 
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
@@ -53,6 +54,7 @@ pub use query::{
     filter_and_sort, flatten_process_tree, normalise_percent, Filter, ProcessTreeRow,
     SortDirection, SortKey, SortSpec,
 };
+pub use wire::{SnapshotEnvelope, FORBIDDEN_GUIDANCE, MAX_RETRY_AFTER_SECS};
 
 /// Version of the JSON wire schema used between the native agent and the
 /// browser shell. Bump it whenever a field is removed or its meaning changes.

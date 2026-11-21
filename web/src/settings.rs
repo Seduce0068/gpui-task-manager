@@ -48,7 +48,14 @@
 
 use std::sync::Mutex;
 
-use tm_viewmodel::Settings;
+use tm_viewmodel::{
+    CORRUPT_BACKUP_LIMIT, MAX_SETTINGS_BYTES, Settings, SettingsDocument, merged_map_with_baseline,
+    parse_document as parse_shared_document, strip_bom,
+};
+// Re-exported so callers can use one canonical notice type from this module. The
+// shape and redaction contract come from `tm_viewmodel::settings_policy`; only
+// the fixed wording and the save-failure announcement guard stay in this shell.
+pub use tm_viewmodel::SettingsNotice;
 
 /// Key used in `localStorage`.
 pub const STORAGE_KEY: &str = "gpui-task-manager.settings";
@@ -65,30 +72,6 @@ pub const SETTINGS_NOTICE_DOM_ID: &str = "gpui-settings-notice";
 /// equivalent is a sibling key with this prefix and a hex timestamp, so the
 /// offending bytes survive for diagnosis without blocking a clean reload.
 pub const CORRUPT_BACKUP_KEY_PREFIX: &str = "gpui-task-manager.settings.corrupt.";
-
-/// Maximum number of corrupt backups kept in `localStorage`. Older ones are
-/// pruned after a successful quarantine (H1-BACKUP).
-const CORRUPT_BACKUP_LIMIT: usize = 5;
-
-/// Largest stored settings value this build will parse (4 MiB, UTF-8 bytes).
-///
-/// Judgment (PC-CSVBOM): `localStorage` quotas are browser-dependent (commonly
-/// around 5 MiB per origin and shared by *all* keys), so a value near 4 MiB is
-/// not a legitimate preference document even if the browser still accepts it.
-/// Using the same cap as the native shell gives one consistent rule and keeps a
-/// corrupt/oversized item from consuming the origin quota and starving other
-/// keys. Over-limit values take the ordinary quarantine + redacted-notice path.
-/// `str::len` counts bytes, matching the native on-disk byte cap.
-const MAX_SETTINGS_BYTES: usize = 4 * 1024 * 1024;
-
-/// Removes one leading UTF-8 BOM (EF BB BF, decoded as U+FEFF) before parsing.
-///
-/// A BOM-prefixed settings value copied from a Windows file is otherwise valid
-/// JSON, but `serde_json` rejects the leading U+FEFF. Strip exactly one BOM so
-/// the value loads instead of being quarantined as corrupt (PC-CSVBOM).
-fn strip_bom(raw: &str) -> &str {
-    raw.strip_prefix('\u{feff}').unwrap_or(raw)
-}
 
 /// Fixed, redacted text shown when a stored settings value is corrupt.
 ///
@@ -123,45 +106,14 @@ pub fn interval_label(interval_ms: u64) -> String {
     }
 }
 
-/// A configuration notice safe to pass to `Dashboard::set_persistent_status`.
-///
-/// `text` is the fixed [`NOTICE_CORRUPT`] constant: no path, host name, token or
-/// parser error text is included, so it is safe to copy into the DOM as well.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SettingsNotice {
-    /// Redacted status-bar text.
-    pub text: String,
-    /// Always `true`: a settings problem is an error.
-    pub is_error: bool,
-    /// Always `true`: a startup notice must survive the next sample.
-    pub persistent: bool,
+/// Builds the corrupt-load notice from this shell's fixed redacted text.
+fn corrupt_notice() -> SettingsNotice {
+    SettingsNotice::new(NOTICE_CORRUPT)
 }
 
-impl SettingsNotice {
-    fn corrupt() -> Self {
-        Self {
-            text: NOTICE_CORRUPT.to_string(),
-            is_error: true,
-            persistent: true,
-        }
-    }
-
-    fn save_failed() -> Self {
-        Self {
-            text: NOTICE_SAVE_FAILED.to_string(),
-            is_error: true,
-            // A failed save is a configuration problem, not a sample result:
-            // it must survive the next successful sample (C2-SETTINGS).
-            persistent: true,
-        }
-    }
-}
-
-/// Parsed settings plus the untouched JSON object they came from.
-#[derive(Clone, Debug)]
-struct SettingsDocument {
-    settings: Settings,
-    raw: serde_json::Map<String, serde_json::Value>,
+/// Builds the save-failure notice from this shell's fixed redacted text.
+fn save_failed_notice() -> SettingsNotice {
+    SettingsNotice::new(NOTICE_SAVE_FAILED)
 }
 
 static LAST_LOADED: Mutex<Option<serde_json::Map<String, serde_json::Value>>> = Mutex::new(None);
@@ -314,146 +266,41 @@ fn quarantine_corrupt(raw: &str) {
 #[cfg(not(target_family = "wasm"))]
 fn quarantine_corrupt(_raw: &str) {}
 
-/// Clamps into the supported range without rewriting the schema `version`.
+/// Parses a persisted JSON document, applying the shared size cap first.
 ///
-/// `Settings::normalized()` always forces the current version; storage must not
-/// do that or a newer value would be downgraded on the next save (R2-D01).
-fn clamped(mut settings: Settings) -> Settings {
-    settings.interval_ms = settings.interval_ms.clamp(
-        tm_viewmodel::MIN_REFRESH_INTERVAL.as_millis() as u64,
-        tm_viewmodel::MAX_REFRESH_INTERVAL.as_millis() as u64,
-    );
-    settings
-}
-
-/// Interprets a persisted `version` under the compatibility policy.
-///
-/// Only a non-negative integer that fits in `u32` is comparable here. Other
-/// JSON forms are opaque: they stay in `raw` and [`merged_map`] writes them back
-/// verbatim rather than replacing them with a version this build understands
-/// (R2X-D3).
-fn interpretable_version(value: Option<&serde_json::Value>) -> Option<u32> {
-    value
-        .and_then(|value| value.as_u64())
-        .and_then(|version| u32::try_from(version).ok())
-}
-
-/// Parses a persisted JSON document, keeping its raw object for round-tripping.
-fn parse_document(raw: &str) -> Option<SettingsDocument> {
-    if raw.len() > MAX_SETTINGS_BYTES {
+/// `localStorage` quotas are browser-dependent (commonly around 5 MiB per
+/// origin, shared by every key), so a value near [`MAX_SETTINGS_BYTES`] is not a
+/// legitimate preference document even if the browser accepts it. Over-limit
+/// values take the ordinary quarantine + redacted-notice path. `str::len`
+/// counts bytes, matching the native on-disk byte cap. The BOM handling,
+/// clamping, version interpretation and raw-object round-trip are the shared
+/// policy in `tm_viewmodel::settings_policy` (C2-SETTINGSSHARE).
+fn parse_document(text: &str) -> Option<SettingsDocument> {
+    if (text.len() as u64) > MAX_SETTINGS_BYTES {
         return None;
     }
-    let mut value: serde_json::Value = serde_json::from_str(strip_bom(raw)).ok()?;
-    let object = value.as_object()?.clone();
-    let stored_version = interpretable_version(object.get("version"));
-
-    // A future schema may use a version type this build cannot deserialize;
-    // that must not make the whole value look corrupt.
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "version".to_string(),
-            serde_json::json!(tm_viewmodel::SETTINGS_VERSION),
-        );
-    }
-    let mut settings: Settings = serde_json::from_value(value).ok()?;
-    settings = clamped(settings);
-    settings.version = stored_version
-        .unwrap_or(tm_viewmodel::SETTINGS_VERSION)
-        .max(tm_viewmodel::SETTINGS_VERSION);
-    Some(SettingsDocument {
-        settings,
-        raw: object,
-    })
+    parse_shared_document(text)
 }
 
-/// Rebuilds the JSON object to save: known fields come from `settings`, every
-/// unknown key and the highest seen `version` come from the loaded document.
+/// Test-only shorthand for the overwrite-all case (no baseline available).
+///
+/// Production saves use [`merged_map_with_baseline`] directly so concurrent
+/// known-field edits survive; regressions that exercise the older contract call
+/// this wrapper.
+#[cfg(test)]
 fn merged_map(
     settings: &Settings,
     raw: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let mut map = raw.cloned().unwrap_or_default();
-    let known = serde_json::to_value(clamped(settings.clone()))
-        .expect("Settings always serializes to a JSON object");
-    let serde_json::Value::Object(known) = known else {
-        return map;
-    };
-    for (key, value) in known {
-        if key == "version" {
-            match interpretable_version(map.get(&key)) {
-                // Comparable numeric version: upgrade older values, never
-                // downgrade newer ones.
-                Some(stored) => {
-                    let current = value.as_u64().unwrap_or(0);
-                    map.insert(key, serde_json::json!((stored as u64).max(current)));
-                }
-                // No version at all: record the version this build writes.
-                None if !map.contains_key(&key) => {
-                    map.insert(key, value);
-                }
-                // Opaque or out-of-u32-range value: keep it verbatim so a newer
-                // shell still recognises its own schema (R2X-D3).
-                None => {}
-            }
-        } else {
-            map.insert(key, value);
-        }
-    }
-    map
-}
-
-/// Rebuilds the object to save from the freshly re-read stored value, applying
-/// **only the known fields the caller actually changed**.
-///
-/// `baseline` is the raw object captured at the previous load/save. A field is
-/// considered changed when its serialised value differs from the baseline's
-/// value (or is absent there, e.g. an older schema). Columns the caller never
-/// touched are left exactly as they were re-read, so another tab's write to
-/// those columns survives. Unknown fields are likewise never rewritten here.
-/// `version` keeps the existing max/opaque policy from [`merged_map`] and is
-/// handled independently of the diff.
-fn merged_map_for_changes(
-    settings: &Settings,
-    stored: Option<&serde_json::Map<String, serde_json::Value>>,
-    baseline: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut map = stored.cloned().unwrap_or_default();
-    let known = serde_json::to_value(clamped(settings.clone()))
-        .expect("Settings always serializes to a JSON object");
-    let serde_json::Value::Object(known) = known else {
-        return map;
-    };
-    for (key, value) in known {
-        if key == "version" {
-            match interpretable_version(map.get(&key)) {
-                // Comparable numeric version: upgrade older values, never
-                // downgrade newer ones (R2-D01).
-                Some(stored_version) => {
-                    let current = value.as_u64().unwrap_or(0);
-                    map.insert(key, serde_json::json!((stored_version as u64).max(current)));
-                }
-                // No version at all: record the version this build writes.
-                None if !map.contains_key(&key) => {
-                    map.insert(key, value);
-                }
-                // Opaque or out-of-u32-range value: keep it verbatim so a newer
-                // shell still recognises its own schema (R2X-D3).
-                None => {}
-            }
-            continue;
-        }
-        let changed = baseline
-            .map(|base| base.get(&key) != Some(&value))
-            .unwrap_or(true);
-        if changed {
-            map.insert(key, value);
-        }
-    }
-    map
+    merged_map_with_baseline(settings, None, raw)
 }
 
 /// Pure, baseline-injected variant of [`merged_for_save`] so tests can model two
 /// tabs without depending on the process-wide [`LAST_LOADED`] state.
+///
+/// The three-way diff is the shared `tm_viewmodel::merged_map_with_baseline`:
+/// an untouched known field keeps the value re-read from storage, and a field
+/// the destination dropped is restored from ours (HA-WEBMERGE / C2-SETTINGSSHARE).
 fn merged_for_save_inner(
     settings: &Settings,
     stored: Option<&str>,
@@ -462,11 +309,11 @@ fn merged_for_save_inner(
     let raw = stored
         // Ignore an oversized re-read value just like the load path does: it is
         // not a usable merge base, so fall back to the in-memory baseline.
-        .filter(|text| text.len() <= MAX_SETTINGS_BYTES)
+        .filter(|text| (text.len() as u64) <= MAX_SETTINGS_BYTES)
         .and_then(|text| serde_json::from_str::<serde_json::Value>(strip_bom(text)).ok())
         .and_then(|value| value.as_object().cloned())
         .or_else(|| baseline.cloned());
-    merged_map_for_changes(settings, raw.as_ref(), baseline)
+    merged_map_with_baseline(settings, baseline, raw.as_ref())
 }
 
 /// Raw-injected loading, shared by [`load_with_notice`] and the tests
@@ -491,7 +338,7 @@ fn load_from_raw(raw: Option<&str>) -> Settings {
         }
         None => {
             quarantine_corrupt(raw);
-            let notice = SettingsNotice::corrupt();
+            let notice = corrupt_notice();
             *lock(&LAST_LOADED) = None;
             *lock(&PENDING_NOTICE) = Some(notice.clone());
             log::warn!("保存された設定を読み込めません（既定値を使います）");
@@ -646,7 +493,7 @@ fn record_save_failure() {
             // corrupt text, and overwriting it would lose the same notice.
             return;
         }
-        let notice = SettingsNotice::save_failed();
+        let notice = save_failed_notice();
         *pending = Some(notice.clone());
         notice
     };
@@ -781,7 +628,7 @@ mod tests {
         let _guard = lock(&NOTICE_TEST_LOCK);
         let raw = format!(
             "{{\"version\":9,\"interval_ms\":1500,\"pad\":\"{}\"}}",
-            "x".repeat(MAX_SETTINGS_BYTES)
+            "x".repeat(MAX_SETTINGS_BYTES as usize)
         );
         assert!(
             parse_document(&raw).is_none(),
@@ -1093,7 +940,7 @@ mod tests {
         // with a fixed, redacted message; it is drained exactly once.
         record_save_failure();
         let notice = take_pending_notice().expect("save failure notice");
-        assert_eq!(notice, SettingsNotice::save_failed());
+        assert_eq!(notice, save_failed_notice());
         assert_eq!(notice.text, NOTICE_SAVE_FAILED);
         assert!(notice.is_error);
         assert!(notice.persistent, "must survive the next sample");
@@ -1111,12 +958,8 @@ mod tests {
             persistent: false,
         })));
         // Both fixed notices are persistent errors; neither may be replaced.
-        assert!(!should_announce_save_failure(Some(
-            &SettingsNotice::corrupt()
-        )));
-        assert!(!should_announce_save_failure(Some(
-            &SettingsNotice::save_failed()
-        )));
+        assert!(!should_announce_save_failure(Some(&corrupt_notice())));
+        assert!(!should_announce_save_failure(Some(&save_failed_notice())));
     }
 
     #[test]
@@ -1132,7 +975,7 @@ mod tests {
         // is skipped as well, so the DOM node keeps the same fixed text.
         record_save_failure();
         let notice = take_pending_notice().expect("corrupt notice must survive");
-        assert_eq!(notice, SettingsNotice::corrupt());
+        assert_eq!(notice, corrupt_notice());
         assert_eq!(notice.text, NOTICE_CORRUPT);
         assert!(notice.is_error && notice.persistent);
         assert!(!notice.text.contains('/'));
@@ -1143,7 +986,7 @@ mod tests {
         // again with the existing fixed, redacted text (drain-once contract).
         record_save_failure();
         let notice = take_pending_notice().expect("save failure notice");
-        assert_eq!(notice, SettingsNotice::save_failed());
+        assert_eq!(notice, save_failed_notice());
         assert_eq!(notice.text, NOTICE_SAVE_FAILED);
         assert!(notice.is_error && notice.persistent);
         assert!(!notice.text.contains('/'));
@@ -1453,5 +1296,32 @@ mod tests {
             );
             assert_eq!(map.get("future_flag"), Some(&serde_json::json!(1)));
         }
+    }
+
+    #[test]
+    fn missing_known_field_is_restored_from_ours_on_save() {
+        // HA-WEBMERGE now uses the same native merge policy: a known field that
+        // the stored value dropped is written back when it still equals our
+        // baseline (C2-SETTINGSSHARE).
+        let initial = r#"{"version":9,"interval_ms":1500,"theme":"Light","future_flag":1}"#;
+        let document = parse_document(initial).expect("load document");
+        let mut dropped: serde_json::Value = serde_json::from_str(initial).expect("parse");
+        dropped.as_object_mut().expect("object").remove("theme");
+        let stored = dropped.to_string();
+
+        let saved = merged_for_save_inner(&document.settings, Some(&stored), Some(&document.raw));
+        assert_eq!(saved.get("theme"), Some(&serde_json::json!("Light")));
+        assert_eq!(saved.get("interval_ms"), Some(&serde_json::json!(1_500)));
+        assert_eq!(saved.get("version"), Some(&serde_json::json!(9)));
+        assert_eq!(saved.get("future_flag"), Some(&serde_json::json!(1)));
+
+        // A field another tab actually changed is still kept.
+        dropped["theme"] = serde_json::json!("Dark");
+        let kept = merged_for_save_inner(
+            &document.settings,
+            Some(&dropped.to_string()),
+            Some(&document.raw),
+        );
+        assert_eq!(kept.get("theme"), Some(&serde_json::json!("Dark")));
     }
 }
