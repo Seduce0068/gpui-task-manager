@@ -36,6 +36,8 @@ GPUI Task Manager の調査・検証資料です。設計判断の根拠は本�
 - [web-shell.md](web-shell.md) — ブラウザ版シェル（`web/`）の実装と検証
 - [review-2026-11-14.md](review-2026-11-14.md) — 独立レビュー（セキュリティ・アーキテクチャ・運用）
 
+- [wayland-ui-testing-research.md](wayland-ui-testing-research.md) — Kubuntu KDE Wayland でのキー操作（libei/EIS / wdotool / ydotool）と UI テスト（gpui test-support / CDP / ScreenShot2）の出典付き調査
+
 ## 証拠画像
 
 - `assets/task-manager-native-wayland.png` — ネイティブ版（実データ、Wayland、`--redact` 適用）
