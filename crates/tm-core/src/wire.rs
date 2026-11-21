@@ -14,6 +14,14 @@
 
 use crate::SystemSnapshot;
 
+/// Shared reason for a `503 Busy` response when a connection limit is reached.
+///
+/// The agent uses this as the body message for both the ordinary-connection
+/// and SSE-stream caps; the browser shows the same fixed, actionable guidance
+/// because it deliberately never echoes the server body. Keeping the phrase in
+/// one place prevents the two agent call sites and the web hint from drifting.
+pub const SERVICE_UNAVAILABLE_REASON: &str = "同時接続数が上限に達しました";
+
 /// Path of the snapshot endpoint (GET, bearer token required).
 ///
 /// The agent routes on this exact string and the browser builds its poll URL
@@ -165,6 +173,15 @@ mod tests {
         assert_eq!(MAX_SNAPSHOT_LIMIT, 2000);
         const { assert!(DEFAULT_SNAPSHOT_LIMIT <= MAX_SNAPSHOT_LIMIT) };
         assert_eq!(DEFAULT_PORT, 8787);
+    }
+
+    #[test]
+    fn service_unavailable_reason_is_fixed_and_shared() {
+        // Both agent 503 call sites and the web hint derive from this phrase;
+        // keep it a single user-facing reason without proof delimiters.
+        assert_eq!(SERVICE_UNAVAILABLE_REASON, "同時接続数が上限に達しました");
+        assert!(!SERVICE_UNAVAILABLE_REASON.contains(';'));
+        assert!(!SERVICE_UNAVAILABLE_REASON.contains('\n'));
     }
 
     #[test]
