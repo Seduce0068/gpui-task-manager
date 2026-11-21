@@ -486,6 +486,11 @@ pub struct TaskManagerApp {
     /// first frame is also the moment `stream_mode` becomes `Active`. The idle
     /// watchdog measures from here, not from task spawn.
     sse_last_snapshot_at: Option<Instant>,
+    /// When the current subscription started. While `sse_poll_guard` is held
+    /// but no snapshot frame has arrived (e.g. the agent keeps sending only
+    /// `event: error`), this is the watchdog baseline so polling cannot stay
+    /// suspended forever. `None` once a real frame arrives.
+    sse_connect_started_at: Option<Instant>,
     /// Earliest instant at which a failed stream may be retried.
     sse_retry_at: Option<Instant>,
     /// Consecutive fetch-poll failures and the last one-shot `Retry-After`.
@@ -568,6 +573,7 @@ impl TaskManagerApp {
             sse_poll_guard: None,
             sse_epoch: 0,
             sse_last_snapshot_at: None,
+            sse_connect_started_at: None,
             sse_retry_at: None,
             poll_backoff: PollBackoff::default(),
             show_help: false,
@@ -614,7 +620,7 @@ impl TaskManagerApp {
                     // polling suspended forever. Check before the retry so the
                     // cooldown scheduled by the watchdog is honoured on this
                     // same cycle instead of reconnecting immediately.
-                    if matches!(app.stream_mode, StreamMode::Active) && app.sse_watchdog_expired() {
+                    if app.sse_watchdog_expired() {
                         app.on_sse_idle_timeout();
                         cx.notify();
                     }
@@ -752,6 +758,7 @@ impl TaskManagerApp {
         // polling until then and reset the watchdog baseline for this attempt.
         self.stream_mode = stream_mode_while_connecting();
         self.sse_last_snapshot_at = None;
+        self.sse_connect_started_at = Some(Instant::now());
         self.sse_retry_at = None;
         // Hold poll requests from the moment the subscription starts. Storing
         // the guard on the app also drops any guard left by a previous attempt
@@ -782,6 +789,7 @@ impl TaskManagerApp {
                         // `handle_live_result` rewrites the DOM proof with this
                         // mode before returning (sse=active).
                         app.stream_mode = StreamMode::Active;
+                        app.sse_connect_started_at = None;
                         app.sse_last_snapshot_at = Some(Instant::now());
                         // Same ingest path as polling: redaction, ticks, stale
                         // and reconnect handling stay in exactly one place.
@@ -824,6 +832,7 @@ impl TaskManagerApp {
         self.sse_poll_guard = None;
         self.stream_mode = stream_mode_after_sse_end(&outcome);
         self.sse_last_snapshot_at = None;
+        self.sse_connect_started_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
         match outcome {
             Ok(()) => {
@@ -872,12 +881,24 @@ impl TaskManagerApp {
     /// before that the shell stays in `Fallback` and the poll keeps running, so
     /// there is nothing to recover from.
     fn sse_watchdog_expired(&self) -> bool {
-        sse_idle_expired(
-            self.stream_mode,
+        let now = Instant::now();
+        let interval = self.dashboard.effective_interval();
+        // A subscription that only emits `event: error` never reaches Active
+        // (no snapshot frame arrives to confirm it), yet it still holds the
+        // poll suspension guard. Watch that state too, otherwise polling is
+        // suspended forever while the user sees a stale snapshot with no fault
+        // notification (R1-FRESH). The same bound covers a stream that sends
+        // headers but then goes silent before its first snapshot.
+        if connecting_watchdog_expired(
+            self.sse_poll_guard.is_some(),
             self.sse_last_snapshot_at,
-            Instant::now(),
-            self.dashboard.effective_interval(),
-        )
+            self.sse_connect_started_at,
+            now,
+            interval,
+        ) {
+            return true;
+        }
+        sse_idle_expired(self.stream_mode, self.sse_last_snapshot_at, now, interval)
     }
 
     /// Retracts a silent SSE stream and hands freshness back to the fetch poll.
@@ -894,6 +915,7 @@ impl TaskManagerApp {
         self.sse_poll_guard = None;
         self.stream_mode = StreamMode::Fallback;
         self.sse_last_snapshot_at = None;
+        self.sse_connect_started_at = None;
         self.sse_retry_at = Some(Instant::now() + SSE_RECONNECT_DELAY);
         if let Some(text) = sse_fallback_status(self.dashboard.status()) {
             self.dashboard.set_status(text, false);
@@ -4841,6 +4863,22 @@ fn sse_idle_timeout(interval: Duration) -> Duration {
         .max(MIN_SSE_IDLE_TIMEOUT)
 }
 
+/// Connecting-state watchdog: a suspended poll must not stay suspended when a
+/// stream never delivers a snapshot (for example, it emits only `event: error`).
+/// Pure so the regression can be tested without a GPUI entity.
+fn connecting_watchdog_expired(
+    polls_suspended: bool,
+    last_snapshot: Option<Instant>,
+    connect_started: Option<Instant>,
+    now: Instant,
+    interval: Duration,
+) -> bool {
+    polls_suspended
+        && last_snapshot.is_none()
+        && connect_started
+            .is_some_and(|at| now.saturating_duration_since(at) >= sse_idle_timeout(interval))
+}
+
 /// Pure idle-watchdog decision, testable without a GPUI entity.
 ///
 /// `last_snapshot == None` can never count as idle: the stream only becomes
@@ -5130,6 +5168,7 @@ mod tests {
                 sse_poll_guard: None,
                 sse_epoch: 0,
                 sse_last_snapshot_at: None,
+                sse_connect_started_at: None,
                 sse_retry_at: None,
                 poll_backoff: PollBackoff::default(),
                 show_help: false,
@@ -5231,6 +5270,7 @@ mod tests {
                         sse_poll_guard: None,
                         sse_epoch: 0,
                         sse_last_snapshot_at: None,
+                        sse_connect_started_at: None,
                         sse_retry_at: None,
                         poll_backoff: PollBackoff::default(),
                         show_help: false,
@@ -6993,6 +7033,63 @@ mod tests {
             StreamMode::Active,
             Some(first_frame),
             first_frame + timeout * 2,
+            interval
+        ));
+    }
+
+    #[test]
+    fn connecting_watchdog_releases_a_poll_suspended_by_only_error_frames() {
+        let interval = DEFAULT_REFRESH_INTERVAL;
+        let timeout = sse_idle_timeout(interval);
+        let started = Instant::now();
+
+        // No guard: the poll is free, so no watchdog needed even if a stream
+        // attempt once started long ago.
+        assert!(!connecting_watchdog_expired(
+            false,
+            None,
+            Some(started),
+            started + timeout * 2,
+            interval
+        ));
+        // A genuine first frame clears the connecting baseline; the normal
+        // Active watchdog takes over from there.
+        assert!(!connecting_watchdog_expired(
+            true,
+            Some(started),
+            None,
+            started + timeout * 2,
+            interval
+        ));
+        // Regression: a stream that emits only `event: error` never produces a
+        // snapshot, keeps the guard, and previously suspended polling forever.
+        assert!(!connecting_watchdog_expired(
+            true,
+            None,
+            Some(started),
+            started + timeout - Duration::from_millis(1),
+            interval
+        ));
+        assert!(connecting_watchdog_expired(
+            true,
+            None,
+            Some(started),
+            started + timeout,
+            interval
+        ));
+        assert!(connecting_watchdog_expired(
+            true,
+            None,
+            Some(started),
+            started + timeout * 2,
+            interval
+        ));
+        // Once the guard is released (idle timeout ran), no repeated firing.
+        assert!(!connecting_watchdog_expired(
+            false,
+            None,
+            None,
+            started + timeout * 3,
             interval
         ));
     }
