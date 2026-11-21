@@ -29,6 +29,7 @@
 pub mod demo;
 pub mod export;
 pub mod format;
+pub mod icon;
 pub mod metrics;
 pub mod model;
 pub mod port;
@@ -37,6 +38,7 @@ pub mod redact;
 pub mod sanitize;
 pub mod wire;
 
+pub use icon::{AppIconResolver, IconFs, IconSearchEnv};
 pub use metrics::{CpuCounters, MetricHistory, NetworkCounters, RingBuffer};
 pub use model::{
     cgroup_label, group_by_app, group_by_cgroup, normalise_temperature, recommended_sampling_plan,

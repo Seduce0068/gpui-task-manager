@@ -14,6 +14,7 @@
 //!   a `<canvas>`. `document.title` is human-facing only (a fixed label plus
 //!   the data source) and never carries DOM proof fields or user input.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
@@ -21,10 +22,10 @@ use std::time::Duration;
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, SortDirection as AccessKitSortDirection, Toggled};
 use gpui::{
-    AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    KeyDownEvent, Modifiers, MouseButton, Pixels, Render, ScrollStrategy, Stateful, Task,
-    TextInputConfiguration, UTF16Selection, UniformListScrollHandle, Window, canvas, div,
-    prelude::*, px, rgb, uniform_list,
+    AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, Image,
+    ImageFormat, ImageSource, KeyDownEvent, Modifiers, MouseButton, Pixels, Render, ScrollStrategy,
+    Stateful, Task, TextInputConfiguration, UTF16Selection, UniformListScrollHandle, Window,
+    canvas, div, img, prelude::*, px, rgb, uniform_list,
 };
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv_with_total, snapshot_to_json_with_total};
@@ -450,6 +451,15 @@ pub struct TaskManagerApp {
     /// へ渡す。側が不同而なるよう row index ごとに保持し、flat/tree 表示では
     /// 使わない（既存の Tab 順序を変えないため）。
     grouped_row_focus: Vec<FocusHandle>,
+    /// App icons fetched from the agent, keyed by the redacted group key.
+    ///
+    /// Bytes are wrapped once in a GPUI `Image` and reused every frame. Only a
+    /// successful PNG lands here; every miss keeps the existing status dot, so
+    /// the DOM proof / AX mirror (which never mention icons) stay unchanged.
+    app_icons: HashMap<String, Arc<Image>>,
+    /// Whether an icon-refresh task is already walking the current key list.
+    /// Sequential fetches keep the client's dedicated single-flight gate free.
+    icon_refresh_running: bool,
     /// 行メニューをキーボードで開いたときに最初へ移す項目のフォーカスハンドル。
     row_menu_item_focus: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -743,6 +753,8 @@ impl TaskManagerApp {
             focus_handle,
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
             grouped_row_focus: Vec::new(),
+            app_icons: HashMap::new(),
+            icon_refresh_running: false,
             row_menu_item_focus: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
@@ -841,6 +853,7 @@ impl TaskManagerApp {
                                 if app.ingest_guarded_poll(result) {
                                     cx.notify();
                                 }
+                                app.refresh_app_icons(cx);
                             });
                             if alive.is_err() {
                                 break;
@@ -878,6 +891,53 @@ impl TaskManagerApp {
         .detach();
     }
 
+    /// Requests PNG icons for group keys that do not have one yet.
+    ///
+    /// Called after each ingested snapshot (poll or SSE frame). The work is a
+    /// single sequential task: the agent's icon endpoint is decorative, so a
+    /// miss or a timeout simply leaves the existing status dot in place and
+    /// never touches `live_error`, `ticks`, the DOM proof or the AX mirror.
+    /// `AgentClient` caches results per key and applies its own cooldown for
+    /// transient failures, so repeated ticks cannot flood the loopback agent.
+    fn refresh_app_icons(&mut self, cx: &mut Context<Self>) {
+        if self.icon_refresh_running {
+            return;
+        }
+        let DataSource::Live(client) = &self.source else {
+            return;
+        };
+        let keys: Vec<String> = self
+            .dashboard
+            .app_group_rows()
+            .into_iter()
+            .filter(|row| row.kind == AppRowKind::Group && !self.app_icons.contains_key(&row.key))
+            .map(|row| row.key)
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let client = Arc::clone(client);
+        self.icon_refresh_running = true;
+        cx.spawn(async move |this, cx| {
+            for key in keys {
+                let Ok(Some(bytes)) = client.fetch_app_icon(&key).await else {
+                    continue;
+                };
+                let image = icon_image(bytes);
+                let alive = this.update(cx, |app, cx| {
+                    app.app_icons.insert(key, image);
+                    // Only a new icon triggers a repaint; no proof rewrite.
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+            let _ = this.update(cx, |app, _| app.icon_refresh_running = false);
+        })
+        .detach();
+    }
+
     /// Re-reads the connection settings from the page URL and applies them to
     /// the live client when they changed (R3-S04).
     ///
@@ -899,6 +959,10 @@ impl TaskManagerApp {
         if !client.set_config(config) {
             return false;
         }
+        // A different endpoint/token means a different agent: drop cached PNGs
+        // and let the next snapshot re-resolve icons under the new credentials.
+        client.clear_icon_cache();
+        self.app_icons.clear();
         self.proof_token = proof_token;
         self.live_error = None;
         self.reconnect_required = false;
@@ -979,6 +1043,7 @@ impl TaskManagerApp {
                         // Same ingest path as polling: redaction, ticks, stale
                         // and reconnect handling stay in exactly one place.
                         app.handle_live_result(Ok(envelope.into_response()));
+                        app.refresh_app_icons(cx);
                         cx.notify();
                     });
                 }) {
@@ -3030,6 +3095,21 @@ impl TaskManagerApp {
         let expanded = view.expanded;
         let is_group = view.is_group;
         let activation = row_activation(&view, tree_view);
+        // Group rows show the agent-provided PNG when one has been fetched;
+        // every miss (404 / timeout / unsafe key) keeps the original dot.
+        let dot_color = if is_group {
+            palette().muted
+        } else {
+            status_color(view.status)
+        };
+        let group_icon = if is_group {
+            view.group_key
+                .as_deref()
+                .and_then(|key| self.app_icons.get(key))
+                .map(Arc::clone)
+        } else {
+            None
+        };
 
         // Keep a stable handle per row so Tab + Enter/Space reaches the same
         // `on_click` that a mouse activation uses (WCAG 2.1.1). Flat/tree rows
@@ -3110,18 +3190,18 @@ impl TaskManagerApp {
                         .items_center()
                         .gap_2()
                         .overflow_hidden()
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h(px(6.0))
-                                .flex_shrink_0()
-                                .rounded_full()
-                                .bg(rgb(if is_group {
-                                    palette().muted
-                                } else {
-                                    status_color(view.status)
-                                })),
-                        )
+                        .child(if let Some(image) = group_icon {
+                            // Decorative only: no id / role / aria label, so the
+                            // AX mirror and DOM proof keep their exact shape.
+                            // A decode failure falls back to the same dot.
+                            img(ImageSource::Image(image))
+                                .w(px(16.0))
+                                .h(px(16.0))
+                                .with_fallback(move || row_status_dot(dot_color).into_any_element())
+                                .into_any_element()
+                        } else {
+                            row_status_dot(dot_color).into_any_element()
+                        })
                         .child(
                             div()
                                 .min_w_0()
@@ -4931,6 +5011,31 @@ fn status_color(status: ProcessStatus) -> u32 {
     }
 }
 
+/// Wraps fetched PNG bytes exactly once for GPUI's `img()` element.
+///
+/// Kept as a pure helper so the byte-to-image step can be asserted without a
+/// window; the bytes themselves are already size-capped and PNG-checked by
+/// [`crate::agent::AgentClient::fetch_app_icon`].
+fn icon_image(bytes: Arc<Vec<u8>>) -> Arc<Image> {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        bytes.as_slice().to_vec(),
+    ))
+}
+
+/// The pre-existing 6 px status dot, reused when no app icon is available.
+///
+/// Kept as a helper so the success and fallback branches are byte-identical
+/// apart from the image: no id, role or aria label is added to either one.
+fn row_status_dot(color: u32) -> Div {
+    div()
+        .w(px(6.0))
+        .h(px(6.0))
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(rgb(color))
+}
+
 /// Resolves the sampler's timer wait from the interval currently applied to the
 /// dashboard.
 ///
@@ -5740,6 +5845,34 @@ extern "C" {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fetched_png_bytes_become_a_stable_gpui_image() {
+        let png = Arc::new(b"\x89PNG\r\n\x1a\nicon".to_vec());
+        let first = icon_image(Arc::clone(&png));
+        let second = icon_image(png);
+        // GPUI derives the image id from the bytes: identical icons are one
+        // decoded asset in the cache, different files are never conflated.
+        assert_eq!(first.id(), second.id());
+        assert_ne!(
+            first.id(),
+            icon_image(Arc::new(b"\x89PNG\r\n\x1a\nother".to_vec())).id()
+        );
+    }
+
+    #[test]
+    fn cached_icons_do_not_change_the_dom_proof_or_status() {
+        let (_reconnect, _live_error, _status, proof) = run_sse_steps(|app| {
+            let before = app.proof_string(0, 0);
+            app.app_icons.insert(
+                "firefox".to_string(),
+                icon_image(Arc::new(b"\x89PNG\r\n\x1a\nicon".to_vec())),
+            );
+            app.icon_refresh_running = true;
+            assert_eq!(before, app.proof_string(0, 0));
+        });
+        assert!(!proof.contains("icon"), "icons stay out of the DOM proof");
+    }
+
     /// Runs production state transitions on a real (headless) `TaskManagerApp`
     /// and snapshots the observable state afterwards. The instance matches
     /// `TaskManagerApp::new` minus the window-bound sampler / subscription
@@ -5760,6 +5893,8 @@ mod tests {
                 focus_handle: cx.focus_handle(),
                 sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
                 grouped_row_focus: Vec::new(),
+                app_icons: HashMap::new(),
+                icon_refresh_running: false,
                 row_menu_item_focus: cx.focus_handle(),
                 scroll_handle: UniformListScrollHandle::new(),
                 live_total: None,
@@ -5863,6 +5998,8 @@ mod tests {
                         focus_handle: test_cx.focus_handle(),
                         sort_header_focus: std::array::from_fn(|_| test_cx.focus_handle()),
                         grouped_row_focus: Vec::new(),
+                        app_icons: HashMap::new(),
+                        icon_refresh_running: false,
                         row_menu_item_focus: test_cx.focus_handle(),
                         scroll_handle: UniformListScrollHandle::new(),
                         live_total: None,
