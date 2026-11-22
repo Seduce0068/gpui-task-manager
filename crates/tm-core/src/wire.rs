@@ -2,7 +2,7 @@
 //!
 //! Both ends of the loopback protocol need one definition of each of these:
 //! the fixed `403` guidance text, the ceiling for a numeric `Retry-After` hint,
-//! the JSON envelope that carries a snapshot, the two endpoint paths, the
+//! the JSON envelope that carries a snapshot, the endpoint paths, the
 //! default and maximum `?limit=` values, the default listen port, and the set
 //! of machine-readable error codes. Defining them here makes agreement
 //! structural instead of a matter of mirrored comments.
@@ -39,6 +39,16 @@ pub const STREAM_PATH: &str = "/api/v1/stream";
 /// in the agent's current snapshot. Both ends import this constant so the
 /// browser's URL builder and the agent's router cannot drift.
 pub const ICON_PATH: &str = "/api/v1/icon";
+
+/// Path of the human-readable application-name endpoint (GET, bearer token required).
+///
+/// Returns a small JSON envelope (`{"name":"..."}`) for a redacted application
+/// group key present in the agent's current snapshot. The wasm shell cannot read
+/// `.desktop` files, so it resolves display names through this authenticated
+/// loopback endpoint instead. This is additive: [`ICON_PATH`]'s PNG bytes and
+/// cache contract are unchanged, and a miss simply leaves the already-redacted
+/// group key in place.
+pub const APP_NAME_PATH: &str = "/api/v1/app-name";
 
 /// Number of processes returned when `?limit=` is absent.
 ///
@@ -179,10 +189,21 @@ mod tests {
         assert_eq!(SNAPSHOT_PATH, "/api/v1/snapshot");
         assert_eq!(STREAM_PATH, "/api/v1/stream");
         assert_eq!(ICON_PATH, "/api/v1/icon");
+        assert_eq!(APP_NAME_PATH, "/api/v1/app-name");
         assert_eq!(DEFAULT_SNAPSHOT_LIMIT, 500);
         assert_eq!(MAX_SNAPSHOT_LIMIT, 2000);
         const { assert!(DEFAULT_SNAPSHOT_LIMIT <= MAX_SNAPSHOT_LIMIT) };
         assert_eq!(DEFAULT_PORT, 8787);
+    }
+
+    #[test]
+    fn app_name_path_is_distinct_and_proof_safe() {
+        assert_ne!(APP_NAME_PATH, ICON_PATH);
+        assert!(APP_NAME_PATH.starts_with("/api/v1/"));
+        // The path is never written to the DOM proof, but keep it free of the
+        // `key=value;` grammar delimiter so a future mirror cannot corrupt it.
+        assert!(!APP_NAME_PATH.contains(';'));
+        assert!(!APP_NAME_PATH.contains('\n'));
     }
 
     #[test]

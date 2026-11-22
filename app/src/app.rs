@@ -38,6 +38,11 @@ const COL_USER: f32 = 104.0;
 const COL_STATUS: f32 = 78.0;
 const COL_THREADS: f32 = 64.0;
 const DETAILS_WIDTH: f32 = 320.0;
+/// Upper bound for a local `.desktop` `Name=` value shown in the native table.
+///
+/// The value comes from a user-writable file, so a long string must never be
+/// able to stretch a virtualised row or flood an accessibility name.
+const MAX_APP_DISPLAY_NAME_CHARS: usize = 48;
 
 /// Read-only power / sampling / cgroup summary for the status bar (R1-I10..I12).
 ///
@@ -58,6 +63,64 @@ fn power_summary_text(snapshot: Option<&tm_core::SystemSnapshot>) -> String {
 /// Read-only cgroup grouping row: normalised label plus member count (R1-I12).
 fn cgroup_group_text(label: &str, members: usize) -> String {
     format!("{label} — {members} 件")
+}
+
+/// Visible table columns in render order: label, sort key and fixed width.
+///
+/// The four aggregate-only columns (PID / ユーザー / 状態 / スレッド) show
+/// nothing but "—" on a grouped row, so they are hidden by default. The
+/// settings overlay can re-enable them for the flat process table. The header,
+/// each row and the table's `aria_column_count` all read this one layout, so
+/// they cannot drift apart.
+fn table_columns(verbose: bool) -> Vec<(&'static str, SortKey, Option<f32>)> {
+    let mut columns = vec![
+        ("名前", SortKey::Name, None),
+        ("CPU", SortKey::Cpu, Some(COL_CPU)),
+        ("メモリ", SortKey::Memory, Some(COL_MEMORY)),
+    ];
+    if verbose {
+        columns.extend([
+            ("PID", SortKey::Pid, Some(COL_PID)),
+            ("ユーザー", SortKey::User, Some(COL_USER)),
+            ("状態", SortKey::Status, Some(COL_STATUS)),
+            ("スレッド", SortKey::Threads, Some(COL_THREADS)),
+        ]);
+    }
+    columns
+}
+
+/// Returns a safe, shared lookup key for icon *and* display-name resolution.
+///
+/// Group rows carry the already-redacted app key; individual process rows use
+/// `tm_core::model::app_group_key`. The synthetic Others row has a reserved
+/// NUL-prefixed key, which is rejected here so it can never reach a `.desktop`
+/// search (and never borrows an unrelated application's icon/name).
+fn app_lookup_key(raw: &str) -> Option<String> {
+    let key = raw.trim();
+    if key.is_empty() || key.len() > 128 || key.chars().any(|char| char.is_control()) {
+        return None;
+    }
+    Some(key.to_string())
+}
+
+/// Sanitises the arbitrary `Name=` text of a local `.desktop` entry.
+///
+/// Control characters are neutralised (so a crafted entry cannot forge extra
+/// lines in a screenshot or an AccessKit name), whitespace is collapsed and
+/// the result is capped at [`MAX_APP_DISPLAY_NAME_CHARS`]. `None` makes the
+/// caller fall back to the existing redacted group label.
+fn sanitize_app_display_name(raw: &str) -> Option<String> {
+    let collapsed: String = raw
+        .chars()
+        // Replace rather than drop: "Name=Google\nChrome" must not become
+        // "GoogleChrome" in an accessible name.
+        .map(|char| if char.is_control() { ' ' } else { char })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let name: String = collapsed.chars().take(MAX_APP_DISPLAY_NAME_CHARS).collect();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Filesystem adapter for `tm_core::icon::AppIconResolver`.
@@ -108,6 +171,9 @@ struct ProcessRowView {
     key: ProcessKey,
     /// Set for Group and Others rows; the shell passes it to `ToggleAppGroup`.
     group_key: Option<String>,
+    /// Shared icon/display-name lookup key for Group *and* Process rows.
+    /// Never set for the synthetic Others row, and never used for activation.
+    icon_key: Option<String>,
     name: String,
     command: String,
     cpu_percent: f32,
@@ -177,6 +243,7 @@ fn process_row_values(
         Some(group) if group.kind == AppRowKind::Group => ProcessRowView {
             key: group.process_key,
             group_key: Some(group.key.clone()),
+            icon_key: app_lookup_key(&group.key),
             name: group.label.clone(),
             command: format!("{} プロセス", group.process_count),
             cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
@@ -199,6 +266,9 @@ fn process_row_values(
         Some(group) if group.kind == AppRowKind::Others => ProcessRowView {
             key: group.process_key,
             group_key: Some(group.key.clone()),
+            // The reserved NUL key is kept for expansion only: it has no app
+            // identity, so neither icon nor display-name lookup may use it.
+            icon_key: None,
             // The view-model label is the reserved "others" key; the visible
             // and accessible text is derived from the aggregated app count.
             name: format!("その他 {} アプリ", group.process_count),
@@ -223,6 +293,9 @@ fn process_row_values(
         _ => ProcessRowView {
             key: process.key,
             group_key: None,
+            // Individual rows still get the app icon: the same key derivation
+            // as the grouped view, without changing Select/ToggleTreeNode.
+            icon_key: app_lookup_key(tm_core::model::app_group_key(process)),
             name: process.name.clone(),
             command: process.command.clone(),
             cpu_percent: process.cpu_percent,
@@ -386,6 +459,32 @@ struct DiskRow {
     percent: f32,
 }
 
+/// Left-hand navigation section of the native window.
+///
+/// This is shell-local presentation state: it never enters the view model or
+/// the wire/export contracts. Switching a data section reuses the existing
+/// `SetAppGrouping` / `SetTreeView` commands; 概要 intentionally shows only the
+/// overview cards and hides the table and details panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavSection {
+    /// Overview cards only (CPU / メモリ / ネットワーク / システム).
+    Overview,
+    /// Application-grouped process table (the startup default).
+    Applications,
+    /// Flat individual-process table.
+    Processes,
+}
+
+impl NavSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "概要",
+            Self::Applications => "アプリケーション",
+            Self::Processes => "プロセス",
+        }
+    }
+}
+
 /// Native application state.
 pub struct TaskManagerApp {
     dashboard: Dashboard,
@@ -400,6 +499,13 @@ pub struct TaskManagerApp {
     show_help: bool,
     /// 表示設定モーダルの開閉状態。ヘルプ・確認ダイアログと排他にする。
     show_settings: bool,
+    /// Selected left-navigation section; drives which panes are rendered.
+    nav_section: NavSection,
+    /// Stable focus handles for the three left-navigation buttons.
+    nav_focus: [FocusHandle; 3],
+    /// Re-show PID / ユーザー / 状態 / スレッド from the settings overlay.
+    /// GUI flag only: no new persisted schema field or view-model command.
+    verbose_columns: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
@@ -529,6 +635,10 @@ impl TaskManagerApp {
             filter_input: FilterInput::new(),
             show_help: false,
             show_settings: false,
+            // Keep the existing startup view (grouped application table).
+            nav_section: NavSection::Applications,
+            nav_focus: std::array::from_fn(|_| cx.focus_handle()),
+            verbose_columns: false,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
@@ -813,6 +923,87 @@ impl TaskManagerApp {
             theme: crate::theme::theme(),
         };
         report_save_result(&mut self.dashboard, crate::settings::save(&settings));
+    }
+
+    /// Applies a left-navigation choice.
+    ///
+    /// The two data sections reuse the existing view-model commands, so the
+    /// dashboard stays the single source of truth for grouping/tree state and
+    /// no new wire or settings field is introduced. 概要 only changes which
+    /// panes are rendered; it leaves the underlying table state intact.
+    fn select_nav_section(&mut self, section: NavSection, cx: &mut Context<Self>) {
+        self.nav_section = section;
+        match section {
+            NavSection::Overview => {}
+            NavSection::Applications => {
+                self.handle_command(Command::SetAppGrouping(true), cx);
+            }
+            NavSection::Processes => {
+                self.handle_command(Command::SetTreeView(false), cx);
+                self.handle_command(Command::SetAppGrouping(false), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Vertical left navigation, placed before the content column in `render`.
+    fn left_nav(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let sections = [
+            NavSection::Overview,
+            NavSection::Applications,
+            NavSection::Processes,
+        ];
+        let mut buttons = Vec::new();
+        for (index, section) in sections.into_iter().enumerate() {
+            let active = self.nav_section == section;
+            let focus = self.nav_focus[index].clone();
+            buttons.push(
+                div()
+                    .id(("nav-section", index))
+                    .role(Role::Button)
+                    .aria_label(section.label())
+                    .aria_selected(active)
+                    .track_focus(&focus)
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .bg(rgb(if active {
+                        palette().surface
+                    } else {
+                        palette().base
+                    }))
+                    .text_color(rgb(if active {
+                        palette().blue
+                    } else {
+                        palette().subtext
+                    }))
+                    .hover(|style| {
+                        style
+                            .bg(rgb(palette().surface))
+                            .text_color(rgb(palette().text))
+                    })
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        focus.focus(window, cx);
+                        this.select_nav_section(section, cx);
+                    }))
+                    .child(section.label()),
+            );
+        }
+        v_flex()
+            .id("left-nav")
+            .role(Role::Navigation)
+            .aria_label("表示セクション")
+            .w(px(140.0))
+            .min_h_0()
+            .gap_1()
+            .p_2()
+            .bg(rgb(palette().mantle))
+            .border_r_1()
+            .border_color(rgb(palette().surface))
+            .children(buttons)
     }
 
     /// 絞り込み編集を開始する。現在の確定文字列を入力欄へ引き継ぐ。
@@ -1843,15 +2034,9 @@ impl TaskManagerApp {
 
     fn table_header(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let sort = self.dashboard.sort_spec();
-        let columns: [(&'static str, SortKey, Option<f32>); 7] = [
-            ("名前", SortKey::Name, None),
-            ("CPU", SortKey::Cpu, Some(COL_CPU)),
-            ("メモリ", SortKey::Memory, Some(COL_MEMORY)),
-            ("PID", SortKey::Pid, Some(COL_PID)),
-            ("ユーザー", SortKey::User, Some(COL_USER)),
-            ("状態", SortKey::Status, Some(COL_STATUS)),
-            ("スレッド", SortKey::Threads, Some(COL_THREADS)),
-        ];
+        // Header, rows and the table's aria_column_count all come from this
+        // single layout so hidden columns stay consistent across all three.
+        let columns = table_columns(self.verbose_columns);
         let mut headers = Vec::new();
         for (index, (label, key, width)) in columns.iter().enumerate() {
             let active = sort.key == *key;
@@ -2044,6 +2229,7 @@ impl TaskManagerApp {
         let group_view = self.dashboard.app_group_view();
         let key = view.key;
         let group_key = view.group_key.clone();
+        let icon_key = view.icon_key.clone();
         let has_children = view.has_children;
         let depth = view.depth;
         let selected = view.selected;
@@ -2059,15 +2245,29 @@ impl TaskManagerApp {
         let command_emphasis = view.command_emphasis;
         let collapsed = !expanded;
         // Group rows show the app's native icon when a .desktop entry resolves;
-        // every other row (and an unresolved group) keeps the status dot. The
+        // individual process rows now share that same lookup key, so both row
+        // kinds get the icon. An unresolved row keeps the status dot. The
         // Others summary is not an application, so it never gets an app icon.
-        // The icon is decorative: `aria_label` below stays the group label.
+        // The icon is decorative: `aria_label` below carries the shown name.
         let app_icon = if is_others {
             None
         } else {
-            group_key
+            icon_key
                 .as_deref()
                 .and_then(|key| self.icon_resolver.resolve(key))
+        };
+        // Human-readable `Name=` from the same .desktop entry. Resolution is
+        // cached per key, then sanitised and scrubbed through `display()` so a
+        // local file cannot inject control characters or bypass --redact.
+        // A group with no match keeps its existing redacted label; process
+        // rows deliberately keep their own name.
+        let resolved_name = if is_others || !is_group {
+            None
+        } else {
+            icon_key
+                .as_deref()
+                .and_then(|key| self.icon_resolver.resolve_display_name(key))
+                .and_then(|raw| sanitize_app_display_name(&raw))
         };
         let dot_color = status_color(status);
         // All process users collapse to "user" under --redact, matching the
@@ -2079,7 +2279,13 @@ impl TaskManagerApp {
             self.display(&view.user)
         };
         let command = self.display(&view.command);
-        let name = self.display(&view.name);
+        // Display-only override: the view-model label (and therefore the
+        // export/wire contract) is untouched. The same `name` feeds the
+        // visible cell and the AccessKit row name below.
+        let name = match (is_group, resolved_name.as_deref()) {
+            (true, Some(resolved)) => self.display(resolved),
+            _ => self.display(&view.name),
+        };
         let marker = if (is_group && has_children) || is_others {
             if expanded {
                 "▾ "
@@ -2108,115 +2314,119 @@ impl TaskManagerApp {
             a11y_row_label(&name, status, cpu, memory, key.pid, selected)
         };
 
-        Some(
-            div()
-                .id(("row", index))
-                // Mirror the browser shell's row semantics: role/name plus the
-                // selected state and 1-based row index, so a screen reader can
-                // describe the row without relying on the colour-only status
-                // dot. `name` is the already-displayed (possibly redacted) value.
-                .role(Role::Row)
-                .aria_label(aria_label)
-                .aria_selected(selected)
-                .aria_row_index(index + 1)
-                // Group rows advertise the same expansion state as tree nodes;
-                // both use `has_children` from the visible row arrays.
-                .when(has_children || is_others, |this| {
-                    this.aria_expanded(expanded)
-                })
-                .track_focus(&row_focus)
-                .aria_keyshortcuts("Enter, Space")
-                .flex()
-                .items_center()
-                .w_full()
-                .h(px(ROW_HEIGHT))
-                .px_3()
-                .gap_2()
-                .cursor_pointer()
-                .when(selected, |this| this.bg(rgb(palette().surface)))
-                .when(!selected, |this| {
-                    this.hover(|style| style.bg(rgb(palette().mantle)))
-                })
-                .on_click(cx.listener(move |this, _event, window, cx| {
-                    row_focus.focus(window, cx);
-                    if let Some(group_key) = group_key.clone() {
-                        // A group has no process identity of its own: activation
-                        // toggles the expansion set instead of selecting a member.
-                        this.handle_command(Command::ToggleAppGroup(group_key), cx);
-                    } else if tree_view && has_children {
-                        this.handle_command(Command::Select(Some(key)), cx);
-                        this.handle_command(Command::ToggleTreeNode(key), cx);
+        let mut row = div()
+            .id(("row", index))
+            // Mirror the browser shell's row semantics: role/name plus the
+            // selected state and 1-based row index, so a screen reader can
+            // describe the row without relying on the colour-only status
+            // dot. `name` is the already-displayed (possibly redacted) value.
+            .role(Role::Row)
+            .aria_label(aria_label)
+            .aria_selected(selected)
+            .aria_row_index(index + 1)
+            // Group rows advertise the same expansion state as tree nodes;
+            // both use `has_children` from the visible row arrays.
+            .when(has_children || is_others, |this| {
+                this.aria_expanded(expanded)
+            })
+            .track_focus(&row_focus)
+            .aria_keyshortcuts("Enter, Space")
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px_3()
+            .gap_2()
+            .cursor_pointer()
+            .when(selected, |this| this.bg(rgb(palette().surface)))
+            .when(!selected, |this| {
+                this.hover(|style| style.bg(rgb(palette().mantle)))
+            })
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                row_focus.focus(window, cx);
+                if let Some(group_key) = group_key.clone() {
+                    // A group has no process identity of its own: activation
+                    // toggles the expansion set instead of selecting a member.
+                    this.handle_command(Command::ToggleAppGroup(group_key), cx);
+                } else if tree_view && has_children {
+                    this.handle_command(Command::Select(Some(key)), cx);
+                    this.handle_command(Command::ToggleTreeNode(key), cx);
+                } else {
+                    this.handle_command(Command::Select(Some(key)), cx);
+                }
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(200.0))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .overflow_hidden()
+                    .child(if let Some(path) = app_icon {
+                        // `img(PathBuf)` loads via GPUI's global image cache;
+                        // if the PNG still fails to decode, fall back to the
+                        // same status dot instead of an empty hole.
+                        img(path)
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .with_fallback(move || status_dot(dot_color).into_any_element())
+                            .into_any_element()
                     } else {
-                        this.handle_command(Command::Select(Some(key)), cx);
-                    }
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(200.0))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .overflow_hidden()
-                        .child(if let Some(path) = app_icon {
-                            // `img(PathBuf)` loads via GPUI's global image cache;
-                            // if the PNG still fails to decode, fall back to the
-                            // same status dot instead of an empty hole.
-                            img(path)
-                                .w(px(16.0))
-                                .h(px(16.0))
-                                .with_fallback(move || status_dot(dot_color).into_any_element())
-                                .into_any_element()
-                        } else {
-                            status_dot(dot_color).into_any_element()
-                        })
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(if selected {
-                                    palette().text
-                                } else {
-                                    palette().subtext
-                                }))
-                                .max_w(px(200.0))
-                                .truncate()
-                                .child(display_name),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                // A real multi-process count (and the Others
-                                // expand hint) uses a bold accent colour so
-                                // it stands out; single-process rows keep the
-                                // muted default (R1-OTHERS).
-                                .text_color(rgb(if command_emphasis {
-                                    palette().blue
-                                } else {
-                                    palette().dim
-                                }))
-                                .when(command_emphasis, |this| this.font_weight(FontWeight::BOLD))
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(command),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(COL_CPU))
-                        .text_sm()
-                        // `f32::min(NaN, 100.0)` returns 100.0 (red) while the
-                        // label shows 0.0%; usage_color already handles NaN.
-                        .text_color(rgb(usage_color(cpu)))
-                        .child(format::format_cpu_percent(cpu)),
-                )
-                .child(
-                    div()
-                        .w(px(COL_MEMORY))
-                        .text_sm()
-                        .text_color(rgb(palette().subtext))
-                        .child(format::format_bytes(memory)),
-                )
+                        status_dot(dot_color).into_any_element()
+                    })
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(if selected {
+                                palette().text
+                            } else {
+                                palette().subtext
+                            }))
+                            .max_w(px(200.0))
+                            .truncate()
+                            .child(display_name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            // A real multi-process count (and the Others
+                            // expand hint) uses a bold accent colour so
+                            // it stands out; single-process rows keep the
+                            // muted default (R1-OTHERS).
+                            .text_color(rgb(if command_emphasis {
+                                palette().blue
+                            } else {
+                                palette().dim
+                            }))
+                            .when(command_emphasis, |this| this.font_weight(FontWeight::BOLD))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(command),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(COL_CPU))
+                    .text_sm()
+                    // `f32::min(NaN, 100.0)` returns 100.0 (red) while the
+                    // label shows 0.0%; usage_color already handles NaN.
+                    .text_color(rgb(usage_color(cpu)))
+                    .child(format::format_cpu_percent(cpu)),
+            )
+            .child(
+                div()
+                    .w(px(COL_MEMORY))
+                    .text_sm()
+                    .text_color(rgb(palette().subtext))
+                    .child(format::format_bytes(memory)),
+            );
+        // Aggregate rows have no PID/user/status/threads, so those columns are
+        // dash-only noise by default. The settings overlay restores them for
+        // users who want the flat process details.
+        if self.verbose_columns {
+            row = row
                 .child(
                     div()
                         .w(px(COL_PID))
@@ -2243,9 +2453,9 @@ impl TaskManagerApp {
                         .text_xs()
                         .text_color(rgb(palette().muted))
                         .child(threads),
-                )
-                .into_any_element(),
-        )
+                );
+        }
+        Some(row.into_any_element())
     }
 
     fn details_panel(&mut self, cx: &mut Context<Self>) -> Div {
@@ -2552,7 +2762,7 @@ impl TaskManagerApp {
                     .role(Role::Table)
                     .aria_label("プロセス一覧")
                     .aria_row_count(self.dashboard.visible_count())
-                    .aria_column_count(7)
+                    .aria_column_count(table_columns(self.verbose_columns).len())
                     .flex_1()
                     .h_full()
                     .min_w_0()
@@ -3001,6 +3211,23 @@ impl TaskManagerApp {
             }),
         );
 
+        let columns_button = action_button(
+            "settings-columns",
+            if self.verbose_columns {
+                "主要列のみ"
+            } else {
+                "全列を表示"
+            },
+            palette().surface_hi,
+            true,
+            cx.listener(|this, _event, _window, cx| {
+                // GUI flag only: re-show PID / ユーザー / 状態 / スレッド in
+                // both the header and the rows without a schema change.
+                this.verbose_columns = !this.verbose_columns;
+                cx.notify();
+            }),
+        );
+
         let details_button = action_button(
             "settings-details",
             if details_visible {
@@ -3111,6 +3338,7 @@ impl TaskManagerApp {
                         .child(row("並び方向", vec![direction_button]))
                         .child(row("テーマ", vec![theme_button]))
                         .child(row("詳細パネル", vec![details_button]))
+                        .child(row("列表示", vec![columns_button]))
                         .child(row("表示形式", view_buttons))
                         .child(
                             div()
@@ -3306,14 +3534,30 @@ impl Render for TaskManagerApp {
             self.last_overlay = overlay_now;
         }
 
+        let nav = self.left_nav(cx);
         let top = self.top_bar(cx);
+        // 概要 shows the existing cards only: the table, its toolbar and the
+        // details panel are hidden. Both data sections keep the cards *and* the
+        // table visible (the original layout).
+        let overview_only = self.nav_section == NavSection::Overview;
         let overview = self.overview();
-        let toolbar = self.toolbar(cx);
-        let main = self.main_area(cx);
+        let toolbar = (!overview_only).then(|| self.toolbar(cx));
+        let main = (!overview_only).then(|| self.main_area(cx));
         let status = self.status_bar();
         let dialog = self.kill_dialog(cx);
         let settings = self.settings_overlay(cx);
         let help = self.help_overlay(cx);
+
+        let content = v_flex()
+            .id("main-content")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .child(top)
+            .child(overview)
+            .children(toolbar)
+            .children(main)
+            .child(status);
 
         div()
             .id("task-manager-root")
@@ -3322,14 +3566,11 @@ impl Render for TaskManagerApp {
             .relative()
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(rgb(palette().base))
             .text_color(rgb(palette().text))
-            .child(top)
-            .child(overview)
-            .child(toolbar)
-            .child(main)
-            .child(status)
+            .child(nav)
+            .child(content)
             .children(dialog)
             .children(settings)
             .children(help)
@@ -3800,11 +4041,13 @@ mod tests {
     use super::{
         a11y_filter_hint, a11y_filter_label, a11y_group_row_label, a11y_live_text, a11y_row_label,
         a11y_sort_accesskit, a11y_sort_direction, a11y_temperature_label, a11y_usage_label,
-        apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, is_row_activation,
-        is_sort_key_activation, key_action, normalised_group_cpu, power_summary_text,
-        process_row_values, report_save_result, resolve_probe_retry, signal_enabled,
-        sort_header_label, sort_header_text, temperature_severity_label, truncate_label,
-        usage_severity, AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
+        app_lookup_key, apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts,
+        is_row_activation, is_sort_key_activation, key_action, normalised_group_cpu,
+        power_summary_text, process_row_values, report_save_result, resolve_probe_retry,
+        sanitize_app_display_name, signal_enabled, sort_header_label, sort_header_text,
+        table_columns, temperature_severity_label, truncate_label, usage_severity,
+        AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
+        MAX_APP_DISPLAY_NAME_CHARS,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -5135,6 +5378,109 @@ mod tests {
     }
 
     #[test]
+    fn app_lookup_key_rejects_the_others_nul_key_and_unsafe_input() {
+        assert_eq!(app_lookup_key("firefox").as_deref(), Some("firefox"));
+        assert_eq!(app_lookup_key("  Firefox  ").as_deref(), Some("Firefox"));
+        // The reserved Others bucket must never reach a .desktop search.
+        assert_eq!(app_lookup_key("\0others"), None);
+        assert_eq!(app_lookup_key("firefox\nName=evil"), None);
+        assert_eq!(app_lookup_key(""), None);
+        assert_eq!(app_lookup_key(&"a".repeat(129)), None);
+    }
+
+    #[test]
+    fn display_name_sanitisation_drops_controls_and_caps_length() {
+        assert_eq!(
+            sanitize_app_display_name("Google  Chrome\nExtra").as_deref(),
+            Some("Google Chrome Extra")
+        );
+        assert_eq!(sanitize_app_display_name(" \t\n "), None);
+        let long = sanitize_app_display_name(&"x".repeat(200)).expect("long name");
+        assert_eq!(long.chars().count(), MAX_APP_DISPLAY_NAME_CHARS);
+    }
+
+    #[test]
+    fn default_table_hides_the_four_dash_only_columns() {
+        let compact = table_columns(false);
+        assert_eq!(compact.len(), 3);
+        assert_eq!(compact[0].0, "名前");
+        assert_eq!(compact[2].0, "メモリ");
+        let verbose = table_columns(true);
+        assert_eq!(verbose.len(), 7);
+        assert_eq!(verbose[3].0, "PID");
+        assert_eq!(verbose[6].0, "スレッド");
+    }
+
+    #[test]
+    fn icon_key_is_shared_by_group_and_process_but_never_by_others() {
+        let representative = sample_process(100, "firefox");
+        let group = process_row_values(Some(&sample_group()), &representative, 1, false, 0, true);
+        assert_eq!(group.icon_key.as_deref(), Some("firefox"));
+        let others =
+            process_row_values(Some(&sample_others(4)), &representative, 1, false, 0, true);
+        assert_eq!(others.icon_key, None, "NUL bucket must not resolve an icon");
+        let flat = process_row_values(None, &representative, 1, false, 0, false);
+        assert!(
+            flat.icon_key.is_some() && flat.group_key.is_none(),
+            "a process row gets an icon key without changing activation"
+        );
+    }
+
+    #[test]
+    fn native_nav_and_verbose_columns_are_wired_without_contract_changes() {
+        let source = include_str!("app.rs");
+        let render = source
+            .split("fn render(&mut self")
+            .nth(1)
+            .expect("render must exist")
+            .split("fn signal_enabled(")
+            .next()
+            .expect("render slice must end");
+        assert!(
+            source.contains("Role::Navigation"),
+            "left nav must be an AccessKit landmark"
+        );
+        assert!(render.contains("left_nav(cx)"));
+        assert!(
+            render.contains("NavSection::Overview"),
+            "概要 must switch panes"
+        );
+        assert!(
+            render.contains(".flex_row()"),
+            "nav sits left of the content"
+        );
+        let row = source
+            .split("fn process_row(")
+            .nth(1)
+            .expect("process_row must exist")
+            .split("fn details_panel(")
+            .next()
+            .expect("row slice must end");
+        assert!(row.contains("resolve_display_name("));
+        assert!(row.contains("sanitize_app_display_name("));
+        assert!(row.contains("if self.verbose_columns"));
+        let table = source
+            .split("fn main_area(")
+            .nth(1)
+            .expect("main_area must exist")
+            .split("fn status_bar(")
+            .next()
+            .expect("table slice must end");
+        assert!(table.contains("aria_column_count(table_columns(self.verbose_columns).len())"));
+        let settings = source
+            .split("fn settings_overlay(")
+            .nth(1)
+            .expect("settings must exist")
+            .split("impl EntityInputHandler")
+            .next()
+            .expect("settings slice must end");
+        assert!(
+            settings.contains("settings-columns"),
+            "columns must be re-showable"
+        );
+    }
+
+    #[test]
     fn group_cpu_is_normalised_by_logical_core_count() {
         // The canonical example: a 471.1% sum on 12 cores reads as 39.3%.
         assert!((normalised_group_cpu(471.1, 12) - 39.258_33).abs() < 0.001);
@@ -5328,6 +5674,10 @@ mod tests {
         let first = snapshot.processes[0].clone();
         snapshot.processes[1].name = first.name.clone();
         snapshot.processes[1].command = first.command.clone();
+        // Idle (0%) rows are hidden by default, so give both members a
+        // non-zero CPU reading to keep this group visible.
+        snapshot.processes[0].cpu_percent = 1.0;
+        snapshot.processes[1].cpu_percent = 1.0;
         dashboard.ingest(snapshot);
 
         let group = dashboard

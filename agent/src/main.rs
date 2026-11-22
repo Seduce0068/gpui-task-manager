@@ -45,7 +45,8 @@ use tm_core::icon::{icon_search_env, AppIconResolver, IconFs};
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
 use tm_core::wire::{
-    ErrorCode, DEFAULT_SNAPSHOT_LIMIT, ICON_PATH, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH, STREAM_PATH,
+    ErrorCode, APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT, ICON_PATH, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH,
+    STREAM_PATH,
 };
 use tm_core::FORBIDDEN_GUIDANCE;
 use tm_platform::NativeProbe;
@@ -81,6 +82,19 @@ const ICON_KEY_INVALID_MESSAGE: &str = "指定された key は利用できま�
 const ICON_NOT_FOUND_MESSAGE: &str = "アプリアイコンが見つかりません";
 /// Fixed error text for an internal icon-resolution failure.
 const ICON_INTERNAL_MESSAGE: &str = "アイコンを取得できませんでした";
+
+/// Hard cap on a single application-name response body (4 KiB).
+///
+/// A `.desktop` `Name=` is short by design. The ceiling bounds the wasm heap
+/// even if a hostile local entry writes a huge value; an oversized value is
+/// dropped exactly like a missing name, never echoed back.
+const MAX_APP_NAME_BYTES: u64 = 4 * 1024;
+
+/// Fixed error text for an internal application-name resolution failure.
+const APP_NAME_INTERNAL_MESSAGE: &str = "アプリ名を取得できませんでした";
+/// Fixed `404` body for every application-name miss (no entry, no `Name=`, or an
+/// unsafe/absent key). No key, path or request-derived text is ever echoed.
+const APP_NAME_NOT_FOUND_MESSAGE: &str = "アプリ名が見つかりません";
 
 // `SNAPSHOT_PATH` / `STREAM_PATH`, `DEFAULT_SNAPSHOT_LIMIT` /
 // `MAX_SNAPSHOT_LIMIT` and `ErrorCode` are defined once in `tm_core::wire` and
@@ -1593,11 +1607,13 @@ fn spawn_connection(
                     // for a slow sample (including the 250 ms warm-up sleep) — R40 audit.
                     // The SSE path samples the shared probe inside its own loop and
                     // never invokes this closure.
-                    // The icon endpoint samples the live snapshot too, so it
-                    // can reject keys that are not present right now. Both
-                    // paths share the one serial probe behind this mutex.
-                    let needs_probe =
-                        request.path == SNAPSHOT_PATH || request.path == ICON_PATH;
+                    // The icon and app-name endpoints sample the live snapshot
+                    // too, so they can reject keys that are not present right
+                    // now. All paths share the one serial probe behind this
+                    // mutex.
+                    let needs_probe = request.path == SNAPSHOT_PATH
+                        || request.path == ICON_PATH
+                        || request.path == APP_NAME_PATH;
                     let mut guard = if needs_probe {
                         // Rust の Mutex はパニックで poison する可能性があるが、
                         // プローブ側の致命的失敗でエージェント全体を止めないよう
@@ -1908,6 +1924,16 @@ fn route(
                 500,
                 "Internal Server Error",
                 error_body(ErrorCode::Internal, ICON_INTERNAL_MESSAGE),
+            ),
+        },
+        APP_NAME_PATH => match probe {
+            Some(probe) => app_name_response(request, probe, token, context.request_id),
+            // The caller acquires the probe for this path too; reaching here
+            // means the lock was not passed through.
+            None => http::Response::json(
+                500,
+                "Internal Server Error",
+                error_body(ErrorCode::Internal, APP_NAME_INTERNAL_MESSAGE),
             ),
         },
         _ => http::Response::json(
@@ -2524,60 +2550,18 @@ fn icon_response(
     token: &str,
     request_id: u64,
 ) -> http::Response {
-    let Some(supplied) = auth::request_token(request) else {
-        emit_auth_denied(request_id, "missing_token", &request.path);
-        return unauthorized_response();
+    let canonical_key = match authenticated_asset_key(
+        request,
+        probe,
+        token,
+        request_id,
+        "icon",
+        ICON_INTERNAL_MESSAGE,
+        ICON_NOT_FOUND_MESSAGE,
+    ) {
+        Ok(key) => key,
+        Err(response) => return response,
     };
-    if !auth::constant_time_eq(token, &supplied) {
-        emit_auth_denied(request_id, "invalid_token", &request.path);
-        return unauthorized_response();
-    }
-
-    let Some(raw_key) = http::query_param(request.query.as_deref(), "key") else {
-        return http::Response::json(
-            400,
-            "Bad Request",
-            error_body(ErrorCode::BadRequest, ICON_KEY_REQUIRED_MESSAGE),
-        );
-    };
-    // Canonicalisation rejects unsafe components (`/`, `..`, controls, …) and
-    // applies the small desktop-name alias table. The browser's validated key
-    // therefore never reaches `AppIconResolver` as a raw path component.
-    let Some(canonical_key) = tm_core::icon::canonical_key(&raw_key) else {
-        return http::Response::json(
-            400,
-            "Bad Request",
-            error_body(ErrorCode::BadRequest, ICON_KEY_INVALID_MESSAGE),
-        );
-    };
-
-    // Only keys that exist in the live snapshot may be looked up. Sampling is
-    // serial behind the probe mutex held by the caller, so this is the same
-    // snapshot the UI is about to display (no stale or invented key).
-    let snapshot = match probe.sample() {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            // The probe error detail can contain host paths: never log it.
-            emit(
-                Level::Error,
-                "probe.sample_failed",
-                request_error_fields(request_id, json!({ "phase": "icon" })),
-            );
-            return http::Response::json(
-                500,
-                "Internal Server Error",
-                error_body(ErrorCode::Internal, ICON_INTERNAL_MESSAGE),
-            );
-        }
-    };
-    let key = raw_key.trim();
-    if !snapshot
-        .processes
-        .iter()
-        .any(|process| tm_core::model::app_group_key(process).eq_ignore_ascii_case(key))
-    {
-        return icon_not_found();
-    }
 
     let path = ICON_RESOLVER.with(|cell| cell.borrow_mut().resolve(&canonical_key));
     let Some(path) = path else {
@@ -2615,6 +2599,138 @@ fn icon_not_found() -> http::Response {
         "Not Found",
         error_body(ErrorCode::NotFound, ICON_NOT_FOUND_MESSAGE),
     )
+}
+
+/// Shared gate for the two authenticated, keyed asset endpoints.
+///
+/// Both `/api/v1/icon` and `/api/v1/app-name` require the identical four
+/// checks, in the same order: loopback bearer token, safe `key` canonicalisation,
+/// membership in the *current* snapshot's `app_group_key` set, and a fixed body
+/// for every rejection. Nothing request-derived — key, path, probe error — is
+/// ever logged or echoed. Sharing the gate keeps the two endpoints from
+/// drifting, while each keeps its own fixed messages and resolver.
+fn authenticated_asset_key(
+    request: &http::Request,
+    probe: &mut dyn SystemProbe,
+    token: &str,
+    request_id: u64,
+    phase: &'static str,
+    internal_message: &'static str,
+    not_found_message: &'static str,
+) -> Result<String, http::Response> {
+    let Some(supplied) = auth::request_token(request) else {
+        emit_auth_denied(request_id, "missing_token", &request.path);
+        return Err(unauthorized_response());
+    };
+    if !auth::constant_time_eq(token, &supplied) {
+        emit_auth_denied(request_id, "invalid_token", &request.path);
+        return Err(unauthorized_response());
+    }
+
+    let Some(raw_key) = http::query_param(request.query.as_deref(), "key") else {
+        return Err(http::Response::json(
+            400,
+            "Bad Request",
+            error_body(ErrorCode::BadRequest, ICON_KEY_REQUIRED_MESSAGE),
+        ));
+    };
+    // Canonicalisation rejects unsafe components (`/`, `..`, controls, …) and
+    // applies the small desktop-name alias table. No raw key ever reaches a
+    // filesystem resolver as a path component.
+    let canonical_key = tm_core::icon::canonical_key(&raw_key).ok_or_else(|| {
+        http::Response::json(
+            400,
+            "Bad Request",
+            error_body(ErrorCode::BadRequest, ICON_KEY_INVALID_MESSAGE),
+        )
+    })?;
+
+    // Only keys that exist in the live snapshot may be looked up. Sampling is
+    // serial behind the probe mutex held by the caller, so this is the same
+    // snapshot the UI is about to display (no stale or invented key).
+    let snapshot = probe.sample().map_err(|_| {
+        // The probe error detail can contain host paths: never log it.
+        emit(
+            Level::Error,
+            "probe.sample_failed",
+            request_error_fields(request_id, json!({ "phase": phase })),
+        );
+        http::Response::json(
+            500,
+            "Internal Server Error",
+            error_body(ErrorCode::Internal, internal_message),
+        )
+    })?;
+    let key = raw_key.trim();
+    if !snapshot
+        .processes
+        .iter()
+        .any(|process| tm_core::model::app_group_key(process).eq_ignore_ascii_case(key))
+    {
+        return Err(http::Response::json(
+            404,
+            "Not Found",
+            error_body(ErrorCode::NotFound, not_found_message),
+        ));
+    }
+    Ok(canonical_key)
+}
+
+/// `/api/v1/app-name`: authenticated human-readable name for one redacted key.
+///
+/// Uses the same gate as [`icon_response`] and reads `Name=` through the same
+/// cached, thread-local `AppIconResolver`. The value is sanitised with the
+/// shared display rules before it is serialised, so no control character,
+/// bidi override or unbounded string can reach the browser. The response is a
+/// small JSON envelope; a miss is a fixed `404`. The key and the resolved
+/// filesystem path are never logged, and the display name never enters the
+/// DOM proof.
+fn app_name_response(
+    request: &http::Request,
+    probe: &mut dyn SystemProbe,
+    token: &str,
+    request_id: u64,
+) -> http::Response {
+    let canonical_key = match authenticated_asset_key(
+        request,
+        probe,
+        token,
+        request_id,
+        "app_name",
+        APP_NAME_INTERNAL_MESSAGE,
+        APP_NAME_NOT_FOUND_MESSAGE,
+    ) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+
+    let raw_name =
+        ICON_RESOLVER.with(|cell| cell.borrow_mut().resolve_display_name(&canonical_key));
+    let Some(raw_name) = raw_name else {
+        return http::Response::json(
+            404,
+            "Not Found",
+            error_body(ErrorCode::NotFound, APP_NAME_NOT_FOUND_MESSAGE),
+        );
+    };
+    // Same sanitisation as the snapshot's process names: ASCII controls, bidi
+    // controls and invisible format characters become spaces, whitespace is
+    // collapsed and the value is capped at `MAX_NAME_CHARS`.
+    let name = tm_core::sanitize::sanitize_display(&raw_name, tm_core::sanitize::MAX_NAME_CHARS);
+    if name.is_empty() || name.len() as u64 > MAX_APP_NAME_BYTES {
+        // Fixed event only: neither the name nor the key/path is included.
+        emit(
+            Level::Warn,
+            "app_name.unavailable",
+            request_error_fields(request_id, json!({})),
+        );
+        return http::Response::json(
+            404,
+            "Not Found",
+            error_body(ErrorCode::NotFound, APP_NAME_NOT_FOUND_MESSAGE),
+        );
+    }
+    http::Response::json(200, "OK", json!({ "name": name }).to_string().into_bytes())
 }
 
 /// Removes local identifiers from a snapshot before it is serialised.
@@ -3122,6 +3238,101 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "image/png");
         assert_eq!(response.body.as_slice(), png, "PNG bytes must be verbatim");
+    }
+
+    #[test]
+    fn app_name_endpoint_requires_the_bearer_token() {
+        let (address, handle) = spawn_demo_server(1);
+        let response = send_request(
+            address,
+            "GET /api/v1/app-name?key=firefox HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        );
+        join_demo_server(handle);
+
+        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        assert!(response.contains("WWW-Authenticate: Bearer"));
+        let body = parse_body(&response);
+        assert_eq!(body["code"], "unauthorized");
+        assert!(!response.contains("firefox"));
+    }
+
+    #[test]
+    fn app_name_rejects_missing_and_unsafe_keys_without_echoing_them() {
+        let (address, handle) = spawn_demo_server(3);
+        let missing = send_request(
+            address,
+            "GET /api/v1/app-name HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let traversal = send_request(
+            address,
+            "GET /api/v1/app-name?key=..%2Fetc%2Fpasswd HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        let unknown = send_request(
+            address,
+            "GET /api/v1/app-name?key=no-such-app HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        );
+        join_demo_server(handle);
+
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+        assert_eq!(parse_body(&missing)["code"], "bad_request");
+        assert!(traversal.starts_with("HTTP/1.1 400"), "{traversal}");
+        assert_eq!(parse_body(&traversal)["code"], "bad_request");
+        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
+        assert_eq!(parse_body(&unknown)["code"], "not_found");
+        assert!(!unknown.to_lowercase().contains("passwd"));
+    }
+
+    #[test]
+    fn app_name_serves_a_sanitised_name_without_leaking_key_or_path() {
+        let desktop_dir = std::path::PathBuf::from("/opt/test/applications");
+        // A bidi control in `Name=` must not survive into the JSON body.
+        let desktop = "[Desktop Entry]\nType=Application\nName=Fox\u{202e}irefox\nIcon=firefox\n";
+        struct FixtureFs {
+            desktop_dir: std::path::PathBuf,
+            desktop: String,
+        }
+        impl IconFs for FixtureFs {
+            fn list_dir(&self, dir: &Path) -> Vec<String> {
+                if dir == self.desktop_dir {
+                    vec!["firefox.desktop".to_string()]
+                } else {
+                    Vec::new()
+                }
+            }
+            fn read_to_string(&self, path: &Path) -> Option<String> {
+                (path == self.desktop_dir.join("firefox.desktop")).then(|| self.desktop.clone())
+            }
+            fn is_file(&self, _path: &Path) -> bool {
+                false
+            }
+        }
+        ICON_RESOLVER.with(|cell| {
+            *cell.borrow_mut() = AppIconResolver::new(
+                tm_core::icon::IconSearchEnv {
+                    applications_dirs: vec![desktop_dir.clone()],
+                    data_dirs: Vec::new(),
+                },
+                FixtureFs {
+                    desktop_dir,
+                    desktop: desktop.to_string(),
+                },
+            );
+        });
+        let request = http::parse_request(
+            b"GET /api/v1/app-name?key=firefox HTTP/1.1\r\nAuthorization: Bearer test-token\r\n\r\n",
+        )
+        .expect("request head must parse");
+        let mut probe = DemoProbe::new();
+        let response = app_name_response(&request, &mut probe, TEST_TOKEN, 42);
+
+        assert_eq!(response.status, 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.body).expect("name body must be JSON");
+        assert_eq!(body["name"], "Fox irefox");
+        let raw = String::from_utf8(response.body).expect("UTF-8 body");
+        assert!(!raw.contains('\u{202e}'));
+        assert!(!raw.contains("/opt/test"));
+        assert!(!raw.contains(TEST_TOKEN));
     }
 
     #[test]

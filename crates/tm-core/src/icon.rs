@@ -185,6 +185,58 @@ pub fn desktop_icon(contents: &str) -> Option<String> {
     }
 }
 
+/// Extracts the unqualified `Name=` from a `.desktop` file for display.
+///
+/// Parsed with the same deterministic rules as [`desktop_icon`]: only a
+/// visible `Type=Application` entry inside `[Desktop Entry]` is accepted,
+/// `NoDisplay`/`Hidden` (true/1/yes) are rejected, and locale-qualified keys
+/// such as `Name[ja]` are deliberately ignored. Only the exact key `Name` is
+/// considered, so the result never depends on the host locale. `None` means
+/// "no usable name" and lets the caller fall back to the redacted group key.
+pub fn desktop_name(contents: &str) -> Option<String> {
+    let mut in_entry = false;
+    let mut is_application = false;
+    let mut hidden = false;
+    let mut name = None;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            if in_entry {
+                break;
+            }
+            in_entry = line.eq_ignore_ascii_case("[Desktop Entry]");
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "Type" => is_application = value.eq_ignore_ascii_case("Application"),
+            "NoDisplay" | "Hidden" => {
+                if matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes") {
+                    hidden = true;
+                }
+            }
+            "Name" if name.is_none() && !value.is_empty() => {
+                name = Some(value.to_string());
+            }
+            _ => {}
+        }
+    }
+    if is_application && !hidden {
+        name
+    } else {
+        None
+    }
+}
+
 /// Selects `.desktop` filenames for one canonical key from a depth-1 listing.
 ///
 /// The exact `<key>.desktop` wins; snap's `<prefix>_<key>.desktop` convention
@@ -249,6 +301,7 @@ pub struct AppIconResolver {
     env: IconSearchEnv,
     fs: Box<dyn IconFs>,
     cache: HashMap<String, Option<PathBuf>>,
+    name_cache: HashMap<String, Option<String>>,
 }
 
 impl AppIconResolver {
@@ -258,6 +311,7 @@ impl AppIconResolver {
             env,
             fs: Box::new(fs),
             cache: HashMap::new(),
+            name_cache: HashMap::new(),
         }
     }
 
@@ -274,9 +328,44 @@ impl AppIconResolver {
         resolved
     }
 
-    /// Drops all cached positive and negative results (e.g. after an install).
+    /// Resolves a raw group key to a human-readable `.desktop` name, or `None`.
+    ///
+    /// Uses the same canonicalisation, search roots and `.desktop` candidate
+    /// ordering as [`Self::resolve`], but reads `Name=` via [`desktop_name`].
+    /// Positive and negative results are cached by raw group key, so a
+    /// repeated lookup never rescans the filesystem. `None` (invalid key,
+    /// missing entry or hidden/non-application entry) is the signal for the UI
+    /// to fall back to the already-redacted group key.
+    pub fn resolve_display_name(&mut self, group_key: &str) -> Option<String> {
+        if let Some(cached) = self.name_cache.get(group_key) {
+            return cached.clone();
+        }
+        let resolved = self.resolve_display_name_uncached(group_key);
+        self.name_cache
+            .insert(group_key.to_string(), resolved.clone());
+        resolved
+    }
+
+    /// Drops all cached icon and display-name results (e.g. after an install).
     pub fn clear_cache(&mut self) {
         self.cache.clear();
+        self.name_cache.clear();
+    }
+
+    fn resolve_display_name_uncached(&self, group_key: &str) -> Option<String> {
+        let key = canonical_key(group_key)?;
+        for dir in &self.env.applications_dirs {
+            let names = self.fs.list_dir(dir);
+            for name in desktop_matches(&key, &names) {
+                let Some(contents) = self.fs.read_to_string(&dir.join(&name)) else {
+                    continue;
+                };
+                if let Some(display_name) = desktop_name(&contents) {
+                    return Some(display_name);
+                }
+            }
+        }
+        None
     }
 
     fn resolve_uncached(&self, group_key: &str) -> Option<PathBuf> {
@@ -373,6 +462,8 @@ fn is_png(path: &Path) -> bool {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     // Relevant lines of the real entries present on the target host
     // (checked 2026-11-21):
@@ -427,6 +518,31 @@ Type=Application
 
         fn is_file(&self, path: &Path) -> bool {
             self.files.contains_key(&path_key(path))
+        }
+    }
+
+    // Shares a scan counter with a resolver so the tests can prove whether a
+    // lookup hit the cache or actually walked the applications directories.
+    #[derive(Clone, Default)]
+    struct ScanCounter(Rc<Cell<usize>>);
+
+    struct CountingFs {
+        inner: FakeFs,
+        scans: ScanCounter,
+    }
+
+    impl IconFs for CountingFs {
+        fn list_dir(&self, dir: &Path) -> Vec<String> {
+            self.scans.0.set(self.scans.0.get() + 1);
+            self.inner.list_dir(dir)
+        }
+
+        fn read_to_string(&self, path: &Path) -> Option<String> {
+            self.inner.read_to_string(path)
+        }
+
+        fn is_file(&self, path: &Path) -> bool {
+            self.inner.is_file(path)
         }
     }
 
@@ -661,6 +777,152 @@ Type=Application
         assert_eq!(
             desktop_icon("[Desktop Entry]\nType=Application\nIcon[ja]=x\n"),
             None
+        );
+    }
+
+    #[test]
+    fn desktop_name_extracts_unqualified_name_and_ignores_locale_variants() {
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nName=Google Chrome\nIcon=x\n")
+                .as_deref(),
+            Some("Google Chrome")
+        );
+        // Key order is irrelevant, just as for desktop_icon.
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nName=Firefox\nType=Application\n").as_deref(),
+            Some("Firefox")
+        );
+        // Locale-qualified keys alone never produce a name (deterministic core).
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nName[ja]=読み込み\n"),
+            None
+        );
+        // With both present the unqualified key wins; locale is ignored.
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nName[ja]=X\nName=Y\n").as_deref(),
+            Some("Y")
+        );
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nName=\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn desktop_name_requires_visible_application_entry() {
+        assert_eq!(desktop_name("[Desktop Entry]\nType=Link\nName=X\n"), None);
+        assert_eq!(desktop_name("[Desktop Entry]\nName=X\n"), None);
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nNoDisplay=true\nName=X\n"),
+            None
+        );
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nHidden=1\nName=X\n"),
+            None
+        );
+        // Sections outside [Desktop Entry] are ignored, exactly as in desktop_icon.
+        assert_eq!(
+            desktop_name("[Other]\nName=X\n[Desktop Entry]\nType=Application\nName=Y\n").as_deref(),
+            Some("Y")
+        );
+        assert_eq!(
+            desktop_name("[Desktop Entry]\nType=Application\nName=X\n[Other]\nName=Y\n").as_deref(),
+            Some("X")
+        );
+    }
+
+    #[test]
+    fn resolve_display_name_uses_human_readable_name_and_alias() {
+        let fs = FakeFs::default()
+            .dir("/usr/share/applications", &["google-chrome.desktop"])
+            .file(
+                "/usr/share/applications/google-chrome.desktop",
+                CHROME_DESKTOP,
+            );
+        let mut resolver = AppIconResolver::new(test_env(), fs);
+        assert_eq!(
+            resolver.resolve_display_name("chrome").as_deref(),
+            Some("Google Chrome")
+        );
+        // Alias and case normalisation apply to names as they do to icons.
+        assert_eq!(
+            resolver.resolve_display_name("Chrome").as_deref(),
+            Some("Google Chrome")
+        );
+        assert_eq!(
+            resolver.resolve_display_name("chrome-stable").as_deref(),
+            Some("Google Chrome")
+        );
+        // Invalid keys and unknown groups resolve to None.
+        assert_eq!(resolver.resolve_display_name("../etc/passwd"), None);
+        assert_eq!(resolver.resolve_display_name("not-installed"), None);
+    }
+
+    #[test]
+    fn resolve_display_name_caches_positive_and_negative_results() {
+        let scans = ScanCounter::default();
+        let inner = FakeFs::default()
+            .dir("/usr/share/applications", &["app.desktop"])
+            .file(
+                "/usr/share/applications/app.desktop",
+                "[Desktop Entry]\nType=Application\nName=App\n",
+            );
+        let mut resolver = AppIconResolver::new(
+            test_env(),
+            CountingFs {
+                inner,
+                scans: scans.clone(),
+            },
+        );
+
+        assert_eq!(resolver.resolve_display_name("app").as_deref(), Some("App"));
+        let after_first = scans.0.get();
+        assert!(after_first > 0, "first lookup must scan the directories");
+        assert_eq!(resolver.resolve_display_name("app").as_deref(), Some("App"));
+        assert_eq!(
+            scans.0.get(),
+            after_first,
+            "positive result must be served from cache"
+        );
+
+        assert_eq!(resolver.resolve_display_name("missing"), None);
+        let after_negative = scans.0.get();
+        assert!(after_negative > after_first);
+        assert_eq!(resolver.resolve_display_name("missing"), None);
+        assert_eq!(
+            scans.0.get(),
+            after_negative,
+            "negative result must be served from cache"
+        );
+    }
+
+    #[test]
+    fn clear_cache_drops_cached_display_names() {
+        let scans = ScanCounter::default();
+        let inner = FakeFs::default()
+            .dir("/usr/share/applications", &["app.desktop"])
+            .file(
+                "/usr/share/applications/app.desktop",
+                "[Desktop Entry]\nType=Application\nName=App\n",
+            );
+        let mut resolver = AppIconResolver::new(
+            test_env(),
+            CountingFs {
+                inner,
+                scans: scans.clone(),
+            },
+        );
+
+        assert_eq!(resolver.resolve_display_name("app").as_deref(), Some("App"));
+        let cached_scans = scans.0.get();
+        assert_eq!(resolver.resolve_display_name("app").as_deref(), Some("App"));
+        assert_eq!(scans.0.get(), cached_scans);
+
+        resolver.clear_cache();
+        assert_eq!(resolver.resolve_display_name("app").as_deref(), Some("App"));
+        assert!(
+            scans.0.get() > cached_scans,
+            "clear_cache must invalidate the display-name cache"
         );
     }
 }

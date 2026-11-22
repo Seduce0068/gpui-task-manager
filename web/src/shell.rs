@@ -440,6 +440,18 @@ impl StreamMode {
     }
 }
 
+/// Page selected in the left navigation.
+///
+/// `Overview` keeps the cards but hides the table; `Applications` and
+/// `Processes` map onto the existing grouping/tree commands so no new viewmodel
+/// state is introduced. The DOM proof string is independent of this choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavSection {
+    Overview,
+    Applications,
+    Processes,
+}
+
 /// Browser application state.
 pub struct TaskManagerApp {
     dashboard: Dashboard,
@@ -480,9 +492,18 @@ pub struct TaskManagerApp {
     /// successful PNG lands here; every miss keeps the existing status dot, so
     /// the DOM proof / AX mirror (which never mention icons) stay unchanged.
     app_icons: HashMap<String, Arc<Image>>,
-    /// Whether an icon-refresh task is already walking the current key list.
-    /// Sequential fetches keep the client's dedicated single-flight gate free.
+    /// Human-readable names fetched from the authenticated agent endpoint,
+    /// keyed by the same redacted group key. `None` is a definitive miss, so a
+    /// known-unnamed app keeps its already-redacted label without re-requesting.
+    /// The value is sanitised at both ends of the wire and is never written to
+    /// the DOM proof.
+    app_names: HashMap<String, Option<String>>,
+    /// Whether an asset-refresh task is already walking the current key list.
+    /// Sequential fetches keep the client's dedicated single-flight gates free.
     icon_refresh_running: bool,
+    /// Which page the left navigation currently shows. Purely presentational:
+    /// it is not a `Dashboard` command and never enters the DOM proof.
+    nav_section: NavSection,
     /// 行メニューをキーボードで開いたときに最初へ移す項目のフォーカスハンドル。
     row_menu_item_focus: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -568,6 +589,10 @@ pub struct TaskManagerApp {
 struct ProcessRowView {
     key: ProcessKey,
     group_key: Option<String>,
+    /// Redacted app key used only for the decorative icon lookup. Unlike
+    /// `group_key` (which drives row activation) this is also set on expanded
+    /// process rows; `Others` keeps `None` so its NUL key is never looked up.
+    icon_key: Option<String>,
     name: String,
     command: String,
     cpu: f32,
@@ -620,12 +645,20 @@ fn row_activation(view: &ProcessRowView, tree_view: bool) -> RowActivation {
 /// reserved NUL-prefixed key). A multi-process group shows `×N`; the newly
 /// revealed one-member groups keep the ordinary label with no `×1` suffix.
 fn grouped_row_display_name(row: &AppGroupRow) -> String {
+    grouped_row_display_name_with(row, &row.label)
+}
+
+/// Same shape as [`grouped_row_display_name`] but with an explicit base label,
+/// so a resolved human name can replace the redacted key in every row.
+/// `Others` ignores the override: its fixed label and numeric count are the
+/// only redaction-safe text available for that aggregate.
+fn grouped_row_display_name_with(row: &AppGroupRow, label: &str) -> String {
     match row.kind {
         AppRowKind::Others => format!("その他 {} アプリ", row.process_count),
         AppRowKind::Group if row.process_count > 1 => {
-            format!("{} ×{}", row.label, row.process_count)
+            format!("{label} ×{}", row.process_count)
         }
-        AppRowKind::Group | AppRowKind::Process => row.label.clone(),
+        AppRowKind::Group | AppRowKind::Process => label.to_string(),
     }
 }
 
@@ -662,6 +695,21 @@ fn resolve_process_row(
     index: usize,
     app_row: Option<&AppGroupRow>,
 ) -> Option<ProcessRowView> {
+    resolve_process_row_with_names(dashboard, index, app_row, &HashMap::new())
+}
+
+/// Full resolver including the agent-provided display names.
+///
+/// `app_names` maps a redacted group key to an optional sanitised human name.
+/// An unresolved key (absent, or `None` for a definitive miss) falls back to
+/// the already-redacted label from the view model, so no new identifier can
+/// reach the canvas, the AX mirror or the DOM proof.
+fn resolve_process_row_with_names(
+    dashboard: &Dashboard,
+    index: usize,
+    app_row: Option<&AppGroupRow>,
+    app_names: &HashMap<String, Option<String>>,
+) -> Option<ProcessRowView> {
     let snapshot = dashboard.snapshot()?;
     let selected = dashboard.selected_key();
     let fixed = "—".to_string();
@@ -679,11 +727,15 @@ fn resolve_process_row(
         } else {
             selected == Some(row.process_key)
         };
-        // The Others row uses only a fixed, already-redacted label plus the
-        // numeric count; no raw process name can reach the canvas or AX mirror.
-        // A one-member group (including the rows revealed under Others) keeps
-        // its plain label; only multi-process groups carry the `×N` marker.
-        let name = grouped_row_display_name(row);
+        // A resolved human name overrides the redacted group key on every row
+        // (including expanded process rows, which carry their parent's key).
+        // An unresolved key keeps the already-redacted label. `Others` never
+        // overrides its fixed label: its NUL key is reserved and unresolvable.
+        let resolved = (!is_others)
+            .then(|| app_names.get(&row.key).and_then(|value| value.as_deref()))
+            .flatten();
+        let base_label = resolved.unwrap_or(&row.label);
+        let name = grouped_row_display_name_with(row, base_label);
         // Only multi-process group rows emphasise their `×N`; a single-member
         // group, the Others summary and process rows keep the plain style.
         let count_emphasis =
@@ -706,7 +758,7 @@ fn resolve_process_row(
             )
         } else if is_group {
             a11y_group_row_label(
-                &row.label,
+                base_label,
                 display_cpu,
                 row.memory_bytes,
                 row.process_count,
@@ -715,7 +767,7 @@ fn resolve_process_row(
             )
         } else {
             a11y_row_label(
-                &row.label,
+                base_label,
                 process.status,
                 display_cpu,
                 row.memory_bytes,
@@ -726,6 +778,9 @@ fn resolve_process_row(
         return Some(ProcessRowView {
             key: row.process_key,
             group_key: is_aggregate.then(|| row.key.clone()),
+            // Group *and* expanded process rows get the decorative icon; the
+            // Others summary keeps `None` so its NUL key is never sent.
+            icon_key: (!is_others).then(|| row.key.clone()),
             name,
             command: if is_others {
                 "クリックで展開".to_string()
@@ -769,7 +824,8 @@ fn resolve_process_row(
         });
     }
 
-    // Flat / tree view: byte-for-byte the previous data path.
+    // Flat / tree view: the previous data path plus an optional human name for
+    // the process's redacted app key. No other field changes.
     let row_index = *dashboard.visible_indices().get(index)?;
     let depth = dashboard.visible_depths().get(index).copied().unwrap_or(0);
     let has_children = dashboard
@@ -779,18 +835,24 @@ fn resolve_process_row(
         .unwrap_or(false);
     let process = snapshot.processes.get(row_index)?;
     let selected = selected == Some(process.key);
+    let flat_key = tm_core::model::app_group_key(process);
+    let resolved = app_names.get(flat_key).and_then(|value| value.as_deref());
+    let base_label = resolved.unwrap_or(&process.name);
     let row_a11y_label = a11y_row_label(
-        &process.name,
+        base_label,
         process.status,
         process.cpu_percent,
         process.memory_bytes,
         process.key.pid,
         selected,
     );
+    let icon_key =
+        (!flat_key.is_empty() && flat_key != OTHERS_APP_GROUP_KEY).then(|| flat_key.to_string());
     Some(ProcessRowView {
         key: process.key,
         group_key: None,
-        name: process.name.clone(),
+        icon_key,
+        name: base_label.to_string(),
         command: process.command.clone(),
         cpu: process.cpu_percent,
         memory: process.memory_bytes,
@@ -860,7 +922,9 @@ impl TaskManagerApp {
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
             grouped_row_focus: Vec::new(),
             app_icons: HashMap::new(),
+            app_names: HashMap::new(),
             icon_refresh_running: false,
+            nav_section: NavSection::Applications,
             row_menu_item_focus: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             live_total: None,
@@ -964,7 +1028,7 @@ impl TaskManagerApp {
                                 if app.ingest_guarded_poll(result) {
                                     cx.notify();
                                 }
-                                app.refresh_app_icons(cx);
+                                app.refresh_app_assets(cx);
                             });
                             if alive.is_err() {
                                 break;
@@ -1002,28 +1066,50 @@ impl TaskManagerApp {
         .detach();
     }
 
-    /// Requests PNG icons for group keys that do not have one yet.
+    /// Fetches missing human names and PNG icons for the visible app keys.
     ///
-    /// Called after each ingested snapshot (poll or SSE frame). The work is a
-    /// single sequential task: the agent's icon endpoint is decorative, so a
-    /// miss or a timeout simply leaves the existing status dot in place and
-    /// never touches `live_error`, `ticks`, the DOM proof or the AX mirror.
-    /// `AgentClient` caches results per key and applies its own cooldown for
+    /// Called after each ingested snapshot (poll or SSE frame). Both endpoints
+    /// are decorative: a miss or timeout leaves the redacted label / status dot
+    /// in place and never touches `live_error`, `ticks`, the DOM proof or the
+    /// AX mirror. One sequential task walks the keys, so the client's separate
+    /// single-flight gates are never contended. `AgentClient` caches both
+    /// channels (with a `name:` prefix for names) and applies cooldowns for
     /// transient failures, so repeated ticks cannot flood the loopback agent.
-    fn refresh_app_icons(&mut self, cx: &mut Context<Self>) {
+    fn refresh_app_assets(&mut self, cx: &mut Context<Self>) {
         if self.icon_refresh_running {
             return;
         }
         let DataSource::Live(client) = &self.source else {
             return;
         };
-        let keys: Vec<String> = self
-            .dashboard
-            .app_group_rows()
-            .into_iter()
-            .filter(|row| row.kind == AppRowKind::Group && !self.app_icons.contains_key(&row.key))
-            .map(|row| row.key)
-            .collect();
+        let mut keys: Vec<String> = Vec::new();
+        if self.dashboard.app_group_view() {
+            // Group *and* expanded process rows carry a real group key. The
+            // Others summary's NUL-prefixed key is deliberately excluded.
+            for row in self.dashboard.app_group_rows() {
+                if matches!(row.kind, AppRowKind::Group | AppRowKind::Process)
+                    && row.key != OTHERS_APP_GROUP_KEY
+                    && (!self.app_names.contains_key(&row.key)
+                        || !self.app_icons.contains_key(&row.key))
+                {
+                    keys.push(row.key);
+                }
+            }
+        } else if let Some(snapshot) = self.dashboard.snapshot() {
+            for index in self.dashboard.visible_indices() {
+                if let Some(process) = snapshot.processes.get(*index) {
+                    let key = tm_core::model::app_group_key(process);
+                    if !key.is_empty()
+                        && key != OTHERS_APP_GROUP_KEY
+                        && (!self.app_names.contains_key(key) || !self.app_icons.contains_key(key))
+                    {
+                        keys.push(key.to_string());
+                    }
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
         if keys.is_empty() {
             return;
         }
@@ -1031,13 +1117,38 @@ impl TaskManagerApp {
         self.icon_refresh_running = true;
         cx.spawn(async move |this, cx| {
             for key in keys {
-                let Ok(Some(bytes)) = client.fetch_app_icon(&key).await else {
-                    continue;
+                let (want_name, want_icon) = match this.update(cx, |app, _| {
+                    (
+                        app.app_names.get(&key).is_none_or(Option::is_none),
+                        !app.app_icons.contains_key(&key),
+                    )
+                }) {
+                    Ok(flags) => flags,
+                    Err(_) => break,
                 };
-                let image = icon_image(bytes);
+                // Keep the `Result`: a transient error must not be recorded as
+                // a definitive miss. `AgentClient` applies its own cooldown.
+                let name_result = if want_name {
+                    Some(client.fetch_app_name(&key).await)
+                } else {
+                    None
+                };
+                let bytes = if want_icon {
+                    client.fetch_app_icon(&key).await.ok().flatten()
+                } else {
+                    None
+                };
+                let image = bytes.map(icon_image);
                 let alive = this.update(cx, |app, cx| {
-                    app.app_icons.insert(key, image);
-                    // Only a new icon triggers a repaint; no proof rewrite.
+                    if let Some(Ok(name)) = &name_result
+                        && !app.app_names.contains_key(&key)
+                    {
+                        app.app_names.insert(key.clone(), name.clone());
+                    }
+                    if let Some(image) = image {
+                        app.app_icons.insert(key.clone(), image);
+                    }
+                    // Only a new asset triggers a repaint; no proof rewrite.
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -1071,9 +1182,11 @@ impl TaskManagerApp {
             return false;
         }
         // A different endpoint/token means a different agent: drop cached PNGs
-        // and let the next snapshot re-resolve icons under the new credentials.
-        client.clear_icon_cache();
+        // and names, and let the next snapshot re-resolve both under the new
+        // credentials.
+        client.clear_asset_caches();
         self.app_icons.clear();
+        self.app_names.clear();
         self.proof_token = proof_token;
         self.live_error = None;
         self.reconnect_required = false;
@@ -1154,7 +1267,7 @@ impl TaskManagerApp {
                         // Same ingest path as polling: redaction, ticks, stale
                         // and reconnect handling stay in exactly one place.
                         app.handle_live_result(Ok(envelope.into_response()));
-                        app.refresh_app_icons(cx);
+                        app.refresh_app_assets(cx);
                         cx.notify();
                     });
                 }) {
@@ -3353,6 +3466,92 @@ impl TaskManagerApp {
             )
     }
 
+    // ------------------------------------------------------------ left nav
+
+    /// Pure mapping from a nav item's fixed id to its section.
+    fn nav_section_from_id(id: &str) -> Option<NavSection> {
+        match id {
+            "nav-overview" => Some(NavSection::Overview),
+            "nav-applications" => Some(NavSection::Applications),
+            "nav-processes" => Some(NavSection::Processes),
+            _ => None,
+        }
+    }
+
+    /// Selects a page using only existing `Dashboard` commands for the two
+    /// table pages. The page choice itself is shell-local: no new viewmodel
+    /// state, no new DOM-proof field and no new wire contract.
+    fn select_nav_section(&mut self, section: NavSection, cx: &mut Context<Self>) {
+        self.nav_section = section;
+        match section {
+            NavSection::Overview => {}
+            NavSection::Applications => {
+                self.handle_command(Command::SetAppGrouping(true), cx);
+            }
+            NavSection::Processes => {
+                self.handle_command(Command::SetAppGrouping(false), cx);
+                self.handle_command(Command::SetTreeView(false), cx);
+            }
+        }
+        // `handle_command` already notifies; Overview needs this one.
+        cx.notify();
+    }
+
+    fn left_nav(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let item = |id: &'static str, label: &'static str, section: NavSection| {
+            let active = self.nav_section == section;
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(if active {
+                    format!("{label}（表示中）")
+                } else {
+                    label.to_string()
+                })
+                .w_full()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .cursor_pointer()
+                .bg(rgb(if active {
+                    palette().surface
+                } else {
+                    palette().base
+                }))
+                .text_color(rgb(if active {
+                    palette().text
+                } else {
+                    palette().muted
+                }))
+                .hover(|style| style.text_color(rgb(palette().text)))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.select_nav_section(section, cx);
+                }))
+                .child(label.to_string())
+        };
+        div()
+            .id("left-nav")
+            .role(Role::Navigation)
+            .aria_label("画面切替")
+            .w(px(160.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(item("nav-overview", "概要", NavSection::Overview))
+            .child(item(
+                "nav-applications",
+                "アプリケーション",
+                NavSection::Applications,
+            ))
+            .child(item("nav-processes", "プロセス", NavSection::Processes))
+    }
+
+    /// Whether the process table is visible for the selected nav page.
+    fn table_visible(&self) -> bool {
+        self.nav_section != NavSection::Overview
+    }
+
     // ------------------------------------------------------------- main area
 
     fn main_area(&self, cx: &mut Context<Self>) -> Div {
@@ -3407,7 +3606,9 @@ impl TaskManagerApp {
             .role(Role::Table)
             .aria_label("プロセス一覧")
             .aria_row_count(count)
-            .aria_column_count(8)
+            // Only 名前 / コマンド / CPU / メモリ are shown by default; PID,
+            // ユーザー, 状態 and スレッド stay in the details panel instead.
+            .aria_column_count(4)
             .flex()
             .flex_col()
             .flex_1()
@@ -3490,50 +3691,10 @@ impl TaskManagerApp {
                 .w(px(COL_MEMORY))
                 .flex_shrink_0(),
             )
-            .child(
-                self.sort_cell(
-                    "sort-pid",
-                    "PID",
-                    SortKey::Pid,
-                    &self.sort_header_focus[3],
-                    cx,
-                )
-                .w(px(COL_PID))
-                .flex_shrink_0(),
-            )
-            .child(
-                self.sort_cell(
-                    "sort-user",
-                    "ユーザー",
-                    SortKey::User,
-                    &self.sort_header_focus[4],
-                    cx,
-                )
-                .w(px(COL_USER))
-                .flex_shrink_0(),
-            )
-            .child(
-                self.sort_cell(
-                    "sort-status",
-                    "状態",
-                    SortKey::Status,
-                    &self.sort_header_focus[5],
-                    cx,
-                )
-                .w(px(COL_STATUS))
-                .flex_shrink_0(),
-            )
-            .child(
-                self.sort_cell(
-                    "sort-threads",
-                    "スレッド",
-                    SortKey::Threads,
-                    &self.sort_header_focus[6],
-                    cx,
-                )
-                .w(px(COL_THREADS))
-                .flex_shrink_0(),
-            )
+        // PID / ユーザー / 状態 / スレッド are hidden by default. Their
+        // focus handles stay allocated (indices 3..6) but are never
+        // attached to a header, so they create no tab stops; sorting by
+        // those keys remains available from the settings dialog.
     }
 
     fn sort_cell(
@@ -3594,7 +3755,8 @@ impl TaskManagerApp {
     ) -> Option<AnyElement> {
         let tree_view = self.dashboard.tree_view();
         let grouped = self.dashboard.app_group_view();
-        let view = resolve_process_row(&self.dashboard, index, app_row)?;
+        let view =
+            resolve_process_row_with_names(&self.dashboard, index, app_row, &self.app_names)?;
         let key = view.key;
         let selected = view.selected;
         let depth = view.depth;
@@ -3612,14 +3774,13 @@ impl TaskManagerApp {
         } else {
             status_color(view.status)
         };
-        let group_icon = if is_group {
-            view.group_key
-                .as_deref()
-                .and_then(|key| self.app_icons.get(key))
-                .map(Arc::clone)
-        } else {
-            None
-        };
+        // Group *and* expanded process rows use the same decorative PNG. The
+        // Others row has no `icon_key`, so its reserved NUL key is never sent.
+        let group_icon = view
+            .icon_key
+            .as_deref()
+            .and_then(|key| self.app_icons.get(key))
+            .map(Arc::clone);
 
         // Keep a stable handle per row so Tab + Enter/Space reaches the same
         // `on_click` that a mouse activation uses (WCAG 2.1.1). Flat/tree rows
@@ -3770,47 +3931,10 @@ impl TaskManagerApp {
                         .text_color(rgb(palette().subtext))
                         .child(format::format_bytes(view.memory)),
                 )
-                .child(
-                    div()
-                        .w(px(COL_PID))
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(rgb(palette().muted))
-                        .child(view.pid_text),
-                )
-                .child(
-                    div()
-                        .w(px(COL_USER))
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(rgb(palette().subtext))
-                        .truncate()
-                        .child(view.user),
-                )
-                .child(
-                    div()
-                        .w(px(COL_STATUS))
-                        .flex_shrink_0()
-                        .child(accessible_pill(
-                            ("row-status", index),
-                            view.status_text.clone(),
-                            if is_group {
-                                palette().muted
-                            } else {
-                                status_color(view.status)
-                            },
-                            palette().surface,
-                            format!("状態: {}", view.status_text),
-                        )),
-                )
-                .child(
-                    div()
-                        .w(px(COL_THREADS))
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(rgb(palette().muted))
-                        .child(view.threads_text),
-                )
+                // PID / ユーザー / 状態 / スレッド are hidden by default. The
+                // data still feeds the AX row label and the details panel, so
+                // no redaction or DOM-proof contract changes; only four cells
+                // are drawn, matching `aria_column_count(4)` above.
                 .into_any_element(),
         )
     }
@@ -4340,18 +4464,20 @@ impl TaskManagerApp {
             return;
         };
         let data_html = if self.dashboard.app_group_view() {
-            a11y_mirror_grouped_data_html(
+            a11y_mirror_grouped_data_html_with_names(
                 self.dashboard.snapshot(),
                 &self.dashboard.app_group_rows(),
                 self.dashboard.selected_key(),
                 self.dashboard.sort_spec(),
+                &self.app_names,
             )
         } else {
-            a11y_mirror_data_html(
+            a11y_mirror_data_html_with_names(
                 self.dashboard.snapshot(),
                 self.dashboard.visible_indices(),
                 self.dashboard.selected_key(),
                 self.dashboard.sort_spec(),
+                &self.app_names,
             )
         };
         if data.inner_html() != data_html {
@@ -4651,9 +4777,12 @@ impl Render for TaskManagerApp {
         }
         let focused = self.focus_handle.is_focused(window);
         let header = self.header(cx);
+        let left_nav = self.left_nav(cx);
         let overview = self.overview();
         let toolbar = self.toolbar(focused, cx);
-        let main_area = self.main_area(cx);
+        // 概要選択時はテーブルを隠すだけ。DOM proof の書式と件数は不変で、
+        // 隠し AX ミラーもこれまでどおり同期され続ける。
+        let table = self.table_visible().then(|| self.main_area(cx));
         let status_bar = self.status_bar();
         let row_menu = self.row_context_menu(cx);
         let help = self.help_overlay(cx);
@@ -4695,9 +4824,27 @@ impl Render for TaskManagerApp {
             .text_color(rgb(palette().text))
             .font_family(FONT_SANS)
             .child(header)
-            .child(overview)
-            .child(toolbar)
-            .child(main_area)
+            .child(
+                div()
+                    .id("tm-web-workspace")
+                    .flex()
+                    .gap_3()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(left_nav)
+                    .child(
+                        div()
+                            .id("tm-web-content")
+                            .flex()
+                            .flex_col()
+                            .gap(px(GAP))
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .child(overview)
+                            .child(toolbar)
+                            .children(table),
+                    ),
+            )
             .child(status_bar)
             .children(row_menu)
             .children(help)
@@ -5096,10 +5243,6 @@ const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
     ("コマンド", None),
     ("CPU", Some(SortKey::Cpu)),
     ("メモリ", Some(SortKey::Memory)),
-    ("PID", Some(SortKey::Pid)),
-    ("ユーザー", Some(SortKey::User)),
-    ("状態", Some(SortKey::Status)),
-    ("スレッド", Some(SortKey::Threads)),
 ];
 
 /// Escapes dynamic text before it is written through `set_inner_html`.
@@ -5204,14 +5347,29 @@ fn a11y_mirror_rows_html(
     visible_indices: &[usize],
     selected: Option<ProcessKey>,
 ) -> String {
+    a11y_mirror_rows_html_with_names(snapshot, visible_indices, selected, &HashMap::new())
+}
+
+/// Same mirror with the agent-provided display names applied.
+fn a11y_mirror_rows_html_with_names(
+    snapshot: Option<&SystemSnapshot>,
+    visible_indices: &[usize],
+    selected: Option<ProcessKey>,
+    app_names: &HashMap<String, Option<String>>,
+) -> String {
     let mut html = String::from("<div role=\"rowgroup\">");
     if let Some(snapshot) = snapshot {
         for (index, process_index) in visible_indices.iter().enumerate() {
             let Some(process) = snapshot.processes.get(*process_index) else {
                 continue;
             };
+            let key = tm_core::model::app_group_key(process);
+            let name = app_names
+                .get(key)
+                .and_then(|value| value.as_deref())
+                .unwrap_or(&process.name);
             html.push_str(&a11y_mirror_row_html(
-                &process.name,
+                name,
                 process.status,
                 process.cpu_percent,
                 process.memory_bytes,
@@ -5237,6 +5395,17 @@ fn a11y_mirror_group_rows_html(
     rows: &[AppGroupRow],
     selected: Option<ProcessKey>,
 ) -> String {
+    a11y_mirror_group_rows_html_with_names(snapshot, rows, selected, &HashMap::new())
+}
+
+/// Same mirror with resolved human names; unresolved rows keep their redacted
+/// labels exactly as before.
+fn a11y_mirror_group_rows_html_with_names(
+    snapshot: Option<&SystemSnapshot>,
+    rows: &[AppGroupRow],
+    selected: Option<ProcessKey>,
+    app_names: &HashMap<String, Option<String>>,
+) -> String {
     let mut html = String::from("<div role=\"rowgroup\">");
     // Aggregate rows show CPU as a share of the machine's logical cores, so
     // the DOM mirror reports the same normalised value the canvas draws
@@ -5256,13 +5425,19 @@ fn a11y_mirror_group_rows_html(
         } else {
             selected == Some(row.process_key)
         };
+        // The AX mirror names the same human-readable value the canvas draws.
+        // Others has no resolvable key and keeps its fixed redacted label.
+        let resolved = (!is_others)
+            .then(|| app_names.get(&row.key).and_then(|value| value.as_deref()))
+            .flatten();
+        let base_label = resolved.unwrap_or(&row.label);
         if !is_aggregate {
             let status = snapshot
                 .and_then(|snapshot| snapshot.processes.get(row.index))
                 .map(|process| process.status)
                 .unwrap_or(ProcessStatus::Unknown);
             html.push_str(&a11y_mirror_row_html(
-                &grouped_row_display_name(row),
+                &grouped_row_display_name_with(row, base_label),
                 status,
                 row.cpu_percent,
                 row.memory_bytes,
@@ -5295,7 +5470,7 @@ fn a11y_mirror_group_rows_html(
             )
         } else {
             a11y_group_row_label(
-                &row.label,
+                base_label,
                 display_cpu,
                 row.memory_bytes,
                 row.process_count,
@@ -5303,7 +5478,7 @@ fn a11y_mirror_group_rows_html(
                 row_selected,
             )
         };
-        let name_text = grouped_row_display_name(row);
+        let name_text = grouped_row_display_name_with(row, base_label);
         html.push_str(&format!(
             "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected_value}\"{current_attribute}{expanded_attribute} \
              aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
@@ -5328,11 +5503,24 @@ fn a11y_mirror_grouped_data_html(
     selected: Option<ProcessKey>,
     sort: SortSpec,
 ) -> String {
+    a11y_mirror_grouped_data_html_with_names(snapshot, rows, selected, sort, &HashMap::new())
+}
+
+/// Same grouped mirror with the agent-provided display names applied.
+fn a11y_mirror_grouped_data_html_with_names(
+    snapshot: Option<&SystemSnapshot>,
+    rows: &[AppGroupRow],
+    selected: Option<ProcessKey>,
+    sort: SortSpec,
+    app_names: &HashMap<String, Option<String>>,
+) -> String {
     let mut html = String::from("<div role=\"grid\" aria-label=\"プロセス一覧\">");
     html.push_str("<div role=\"rowgroup\">");
     html.push_str(&a11y_mirror_header_html(sort));
     html.push_str("</div>");
-    html.push_str(&a11y_mirror_group_rows_html(snapshot, rows, selected));
+    html.push_str(&a11y_mirror_group_rows_html_with_names(
+        snapshot, rows, selected, app_names,
+    ));
     html.push_str("</div>");
     html.push_str(&a11y_mirror_metrics_html(snapshot));
     html
@@ -5543,11 +5731,27 @@ fn a11y_mirror_data_html(
     selected: Option<ProcessKey>,
     sort: SortSpec,
 ) -> String {
+    a11y_mirror_data_html_with_names(snapshot, visible_indices, selected, sort, &HashMap::new())
+}
+
+/// Same flat/tree mirror with the agent-provided display names applied.
+fn a11y_mirror_data_html_with_names(
+    snapshot: Option<&SystemSnapshot>,
+    visible_indices: &[usize],
+    selected: Option<ProcessKey>,
+    sort: SortSpec,
+    app_names: &HashMap<String, Option<String>>,
+) -> String {
     let mut html = String::from("<div role=\"grid\" aria-label=\"プロセス一覧\">");
     html.push_str("<div role=\"rowgroup\">");
     html.push_str(&a11y_mirror_header_html(sort));
     html.push_str("</div>");
-    html.push_str(&a11y_mirror_rows_html(snapshot, visible_indices, selected));
+    html.push_str(&a11y_mirror_rows_html_with_names(
+        snapshot,
+        visible_indices,
+        selected,
+        app_names,
+    ));
     html.push_str("</div>");
     html.push_str(&a11y_mirror_metrics_html(snapshot));
     html
@@ -6661,7 +6865,9 @@ mod tests {
                 sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
                 grouped_row_focus: Vec::new(),
                 app_icons: HashMap::new(),
+                app_names: HashMap::new(),
                 icon_refresh_running: false,
+                nav_section: NavSection::Applications,
                 row_menu_item_focus: cx.focus_handle(),
                 scroll_handle: UniformListScrollHandle::new(),
                 live_total: None,
@@ -6769,7 +6975,9 @@ mod tests {
                         sort_header_focus: std::array::from_fn(|_| test_cx.focus_handle()),
                         grouped_row_focus: Vec::new(),
                         app_icons: HashMap::new(),
+                        app_names: HashMap::new(),
                         icon_refresh_running: false,
+                        nav_section: NavSection::Applications,
                         row_menu_item_focus: test_cx.focus_handle(),
                         scroll_handle: UniformListScrollHandle::new(),
                         live_total: None,
@@ -9700,6 +9908,138 @@ mod tests {
             a11y_mirror_grouped_data_html(snapshot.as_ref(), &rows, None, SortSpec::default());
         assert!(html.contains("aria-expanded=\"true\""), "{html}");
         assert_eq!(html.matches("role=\"row\"").count(), rows.len() + 1);
+    }
+
+    #[test]
+    fn resolved_name_overrides_group_label_in_canvas_and_ax_mirror() {
+        let dashboard = grouped_dashboard();
+        let rows = dashboard.app_group_rows();
+        let group = rows
+            .iter()
+            .find(|row| row.kind == AppRowKind::Group)
+            .expect("group row");
+        let mut names = HashMap::new();
+        names.insert(group.key.clone(), Some("Firefox Browser".to_string()));
+
+        let view =
+            resolve_process_row_with_names(&dashboard, 0, Some(group), &names).expect("row view");
+        assert_eq!(view.name, "Firefox Browser ×3");
+        assert!(view.row_a11y_label.contains("Firefox Browser"));
+        assert_eq!(view.icon_key.as_deref(), Some(group.key.as_str()));
+
+        let html = a11y_mirror_grouped_data_html_with_names(
+            dashboard.snapshot(),
+            &rows,
+            None,
+            SortSpec::default(),
+            &names,
+        );
+        assert!(html.contains("Firefox Browser ×3"), "{html}");
+        assert!(html.contains("アプリグループ Firefox Browser"), "{html}");
+        // Unresolved rows keep the original redacted label and the same shape.
+        let plain =
+            a11y_mirror_grouped_data_html(dashboard.snapshot(), &rows, None, SortSpec::default());
+        assert!(plain.contains("firefox ×3"), "{plain}");
+    }
+
+    #[test]
+    fn flat_rows_use_the_resolved_name_and_icon_key() {
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        snapshot.processes = vec![ProcessSnapshot {
+            key: ProcessKey::new(10, 1),
+            name: "firefox".into(),
+            command: "/usr/bin/firefox".into(),
+            cpu_percent: 1.0,
+            ..ProcessSnapshot::default()
+        }];
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(snapshot);
+        dashboard.apply(Command::SetAppGrouping(false));
+        assert!(!dashboard.app_group_view());
+
+        let mut names = HashMap::new();
+        names.insert("firefox".to_string(), Some("Firefox Browser".to_string()));
+        let view = resolve_process_row_with_names(&dashboard, 0, None, &names).expect("flat row");
+        assert_eq!(view.name, "Firefox Browser");
+        assert!(view.row_a11y_label.contains("Firefox Browser"));
+        assert_eq!(view.icon_key.as_deref(), Some("firefox"));
+
+        let html = a11y_mirror_data_html_with_names(
+            dashboard.snapshot(),
+            dashboard.visible_indices(),
+            None,
+            SortSpec::default(),
+            &names,
+        );
+        assert!(html.contains("Firefox Browser"), "{html}");
+    }
+
+    #[test]
+    fn others_row_keeps_fixed_label_and_never_looks_up_an_icon() {
+        let dashboard = many_apps_dashboard(6);
+        let rows = dashboard.app_group_rows();
+        let pos = rows
+            .iter()
+            .position(|row| row.kind == AppRowKind::Others)
+            .expect("others row");
+        let others = &rows[pos];
+        let mut names = HashMap::new();
+        names.insert(others.key.clone(), Some("MUST NOT APPEAR".to_string()));
+
+        let view = resolve_process_row_with_names(&dashboard, pos, Some(others), &names)
+            .expect("others view");
+        assert_eq!(view.icon_key, None, "NUL key must never be fetched");
+        assert!(!view.name.contains("MUST NOT APPEAR"));
+        assert!(view.name.starts_with("その他 "));
+
+        let html = a11y_mirror_grouped_data_html_with_names(
+            dashboard.snapshot(),
+            &rows,
+            None,
+            SortSpec::default(),
+            &names,
+        );
+        assert!(!html.contains("MUST NOT APPEAR"), "{html}");
+    }
+
+    #[test]
+    fn visible_columns_and_nav_pages_keep_the_dom_proof_shape() {
+        // The hidden columns must not reappear in either header representation.
+        for hidden in ["PID", "ユーザー", "状態", "スレッド"] {
+            assert!(
+                !A11Y_MIRROR_COLUMNS
+                    .iter()
+                    .any(|(label, _)| *label == hidden),
+                "{hidden} must stay hidden"
+            );
+        }
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 4);
+        assert_eq!(
+            TaskManagerApp::nav_section_from_id("nav-overview"),
+            Some(NavSection::Overview)
+        );
+        assert_eq!(
+            TaskManagerApp::nav_section_from_id("nav-applications"),
+            Some(NavSection::Applications)
+        );
+        assert_eq!(
+            TaskManagerApp::nav_section_from_id("nav-processes"),
+            Some(NavSection::Processes)
+        );
+        assert_eq!(TaskManagerApp::nav_section_from_id("nope"), None);
+
+        // Switching pages is presentational: the proof string keeps the same
+        // fields and the same row count.
+        let (_, _, _, proof) = run_sse_steps(|app| {
+            app.dashboard.ingest(grouped_snapshot());
+            app.nav_section = NavSection::Overview;
+            assert!(!app.table_visible());
+            let overview_proof = app.proof_string(0, 0);
+            app.nav_section = NavSection::Processes;
+            assert!(app.table_visible());
+            assert_eq!(overview_proof, app.proof_string(0, 0));
+        });
+        assert!(proof.contains("rows=2;"), "{proof}");
     }
 
     #[test]

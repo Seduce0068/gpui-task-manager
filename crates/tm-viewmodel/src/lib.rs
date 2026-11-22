@@ -726,6 +726,13 @@ pub struct Dashboard {
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
+    /// Suppress rows whose normalised CPU usage is exactly zero in the default
+    /// view (C4-VIEWMODEL).
+    ///
+    /// This is presentation-only: `Filter` (and its "active" indicator) stays
+    /// untouched, export/wire code keeps reading `snapshot.processes`, and an
+    /// explicit `ClearFilter` or the `All` preset restores the idle rows.
+    hide_idle_processes: bool,
     active_preset: Option<FilterPresetId>,
     selected: Option<ProcessKey>,
     selection_hint: usize,
@@ -781,6 +788,7 @@ impl Dashboard {
             history: MetricHistory::new(HISTORY_CAPACITY),
             sort: SortSpec::default(),
             filter: Filter::default(),
+            hide_idle_processes: true,
             active_preset: None,
             selected: None,
             selection_hint: 0,
@@ -975,6 +983,21 @@ impl Dashboard {
             })
     }
 
+    /// Indices of snapshot processes eligible for a display row.
+    ///
+    /// Starts from the same filter/sort pipeline as the flat table, then drops
+    /// processes rendering as `0.0%` while the default idle suppression is in
+    /// effect. Kept in one place so grouped and flat views never disagree about
+    /// which processes exist on screen (C4-VIEWMODEL). Export/wire paths read
+    /// `snapshot.processes` directly and never come through here.
+    fn display_base(&self, snapshot: &SystemSnapshot) -> Vec<usize> {
+        let mut base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        if self.hide_idle_processes {
+            base.retain(|&index| normalise_percent(snapshot.processes[index].cpu_percent) > 0.0);
+        }
+        base
+    }
+
     /// Whether an application group is currently expanded (R1-GROUP).
     pub fn is_app_group_expanded(&self, key: &str) -> bool {
         self.expanded_app_groups.contains(key)
@@ -986,9 +1009,10 @@ impl Dashboard {
     /// [`app_group_key`]), with the members' CPU/memory totals already computed
     /// by [`group_by_app`]. One-process applications are compacted into a single
     /// [`AppRowKind::Others`] row when at least [`OTHERS_MIN_GROUP_COUNT`] of
-    /// them exist and a multi-process group remains visible; expanding that
-    /// reserved key reveals the original rows at `depth = 1`. A multi-process
-    /// group added to the expansion set through
+    /// them exist and a multi-process group remains visible; the summary row is
+    /// always the last one (only its own expanded children follow it), and
+    /// expanding that reserved key reveals the original rows at `depth = 1`.
+    /// A multi-process group added to the expansion set through
     /// [`Command::ToggleAppGroup`] is likewise followed by its individual
     /// processes at `depth = 1`; collapsing it removes them again. The current
     /// filter is applied first and the active sort spec orders the group rows
@@ -1003,7 +1027,7 @@ impl Dashboard {
         };
         // Build the filtered subset so group totals describe exactly the rows
         // the user can see; `base` maps filtered positions back to the snapshot.
-        let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        let base = self.display_base(snapshot);
         let filtered: Vec<ProcessSnapshot> = base
             .iter()
             .map(|&index| snapshot.processes[index].clone())
@@ -1030,20 +1054,11 @@ impl Dashboard {
             fold_others && self.expanded_app_groups.contains(OTHERS_APP_GROUP_KEY);
 
         let mut rows = Vec::new();
-        let mut others_emitted = false;
         for group in groups {
+            // Folded singles are appended once after the loop, so the summary
+            // row always closes the list instead of interrupting the ordinary
+            // groups at the first single-process position (C4-VIEWMODEL).
             if fold_others && group.process_count == 1 {
-                if !others_emitted {
-                    rows.push(others_row(&singles, &filtered, &base, others_expanded));
-                    if others_expanded {
-                        rows.extend(
-                            singles
-                                .iter()
-                                .map(|single| single_group_row(single, &filtered, &base, 1)),
-                        );
-                    }
-                    others_emitted = true;
-                }
                 continue;
             }
             let member_keys: Vec<ProcessKey> = group
@@ -1088,6 +1103,19 @@ impl Dashboard {
                 }
             }
         }
+        if fold_others {
+            // Trailing summary: only its own revealed one-process rows may
+            // follow it, so expanding "others" never pushes the bucket away
+            // from the end of the list (C4-VIEWMODEL).
+            rows.push(others_row(&singles, &filtered, &base, others_expanded));
+            if others_expanded {
+                rows.extend(
+                    singles
+                        .iter()
+                        .map(|single| single_group_row(single, &filtered, &base, 1)),
+                );
+            }
+        }
         rows
     }
 
@@ -1111,13 +1139,16 @@ impl Dashboard {
     }
 
     /// First member (smallest [`ProcessKey`]) of a keyed, visible group.
+    ///
+    /// Uses [`Self::display_base`] rather than the raw filter so an idle
+    /// process hidden from the table can never become a selection
+    /// representative (C4-VIEWMODEL).
     fn first_app_group_key(&self, key: &str) -> Option<ProcessKey> {
         self.snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .processes
-                .iter()
-                .filter(|process| app_group_key(process) == key && self.filter.matches(process))
-                .map(|process| process.key)
+            let base = self.display_base(snapshot);
+            base.iter()
+                .filter(|&&index| app_group_key(&snapshot.processes[index]) == key)
+                .map(|&index| snapshot.processes[index].key)
                 .min()
         })
     }
@@ -1326,6 +1357,11 @@ impl Dashboard {
                 // Clone the static preset: a preset is shared immutable data,
                 // the dashboard owns its own mutable filter.
                 self.filter = filter_preset(id).filter.clone();
+                // "すべて" is the explicit reset choice: restore idle rows that
+                // the default presentation suppressed (C4-VIEWMODEL).
+                if id == FilterPresetId::All {
+                    self.hide_idle_processes = false;
+                }
                 self.active_preset = Some(id);
                 self.recompute_visible();
                 Vec::new()
@@ -1346,6 +1382,7 @@ impl Dashboard {
             }
             Command::ClearFilter => {
                 self.filter = Filter::default();
+                self.hide_idle_processes = false;
                 self.active_preset = None;
                 self.recompute_visible();
                 Vec::new()
@@ -1883,7 +1920,7 @@ impl Dashboard {
             self.visible_has_children.clear();
             return;
         };
-        let base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        let base = self.display_base(snapshot);
         if self.app_group_view {
             // Grouping drives the *existing* visible arrays so the native and
             // web renderers need no changes (R1-VISIBLE). `app_group_rows()`
@@ -2845,14 +2882,25 @@ mod tests {
             snapshot
                 .processes
                 .iter()
-                .filter(|process| process.virtual_memory_bytes >= max_vm)
+                .filter(|process| {
+                    process.virtual_memory_bytes >= max_vm
+                        && normalise_percent(process.cpu_percent) > 0.0
+                })
                 .count()
         );
 
         dashboard.apply(Command::SetMinVirtualMemoryBytes(None));
         assert_eq!(dashboard.filter().min_virtual_memory_bytes, None);
         assert!(!dashboard.filter().is_active());
-        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+        // The default view still suppresses idle rows until an explicit clear.
+        assert_eq!(
+            dashboard.visible_count(),
+            snapshot
+                .processes
+                .iter()
+                .filter(|process| normalise_percent(process.cpu_percent) > 0.0)
+                .count()
+        );
 
         // Both the dedicated clear and ClearFilter must reset the threshold.
         dashboard.apply(Command::SetMinVirtualMemoryBytes(Some(min_vm)));
@@ -3418,6 +3466,7 @@ mod tests {
                 parent_pid: None,
                 name: "root".to_string(),
                 command: "root".to_string(),
+                cpu_percent: 1.0,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3425,6 +3474,7 @@ mod tests {
                 parent_pid: Some(10),
                 name: "leaf".to_string(),
                 command: "leaf".to_string(),
+                cpu_percent: 1.0,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -3450,6 +3500,7 @@ mod tests {
                 parent_pid: None,
                 name: "parent".to_string(),
                 command: "parent".to_string(),
+                cpu_percent: 1.0,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3457,6 +3508,7 @@ mod tests {
                 parent_pid: Some(parent.pid),
                 name: "child".to_string(),
                 command: "child".to_string(),
+                cpu_percent: 1.0,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -3737,6 +3789,7 @@ mod tests {
                 key: ProcessKey::new(80, 8),
                 name: "solo".into(),
                 command: "solo".into(),
+                cpu_percent: 1.0,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -4112,12 +4165,15 @@ mod tests {
             direction: SortDirection::Ascending,
         }));
         let rows = dashboard.app_group_rows();
-        // Name ascending puts `alpha` first, so it becomes the representative
-        // and the bucket takes the first single app's display position.
-        assert_eq!(rows[0].kind, AppRowKind::Others);
-        assert_eq!(rows[0].process_key, ProcessKey::new(11, 1));
+        // The multi-process `firefox` group comes first; the bucket closes the
+        // list. Name ascending still makes `alpha` the representative and keeps
+        // the single apps in their sorted order inside the bucket.
+        assert_eq!(rows[0].kind, AppRowKind::Group);
+        assert_eq!(rows[0].key, "firefox");
+        assert_eq!(rows[1].kind, AppRowKind::Others);
+        assert_eq!(rows[1].process_key, ProcessKey::new(11, 1));
         assert_eq!(
-            rows[0].member_keys,
+            rows[1].member_keys,
             vec![
                 ProcessKey::new(11, 1),
                 ProcessKey::new(22, 2),
@@ -4142,6 +4198,157 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.kind == AppRowKind::Group));
         assert!(rows.iter().all(|row| row.key != OTHERS_APP_GROUP_KEY));
+    }
+
+    /// Two multi-process apps plus three single-process apps: the bucket has to
+    /// clear both real group rows before it can be last (C4-VIEWMODEL).
+    fn others_multi_group_snapshot() -> tm_core::SystemSnapshot {
+        let mut snapshot = demo_snapshot(0);
+        let process = |pid: u32, name: &str, cpu_percent| ProcessSnapshot {
+            key: ProcessKey::new(pid, pid as u64),
+            name: name.into(),
+            command: format!("/usr/bin/{name} --pid={pid}"),
+            cpu_percent,
+            memory_bytes: 100,
+            ..ProcessSnapshot::default()
+        };
+        snapshot.processes = vec![
+            process(11, "alpha", 3.0),
+            process(22, "beta", 2.0),
+            process(33, "gamma", 1.0),
+            process(44, "browser", 10.0),
+            process(45, "browser", 5.0),
+            process(66, "editor", 8.0),
+            process(67, "editor", 4.0),
+        ];
+        snapshot
+    }
+
+    #[test]
+    fn others_row_is_last_with_multiple_multi_process_groups() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_multi_group_snapshot());
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].key, "browser");
+        assert_eq!(rows[1].key, "editor");
+        let others = rows.last().expect("others row");
+        assert_eq!(others.kind, AppRowKind::Others);
+        assert_eq!(others.key, OTHERS_APP_GROUP_KEY);
+        assert_eq!(others.process_count, 3);
+        assert_eq!(dashboard.visible_count(), rows.len());
+        assert_eq!(dashboard.visible_depths(), &[0, 0, 0]);
+    }
+
+    #[test]
+    fn others_row_stays_last_when_expanded_and_selection_falls_back_to_it() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(others_multi_group_snapshot());
+
+        // A folded single resolves to the trailing bucket's representative.
+        dashboard.apply(Command::Select(Some(ProcessKey::new(22, 22))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(11, 11)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(2));
+
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[2].kind, AppRowKind::Others);
+        assert!(rows[2].expanded);
+        assert_eq!(
+            rows[3..]
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "gamma"]
+        );
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(2));
+
+        // A hidden member of a collapsed real group still maps to that group,
+        // unaffected by the bucket now sitting behind it.
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        dashboard.apply(Command::Select(Some(ProcessKey::new(67, 67))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(66, 66)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(1));
+    }
+
+    #[test]
+    fn idle_rows_hidden_by_default_and_restored_by_clear_and_all_preset() {
+        let snapshot = demo_snapshot(0);
+        let active = snapshot
+            .processes
+            .iter()
+            .filter(|process| normalise_percent(process.cpu_percent) > 0.0)
+            .count();
+        assert!(
+            active < snapshot.processes.len(),
+            "demo must contain idle rows"
+        );
+
+        let mut dashboard = flat_dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        assert_eq!(dashboard.visible_count(), active);
+        // Filter state stays clean: no phantom "filtered" indicator (C4-VIEWMODEL).
+        assert!(!dashboard.filter().is_active());
+
+        dashboard.apply(Command::ClearFilter);
+        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+
+        let mut dashboard = flat_dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::All));
+        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+    }
+
+    #[test]
+    fn selection_never_resolves_to_an_idle_hidden_group_member() {
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 10),
+                name: "worker".into(),
+                command: "/usr/bin/worker".into(),
+                cpu_percent: 0.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 20),
+                name: "worker".into(),
+                command: "/usr/bin/worker --type=child".into(),
+                cpu_percent: 4.0,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        let mut dashboard = dashboard();
+        dashboard.ingest(snapshot);
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].process_key, ProcessKey::new(20, 20));
+
+        // The smallest-key member is idle and hidden, so it must not become the
+        // representative of the collapsed group.
+        dashboard.apply(Command::Select(Some(ProcessKey::new(20, 20))));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 20)));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
+    }
+
+    #[test]
+    fn idle_suppression_does_not_change_snapshot_or_export_input() {
+        let mut dashboard = flat_dashboard();
+        ingest_ticks(&mut dashboard, 1);
+        let snapshot = dashboard.snapshot().expect("snapshot").clone();
+        assert_eq!(snapshot.processes.len(), demo_snapshot(0).processes.len());
+        assert!(snapshot
+            .processes
+            .iter()
+            .any(|process| normalise_percent(process.cpu_percent) == 0.0));
+
+        // Clearing restores every snapshot index; export/wire keep reading the
+        // unmodified `snapshot.processes` (no aggregate, no dropped idle row).
+        dashboard.apply(Command::ClearFilter);
+        let mut indices = dashboard.visible_indices().to_vec();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..snapshot.processes.len()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -4396,7 +4603,13 @@ mod tests {
     fn applying_a_preset_filters_the_table_and_marks_it_active() {
         let mut dashboard = flat_dashboard();
         ingest_ticks(&mut dashboard, 1);
-        let all_count = dashboard.visible_count();
+        // The default view suppresses idle rows; "All" restores them too.
+        let default_count = dashboard.visible_count();
+        let total_count = dashboard.snapshot().expect("snapshot").processes.len();
+        assert!(
+            default_count < total_count,
+            "demo data must contain idle rows"
+        );
         assert_eq!(dashboard.active_filter_preset(), None);
 
         assert!(dashboard
@@ -4414,12 +4627,16 @@ mod tests {
             .filter(|process| normalise_percent(process.cpu_percent) >= PRESET_HIGH_CPU_PERCENT)
             .count();
         assert_eq!(dashboard.visible_count(), expected);
-        assert!(expected < all_count, "demo data must contain low-CPU rows");
+        assert!(
+            expected < default_count,
+            "demo data must contain low-CPU rows"
+        );
 
         // Switching presets is a single effect-free command; "All" resets the
-        // filter while keeping the marker so the UI can highlight that chip.
+        // filter (and idle suppression) while keeping the marker so the UI can
+        // highlight that chip.
         dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::All));
-        assert_eq!(dashboard.visible_count(), all_count);
+        assert_eq!(dashboard.visible_count(), total_count);
         assert_eq!(dashboard.active_filter_preset(), Some(FilterPresetId::All));
     }
 

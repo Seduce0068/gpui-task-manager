@@ -39,8 +39,13 @@ use gpui::BackgroundExecutor;
 use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
-use tm_core::wire::{DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, ICON_PATH, SNAPSHOT_PATH};
-use tm_core::{MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION};
+use tm_core::wire::{
+    APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, ICON_PATH, SNAPSHOT_PATH,
+};
+use tm_core::{
+    MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION, sanitize::MAX_NAME_CHARS,
+    sanitize::sanitize_display,
+};
 use web_time::Instant;
 
 /// Hard cap on a single snapshot response body (8 MiB), protecting the wasm
@@ -49,6 +54,12 @@ pub const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Hard cap on one application-icon PNG (256 KiB), mirrored by the agent.
 pub const MAX_ICON_BYTES: u64 = 256 * 1024;
+
+/// Hard cap on one application-name JSON body (4 KiB), mirrored by the agent.
+///
+/// A `.desktop` `Name=` is short by design; this bound protects the wasm heap
+/// without touching the PNG path or its 256 KiB contract.
+pub const MAX_APP_NAME_BYTES: u64 = 4 * 1024;
 
 /// Cooldown after a transient icon failure. Missing icons are cached as absent
 /// indefinitely (they cannot change without an install), but a timeout or a
@@ -522,6 +533,41 @@ fn icon_entry_is_live(entry: &IconCacheEntry, now: Instant) -> bool {
     !matches!(entry, IconCacheEntry::RetryAt(at) if now >= *at)
 }
 
+/// Per-key display-name cache plus its own single-flight gate.
+///
+/// Names and PNGs use separate maps *and* separate cache-key prefixes, so a
+/// human-readable name can never be confused with icon bytes even if both are
+/// looked up for the same group key. Only redacted keys and sanitised display
+/// text are stored — no endpoint, token, path or raw agent text.
+#[derive(Debug, Default)]
+struct NameCacheState {
+    entries: RwLock<HashMap<String, NameCacheEntry>>,
+    gate: FetchGate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NameCacheEntry {
+    /// Sanitised human-readable name for this key.
+    Found(String),
+    /// Definitive miss: keep the already-redacted group key in the UI.
+    Absent,
+    /// A transient failure is not retried until this instant.
+    RetryAt(Instant),
+}
+
+/// Cache key for the name channel of a group key.
+///
+/// The explicit `name:` prefix keeps the two channels disjoint by construction,
+/// mirroring the separate PNG cache in [`IconCacheState`].
+fn name_cache_key(key: &str) -> String {
+    format!("name:{key}")
+}
+
+/// Whether a name cache entry may still be used at `now`.
+fn name_entry_is_live(entry: &NameCacheEntry, now: Instant) -> bool {
+    !matches!(entry, NameCacheEntry::RetryAt(at) if now >= *at)
+}
+
 /// Monotonic epoch that invalidates poll snapshots superseded by SSE.
 ///
 /// Distinct from [`SharedConfig::generation`]: a token/endpoint reload changes
@@ -611,6 +657,8 @@ pub struct AgentClient {
     poll_suspensions: Arc<AtomicUsize>,
     /// Independent cache and single-flight permit for `/api/v1/icon`.
     icons: IconCacheState,
+    /// Independent cache and single-flight permit for `/api/v1/app-name`.
+    names: NameCacheState,
 }
 
 impl AgentClient {
@@ -628,6 +676,7 @@ impl AgentClient {
             poll_generation: PollGeneration::new(),
             poll_suspensions: Arc::new(AtomicUsize::new(0)),
             icons: IconCacheState::default(),
+            names: NameCacheState::default(),
         }
     }
 
@@ -841,16 +890,99 @@ impl AgentClient {
             .insert(key.to_string(), entry);
     }
 
-    /// Drops every cached icon after the endpoint / token changed.
+    /// Drops every cached icon and display name after the endpoint / token changed.
     ///
-    /// A restarted agent may resolve different PNG bytes for the same key, so
-    /// the shell must not keep showing an icon fetched under old credentials.
-    pub fn clear_icon_cache(&self) {
+    /// A restarted agent may resolve different PNG bytes and `.desktop` names
+    /// for the same key, so the shell must not keep showing an asset fetched
+    /// under old credentials. Both channels are cleared together.
+    pub fn clear_asset_caches(&self) {
         self.icons
             .entries
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
+        self.names
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Fetches one human-readable application name for a redacted group key.
+    ///
+    /// Uses the same loopback/Bearer/timeout gate and cooldowns as
+    /// [`Self::fetch_app_icon`], but with an independent cache and single-flight
+    /// permit so a stalled name lookup cannot block icon loading (or polling).
+    /// `Ok(None)` means "keep the already-redacted label" (invalid key, `400` /
+    /// `404`, or a transient failure inside its cooldown). The name is
+    /// re-sanitised on arrival; no endpoint, token, key or path is ever logged.
+    pub async fn fetch_app_name(&self, key: &str) -> Result<Option<String>, FetchError> {
+        if tm_core::icon::canonical_key(key).is_none() {
+            return Ok(None);
+        }
+        let cache_key = name_cache_key(key);
+        if let Some(entry) = self.cached_name(&cache_key) {
+            return Ok(name_from_entry(entry));
+        }
+        let _permit = match self.names.gate.try_acquire() {
+            Some(permit) => permit,
+            None => return Err(FetchError::Busy),
+        };
+        if let Some(entry) = self.cached_name(&cache_key) {
+            return Ok(name_from_entry(entry));
+        }
+
+        let config = self.config.snapshot();
+        let deadline = self.executor.timer(FETCH_TIMEOUT);
+        let result = with_deadline(fetch_app_name_once(&config, &*self.http, key), deadline).await;
+        match result {
+            Ok(Some(name)) => {
+                self.record_name(&cache_key, NameCacheEntry::Found(name.clone()));
+                Ok(Some(name))
+            }
+            Ok(None) => {
+                self.record_name(&cache_key, NameCacheEntry::Absent);
+                Ok(None)
+            }
+            Err(error) => {
+                let cooldown = if error == FetchError::Busy {
+                    ICON_BUSY_COOLDOWN
+                } else {
+                    ICON_RETRY_COOLDOWN
+                };
+                self.record_name(
+                    &cache_key,
+                    NameCacheEntry::RetryAt(Instant::now() + cooldown),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Cached entry for `cache_key`, dropping expired cooldowns in place.
+    fn cached_name(&self, cache_key: &str) -> Option<NameCacheEntry> {
+        let mut entries = self
+            .names
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let expired = entries
+            .get(cache_key)
+            .is_some_and(|entry| !name_entry_is_live(entry, Instant::now()));
+        if expired {
+            entries.remove(cache_key);
+            None
+        } else {
+            entries.get(cache_key).cloned()
+        }
+    }
+
+    fn record_name(&self, cache_key: &str, entry: NameCacheEntry) {
+        self.names
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(cache_key.to_string(), entry);
     }
 
     /// Subscribes to the agent's long-lived `GET /api/v1/stream` endpoint.
@@ -1044,6 +1176,27 @@ fn icon_url(endpoint: &str, key: &str) -> String {
     format!("{endpoint}{ICON_PATH}?key={}", encode_query_value(key))
 }
 
+/// Builds the application-name request URL. Same rules as [`icon_url`]: the
+/// token stays in the Bearer header and the path comes from the wire contract.
+fn app_name_url(endpoint: &str, key: &str) -> String {
+    format!("{endpoint}{APP_NAME_PATH}?key={}", encode_query_value(key))
+}
+
+/// Compact JSON returned by `/api/v1/app-name`. Unknown fields are ignored so
+/// the agent may add diagnostics without breaking older browser builds.
+#[derive(Deserialize)]
+struct AppNameResponse {
+    name: String,
+}
+
+/// Projects a cached name entry to the caller's "keep the redacted label" form.
+fn name_from_entry(entry: NameCacheEntry) -> Option<String> {
+    match entry {
+        NameCacheEntry::Found(name) => Some(name),
+        NameCacheEntry::Absent | NameCacheEntry::RetryAt(_) => None,
+    }
+}
+
 /// Cheap PNG signature check before a byte buffer is handed to the decoder.
 fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
@@ -1109,6 +1262,74 @@ async fn fetch_icon_once(
         return Ok(None);
     }
     Ok(Some(Arc::new(buffer)))
+}
+
+/// One application-name request/response pipeline, with the transport injected.
+///
+/// Mirrors [`fetch_icon_once`] exactly: loopback-only destination checked
+/// *before* the Bearer token is attached, no token in the URL, a declared-and-
+/// streamed 4 KiB body cap and fixed redacted error strings. `400`/`404` and a
+/// malformed body are normal "keep the redacted label" results. The name is
+/// re-sanitised here as a second trust boundary, never logged or echoed.
+async fn fetch_app_name_once(
+    config: &AgentConfig,
+    http: &dyn HttpClient,
+    key: &str,
+) -> Result<Option<String>, FetchError> {
+    if !is_loopback_http_endpoint(&config.endpoint) {
+        return Err(FetchError::InvalidEndpoint);
+    }
+    let url = app_name_url(&config.endpoint, key);
+    let mut builder = Request::builder().method("GET").uri(&url);
+    if let Some(token) = &config.token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let request = builder.body(AsyncBody::empty()).map_err(|error| {
+        FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
+    })?;
+    let response = http.send(request).await.map_err(|error| {
+        log::warn!(
+            "アプリ名の取得に失敗: {}",
+            redact_token(&format!("{error:#}"), config.token.as_deref())
+        );
+        FetchError::Connect
+    })?;
+    let status = response.status();
+    if status.as_u16() == 400 || status.as_u16() == 404 {
+        // No body is read: a fixed "no name" result stays redaction-safe.
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(status_error_with_headers(
+            status.as_u16(),
+            response.headers(),
+        ));
+    }
+    let declared = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok());
+    if content_length_exceeds_limit(declared, MAX_APP_NAME_BYTES) {
+        return Err(FetchError::SizeLimit);
+    }
+    let mut buffer = Vec::new();
+    read_body_abortable(
+        response.into_body(),
+        &mut buffer,
+        MAX_APP_NAME_BYTES,
+        config.token.as_deref(),
+        || false,
+    )
+    .await?;
+    let parsed: AppNameResponse = match serde_json::from_slice(&buffer) {
+        Ok(parsed) => parsed,
+        Err(_) => return Ok(None),
+    };
+    let name = sanitize_display(&parsed.name, MAX_NAME_CHARS);
+    if name.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(name))
 }
 
 /// Reads `body` into `out`, stopping as soon as `aborted()` turns true or the
@@ -1862,6 +2083,81 @@ mod tests {
         assert_eq!(
             icon_url("http://127.0.0.1:18787", "a b"),
             format!("http://127.0.0.1:18787{ICON_PATH}?key=a%20b")
+        );
+    }
+
+    #[test]
+    fn app_name_url_has_no_token_and_uses_the_wire_constant() {
+        let url = app_name_url("http://127.0.0.1:18787", "google-chrome");
+        assert_eq!(
+            url,
+            format!("http://127.0.0.1:18787{APP_NAME_PATH}?key=google-chrome")
+        );
+        assert!(!url.contains("token"));
+        assert_ne!(APP_NAME_PATH, ICON_PATH);
+        assert_eq!(
+            app_name_url("http://127.0.0.1:18787", "a b"),
+            format!("http://127.0.0.1:18787{APP_NAME_PATH}?key=a%20b")
+        );
+    }
+
+    #[test]
+    fn name_cache_key_is_disjoint_from_the_icon_channel() {
+        // A name is never looked up in the PNG map: the explicit prefix keeps
+        // the two channels separate even for an identical group key.
+        assert_ne!(name_cache_key("firefox"), "firefox");
+        assert!(name_cache_key("firefox").starts_with("name:"));
+        assert_eq!(
+            name_from_entry(NameCacheEntry::Found("Firefox".to_string())),
+            Some("Firefox".to_string())
+        );
+        assert_eq!(name_from_entry(NameCacheEntry::Absent), None);
+        assert_eq!(
+            name_from_entry(NameCacheEntry::RetryAt(Instant::now())),
+            None
+        );
+    }
+
+    #[test]
+    fn app_name_fetch_uses_bearer_header_and_sanitises_the_name() {
+        let body = br#"{"name":"Fox\u202eirefox"}"#.to_vec();
+        let (config, client, _) = fake_fetch_client(Some("secret-agent-token"), 200, body);
+        let name = futures::executor::block_on(fetch_app_name_once(&config, &client, "firefox"))
+            .expect("a 200 name must be accepted")
+            .expect("a valid name must be returned");
+        assert_eq!(name, "Fox irefox");
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].uri, app_name_url(TEST_ENDPOINT, "firefox"));
+        assert!(calls[0].bearer_matches);
+        assert!(!calls[0].uri.contains("secret"));
+    }
+
+    #[test]
+    fn app_name_fetch_maps_misses_and_bad_bodies_to_absent() {
+        let (config, client, _) = fake_fetch_client(None, 404, b"SECRET-PATH".to_vec());
+        let result = futures::executor::block_on(fetch_app_name_once(&config, &client, "no-app"));
+        assert_eq!(result, Ok(None));
+        assert!(
+            !format!("{result:?}").contains("SECRET-PATH"),
+            "no body text may leak from a miss"
+        );
+
+        let (config, client, _) = fake_fetch_client(None, 200, b"not json".to_vec());
+        let result = futures::executor::block_on(fetch_app_name_once(&config, &client, "firefox"));
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn app_name_fetch_rejects_a_non_loopback_endpoint_before_attaching_the_token() {
+        let (mut config, client, _) =
+            fake_fetch_client(Some("secret-agent-token"), 200, br#"{"name":"X"}"#.to_vec());
+        config.endpoint = "https://agent.example".to_string();
+        let result = futures::executor::block_on(fetch_app_name_once(&config, &client, "firefox"));
+        assert_eq!(result, Err(FetchError::InvalidEndpoint));
+        assert!(
+            client.calls.lock().unwrap().is_empty(),
+            "no request may be sent to a non-loopback endpoint"
         );
     }
 
