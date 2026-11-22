@@ -65,6 +65,10 @@ criteria = "baseline-unreviewed"
 version = "0.8.4"
 criteria = "baseline-unreviewed"
 
+[[exemptions.aes]]
+version = "0.9.4"
+criteria = "baseline-unreviewed"
+
 [[exemptions.ahash]]
 version = "0.8.12"
 criteria = "baseline-unreviewed"
@@ -277,6 +281,10 @@ criteria = "baseline-unreviewed"
 version = "0.3.3"
 criteria = "baseline-unreviewed"
 
+[[exemptions.block-padding]]
+version = "0.4.2"
+criteria = "baseline-unreviewed"
+
 [[exemptions.block2]]
 version = "0.5.1"
 criteria = "baseline-unreviewed"
@@ -333,6 +341,10 @@ criteria = "baseline-unreviewed"
 version = "0.1.2"
 criteria = "baseline-unreviewed"
 
+[[exemptions.cbc]]
+version = "0.2.1"
+criteria = "baseline-unreviewed"
+
 [[exemptions.cbindgen]]
 version = "0.28.0"
 criteria = "baseline-unreviewed"
@@ -359,6 +371,14 @@ criteria = "baseline-unreviewed"
 
 [[exemptions.cipher]]
 version = "0.4.4"
+criteria = "baseline-unreviewed"
+
+[[exemptions.cipher]]
+version = "0.5.2"
+criteria = "baseline-unreviewed"
+
+[[exemptions.cmov]]
+version = "0.5.4"
 criteria = "baseline-unreviewed"
 
 [[exemptions.cocoa]]
@@ -449,6 +469,10 @@ criteria = "baseline-unreviewed"
 version = "0.19.0"
 criteria = "baseline-unreviewed"
 
+[[exemptions.cpubits]]
+version = "0.1.1"
+criteria = "baseline-unreviewed"
+
 [[exemptions.cpufeatures]]
 version = "0.2.17"
 criteria = "baseline-unreviewed"
@@ -487,6 +511,10 @@ criteria = "baseline-unreviewed"
 
 [[exemptions.ctor]]
 version = "1.0.14"
+criteria = "baseline-unreviewed"
+
+[[exemptions.ctutils]]
+version = "0.4.8"
 criteria = "baseline-unreviewed"
 
 [[exemptions.data-url]]
@@ -993,8 +1021,16 @@ criteria = "baseline-unreviewed"
 version = "0.12.4"
 criteria = "baseline-unreviewed"
 
+[[exemptions.hkdf]]
+version = "0.13.0"
+criteria = "baseline-unreviewed"
+
 [[exemptions.hmac]]
 version = "0.12.1"
+criteria = "baseline-unreviewed"
+
+[[exemptions.hmac]]
+version = "0.13.0"
 criteria = "baseline-unreviewed"
 
 [[exemptions.html5ever]]
@@ -1131,6 +1167,10 @@ criteria = "baseline-unreviewed"
 
 [[exemptions.inout]]
 version = "0.1.4"
+criteria = "baseline-unreviewed"
+
+[[exemptions.inout]]
+version = "0.2.6"
 criteria = "baseline-unreviewed"
 
 [[exemptions.instant]]
@@ -2099,6 +2139,10 @@ criteria = "baseline-unreviewed"
 
 [[exemptions.seahash]]
 version = "4.1.0"
+criteria = "baseline-unreviewed"
+
+[[exemptions.secret-service]]
+version = "5.2.0"
 criteria = "baseline-unreviewed"
 
 [[exemptions.security-framework]]

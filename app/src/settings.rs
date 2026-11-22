@@ -75,6 +75,16 @@ use tm_viewmodel::{
     MAX_SETTINGS_BYTES,
 };
 
+// C1-KEYRING: the OS keyring token store lives in its own file next to this
+// one. Declaring it here with an explicit path keeps `main.rs` (outside this
+// task's write scope) unchanged while still compiling the module and its tests.
+// Tokens are deliberately NOT part of the settings schema stored by this file.
+// The store is not consumed by the shell yet (wiring is a separate task), so
+// keep dead-code warnings scoped to this declaration only.
+#[allow(dead_code)]
+#[path = "keyring.rs"]
+pub mod keyring;
+
 /// Directory name used under the platform configuration root.
 const APP_DIR: &str = "gpui-task-manager";
 /// Settings file name.

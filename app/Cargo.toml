@@ -23,4 +23,13 @@ tm-viewmodel = { workspace = true }
 tm-platform = { workspace = true }
 serde_json = { workspace = true }
 
+# C1-KEYRING: native Secret Service (org.freedesktop.secrets) token storage.
+# Pinned to 5.2.0; `default-features = false` keeps the dependency minimal and
+# the explicit `rt-async-io-crypto-rust` feature is required because this crate
+# raises `compile_error!` when no crypto feature is selected (verified against
+# crates.io metadata). It reuses the zbus 5.19.0 already present in Cargo.lock
+# and avoids the OpenSSL backend.
+[target.'cfg(unix)'.dependencies]
+secret-service = { version = "=5.2.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
+
 [build-dependencies]
