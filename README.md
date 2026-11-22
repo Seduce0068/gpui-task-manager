@@ -141,6 +141,21 @@ cargo build -p gpui-task-manager
 ./target/debug/gpui-task-manager --demo
 ```
 
+### アプリケーションメニューにインストール（開発用）
+
+`scripts/install-local.sh` は root 不要で、ビルドからランチャー登録までを
+一括で行います。再ビルド後に再度実行すれば、バイナリとメニューが更新されます。
+
+```bash
+bash scripts/install-local.sh              # ビルド + 配置 + メニューキャッシュ更新
+bash scripts/install-local.sh --skip-build # 既存の target/release バイナリを再利用
+```
+
+配置先は `~/.local/bin/gpui-task-manager`、
+`~/.local/share/applications/gpui-task-manager.desktop`、および
+`~/.local/share/icons/hicolor/` です。配布用の `.deb` は
+`packaging/linux/build-deb.sh` が作成します（こちらは `/usr` 配下へインストール）。
+
 `--demo` は決定的な合成データです。フィルタプリセットの「高 CPU」は 50% 超の
 行を表示し、更新間隔プリセットの 0.5s も実効します（未変更の既定は 1s）。
 実データを見る場合は `./target/debug/gpui-task-manager` を起動してください。
