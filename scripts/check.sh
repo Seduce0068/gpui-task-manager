@@ -187,12 +187,21 @@ if [ -f web/Cargo.toml ]; then
   RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path web/Cargo.toml --no-deps
 fi
 
-if optional_gate_enabled gitleaks; then
+if optional_gate_enabled betterleaks || optional_gate_enabled gitleaks; then
   # Secret scanning (working tree + git history). Matches the CI extra gate.
-  echo '==> gitleaks detect --redact'
-  gitleaks detect --source "${repo_root}" --redact --exit-code 1
+  # Gitleaks is feature-complete; Betterleaks is its maintained successor and
+  # accepts the same --redact/--exit-code contract, so prefer it when present.
+  if command -v betterleaks >/dev/null 2>&1; then
+    echo '==> betterleaks git --redact'
+    betterleaks git "${repo_root}" --redact --exit-code 1
+  elif command -v gitleaks >/dev/null 2>&1; then
+    echo '==> gitleaks detect --redact'
+    gitleaks detect --source "${repo_root}" --redact --exit-code 1
+  else
+    record_skip 'gitleaks' 'neither betterleaks nor gitleaks is installed'
+  fi
 else
-  record_skip 'gitleaks' 'gitleaks is not installed'
+  record_skip 'gitleaks' 'secret scanning disabled'
 fi
 
 if optional_gate_enabled markdownlint-cli2; then

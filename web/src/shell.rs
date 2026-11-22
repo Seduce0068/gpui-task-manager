@@ -629,6 +629,27 @@ fn grouped_row_display_name(row: &AppGroupRow) -> String {
     }
 }
 
+/// Normalises a multi-process group's summed CPU to a 0–100 percentage of the
+/// machine's logical cores (C1-CPUNORM).
+///
+/// The view model keeps the raw sum (e.g. 471.1% on 12 cores) so the wire and
+/// export contracts are untouched; only the shell's aggregate-row rendering
+/// divides by `core_count()`. Individual process rows and the overview card
+/// are not passed through this helper.
+///
+/// A `core_count` of 0 passes the raw total through without division or
+/// clamping (no core data must not distort the figure), non-finite or negative
+/// totals become 0, and divided results above 100 are clamped.
+fn normalised_group_cpu(total: f32, core_count: usize) -> f32 {
+    if !total.is_finite() || total < 0.0 {
+        return 0.0;
+    }
+    if core_count == 0 {
+        return total;
+    }
+    (total / core_count as f32).min(100.0)
+}
+
 /// Resolves one visible row without touching GPUI state, so the grouped and
 /// flat/tree data paths can be asserted in native unit tests.
 ///
@@ -667,10 +688,18 @@ fn resolve_process_row(
         // group, the Others summary and process rows keep the plain style.
         let count_emphasis =
             (is_group && row.process_count > 1).then(|| format!(" ×{}", row.process_count));
+        // Aggregate rows show CPU as a share of the whole machine, not the raw
+        // sum of member percentages (C1-CPUNORM). Process rows keep their
+        // original value.
+        let display_cpu = if is_aggregate {
+            normalised_group_cpu(row.cpu_percent, snapshot.cpu.core_count())
+        } else {
+            row.cpu_percent
+        };
         let row_a11y_label = if is_others {
             a11y_others_row_label(
                 row.process_count,
-                row.cpu_percent,
+                display_cpu,
                 row.memory_bytes,
                 row.expanded,
                 selected,
@@ -678,7 +707,7 @@ fn resolve_process_row(
         } else if is_group {
             a11y_group_row_label(
                 &row.label,
-                row.cpu_percent,
+                display_cpu,
                 row.memory_bytes,
                 row.process_count,
                 row.expanded,
@@ -688,7 +717,7 @@ fn resolve_process_row(
             a11y_row_label(
                 &row.label,
                 process.status,
-                row.cpu_percent,
+                display_cpu,
                 row.memory_bytes,
                 process.key.pid,
                 selected,
@@ -705,7 +734,7 @@ fn resolve_process_row(
             } else {
                 process.command.clone()
             },
-            cpu: row.cpu_percent,
+            cpu: display_cpu,
             memory: row.memory_bytes,
             pid_text: if is_aggregate {
                 fixed.clone()
@@ -5209,10 +5238,19 @@ fn a11y_mirror_group_rows_html(
     selected: Option<ProcessKey>,
 ) -> String {
     let mut html = String::from("<div role=\"rowgroup\">");
+    // Aggregate rows show CPU as a share of the machine's logical cores, so
+    // the DOM mirror reports the same normalised value the canvas draws
+    // (C1-CPUNORM). Individual process rows keep their raw snapshot value.
+    let core_count = snapshot.map_or(0, |snapshot| snapshot.cpu.core_count());
     for (index, row) in rows.iter().enumerate() {
         let is_group = row.kind == AppRowKind::Group;
         let is_others = row.kind == AppRowKind::Others;
         let is_aggregate = is_group || is_others;
+        let display_cpu = if is_aggregate {
+            normalised_group_cpu(row.cpu_percent, core_count)
+        } else {
+            row.cpu_percent
+        };
         let row_selected = if is_aggregate {
             selected.is_some_and(|key| row.process_key == key || row.member_keys.contains(&key))
         } else {
@@ -5250,7 +5288,7 @@ fn a11y_mirror_group_rows_html(
         let label = if is_others {
             a11y_others_row_label(
                 row.process_count,
-                row.cpu_percent,
+                display_cpu,
                 row.memory_bytes,
                 row.expanded,
                 row_selected,
@@ -5258,7 +5296,7 @@ fn a11y_mirror_group_rows_html(
         } else {
             a11y_group_row_label(
                 &row.label,
-                row.cpu_percent,
+                display_cpu,
                 row.memory_bytes,
                 row.process_count,
                 row.expanded,
@@ -5272,7 +5310,7 @@ fn a11y_mirror_group_rows_html(
              <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div></div>",
             escape_html(&label),
             escape_html(&name_text),
-            escape_html(&usage_value_text(row.cpu_percent)),
+            escape_html(&usage_value_text(display_cpu)),
             escape_html(&format::format_bytes(row.memory_bytes)),
             row_index = index + 1,
         ));
@@ -9415,6 +9453,9 @@ mod tests {
     /// Snapshot with a three-member group (CPU 4.0% / 600 B) and a solo process.
     fn grouped_snapshot() -> SystemSnapshot {
         let mut snapshot = tm_core::demo::demo_snapshot(0);
+        // Single logical core keeps the legacy group-CPU assertions meaningful;
+        // the dedicated normalisation tests below use the real 12-core fixture.
+        snapshot.cpu.per_core_percent = vec![100.0];
         snapshot.processes = vec![
             ProcessSnapshot {
                 key: ProcessKey::new(30, 3),
@@ -9489,6 +9530,94 @@ mod tests {
             row_activation(&view, false),
             RowActivation::ToggleGroup("firefox".into())
         );
+    }
+
+    #[test]
+    fn group_cpu_is_normalised_by_logical_core_count() {
+        // Helper contract: 471.1 / 12 = 39.3, 150 / 2 = 75, 0 cores passes
+        // through, invalid input becomes 0, above-100 is clamped.
+        assert!((normalised_group_cpu(471.1, 12) - 39.258_33).abs() < 0.001);
+        assert!((normalised_group_cpu(150.0, 2) - 75.0).abs() < f32::EPSILON);
+        assert!((normalised_group_cpu(150.0, 0) - 150.0).abs() < f32::EPSILON);
+        assert_eq!(normalised_group_cpu(f32::NAN, 4), 0.0);
+        assert_eq!(normalised_group_cpu(f32::INFINITY, 4), 0.0);
+        assert_eq!(normalised_group_cpu(-5.0, 4), 0.0);
+        assert_eq!(normalised_group_cpu(400.0, 2), 100.0);
+    }
+
+    #[test]
+    fn grouped_rows_divide_cpu_by_core_count_in_canvas_and_dom_mirror() {
+        // The real demo snapshot reports 12 logical cores.
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        assert_eq!(snapshot.cpu.core_count(), 12);
+        // Three firefox members summing to 471.1%; one solo process.
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 1),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=10".into(),
+                cpu_percent: 157.0,
+                memory_bytes: 100,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 2),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=20".into(),
+                cpu_percent: 157.05,
+                memory_bytes: 200,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(30, 3),
+                name: "firefox".into(),
+                command: "/usr/bin/firefox --pid=30".into(),
+                cpu_percent: 157.05,
+                memory_bytes: 300,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(50, 5),
+                name: "solo".into(),
+                command: "solo".into(),
+                cpu_percent: 12.5,
+                memory_bytes: 42,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        dashboard.ingest(snapshot);
+        let rows = dashboard.app_group_rows();
+        let group = &rows[0];
+        assert_eq!(group.kind, AppRowKind::Group);
+        assert!(
+            (group.cpu_percent - 471.1).abs() < 0.001,
+            "wire sum unchanged"
+        );
+
+        let view = resolve_process_row(&dashboard, 0, Some(group)).expect("group row");
+        assert!(view.is_group);
+        assert!((view.cpu - 39.258_33).abs() < 0.001, "471.1 / 12");
+        assert!(
+            view.row_a11y_label.contains("39.3%"),
+            "{}",
+            view.row_a11y_label
+        );
+
+        // The DOM mirror reports the same normalised number.
+        let snapshot = dashboard.snapshot().cloned();
+        let html =
+            a11y_mirror_grouped_data_html(snapshot.as_ref(), &rows, None, SortSpec::default());
+        assert!(html.contains("39.3%"), "{html}");
+
+        // Expanded member rows keep their individual CPU values untouched.
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        let rows = dashboard.app_group_rows();
+        let member = &rows[1];
+        assert_eq!(member.kind, AppRowKind::Process);
+        let view = resolve_process_row(&dashboard, 1, Some(member)).expect("member row");
+        assert!(!view.is_group);
+        assert_eq!(view.cpu, member.cpu_percent);
     }
 
     #[test]
@@ -9602,6 +9731,9 @@ mod tests {
     /// second part of the fixture is required for the summary to appear.
     fn many_apps_snapshot(app_count: usize) -> SystemSnapshot {
         let mut snapshot = tm_core::demo::demo_snapshot(0);
+        // Single logical core keeps the legacy Others/aggregate assertions
+        // meaningful; normalisation is covered by the dedicated tests below.
+        snapshot.cpu.per_core_percent = vec![100.0];
         let mut processes: Vec<ProcessSnapshot> = (0..app_count)
             .map(|i| ProcessSnapshot {
                 key: ProcessKey::new((i + 1) as u32, (i + 1) as u64),

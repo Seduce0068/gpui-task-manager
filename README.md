@@ -434,8 +434,8 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 
 | 項目 | 結果 |
 | --- | --- |
-| `cargo test --workspace` | **696 passed / 0 failed**（core 205 / viewmodel 131 / platform 44 / agent 155 / app 160、2026-11-20 実測） |
-| web ユニットテスト | **239 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
+| `cargo test --workspace` | **698 passed / 0 failed**（core 205 / viewmodel 131 / platform 44 / agent 155 / app 162、2026-11-20 実測） |
+| web ユニットテスト | **241 passed / 0 failed**（fetch 制限 / redaction / プリセット / 電源 / SSE / 行メニュー / オンボーディング等を含む、2026-11-20 実測） |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |

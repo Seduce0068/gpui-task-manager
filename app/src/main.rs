@@ -147,6 +147,15 @@ fn main() {
         }
         CliAction::Run(flags) => flags,
     };
+    // Keyring maintenance is headless: the token is read from stdin (never
+    // argv) and only fixed messages are emitted.
+    if let Some(action) = flags.token_action {
+        let status = run_token_action(action);
+        if status != EXIT_OK {
+            std::process::exit(status);
+        }
+        return;
+    }
     // `--export` is a headless mode: no GPUI window, no event loop. The pure
     // exporter always redacts, so `--redact` / `TM_REDACT` need not be passed.
     if let Some(request) = flags.export.as_ref() {
@@ -233,10 +242,24 @@ struct GuiFlags {
     help: bool,
     /// Headless export request; `None` keeps the normal GUI startup path.
     export: Option<ExportRequest>,
+    /// Headless keyring maintenance; `None` keeps the normal GUI startup path.
+    token_action: Option<TokenAction>,
     /// Accepted and validated for parity with `tm-agent`. This GUI has no
     /// structured logging to configure, so the value is recorded only.
     #[allow(dead_code)]
     log_level: LogLevel,
+}
+
+/// Headless token-store maintenance requested on the command line.
+///
+/// The token itself is never accepted as an argument: it is read from stdin so
+/// it cannot leak through argv, shell history or process listings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenAction {
+    /// Read one line from stdin and store it in the OS keyring.
+    Save,
+    /// Remove the stored token (idempotent).
+    Clear,
 }
 
 /// File format requested by `--export`.
@@ -298,7 +321,8 @@ fn help_text() -> String {
             "gpui-task-manager {version} — ネイティブ GPUI シェル\n\n",
             "使い方:\n",
             "  gpui-task-manager [--demo] [--redact] [--log-level LEVEL]\n",
-            "                    [--export csv|json PATH] [-V, --version] [-h, --help]\n\n",
+            "                    [--export csv|json PATH] [--save-token | --clear-token]\n",
+            "                    [-V, --version] [-h, --help]\n\n",
             "オプション:\n",
             "  --demo            合成データで起動します（スクリーンショット・ブラウザ比較用）。\n",
             "                     probe 失敗時の暗黙切替は行いません（不正値は終了コード 2）\n",
@@ -307,6 +331,9 @@ fn help_text() -> String {
             "  --log-level LEVEL ログレベル (error/warn/info/debug/trace、既定 info、受け付け・検証のみ)\n",
             "  --export csv|json PATH  スナップショットを 1 回取得し、伏せ字化した CSV/JSON を\n",
             "                         PATH へ 0600 で書き出して終了（ウィンドウは開きません）\n",
+            "  --save-token           標準入力 1 行のトークンを OS キーリングへ保存して終了\n",
+            "                         （値は argv に出さず、stdout/stderr にも表示しません）\n",
+            "  --clear-token          キーリング内のトークンを削除して終了（冪等）\n",
             "  -V, --version     バージョンを 1 行で表示して終了 (tm-agent と同一形式)\n",
             "  -h, --help        このヘルプを表示\n\n",
             "主なキー: ↑↓ 選択 / Space 一時停止 / Ctrl+F 絞り込み /\n",
@@ -389,6 +416,20 @@ fn parse_gui_flags(args: &[std::ffi::OsString]) -> Result<GuiFlags, String> {
                         .ok_or_else(|| "--log-level には値が必要です".to_string())?,
                 };
                 flags.log_level = parse_log_level(&value)?;
+            }
+            "--save-token" => {
+                reject_inline_value("--save-token", inline_value)?;
+                if flags.token_action.is_some() {
+                    return Err("--save-token と --clear-token は同時に指定できません".to_string());
+                }
+                flags.token_action = Some(TokenAction::Save);
+            }
+            "--clear-token" => {
+                reject_inline_value("--clear-token", inline_value)?;
+                if flags.token_action.is_some() {
+                    return Err("--save-token と --clear-token は同時に指定できません".to_string());
+                }
+                flags.token_action = Some(TokenAction::Clear);
             }
             "--export" => {
                 let format_value = match inline_value {
@@ -646,6 +687,45 @@ fn write_export(path: &std::path::Path, contents: &str) -> Result<(), String> {
 /// sampled, `1` when the file cannot be written, `0` on success. As on the GUI
 /// startup path, a failed native probe is an error here: silently exporting
 /// demo data would produce misleading evidence (R3-S02).
+/// Runs a headless keyring action and returns a process exit status.
+///
+/// Only fixed messages are printed: the token value is read from stdin, never
+/// from argv, and is never echoed to stdout/stderr or included in an error.
+fn run_token_action(action: TokenAction) -> i32 {
+    use crate::settings::keyring;
+
+    let result = match action {
+        TokenAction::Save => {
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                eprintln!("gpui-task-manager: 標準入力からトークンを読み取れませんでした");
+                return EXIT_INTERNAL;
+            }
+            let token = line.trim();
+            if token.is_empty() || token.lines().count() != 1 {
+                eprintln!("gpui-task-manager: --save-token には空でない 1 行を入力してください");
+                return EXIT_USAGE;
+            }
+            keyring::save_token(token)
+        }
+        TokenAction::Clear => keyring::clear_token(),
+    };
+    match result {
+        Ok(()) => {
+            let message = match action {
+                TokenAction::Save => "gpui-task-manager: トークンをキーリングに保存しました",
+                TokenAction::Clear => "gpui-task-manager: キーリングのトークンを削除しました",
+            };
+            let _ = write_stdout(&format!("{message}\n"));
+            EXIT_OK
+        }
+        Err(message) => {
+            eprintln!("gpui-task-manager: {message}");
+            EXIT_INTERNAL
+        }
+    }
+}
+
 fn run_export(request: &ExportRequest, demo: bool) -> i32 {
     // Same policy as the GUI startup: `--demo` is the only route to synthetic
     // data, and a native probe failure is an error rather than a silent switch.

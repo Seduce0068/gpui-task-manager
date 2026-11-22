@@ -130,6 +130,27 @@ struct ProcessRowView {
     process_count: usize,
 }
 
+/// Normalises a multi-process group's summed CPU to a 0–100 percentage of the
+/// machine's logical cores (C1-CPUNORM).
+///
+/// The view model intentionally stores the raw sum of member CPU percentages
+/// (e.g. 471.1% on a 12-core machine), so the wire/export contract is untouched.
+/// Only the two shells divide by `core_count()` before rendering an aggregate
+/// row; individual process rows and the overview card stay as-is.
+///
+/// A `core_count` of 0 (no per-core data) passes the raw total through without
+/// division or clamping, so no core data never distorts the figure. Non-finite
+/// or negative totals become 0, and divided values above 100 are clamped.
+fn normalised_group_cpu(total: f32, core_count: usize) -> f32 {
+    if !total.is_finite() || total < 0.0 {
+        return 0.0;
+    }
+    if core_count == 0 {
+        return total;
+    }
+    (total / core_count as f32).min(100.0)
+}
+
 /// Resolves a visible row's display values without touching GPUI (R1-APPDRAW).
 ///
 /// `group` is supplied only in the default grouped view, for a row whose
@@ -140,9 +161,14 @@ struct ProcessRowView {
 /// Both aggregate kinds are activated with `ToggleAppGroup`, but the Others
 /// row is labelled from its app count (not the reserved `"others"` key) and
 /// advertises its expand affordance in the command column.
+///
+/// `core_count` is the machine's logical core count used by
+/// [`normalised_group_cpu`] to scale aggregate CPU rows to 0–100. Individual
+/// rows ignore it.
 fn process_row_values(
     group: Option<&AppGroupRow>,
     process: &ProcessSnapshot,
+    core_count: usize,
     selected: bool,
     depth: usize,
     has_children: bool,
@@ -153,7 +179,7 @@ fn process_row_values(
             group_key: Some(group.key.clone()),
             name: group.label.clone(),
             command: format!("{} プロセス", group.process_count),
-            cpu_percent: group.cpu_percent,
+            cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
             memory_bytes: group.memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -177,7 +203,7 @@ fn process_row_values(
             // and accessible text is derived from the aggregated app count.
             name: format!("その他 {} アプリ", group.process_count),
             command: "クリックで展開".to_string(),
-            cpu_percent: group.cpu_percent,
+            cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
             memory_bytes: group.memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -1999,8 +2025,9 @@ impl TaskManagerApp {
             let expanded = group
                 .map(|row| row.expanded)
                 .unwrap_or_else(|| !self.dashboard.is_collapsed(process.key));
+            let core_count = snapshot.cpu.core_count();
             (
-                process_row_values(group, process, selected, depth, has_children),
+                process_row_values(group, process, core_count, selected, depth, has_children),
                 expanded,
             )
         };
@@ -3774,10 +3801,10 @@ mod tests {
         a11y_filter_hint, a11y_filter_label, a11y_group_row_label, a11y_live_text, a11y_row_label,
         a11y_sort_accesskit, a11y_sort_direction, a11y_temperature_label, a11y_usage_label,
         apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts, is_row_activation,
-        is_sort_key_activation, key_action, power_summary_text, process_row_values,
-        report_save_result, resolve_probe_retry, signal_enabled, sort_header_label,
-        sort_header_text, temperature_severity_label, truncate_label, usage_severity,
-        AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
+        is_sort_key_activation, key_action, normalised_group_cpu, power_summary_text,
+        process_row_values, report_save_result, resolve_probe_retry, signal_enabled,
+        sort_header_label, sort_header_text, temperature_severity_label, truncate_label,
+        usage_severity, AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -4985,7 +5012,7 @@ mod tests {
     #[test]
     fn multi_process_group_command_is_emphasised_but_single_is_not() {
         let representative = sample_process(100, "firefox");
-        let multi = process_row_values(Some(&sample_group()), &representative, false, 0, true);
+        let multi = process_row_values(Some(&sample_group()), &representative, 1, false, 0, true);
         assert!(multi.command_emphasis, "3 プロセス must stand out");
         assert_eq!(multi.command, "3 プロセス");
         assert!(multi.is_group);
@@ -4995,11 +5022,11 @@ mod tests {
         single.process_count = 1;
         single.has_children = false;
         single.member_keys = vec![single.process_key];
-        let one = process_row_values(Some(&single), &representative, false, 0, false);
+        let one = process_row_values(Some(&single), &representative, 1, false, 0, false);
         assert!(!one.command_emphasis, "one process keeps the normal style");
         assert_eq!(one.command, "1 プロセス");
 
-        let flat = process_row_values(None, &representative, false, 0, false);
+        let flat = process_row_values(None, &representative, 1, false, 0, false);
         assert!(!flat.command_emphasis);
         assert_eq!(flat.command, representative.command);
     }
@@ -5009,7 +5036,7 @@ mod tests {
         let others = sample_others(4);
         let representative = sample_process(200, "firefox");
         let before = representative.clone();
-        let view = process_row_values(Some(&others), &representative, false, 0, true);
+        let view = process_row_values(Some(&others), &representative, 1, false, 0, true);
 
         assert!(
             view.is_group,
@@ -5039,7 +5066,7 @@ mod tests {
     fn grouped_row_shows_totals_and_fixed_non_aggregatable_columns() {
         let group = sample_group();
         let representative = sample_process(100, "firefox");
-        let view = process_row_values(Some(&group), &representative, false, 0, true);
+        let view = process_row_values(Some(&group), &representative, 1, false, 0, true);
 
         assert!(view.is_group);
         assert_eq!(view.group_key.as_deref(), Some("firefox"));
@@ -5063,8 +5090,8 @@ mod tests {
     #[test]
     fn flat_tree_and_expanded_member_rows_keep_snapshot_values() {
         let process = sample_process(42, "emacs");
-        let flat = process_row_values(None, &process, true, 0, false);
-        let tree = process_row_values(None, &process, false, 1, true);
+        let flat = process_row_values(None, &process, 1, true, 0, false);
+        let tree = process_row_values(None, &process, 1, false, 1, true);
         for view in [&flat, &tree] {
             assert!(!view.is_group);
             assert_eq!(view.group_key, None);
@@ -5098,13 +5125,58 @@ mod tests {
             memory_bytes: 9_999,
             process_count: 1,
         };
-        let view = process_row_values(Some(&member), &process, false, 1, false);
+        let view = process_row_values(Some(&member), &process, 1, false, 1, false);
         assert!(!view.is_group);
         assert_eq!(view.group_key, None);
         assert_eq!(view.cpu_percent, process.cpu_percent);
         assert_eq!(view.memory_bytes, process.memory_bytes);
         assert_eq!(view.command, process.command);
         assert_eq!(view.pid, "42");
+    }
+
+    #[test]
+    fn group_cpu_is_normalised_by_logical_core_count() {
+        // The canonical example: a 471.1% sum on 12 cores reads as 39.3%.
+        assert!((normalised_group_cpu(471.1, 12) - 39.258_33).abs() < 0.001);
+        // 150 / 2 = 75.
+        assert!((normalised_group_cpu(150.0, 2) - 75.0).abs() < f32::EPSILON);
+        // A core_count of 0 passes the raw value through (0-division guard).
+        assert!((normalised_group_cpu(150.0, 0) - 150.0).abs() < f32::EPSILON);
+        // Non-finite and negative totals become 0.
+        assert_eq!(normalised_group_cpu(f32::NAN, 4), 0.0);
+        assert_eq!(normalised_group_cpu(f32::INFINITY, 4), 0.0);
+        assert_eq!(normalised_group_cpu(-5.0, 4), 0.0);
+        // Above-100 results are clamped.
+        assert_eq!(normalised_group_cpu(400.0, 2), 100.0);
+    }
+
+    #[test]
+    fn grouped_rows_use_normalised_cpu_while_process_rows_do_not() {
+        let representative = sample_process(100, "firefox");
+        let mut group = sample_group();
+        group.cpu_percent = 150.0;
+
+        // Group row: divided by 2 cores -> 75.0.
+        let view = process_row_values(Some(&group), &representative, 2, false, 0, true);
+        assert!(view.is_group);
+        assert!((view.cpu_percent - 75.0).abs() < f32::EPSILON);
+
+        // Others row: same rule applies.
+        let mut others = sample_others(4);
+        others.cpu_percent = 150.0;
+        let view = process_row_values(Some(&others), &representative, 2, false, 0, true);
+        assert!(view.is_others);
+        assert!((view.cpu_percent - 75.0).abs() < f32::EPSILON);
+
+        // Process row: the raw snapshot value is untouched even when a group
+        // row with a large total is supplied alongside it.
+        let member = AppGroupRow {
+            kind: AppRowKind::Process,
+            ..group.clone()
+        };
+        let view = process_row_values(Some(&member), &representative, 2, false, 1, false);
+        assert!(!view.is_group);
+        assert_eq!(view.cpu_percent, representative.cpu_percent);
     }
 
     #[test]
@@ -5291,7 +5363,7 @@ mod tests {
         let before = snapshot.processes.clone();
         let group = sample_group();
         // Building an aggregate display row only borrows the snapshot.
-        let _ = process_row_values(Some(&group), &snapshot.processes[0], false, 0, true);
+        let _ = process_row_values(Some(&group), &snapshot.processes[0], 1, false, 0, true);
         assert_eq!(snapshot.processes, before);
 
         let ids = RedactionIdentifiers {

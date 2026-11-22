@@ -753,6 +753,10 @@ criteria = "baseline-unreviewed"
 version = "1.2.2"
 criteria = "baseline-unreviewed"
 
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
+criteria = "baseline-unreviewed"
+
 [[exemptions.freetype-sys]]
 version = "0.20.1"
 criteria = "baseline-unreviewed"
@@ -2611,6 +2615,10 @@ criteria = "baseline-unreviewed"
 
 [[exemptions.url]]
 version = "2.5.8"
+criteria = "baseline-unreviewed"
+
+[[exemptions.url]]
+version = "2.5.9"
 criteria = "baseline-unreviewed"
 
 [[exemptions.usvg]]
