@@ -231,6 +231,25 @@ impl TokenStore for SecretServiceTokenStore {
     }
 }
 
+/// Non-Linux platforms have no Secret Service backend compiled in. The CLI
+/// flags still parse everywhere, but they report the fixed unavailable message
+/// instead of failing to link. Tokens can be supplied by the platform's own
+/// mechanism (`TM_AGENT_TOKEN` / `--token-file` on the agent side).
+#[cfg(not(all(unix, target_os = "linux")))]
+pub fn try_load_token() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[cfg(not(all(unix, target_os = "linux")))]
+pub fn save_token(_token: &str) -> Result<(), String> {
+    Err(ERR_UNAVAILABLE.to_owned())
+}
+
+#[cfg(not(all(unix, target_os = "linux")))]
+pub fn clear_token() -> Result<(), String> {
+    Err(ERR_UNAVAILABLE.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
