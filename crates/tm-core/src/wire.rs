@@ -50,6 +50,12 @@ pub const ICON_PATH: &str = "/api/v1/icon";
 /// group key in place.
 pub const APP_NAME_PATH: &str = "/api/v1/app-name";
 
+/// Fixed status for every application-name miss (unknown key, no `Name=` entry,
+/// unreadable desktop file). The browser classifies exactly this status as a
+/// definitive miss (a background process); any other failure stays Pending
+/// until a retry succeeds, so a transient error never moves a row (C3-WEBSECTIONS).
+pub const APP_NAME_NOT_FOUND_STATUS: u16 = 404;
+
 /// Number of processes returned when `?limit=` is absent.
 ///
 /// The agent truncates to this many busiest processes; the browser asks for
@@ -200,6 +206,9 @@ mod tests {
     fn app_name_path_is_distinct_and_proof_safe() {
         assert_ne!(APP_NAME_PATH, ICON_PATH);
         assert!(APP_NAME_PATH.starts_with("/api/v1/"));
+        // A definitive miss is exactly one fixed status on both sides, so the
+        // browser can tell "background process" from a retryable failure.
+        assert_eq!(APP_NAME_NOT_FOUND_STATUS, 404);
         // The path is never written to the DOM proof, but keep it free of the
         // `key=value;` grammar delimiter so a future mirror cannot corrupt it.
         assert!(!APP_NAME_PATH.contains(';'));

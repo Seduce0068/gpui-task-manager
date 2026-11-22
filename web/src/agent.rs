@@ -40,7 +40,8 @@ use gpui::http_client::http::{HeaderMap, Request, header};
 use gpui::http_client::{AsyncBody, HttpClient};
 use serde::Deserialize;
 use tm_core::wire::{
-    APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, ICON_PATH, SNAPSHOT_PATH,
+    APP_NAME_NOT_FOUND_STATUS, APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT as SNAPSHOT_LIMIT, ICON_PATH,
+    SNAPSHOT_PATH,
 };
 use tm_core::{
     MAX_RETRY_AFTER_SECS, SystemSnapshot, WIRE_SCHEMA_VERSION, sanitize::MAX_NAME_CHARS,
@@ -555,6 +556,24 @@ enum NameCacheEntry {
     RetryAt(Instant),
 }
 
+/// Classification of one application-name lookup, surfaced to the shell.
+///
+/// The cache already keeps definitive misses (`Absent`) apart from retryable
+/// failures (`RetryAt`), but [`AgentClient::fetch_app_name`] collapsed both into
+/// `None`. Section headings must not move a row on a transient error, so this
+/// enum carries the distinction out of the client without exposing any name,
+/// key or endpoint text (C3-WEBSECTIONS).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppNameResolution {
+    /// `200` with a sanitised human name: the key belongs to the app section.
+    Found(String),
+    /// The agent's fixed `404` (or an unsafe key): a definitive background key.
+    Absent,
+    /// Transport / status / busy failure inside its cooldown: keep the current
+    /// classification untouched until a later attempt succeeds or misses.
+    Pending,
+}
+
 /// Cache key for the name channel of a group key.
 ///
 /// The explicit `name:` prefix keeps the two channels disjoint by construction,
@@ -917,19 +936,42 @@ impl AgentClient {
     /// `404`, or a transient failure inside its cooldown). The name is
     /// re-sanitised on arrival; no endpoint, token, key or path is ever logged.
     pub async fn fetch_app_name(&self, key: &str) -> Result<Option<String>, FetchError> {
+        // Keep the legacy typed-error contract for any caller that still uses
+        // this method: only a *fresh* failure is an `Err`, a cached cooldown is
+        // still the ordinary "keep the redacted label" `Ok(None)`.
+        match self.resolve_app_name_inner(key).await {
+            (AppNameResolution::Found(name), _) => Ok(Some(name)),
+            (AppNameResolution::Absent, _) | (AppNameResolution::Pending, None) => Ok(None),
+            (AppNameResolution::Pending, Some(error)) => Err(error),
+        }
+    }
+
+    /// Same single-flight / cached lookup as [`Self::fetch_app_name`], but keeps
+    /// the `Absent` vs `Pending` distinction the shell needs before committing
+    /// a section-heading batch. No name, key, path or token is ever surfaced.
+    pub async fn resolve_app_name(&self, key: &str) -> AppNameResolution {
+        self.resolve_app_name_inner(key).await.0
+    }
+
+    /// One name lookup; the second tuple item is the original typed error, kept
+    /// only so [`Self::fetch_app_name`] can preserve its historical signature.
+    async fn resolve_app_name_inner(&self, key: &str) -> (AppNameResolution, Option<FetchError>) {
+        // Reuse the resolver's validation instead of a second charset table.
         if tm_core::icon::canonical_key(key).is_none() {
-            return Ok(None);
+            return (AppNameResolution::Absent, None);
         }
         let cache_key = name_cache_key(key);
         if let Some(entry) = self.cached_name(&cache_key) {
-            return Ok(name_from_entry(entry));
+            return (resolution_from_entry(entry), None);
         }
         let _permit = match self.names.gate.try_acquire() {
             Some(permit) => permit,
-            None => return Err(FetchError::Busy),
+            None => return (AppNameResolution::Pending, Some(FetchError::Busy)),
         };
+        // A second caller for the same key may have filled the cache while we
+        // waited for the permit (the gate is non-blocking).
         if let Some(entry) = self.cached_name(&cache_key) {
-            return Ok(name_from_entry(entry));
+            return (resolution_from_entry(entry), None);
         }
 
         let config = self.config.snapshot();
@@ -938,11 +980,11 @@ impl AgentClient {
         match result {
             Ok(Some(name)) => {
                 self.record_name(&cache_key, NameCacheEntry::Found(name.clone()));
-                Ok(Some(name))
+                (AppNameResolution::Found(name), None)
             }
             Ok(None) => {
                 self.record_name(&cache_key, NameCacheEntry::Absent);
-                Ok(None)
+                (AppNameResolution::Absent, None)
             }
             Err(error) => {
                 let cooldown = if error == FetchError::Busy {
@@ -954,7 +996,7 @@ impl AgentClient {
                     &cache_key,
                     NameCacheEntry::RetryAt(Instant::now() + cooldown),
                 );
-                Err(error)
+                (AppNameResolution::Pending, Some(error))
             }
         }
     }
@@ -1189,6 +1231,18 @@ struct AppNameResponse {
     name: String,
 }
 
+/// Projects a cached entry to the shell's classification enum.
+///
+/// `RetryAt` is deliberately *not* merged into `Absent`: a transient failure
+/// must leave the section assignment untouched until it is retried (C3-WEBSECTIONS).
+fn resolution_from_entry(entry: NameCacheEntry) -> AppNameResolution {
+    match entry {
+        NameCacheEntry::Found(name) => AppNameResolution::Found(name),
+        NameCacheEntry::Absent => AppNameResolution::Absent,
+        NameCacheEntry::RetryAt(_) => AppNameResolution::Pending,
+    }
+}
+
 /// Projects a cached name entry to the caller's "keep the redacted label" form.
 fn name_from_entry(entry: NameCacheEntry) -> Option<String> {
     match entry {
@@ -1295,8 +1349,9 @@ async fn fetch_app_name_once(
         FetchError::Connect
     })?;
     let status = response.status();
-    if status.as_u16() == 400 || status.as_u16() == 404 {
-        // No body is read: a fixed "no name" result stays redaction-safe.
+    if status.as_u16() == 400 || status.as_u16() == APP_NAME_NOT_FOUND_STATUS {
+        // No body is read: a fixed "no name" result stays redaction-safe and
+        // is the agent's deterministic "background process" signal.
         return Ok(None);
     }
     if !status.is_success() {
@@ -2115,6 +2170,37 @@ mod tests {
         assert_eq!(
             name_from_entry(NameCacheEntry::RetryAt(Instant::now())),
             None
+        );
+    }
+
+    #[test]
+    fn name_cache_keeps_definitive_miss_apart_from_transient_cooldown() {
+        assert_eq!(
+            resolution_from_entry(NameCacheEntry::Found("Firefox".to_string())),
+            AppNameResolution::Found("Firefox".to_string())
+        );
+        assert_eq!(
+            resolution_from_entry(NameCacheEntry::Absent),
+            AppNameResolution::Absent
+        );
+        // A transient failure inside its cooldown is Pending, never Absent:
+        // a stalled agent must not reclassify rows as background processes.
+        assert_eq!(
+            resolution_from_entry(NameCacheEntry::RetryAt(Instant::now())),
+            AppNameResolution::Pending
+        );
+    }
+
+    #[test]
+    fn app_name_miss_uses_the_shared_fixed_404_status() {
+        assert_eq!(APP_NAME_NOT_FOUND_STATUS, 404);
+        let (config, client, _) =
+            fake_fetch_client(None, APP_NAME_NOT_FOUND_STATUS, b"SECRET-PATH".to_vec());
+        let result = futures::executor::block_on(fetch_app_name_once(&config, &client, "no-app"));
+        assert_eq!(result, Ok(None));
+        assert!(
+            !format!("{result:?}").contains("SECRET-PATH"),
+            "no body text may leak from a miss"
         );
     }
 

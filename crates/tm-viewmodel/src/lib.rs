@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 use tm_core::format;
@@ -66,6 +66,22 @@ pub const OTHERS_APP_GROUP_LABEL: &str = "others";
 /// at least one multi-process group remains visible: folding every app would
 /// leave a lone "others" row and erase the ordinary list (C1-COLLAPSE).
 pub const OTHERS_MIN_GROUP_COUNT: usize = 2;
+
+/// Reserved identity key for the "アプリ" section heading row (C1-VMCLASSIFY).
+///
+/// The leading NUL keeps it disjoint from every canonical [`app_group_key`] and
+/// from [`OTHERS_APP_GROUP_KEY`]. Like the others key it is an identity token,
+/// never display text, and shells must not feed it back into a command.
+pub const APPS_SECTION_KEY: &str = "\0section-apps";
+/// Reserved identity key for the "バックグラウンド プロセス" section heading row (C1-VMCLASSIFY).
+///
+/// Disjoint from every real application key and from [`APPS_SECTION_KEY`] by the
+/// same leading-NUL convention. Display-only; never sent to a shell command.
+pub const BACKGROUND_SECTION_KEY: &str = "\0section-background";
+/// Japanese label of the application section heading (C1-VMCLASSIFY).
+pub const APPS_SECTION_LABEL: &str = "アプリ";
+/// Japanese label of the background-process section heading (C1-VMCLASSIFY).
+pub const BACKGROUND_SECTION_LABEL: &str = "バックグラウンド プロセス";
 
 /// Text marker prepended to informational status messages (R3-U04).
 ///
@@ -546,6 +562,13 @@ pub enum AppRowKind {
     /// count in [`AppGroupRow::process_count`]. Expanding it reveals the original
     /// one-process group rows as `Group` rows at `depth = 1`.
     Others,
+    /// A display-only section heading inserted by [`Dashboard::app_group_display_rows`]
+    /// (C1-VMCLASSIFY).
+    ///
+    /// It points at no real process: shells render [`AppGroupRow::label`] as a
+    /// heading and never pass its `key`/`process_key` to a command. It is never
+    /// returned by [`Dashboard::app_group_rows`] and never enters `visible`.
+    SectionHeader,
 }
 
 /// One row of the application-grouped process table (R1-GROUP).
@@ -557,6 +580,11 @@ pub enum AppRowKind {
 /// one-process group rows at `depth = 1` (C1-COLLAPSE). This is an *additive*
 /// view model: existing [`ProcessTreeRow`] consumers keep the flat/tree process
 /// list unchanged, so the export and wire contracts are untouched.
+///
+/// [`Dashboard::app_group_display_rows`] additionally wraps this list with
+/// [`AppRowKind::SectionHeader`] rows once an application-key classification has
+/// been injected; those heading rows are display-only and never participate in
+/// selection, export or the wire format (C1-VMCLASSIFY).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppGroupRow {
     /// Whether this row is a group summary or an expanded process.
@@ -603,12 +631,31 @@ pub struct AppGroupRow {
     pub process_count: usize,
 }
 
-/// Orders application groups with the same comparator as the flat table.
+/// Orders application groups with the injected classification as the primary
+/// key and the chosen sort as the secondary key (C1-VMCLASSIFY).
 ///
-/// Shared with the "others" representative path so both resolve the same first
-/// row for a given filter and sort spec (C1-COLLAPSE).
-fn sort_app_groups(groups: &mut [ProcessGroup], sort: SortSpec, filtered: &[ProcessSnapshot]) {
+/// Groups whose key is in `app_keys` sort before every other group, regardless
+/// of `sort.direction`; the caller's [`SortSpec`] is applied only inside one
+/// class. An empty `app_keys` classifies nothing, so the historical order (the
+/// flat-table comparator alone) is preserved while a web classification is
+/// still loading. Shared with the "others" representative path so both resolve
+/// the same first row for a given filter and sort spec (C1-COLLAPSE).
+fn sort_app_groups(
+    groups: &mut [ProcessGroup],
+    sort: SortSpec,
+    filtered: &[ProcessSnapshot],
+    app_keys: &BTreeSet<String>,
+) {
     groups.sort_by(|left, right| {
+        // `false < true`, so comparing (right is app, left is app) puts app
+        // groups first. When both are equally classified this is `Equal` and
+        // the caller's sort decides, keeping the explicit sort as key two.
+        let classification = app_keys
+            .contains(&right.key)
+            .cmp(&app_keys.contains(&left.key));
+        if classification != std::cmp::Ordering::Equal {
+            return classification;
+        }
         let ordering = match sort.key {
             SortKey::Cpu => left.cpu_percent.total_cmp(&right.cpu_percent),
             SortKey::Memory => left.memory_bytes.cmp(&right.memory_bytes),
@@ -678,6 +725,29 @@ fn others_row(
     }
 }
 
+/// Builds a display-only section heading row (C1-VMCLASSIFY).
+///
+/// `index` reuses the first classified row's in-range snapshot index so the
+/// row stays structurally valid, but `process_key` is an unreachable sentinel
+/// and `member_keys` is empty: a shell that accidentally activates the heading
+/// cannot select or signal a real process.
+fn section_header(key: &'static str, label: &'static str, index: usize) -> AppGroupRow {
+    AppGroupRow {
+        kind: AppRowKind::SectionHeader,
+        key: key.to_string(),
+        label: label.to_string(),
+        index,
+        process_key: ProcessKey::new(u32::MAX, u64::MAX),
+        member_keys: Vec::new(),
+        depth: 0,
+        has_children: false,
+        expanded: false,
+        cpu_percent: 0.0,
+        memory_bytes: 0,
+        process_count: 0,
+    }
+}
+
 /// One original one-process group revealed by expanding the "others" row.
 ///
 /// It keeps `kind = Group` and `process_count = 1`; only `depth = 1` marks it as
@@ -717,6 +787,14 @@ pub struct Dashboard {
     /// process (R1-VISIBLE). On by default so grouping needs no settings field
     /// or shell change; mutually exclusive with `tree_view` at the setter.
     app_group_view: bool,
+    /// Redacted app keys classified as "アプリ" (C1-VMCLASSIFY).
+    ///
+    /// Injected by the shell because classification is platform-specific and
+    /// may arrive asynchronously; the viewmodel stays I/O-free and wasm-safe.
+    /// Empty means "no classification yet": sorting and display rows keep the
+    /// legacy, unclassified behaviour. Presentation-only — never persisted and
+    /// never part of `Filter`, export or the wire format.
+    app_keys: BTreeSet<String>,
     collapsed: HashSet<ProcessKey>,
     /// Redacted app keys whose group rows are expanded (R1-GROUP).
     ///
@@ -783,6 +861,7 @@ impl Dashboard {
             visible_has_children: Vec::new(),
             tree_view: false,
             app_group_view: true,
+            app_keys: BTreeSet::new(),
             collapsed: HashSet::new(),
             expanded_app_groups: HashSet::new(),
             history: MetricHistory::new(HISTORY_CAPACITY),
@@ -1033,7 +1112,7 @@ impl Dashboard {
             .map(|&index| snapshot.processes[index].clone())
             .collect();
         let mut groups = group_by_app(&filtered);
-        sort_app_groups(&mut groups, self.sort, &filtered);
+        sort_app_groups(&mut groups, self.sort, &filtered, &self.app_keys);
 
         // Snapshot the one-process groups before consuming `groups`: they are
         // shown either as a single "others" row or, when expanded, as a run of
@@ -1117,6 +1196,78 @@ impl Dashboard {
             }
         }
         rows
+    }
+
+    /// Injects the redacted application keys classified as "アプリ" (C1-VMCLASSIFY).
+    ///
+    /// The shell owns classification (platform-specific and possibly async), so
+    /// the viewmodel only stores the resulting key set and stays I/O-free and
+    /// wasm-compatible. An empty set means "not classified yet": ordering and
+    /// display headings fall back to the legacy behaviour. The visible arrays
+    /// are recomputed so [`Self::app_group_rows`], `visible_indices` and the
+    /// headings always reflect the same order.
+    pub fn set_app_keys(&mut self, keys: BTreeSet<String>) {
+        self.app_keys = keys;
+        self.recompute_visible();
+    }
+
+    /// Currently injected application key set (C1-VMCLASSIFY).
+    pub fn app_keys(&self) -> &BTreeSet<String> {
+        &self.app_keys
+    }
+
+    /// Rows for rendering the grouped table with section headings (C1-VMCLASSIFY).
+    ///
+    /// Wraps [`Self::app_group_rows`] with two display-only
+    /// [`AppRowKind::SectionHeader`] rows: 「アプリ」 before the first top-level
+    /// group whose key is in the injected set, and 「バックグラウンド プロセス」
+    /// before the first one whose key is not. The trailing "others" bucket and
+    /// its revealed children stay unclassified and keep closing the list. With
+    /// no injected keys the input is returned unchanged (legacy order, no
+    /// headings), so an async/classification-loading shell sees no flicker.
+    ///
+    /// Purely additive: [`Self::app_group_rows`], `visible_indices` and every
+    /// export/wire path keep their existing shape and contracts. Heading rows
+    /// carry no selectable process identity and must never reach a command.
+    pub fn app_group_display_rows(&self) -> Vec<AppGroupRow> {
+        let rows = self.app_group_rows();
+        if self.app_keys.is_empty() {
+            return rows;
+        }
+        let mut display = Vec::with_capacity(rows.len() + 2);
+        let mut apps_heading = false;
+        let mut background_heading = false;
+        for row in rows {
+            // Only top-level group rows carry a section. Expanded process rows
+            // and children revealed from "others" inherit their parent's place;
+            // the "others" row itself is deliberately unclassified so it keeps
+            // closing the list without a heading of its own.
+            let class = match row.kind {
+                AppRowKind::Group if row.depth == 0 => Some(self.app_keys.contains(&row.key)),
+                _ => None,
+            };
+            match class {
+                Some(true) if !apps_heading => {
+                    display.push(section_header(
+                        APPS_SECTION_KEY,
+                        APPS_SECTION_LABEL,
+                        row.index,
+                    ));
+                    apps_heading = true;
+                }
+                Some(false) if !background_heading => {
+                    display.push(section_header(
+                        BACKGROUND_SECTION_KEY,
+                        BACKGROUND_SECTION_LABEL,
+                        row.index,
+                    ));
+                    background_heading = true;
+                }
+                _ => {}
+            }
+            display.push(row);
+        }
+        display
     }
 
     /// Position of the selected process inside [`Self::app_group_rows`].
@@ -4808,5 +4959,186 @@ mod tests {
         dashboard.apply(Command::SetPaused(true));
         dashboard.ingest(demo_snapshot(HISTORY_CAPACITY as u64 + 6));
         assert_eq!(dashboard.selected_cpu_history().len(), HISTORY_CAPACITY);
+    }
+
+    // --- C1-VMCLASSIFY: injected app/background classification ---------------
+
+    /// Two app groups, two background groups and two foldable singles.
+    ///
+    /// The background groups win on the default CPU sort, so injecting the app
+    /// keys produces a visible order change instead of a no-op.
+    fn classification_snapshot() -> tm_core::SystemSnapshot {
+        let mut snapshot = demo_snapshot(0);
+        let processes = {
+            let mut processes = Vec::new();
+            let mut push = |pid: u32, name: &str, cpu_percent: f32| {
+                processes.push(ProcessSnapshot {
+                    key: ProcessKey::new(pid, 1),
+                    name: name.into(),
+                    command: format!("/usr/bin/{name}"),
+                    cpu_percent,
+                    memory_bytes: 100,
+                    ..ProcessSnapshot::default()
+                });
+            };
+            push(10, "zebra", 4.0);
+            push(11, "zebra", 3.0);
+            push(20, "apple", 1.0);
+            push(21, "apple", 0.5);
+            push(30, "yard", 6.0);
+            push(31, "yard", 2.0);
+            push(40, "beach", 0.9);
+            push(41, "beach", 0.4);
+            push(50, "alpha", 0.5);
+            push(60, "beta", 0.25);
+            processes
+        };
+        snapshot.processes = processes;
+        snapshot
+    }
+
+    fn key_set(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    fn group_keys(dashboard: &Dashboard) -> Vec<String> {
+        dashboard
+            .app_group_rows()
+            .iter()
+            .map(|row| row.key.clone())
+            .collect()
+    }
+
+    #[test]
+    fn empty_app_keys_keep_legacy_sort_and_add_no_headings() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(classification_snapshot());
+        assert!(dashboard.app_keys().is_empty());
+        assert_eq!(
+            group_keys(&dashboard),
+            ["yard", "zebra", "apple", "beach", OTHERS_APP_GROUP_KEY]
+        );
+        // While classification is still loading the display API is a pure
+        // wrapper: no headings, byte-for-byte the legacy rows.
+        assert_eq!(
+            dashboard.app_group_display_rows(),
+            dashboard.app_group_rows()
+        );
+
+        // With no injected set the chosen sort is the only ordering key.
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        }));
+        assert_eq!(
+            group_keys(&dashboard),
+            ["apple", "beach", "yard", "zebra", OTHERS_APP_GROUP_KEY]
+        );
+    }
+
+    #[test]
+    fn app_keys_injection_puts_apps_first_and_keeps_chosen_sort_second() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(classification_snapshot());
+        let keys = key_set(&["zebra", "apple"]);
+        dashboard.set_app_keys(keys.clone());
+        assert_eq!(dashboard.app_keys(), &keys);
+        assert_eq!(
+            group_keys(&dashboard),
+            ["zebra", "apple", "yard", "beach", OTHERS_APP_GROUP_KEY]
+        );
+        // `visible` follows the new order and still holds real snapshot indices.
+        assert_eq!(dashboard.visible_indices(), &[0, 2, 4, 6, 8]);
+
+        // Classification stays the primary key; an explicit sort only orders
+        // groups *inside* each class (SortSpec itself is untouched).
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Name,
+            direction: SortDirection::Ascending,
+        }));
+        assert_eq!(dashboard.sort_spec().key, SortKey::Name);
+        assert_eq!(
+            group_keys(&dashboard),
+            ["apple", "zebra", "beach", "yard", OTHERS_APP_GROUP_KEY]
+        );
+    }
+
+    #[test]
+    fn display_rows_insert_two_section_headings_and_keep_others_last() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(classification_snapshot());
+        dashboard.set_app_keys(key_set(&["zebra", "apple"]));
+
+        let display = dashboard.app_group_display_rows();
+        assert_eq!(display.len(), dashboard.app_group_rows().len() + 2);
+        assert_eq!(
+            display
+                .iter()
+                .filter(|row| row.kind == AppRowKind::SectionHeader)
+                .count(),
+            2
+        );
+        assert_eq!(display[0].key, APPS_SECTION_KEY);
+        assert_eq!(display[0].label, APPS_SECTION_LABEL);
+        assert_eq!(display[3].key, BACKGROUND_SECTION_KEY);
+        assert_eq!(display[3].label, BACKGROUND_SECTION_LABEL);
+
+        // Headings select nothing: no members, an unreachable identity and no
+        // children. Their index is a borrowed in-range value, not a new row.
+        let snapshot = dashboard.snapshot().expect("snapshot");
+        for header in display
+            .iter()
+            .filter(|row| row.kind == AppRowKind::SectionHeader)
+        {
+            assert!(header.member_keys.is_empty());
+            assert!(snapshot.process(header.process_key).is_none());
+            assert!(!header.has_children);
+            assert!(!header.expanded);
+            assert!(header.index < snapshot.processes.len());
+        }
+
+        // The "others" bucket is unclassified, has no heading and still closes
+        // the list (C1-COLLAPSE contract preserved).
+        let last = display.last().expect("display rows");
+        assert_eq!(last.kind, AppRowKind::Others);
+        assert_eq!(last.key, OTHERS_APP_GROUP_KEY);
+        assert!(display[..display.len() - 1]
+            .iter()
+            .all(|row| row.key != OTHERS_APP_GROUP_KEY));
+    }
+
+    #[test]
+    fn classification_leaves_selection_visible_and_export_contracts_intact() {
+        use tm_core::export::snapshot_to_csv;
+        use tm_core::redact::RedactionIdentifiers;
+
+        let ids = RedactionIdentifiers {
+            home: "",
+            user: "",
+            hostname: "",
+        };
+        let mut dashboard = dashboard();
+        dashboard.ingest(classification_snapshot());
+        let before = snapshot_to_csv(dashboard.snapshot().expect("snapshot"), &ids);
+
+        dashboard.set_app_keys(key_set(&["zebra"]));
+        dashboard.apply(Command::SelectAppGroup("zebra".into()));
+        assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(10, 1)));
+        assert_eq!(dashboard.selected_visible_index(), Some(0));
+        assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
+
+        // Display headings never enter `visible`; exports still read the raw
+        // snapshot and are identical before and after classification.
+        assert_eq!(dashboard.visible_count(), dashboard.app_group_rows().len());
+        let snapshot = dashboard.snapshot().expect("snapshot");
+        let after = snapshot_to_csv(snapshot, &ids);
+        assert_eq!(before, after);
+        assert_eq!(after.lines().count(), snapshot.processes.len() + 1);
+
+        // A heading's sentinel identity matches no process, so the ordinary
+        // selection path clears the selection instead of latching a bogus
+        // target that could later be signalled.
+        dashboard.apply(Command::Select(Some(ProcessKey::new(u32::MAX, u64::MAX))));
+        assert_eq!(dashboard.selected_key(), None);
     }
 }

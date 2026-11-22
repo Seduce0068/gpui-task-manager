@@ -6,6 +6,7 @@
 //! behind an `Arc<Mutex<...>>` and is only touched from the GPUI background
 //! executor, so the UI thread never blocks on `/proc` reads.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -103,6 +104,53 @@ fn app_lookup_key(raw: &str) -> Option<String> {
     Some(key.to_string())
 }
 
+/// Number of rows the native virtual list must render (C2-NATIVESECTIONS).
+///
+/// Section headings exist only in `app_group_display_rows()`; they are never in
+/// `visible`, so the list length cannot come from `visible_count()` while a
+/// classification is injected. Flat/tree views keep the original count.
+fn display_row_count(dashboard: &Dashboard) -> usize {
+    if dashboard.app_group_view() {
+        dashboard.app_group_display_rows().len()
+    } else {
+        dashboard.visible_count()
+    }
+}
+
+/// Maps a `visible` / `app_group_rows()` position to its display-row position.
+///
+/// Headings are display-only and are skipped, so a selected process keeps its
+/// original `visible` index while the virtual list renders two extra rows
+/// above it. Returns the unchanged index outside the grouped view.
+fn row_to_display_index(dashboard: &Dashboard, row_index: usize) -> usize {
+    if !dashboard.app_group_view() {
+        return row_index;
+    }
+    let mut real = 0;
+    for (position, row) in dashboard.app_group_display_rows().iter().enumerate() {
+        if row.kind == AppRowKind::SectionHeader {
+            continue;
+        }
+        if real == row_index {
+            return position;
+        }
+        real += 1;
+    }
+    row_index
+}
+
+/// Whether a display row may receive keyboard focus / activation (C2).
+///
+/// A section heading is presentation-only: it has no process identity and must
+/// never be selectable, even if a stale focus handle exists for its position.
+fn is_focusable_display_row(dashboard: &Dashboard, display_index: usize) -> bool {
+    !dashboard.app_group_view()
+        || dashboard
+            .app_group_display_rows()
+            .get(display_index)
+            .is_none_or(|row| row.kind != AppRowKind::SectionHeader)
+}
+
 /// Sanitises the arbitrary `Name=` text of a local `.desktop` entry.
 ///
 /// Control characters are neutralised (so a crafted entry cannot forge extra
@@ -190,6 +238,10 @@ struct ProcessRowView {
     /// True only for the synthetic "その他 N アプリ" summary row. It is a
     /// group row for activation purposes but has no app icon of its own.
     is_others: bool,
+    /// True for the display-only 「アプリ」 / 「バックグラウンド プロセス」
+    /// headings. They carry no process/group identity and are never clickable
+    /// or selectable (C2-NATIVESECTIONS).
+    is_section_header: bool,
     /// Multi-process group counts (and the Others expand hint) are emphasised
     /// so one-process rows stay visually distinct (R1-OTHERS).
     command_emphasis: bool,
@@ -220,8 +272,9 @@ fn normalised_group_cpu(total: f32, core_count: usize) -> f32 {
 /// Resolves a visible row's display values without touching GPUI (R1-APPDRAW).
 ///
 /// `group` is supplied only in the default grouped view, for a row whose
-/// view-model kind is [`AppRowKind::Group`] or [`AppRowKind::Others`]. Flat/tree
-/// rows deliberately keep their original `ProcessSnapshot` values, so their
+/// view-model kind is [`AppRowKind::Group`], [`AppRowKind::Others`] or the
+/// display-only [`AppRowKind::SectionHeader`]. Flat/tree rows deliberately keep
+/// their original `ProcessSnapshot` values, so their
 /// command/PID/user/status/threads rendering is unchanged.
 ///
 /// Both aggregate kinds are activated with `ToggleAppGroup`, but the Others
@@ -240,6 +293,32 @@ fn process_row_values(
     has_children: bool,
 ) -> ProcessRowView {
     match group {
+        // A heading reuses an in-range snapshot index only so the row stays
+        // structurally valid. Neither the app key nor the representative
+        // process may leak into any cell: the heading shows its fixed label and
+        // dashes, and it is never an activation target (C2-NATIVESECTIONS).
+        Some(group) if group.kind == AppRowKind::SectionHeader => ProcessRowView {
+            key: group.process_key,
+            group_key: None,
+            icon_key: None,
+            name: group.label.clone(),
+            command: String::new(),
+            cpu_percent: 0.0,
+            memory_bytes: 0,
+            pid: "—".to_string(),
+            user: "—".to_string(),
+            status: ProcessStatus::Unknown,
+            status_text: "—".to_string(),
+            threads: "—".to_string(),
+            selected: false,
+            depth: 0,
+            has_children: false,
+            is_group: false,
+            is_others: false,
+            is_section_header: true,
+            command_emphasis: false,
+            process_count: 0,
+        },
         Some(group) if group.kind == AppRowKind::Group => ProcessRowView {
             key: group.process_key,
             group_key: Some(group.key.clone()),
@@ -258,6 +337,7 @@ fn process_row_values(
             has_children,
             is_group: true,
             is_others: false,
+            is_section_header: false,
             // A single-process group reads like a normal row; only a real
             // multi-process count is highlighted (R1-OTHERS).
             command_emphasis: group.process_count > 1,
@@ -287,6 +367,7 @@ fn process_row_values(
             has_children: true,
             is_group: true,
             is_others: true,
+            is_section_header: false,
             command_emphasis: true,
             process_count: group.process_count,
         },
@@ -313,6 +394,7 @@ fn process_row_values(
             has_children,
             is_group: false,
             is_others: false,
+            is_section_header: false,
             command_emphasis: false,
             process_count: 1,
         },
@@ -577,6 +659,10 @@ impl TaskManagerApp {
             BackendInit::Failed(_) => None,
         };
         let mut dashboard = Dashboard::new(platform, DEFAULT_REFRESH_INTERVAL);
+        // Startup has no snapshot yet, so classification starts empty: the
+        // grouped list keeps its legacy order until the first sample arrives.
+        // `sync_app_keys` then injects the real set on every ingest (C2).
+        dashboard.set_app_keys(BTreeSet::new());
         let had_startup_error = startup_status.is_some();
         if let Some(message) = startup_status {
             // Startup failures must stay visible until the user acts.
@@ -737,6 +823,37 @@ impl TaskManagerApp {
         }
     }
 
+    /// Classifies every group key of the current snapshot as an app or not and
+    /// injects the resulting set into the view model (C2-NATIVESECTIONS).
+    ///
+    /// The native shell can call the resolver synchronously, so no async bridge
+    /// is needed: a `.desktop` display name means "アプリ", everything else
+    /// (including the reserved Others key) stays in the background section.
+    /// The resolver itself never crosses into `tm-viewmodel`, which stays
+    /// I/O-free and wasm-portable. Only validated keys are resolved, so a
+    /// crafted group key cannot reach the filesystem adapter.
+    fn sync_app_keys(&mut self) {
+        let keys: Vec<String> = self
+            .dashboard
+            .snapshot()
+            .map(|snapshot| {
+                tm_core::model::group_by_app(&snapshot.processes)
+                    .into_iter()
+                    .map(|group| group.key)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut app_keys = BTreeSet::new();
+        for key in keys {
+            if let Some(key) = app_lookup_key(&key) {
+                if self.icon_resolver.resolve_display_name(&key).is_some() {
+                    app_keys.insert(key);
+                }
+            }
+        }
+        self.dashboard.set_app_keys(app_keys);
+    }
+
     fn start_timer(&self, cx: &mut Context<Self>) {
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| loop {
@@ -789,11 +906,16 @@ impl TaskManagerApp {
                         Ok(snapshot) => {
                             let before = this.dashboard.selected_key();
                             this.dashboard.ingest(snapshot);
+                            // Re-classify on every sample: a newly installed
+                            // .desktop entry or a new app key must move its
+                            // group into the 「アプリ」 section (C2).
+                            this.sync_app_keys();
                             // If ingest had to move the selection (e.g. the
                             // previously selected process disappeared), keep
                             // it on screen. Do not scroll on every sample.
                             if this.dashboard.selected_key() != before {
                                 if let Some(position) = this.dashboard.selected_visible_index() {
+                                    let position = row_to_display_index(&this.dashboard, position);
                                     this.scroll_handle
                                         .scroll_to_item(position, ScrollStrategy::Nearest);
                                 }
@@ -903,6 +1025,9 @@ impl TaskManagerApp {
         let effects = self.dashboard.apply(command);
         self.execute_effects(effects, cx);
         if let Some(position) = self.dashboard.selected_visible_index() {
+            // `selected_visible_index` is a real (non-heading) row position;
+            // the virtual list renders headings too (C2).
+            let position = row_to_display_index(&self.dashboard, position);
             self.scroll_handle
                 .scroll_to_item(position, ScrollStrategy::Nearest);
         }
@@ -1189,8 +1314,11 @@ impl TaskManagerApp {
             && self
                 .row_focus
                 .iter()
-                .take(self.dashboard.visible_count())
-                .any(|handle| handle.is_focused(window))
+                .take(display_row_count(&self.dashboard))
+                .enumerate()
+                .any(|(index, handle)| {
+                    is_focusable_display_row(&self.dashboard, index) && handle.is_focused(window)
+                })
         {
             cx.stop_propagation();
             return;
@@ -1249,13 +1377,22 @@ impl TaskManagerApp {
                 let row_focused = self
                     .row_focus
                     .iter()
-                    .take(self.dashboard.visible_count())
-                    .any(|handle| handle.is_focused(window));
+                    .take(display_row_count(&self.dashboard))
+                    .enumerate()
+                    .any(|(index, handle)| {
+                        is_focusable_display_row(&self.dashboard, index)
+                            && handle.is_focused(window)
+                    });
                 self.handle_command(Command::SelectRelative(delta), cx);
                 if row_focused {
                     if let Some(index) = self.dashboard.selected_visible_index() {
-                        if let Some(handle) = self.row_focus.get(index) {
-                            handle.focus(window, cx);
+                        // `select_relative` only picks real rows in the view
+                        // model; still skip headings in the UI's own list (C2).
+                        let index = row_to_display_index(&self.dashboard, index);
+                        if is_focusable_display_row(&self.dashboard, index) {
+                            if let Some(handle) = self.row_focus.get(index) {
+                                handle.focus(window, cx);
+                            }
                         }
                     }
                 }
@@ -2100,7 +2237,9 @@ impl TaskManagerApp {
     }
 
     fn process_list(&mut self, cx: &mut Context<Self>) -> Div {
-        let count = self.dashboard.visible_count();
+        // Headings are rendered inside this list but never enter `visible`, so
+        // the item count must come from the display rows in grouped view (C2).
+        let count = display_row_count(&self.dashboard);
         let list = uniform_list(
             "process-list",
             count,
@@ -2176,40 +2315,73 @@ impl TaskManagerApp {
     fn process_row(&mut self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (view, expanded) = {
             let snapshot = self.dashboard.snapshot()?;
-            let row_index = *self.dashboard.visible_indices().get(index)?;
+            let grouped = self.dashboard.app_group_view();
+            // Headings live only in `app_group_display_rows()` and never enter
+            // `visible`. Counting real rows before this display position recovers
+            // the `app_group_rows()` / `visible` index (C2-NATIVESECTIONS).
+            let display_rows = if grouped {
+                self.dashboard.app_group_display_rows()
+            } else {
+                Vec::new()
+            };
+            let display_row = display_rows.get(index).cloned();
+            let is_section_header = display_row
+                .as_ref()
+                .is_some_and(|row| row.kind == AppRowKind::SectionHeader);
+            let real_before = if grouped {
+                display_rows
+                    .iter()
+                    .take(index)
+                    .filter(|row| row.kind != AppRowKind::SectionHeader)
+                    .count()
+            } else {
+                index
+            };
+            let row_index = self
+                .dashboard
+                .visible_indices()
+                .get(real_before)
+                .copied()
+                .or_else(|| display_row.as_ref().map(|row| row.index))?;
             let depth = self
                 .dashboard
                 .visible_depths()
-                .get(index)
+                .get(real_before)
                 .copied()
+                .or_else(|| display_row.as_ref().map(|row| row.depth))
                 .unwrap_or(0);
             let has_children = self
                 .dashboard
                 .visible_has_children()
-                .get(index)
+                .get(real_before)
                 .copied()
+                .or_else(|| display_row.as_ref().map(|row| row.has_children))
                 .unwrap_or(false);
             let process = snapshot.processes.get(row_index)?;
-            // In the grouped view `app_group_rows()` is aligned with
-            // `visible_indices()`. Both Group and Others rows take their values
-            // from the aggregate; every flat/tree row keeps the original
-            // `snapshot.processes[row_index]` values (R1-APPDRAW, R1-OTHERS).
-            let group = if self.dashboard.app_group_view() {
-                self.dashboard.app_group_rows().get(index).cloned()
-            } else {
-                None
-            };
-            let group = group
-                .as_ref()
-                .filter(|row| row.kind == AppRowKind::Group || row.kind == AppRowKind::Others);
-            let selected = if group.is_some() {
-                self.dashboard.selected_app_group_row_index() == Some(index)
+            // Group, Others and display-only SectionHeader rows take their
+            // values from the view model; expanded Process rows keep the
+            // original `ProcessSnapshot` values (R1-APPDRAW, R1-OTHERS, C2).
+            let group = display_row.as_ref().filter(|row| {
+                matches!(
+                    row.kind,
+                    AppRowKind::Group | AppRowKind::Others | AppRowKind::SectionHeader
+                )
+            });
+            let selected = if is_section_header {
+                false
+            } else if group.is_some() {
+                self.dashboard.selected_app_group_row_index() == Some(real_before)
             } else {
                 self.dashboard.selected_key() == Some(process.key)
             };
-            let expanded = group
-                .map(|row| row.expanded)
-                .unwrap_or_else(|| !self.dashboard.is_collapsed(process.key));
+            // A heading is never expandable and never a selection target.
+            let expanded = if is_section_header {
+                false
+            } else {
+                group
+                    .map(|row| row.expanded)
+                    .unwrap_or_else(|| !self.dashboard.is_collapsed(process.key))
+            };
             let core_count = snapshot.cpu.core_count();
             (
                 process_row_values(group, process, core_count, selected, depth, has_children),
@@ -2242,6 +2414,7 @@ impl TaskManagerApp {
         let process_count = view.process_count;
         let is_group = view.is_group;
         let is_others = view.is_others;
+        let is_section_header = view.is_section_header;
         let command_emphasis = view.command_emphasis;
         let collapsed = !expanded;
         // Group rows show the app's native icon when a .desktop entry resolves;
@@ -2282,9 +2455,15 @@ impl TaskManagerApp {
         // Display-only override: the view-model label (and therefore the
         // export/wire contract) is untouched. The same `name` feeds the
         // visible cell and the AccessKit row name below.
-        let name = match (is_group, resolved_name.as_deref()) {
-            (true, Some(resolved)) => self.display(resolved),
-            _ => self.display(&view.name),
+        let name = if is_section_header {
+            // The heading label is a fixed view-model constant; no .desktop
+            // name and no representative process text may replace it (C2).
+            self.display(&view.name)
+        } else {
+            match (is_group, resolved_name.as_deref()) {
+                (true, Some(resolved)) => self.display(resolved),
+                _ => self.display(&view.name),
+            }
         };
         let marker = if (is_group && has_children) || is_others {
             if expanded {
@@ -2308,7 +2487,11 @@ impl TaskManagerApp {
         } else {
             format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
         };
-        let aria_label = if is_group {
+        // A heading's accessible name is exactly its visible heading text:
+        // no CPU/memory/selection noise and no process identity (C2).
+        let aria_label = if is_section_header {
+            name.clone()
+        } else if is_group {
             a11y_group_row_label(&name, cpu, memory, process_count, selected, is_others)
         } else {
             a11y_row_label(&name, status, cpu, memory, key.pid, selected)
@@ -2320,41 +2503,56 @@ impl TaskManagerApp {
             // selected state and 1-based row index, so a screen reader can
             // describe the row without relying on the colour-only status
             // dot. `name` is the already-displayed (possibly redacted) value.
-            .role(Role::Row)
-            .aria_label(aria_label)
-            .aria_selected(selected)
-            .aria_row_index(index + 1)
-            // Group rows advertise the same expansion state as tree nodes;
-            // both use `has_children` from the visible row arrays.
-            .when(has_children || is_others, |this| {
-                this.aria_expanded(expanded)
+            // Section headings are Role::RowHeader with a fixed accessible name
+            // and no selection/activation semantics at all (C2-NATIVESECTIONS).
+            .role(if is_section_header {
+                Role::RowHeader
+            } else {
+                Role::Row
             })
-            .track_focus(&row_focus)
-            .aria_keyshortcuts("Enter, Space")
+            .aria_label(aria_label)
+            .when(!is_section_header, |this| {
+                this.aria_selected(selected)
+                    .aria_row_index(index + 1)
+                    // Group rows advertise the same expansion state as tree
+                    // nodes; both use `has_children` from the visible arrays.
+                    .when(has_children || is_others, |this| {
+                        this.aria_expanded(expanded)
+                    })
+                    .track_focus(&row_focus)
+                    .aria_keyshortcuts("Enter, Space")
+            })
             .flex()
             .items_center()
             .w_full()
             .h(px(ROW_HEIGHT))
             .px_3()
             .gap_2()
-            .cursor_pointer()
-            .when(selected, |this| this.bg(rgb(palette().surface)))
-            .when(!selected, |this| {
-                this.hover(|style| style.bg(rgb(palette().mantle)))
+            .when(is_section_header, |this| {
+                this.bg(rgb(palette().mantle))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(palette().text))
             })
-            .on_click(cx.listener(move |this, _event, window, cx| {
-                row_focus.focus(window, cx);
-                if let Some(group_key) = group_key.clone() {
-                    // A group has no process identity of its own: activation
-                    // toggles the expansion set instead of selecting a member.
-                    this.handle_command(Command::ToggleAppGroup(group_key), cx);
-                } else if tree_view && has_children {
-                    this.handle_command(Command::Select(Some(key)), cx);
-                    this.handle_command(Command::ToggleTreeNode(key), cx);
-                } else {
-                    this.handle_command(Command::Select(Some(key)), cx);
-                }
-            }))
+            .when(!is_section_header, |this| {
+                this.cursor_pointer()
+                    .when(selected, |this| this.bg(rgb(palette().surface)))
+                    .when(!selected, |this| {
+                        this.hover(|style| style.bg(rgb(palette().mantle)))
+                    })
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        row_focus.focus(window, cx);
+                        if let Some(group_key) = group_key.clone() {
+                            // A group has no process identity of its own:
+                            // activation toggles the expansion set.
+                            this.handle_command(Command::ToggleAppGroup(group_key), cx);
+                        } else if tree_view && has_children {
+                            this.handle_command(Command::Select(Some(key)), cx);
+                            this.handle_command(Command::ToggleTreeNode(key), cx);
+                        } else {
+                            this.handle_command(Command::Select(Some(key)), cx);
+                        }
+                    }))
+            })
             .child(
                 div()
                     .flex_1()
@@ -2363,22 +2561,26 @@ impl TaskManagerApp {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
-                    .child(if let Some(path) = app_icon {
-                        // `img(PathBuf)` loads via GPUI's global image cache;
-                        // if the PNG still fails to decode, fall back to the
-                        // same status dot instead of an empty hole.
-                        img(path)
-                            .w(px(16.0))
-                            .h(px(16.0))
-                            .with_fallback(move || status_dot(dot_color).into_any_element())
-                            .into_any_element()
-                    } else {
-                        status_dot(dot_color).into_any_element()
+                    // A heading has no icon and no status dot: neither may
+                    // imply a process or an app identity (C2).
+                    .when(!is_section_header, |this| {
+                        this.child(if let Some(path) = app_icon {
+                            // `img(PathBuf)` loads via GPUI's global image cache;
+                            // if the PNG still fails to decode, fall back to the
+                            // same status dot instead of an empty hole.
+                            img(path)
+                                .w(px(16.0))
+                                .h(px(16.0))
+                                .with_fallback(move || status_dot(dot_color).into_any_element())
+                                .into_any_element()
+                        } else {
+                            status_dot(dot_color).into_any_element()
+                        })
                     })
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(if selected {
+                            .text_color(rgb(if selected || is_section_header {
                                 palette().text
                             } else {
                                 palette().subtext
@@ -2412,15 +2614,27 @@ impl TaskManagerApp {
                     .text_sm()
                     // `f32::min(NaN, 100.0)` returns 100.0 (red) while the
                     // label shows 0.0%; usage_color already handles NaN.
-                    .text_color(rgb(usage_color(cpu)))
-                    .child(format::format_cpu_percent(cpu)),
+                    .text_color(rgb(if is_section_header {
+                        palette().muted
+                    } else {
+                        usage_color(cpu)
+                    }))
+                    .child(if is_section_header {
+                        "—".to_string()
+                    } else {
+                        format::format_cpu_percent(cpu)
+                    }),
             )
             .child(
                 div()
                     .w(px(COL_MEMORY))
                     .text_sm()
                     .text_color(rgb(palette().subtext))
-                    .child(format::format_bytes(memory)),
+                    .child(if is_section_header {
+                        "—".to_string()
+                    } else {
+                        format::format_bytes(memory)
+                    }),
             );
         // Aggregate rows have no PID/user/status/threads, so those columns are
         // dash-only noise by default. The settings overlay restores them for
@@ -5599,7 +5813,7 @@ mod tests {
             .next()
             .expect("process_row slice must end at details_panel");
         assert!(row.contains(concat!("Command::Toggle", "AppGroup(group_key)")));
-        assert!(row.contains(concat!("app_group_", "rows().get(index)")));
+        assert!(row.contains(concat!("app_group_display_", "rows()")));
         assert!(row.contains(concat!("AppRowKind::", "Group")));
         assert!(row.contains(concat!("process_row_values(", "group")));
         assert!(row.contains(concat!(".aria_label(", "aria_label)")));
@@ -5608,6 +5822,79 @@ mod tests {
         assert!(row.contains(concat!(".aria_keyshortcuts(", "\"Enter, Space\")")));
         // Tree nodes keep their original select + toggle behaviour.
         assert!(row.contains(concat!("Command::Toggle", "TreeNode(key)")));
+    }
+
+    #[test]
+    fn section_header_values_ignore_the_representative_process() {
+        let representative = sample_process(100, "firefox");
+        let header = AppGroupRow {
+            kind: AppRowKind::SectionHeader,
+            key: tm_viewmodel::APPS_SECTION_KEY.to_string(),
+            label: tm_viewmodel::APPS_SECTION_LABEL.to_string(),
+            index: 0,
+            process_key: ProcessKey::new(u32::MAX, u64::MAX),
+            member_keys: Vec::new(),
+            depth: 0,
+            has_children: false,
+            expanded: false,
+            // Hostile values: a heading must never borrow them.
+            cpu_percent: 99.0,
+            memory_bytes: 999,
+            process_count: 42,
+        };
+        let view = process_row_values(Some(&header), &representative, 1, true, 0, true);
+        assert!(view.is_section_header);
+        assert!(!view.is_group);
+        assert!(!view.is_others);
+        assert_eq!(view.group_key, None);
+        assert_eq!(view.icon_key, None);
+        assert_eq!(view.name, tm_viewmodel::APPS_SECTION_LABEL);
+        assert_eq!(view.command, "");
+        assert_eq!(view.pid, "—");
+        assert_eq!(view.cpu_percent, 0.0);
+        assert_eq!(view.memory_bytes, 0);
+        assert_eq!(view.process_count, 0);
+        assert!(!view.selected, "a heading can never be selected");
+        assert!(!view.has_children);
+    }
+
+    #[test]
+    fn native_sections_render_headings_without_focus_or_click() {
+        let source = include_str!("app.rs");
+        let row = source
+            .split("fn process_row(")
+            .nth(1)
+            .expect("process_row must exist")
+            .split("fn details_panel(")
+            .next()
+            .expect("process_row slice must end at details_panel");
+        assert!(row.contains("app_group_display_rows()"));
+        assert!(row.contains("AppRowKind::SectionHeader"));
+        assert!(row.contains("Role::RowHeader"));
+        assert!(row.contains("is_section_header"));
+        // The heading branch excludes focus, aria state and on_click.
+        assert!(row.contains(".when(!is_section_header, |this| {"));
+        let keys = source
+            .split("fn on_key_down(")
+            .nth(1)
+            .expect("on_key_down must exist")
+            .split("fn render(")
+            .next()
+            .expect("on_key_down slice must end");
+        assert!(keys.contains("is_focusable_display_row"));
+        assert!(keys.contains("row_to_display_index"));
+
+        let shell = source
+            .split("fn sync_app_keys(&mut self)")
+            .nth(1)
+            .expect("sync_app_keys must exist")
+            .split("fn start_timer(")
+            .next()
+            .expect("sync_app_keys slice must end");
+        assert!(shell.contains("tm_core::model::group_by_app"));
+        assert!(shell.contains("resolve_display_name("));
+        assert!(shell.contains("app_lookup_key("));
+        assert!(shell.contains("set_app_keys(app_keys)"));
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //!   a `<canvas>`. `document.title` is human-facing only (a fixed label plus
 //!   the data source) and never carries DOM proof fields or user input.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
@@ -36,9 +36,10 @@ use tm_core::{
     SystemProbe, SystemSnapshot,
 };
 use tm_viewmodel::{
-    AppGroupRow, AppRowKind, Command, DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect,
-    FILTER_PRESETS, FilterInput, FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL,
-    OTHERS_APP_GROUP_KEY, StatusMessage,
+    APPS_SECTION_KEY, AppGroupRow, AppRowKind, BACKGROUND_SECTION_KEY, Command,
+    DEFAULT_REFRESH_INTERVAL, Dashboard, EditOutcome, Effect, FILTER_PRESETS, FilterInput,
+    FilterPresetId, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, OTHERS_APP_GROUP_KEY,
+    StatusMessage,
 };
 #[cfg(target_family = "wasm")]
 use wasm_bindgen::JsCast;
@@ -47,8 +48,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_time::Instant;
 
 use crate::agent::{
-    AgentClient, AgentConfig, FetchError, PollSuspendGuard, SnapshotEnvelope, SnapshotResponse,
-    onboarding_steps,
+    AgentClient, AgentConfig, AppNameResolution, FetchError, PollSuspendGuard, SnapshotEnvelope,
+    SnapshotResponse, onboarding_steps,
 };
 use crate::settings::{INTERVAL_PRESETS_MS, STORAGE_KEY, interval_label};
 use crate::theme::*;
@@ -452,6 +453,21 @@ enum NavSection {
     Processes,
 }
 
+/// Per-key outcome of the asynchronous `/api/v1/app-name` classification.
+///
+/// Only `App` / `Background` may enter the viewmodel's key set; `Pending` keeps
+/// the legacy order until the batch that discovered the key has finished. A
+/// new key starts as `Pending`, so headings never appear row by row (C3-WEBSECTIONS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppKeyClass {
+    /// Fixed `200` name: belongs above the background section.
+    App,
+    /// Fixed `404` miss: a background process.
+    Background,
+    /// Lookup in flight or temporarily failed: keep the current order.
+    Pending,
+}
+
 /// Browser application state.
 pub struct TaskManagerApp {
     dashboard: Dashboard,
@@ -500,7 +516,18 @@ pub struct TaskManagerApp {
     app_names: HashMap<String, Option<String>>,
     /// Whether an asset-refresh task is already walking the current key list.
     /// Sequential fetches keep the client's dedicated single-flight gates free.
+    /// Its falling edge is the "initial load complete" point at which a full
+    /// classification may be committed in one frame (C3-WEBSECTIONS).
     icon_refresh_running: bool,
+    /// Classification of every redacted app key seen so far. Fed only by the
+    /// name endpoint's typed result, never by filesystem access (wasm has none).
+    app_key_classes: HashMap<String, AppKeyClass>,
+    /// Keys covered by the in-flight batch. A key that appeared afterwards is
+    /// not in this set and forces one more batch before any commit.
+    refresh_batch_keys: BTreeSet<String>,
+    /// Whether the current key set has already been injected into the viewmodel.
+    /// Cleared on agent switch so a fresh agent reclassifies every key.
+    classification_committed: bool,
     /// Which page the left navigation currently shows. Purely presentational:
     /// it is not a `Dashboard` command and never enters the DOM proof.
     nav_section: NavSection,
@@ -659,6 +686,9 @@ fn grouped_row_display_name_with(row: &AppGroupRow, label: &str) -> String {
             format!("{label} ×{}", row.process_count)
         }
         AppRowKind::Group | AppRowKind::Process => label.to_string(),
+        // Headings are display-only; callers short-circuit before reaching the
+        // normal row resolver, but keep the pure helper total for safety.
+        AppRowKind::SectionHeader => label.to_string(),
     }
 }
 
@@ -710,6 +740,11 @@ fn resolve_process_row_with_names(
     app_row: Option<&AppGroupRow>,
     app_names: &HashMap<String, Option<String>>,
 ) -> Option<ProcessRowView> {
+    // A section heading points at no process. It is rendered by the dedicated
+    // `section_header_row` and must never be read as a selectable data row.
+    if app_row.is_some_and(|row| row.kind == AppRowKind::SectionHeader) {
+        return None;
+    }
     let snapshot = dashboard.snapshot()?;
     let selected = dashboard.selected_key();
     let fixed = "—".to_string();
@@ -924,6 +959,9 @@ impl TaskManagerApp {
             app_icons: HashMap::new(),
             app_names: HashMap::new(),
             icon_refresh_running: false,
+            app_key_classes: HashMap::new(),
+            refresh_batch_keys: BTreeSet::new(),
+            classification_committed: false,
             nav_section: NavSection::Applications,
             row_menu_item_focus: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -1082,54 +1120,60 @@ impl TaskManagerApp {
         let DataSource::Live(client) = &self.source else {
             return;
         };
-        let mut keys: Vec<String> = Vec::new();
-        if self.dashboard.app_group_view() {
-            // Group *and* expanded process rows carry a real group key. The
-            // Others summary's NUL-prefixed key is deliberately excluded.
-            for row in self.dashboard.app_group_rows() {
-                if matches!(row.kind, AppRowKind::Group | AppRowKind::Process)
-                    && row.key != OTHERS_APP_GROUP_KEY
-                    && (!self.app_names.contains_key(&row.key)
-                        || !self.app_icons.contains_key(&row.key))
-                {
-                    keys.push(row.key);
-                }
-            }
-        } else if let Some(snapshot) = self.dashboard.snapshot() {
-            for index in self.dashboard.visible_indices() {
-                if let Some(process) = snapshot.processes.get(*index) {
-                    let key = tm_core::model::app_group_key(process);
-                    if !key.is_empty()
-                        && key != OTHERS_APP_GROUP_KEY
-                        && (!self.app_names.contains_key(key) || !self.app_icons.contains_key(key))
-                    {
-                        keys.push(key.to_string());
-                    }
-                }
+        let current_keys = self.current_group_keys();
+        // A key is Pending from the instant it is first seen. Nothing is
+        // injected into the viewmodel until every key has a definitive answer.
+        for key in &current_keys {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                self.app_key_classes.entry(key.clone())
+            {
+                entry.insert(AppKeyClass::Pending);
+                // A new key invalidates the previously committed key set; the
+                // next complete batch must re-inject all keys at once so the
+                // newcomer is placed together with the existing rows.
+                self.classification_committed = false;
             }
         }
-        keys.sort();
-        keys.dedup();
+        let keys: Vec<String> = current_keys
+            .iter()
+            .filter(|key| {
+                let unclassified = !matches!(
+                    self.app_key_classes.get(*key),
+                    Some(AppKeyClass::App | AppKeyClass::Background)
+                );
+                unclassified
+                    || self.app_names.get(*key).is_none_or(Option::is_none)
+                    || !self.app_icons.contains_key(*key)
+            })
+            .cloned()
+            .collect();
         if keys.is_empty() {
+            self.commit_app_key_classification(cx);
             return;
         }
+        self.refresh_batch_keys = keys.iter().cloned().collect();
         let client = Arc::clone(client);
         self.icon_refresh_running = true;
         cx.spawn(async move |this, cx| {
             for key in keys {
                 let (want_name, want_icon) = match this.update(cx, |app, _| {
+                    let pending = matches!(
+                        app.app_key_classes.get(&key),
+                        None | Some(AppKeyClass::Pending)
+                    );
                     (
-                        app.app_names.get(&key).is_none_or(Option::is_none),
+                        pending || app.app_names.get(&key).is_none_or(Option::is_none),
                         !app.app_icons.contains_key(&key),
                     )
                 }) {
                     Ok(flags) => flags,
                     Err(_) => break,
                 };
-                // Keep the `Result`: a transient error must not be recorded as
-                // a definitive miss. `AgentClient` applies its own cooldown.
-                let name_result = if want_name {
-                    Some(client.fetch_app_name(&key).await)
+                // The typed resolution keeps a fixed 404 (Absent) apart from a
+                // timeout / busy agent (Pending); a Pending result never moves
+                // a row into another section.
+                let resolution = if want_name {
+                    Some(client.resolve_app_name(&key).await)
                 } else {
                     None
                 };
@@ -1140,10 +1184,23 @@ impl TaskManagerApp {
                 };
                 let image = bytes.map(icon_image);
                 let alive = this.update(cx, |app, cx| {
-                    if let Some(Ok(name)) = &name_result
-                        && !app.app_names.contains_key(&key)
-                    {
-                        app.app_names.insert(key.clone(), name.clone());
+                    if let Some(resolution) = resolution {
+                        let class = match &resolution {
+                            AppNameResolution::Found(name) => {
+                                if !app.app_names.contains_key(&key) {
+                                    app.app_names.insert(key.clone(), Some(name.clone()));
+                                }
+                                AppKeyClass::App
+                            }
+                            AppNameResolution::Absent => AppKeyClass::Background,
+                            AppNameResolution::Pending => AppKeyClass::Pending,
+                        };
+                        // Never downgrade an already definitive class with a
+                        // stale retry; new keys still start as Pending.
+                        if class != AppKeyClass::Pending || !app.app_key_classes.contains_key(&key)
+                        {
+                            app.app_key_classes.insert(key.clone(), class);
+                        }
                     }
                     if let Some(image) = image {
                         app.app_icons.insert(key.clone(), image);
@@ -1155,9 +1212,95 @@ impl TaskManagerApp {
                     break;
                 }
             }
-            let _ = this.update(cx, |app, _| app.icon_refresh_running = false);
+            // Falling edge == initial load finished for this batch. Commit the
+            // whole classification in this single update, so headings, grouping
+            // and row index all change in one frame instead of row by row.
+            let retry = this.update(cx, |app, cx| {
+                app.icon_refresh_running = false;
+                // A key outside the batch set appeared mid-fetch: it was never
+                // looked up, so its class must be reset before another attempt.
+                let new_key_seen = app
+                    .current_group_keys()
+                    .iter()
+                    .any(|key| !app.refresh_batch_keys.contains(key));
+                for key in app.current_group_keys().difference(&app.refresh_batch_keys) {
+                    app.app_key_classes
+                        .insert(key.clone(), AppKeyClass::Pending);
+                    app.classification_committed = false;
+                }
+                app.refresh_batch_keys.clear();
+                let committed = app.commit_app_key_classification(cx);
+                // Re-batch only for genuinely new keys. Purely transient
+                // Pending keys wait for the next snapshot tick so a stalled
+                // endpoint cannot spin a hot retry loop.
+                !committed
+                    && (new_key_seen
+                        || app
+                            .current_group_keys()
+                            .iter()
+                            .any(|key| !app.app_key_classes.contains_key(key)))
+            });
+            if matches!(retry, Ok(true)) {
+                let _ = this.update(cx, |app, cx| app.refresh_app_assets(cx));
+            }
         })
         .detach();
+    }
+
+    /// Real app keys currently visible, with the reserved `Others` key removed.
+    /// Shared by the batch builder and the commit guard so both see the same set.
+    fn current_group_keys(&self) -> BTreeSet<String> {
+        if self.dashboard.app_group_view() {
+            self.dashboard
+                .app_group_rows()
+                .into_iter()
+                .filter(|row| {
+                    matches!(row.kind, AppRowKind::Group | AppRowKind::Process)
+                        && row.key != OTHERS_APP_GROUP_KEY
+                })
+                .map(|row| row.key)
+                .collect()
+        } else if let Some(snapshot) = self.dashboard.snapshot() {
+            self.dashboard
+                .visible_indices()
+                .iter()
+                .filter_map(|&index| snapshot.processes.get(index))
+                .map(tm_core::model::app_group_key)
+                .filter(|key| !key.is_empty() && *key != OTHERS_APP_GROUP_KEY)
+                .map(str::to_string)
+                .collect()
+        } else {
+            BTreeSet::new()
+        }
+    }
+
+    /// Injects the classified key set once, in one frame, with no DOM-proof
+    /// rewrite of its own (the caller already notified the canvas).
+    ///
+    /// Empty / Pending keys abort the commit: the legacy order stays until the
+    /// whole batch has a definitive answer, which is what keeps rows from
+    /// jumping around while names resolve one by one (C3-WEBSECTIONS).
+    fn commit_app_key_classification(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.dashboard.app_group_view() || self.classification_committed {
+            return false;
+        }
+        let keys = self.current_group_keys();
+        if keys.iter().any(|key| {
+            !matches!(
+                self.app_key_classes.get(key),
+                Some(AppKeyClass::App | AppKeyClass::Background)
+            )
+        }) {
+            return false;
+        }
+        let apps: BTreeSet<String> = keys
+            .into_iter()
+            .filter(|key| self.app_key_classes.get(key) == Some(&AppKeyClass::App))
+            .collect();
+        self.dashboard.set_app_keys(apps);
+        self.classification_committed = true;
+        cx.notify();
+        true
     }
 
     /// Re-reads the connection settings from the page URL and applies them to
@@ -1187,6 +1330,13 @@ impl TaskManagerApp {
         client.clear_asset_caches();
         self.app_icons.clear();
         self.app_names.clear();
+        // Classification is agent-specific too: the same key may resolve to a
+        // different desktop name after a restart, so drop the cache and the
+        // injected key set before the new agent's first batch (C3-WEBSECTIONS).
+        self.app_key_classes.clear();
+        self.refresh_batch_keys.clear();
+        self.classification_committed = false;
+        self.dashboard.set_app_keys(BTreeSet::new());
         self.proof_token = proof_token;
         self.live_error = None;
         self.reconnect_required = false;
@@ -3569,21 +3719,40 @@ impl TaskManagerApp {
     }
 
     fn table(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let count = self.dashboard.visible_count();
-        // Resolve group rows once per frame: they are aligned by index with
-        // `visible_indices()` and already carry totals / counts / expansion.
-        // Export still receives `snapshot.processes` untouched (C2-WEBDRAW).
-        let app_rows = if self.dashboard.app_group_view() {
-            self.dashboard.app_group_rows()
+        let data_count = self.dashboard.visible_count();
+        // The display list includes the two additive section headings once the
+        // classification batch has committed. Data rows keep their own index so
+        // selection / context menus still address `visible_indices()` (C3-WEBSECTIONS).
+        let display_rows = if self.dashboard.app_group_view() {
+            self.dashboard.app_group_display_rows()
         } else {
             Vec::new()
         };
+        let count = if self.dashboard.app_group_view() {
+            display_rows.len()
+        } else {
+            data_count
+        };
+        let grouped = self.dashboard.app_group_view();
         let list = uniform_list(
             "process-list",
             count,
             cx.processor(move |this: &mut Self, range: Range<usize>, _window, cx| {
                 range
-                    .filter_map(|index| this.process_row(index, app_rows.get(index), cx))
+                    .filter_map(|index| {
+                        if !grouped {
+                            return this.process_row(index, None, cx);
+                        }
+                        let row = display_rows.get(index)?;
+                        if row.kind == AppRowKind::SectionHeader {
+                            return Some(this.section_header_row(row));
+                        }
+                        let data_index = display_rows[..index]
+                            .iter()
+                            .filter(|entry| entry.kind != AppRowKind::SectionHeader)
+                            .count();
+                        this.process_row(data_index, Some(row), cx)
+                    })
                     .collect::<Vec<_>>()
             }),
         )
@@ -3592,7 +3761,7 @@ impl TaskManagerApp {
 
         let overlay = if self.dashboard.snapshot().is_none() {
             Some(overlay_text(self.empty_message(), palette().muted))
-        } else if count == 0 {
+        } else if data_count == 0 {
             Some(overlay_text(
                 "一致するプロセスがありません".to_string(),
                 palette().muted,
@@ -3747,16 +3916,46 @@ impl TaskManagerApp {
             .child(text)
     }
 
+    /// Display-only section heading drawn between the two application classes.
+    ///
+    /// No click, focus or context-menu handler: a heading is a `RowHeader` with
+    /// a filled background and bold text, not a selectable process row. Its id
+    /// is the reserved key from the viewmodel, so it is stable across frames.
+    fn section_header_row(&self, row: &AppGroupRow) -> AnyElement {
+        let id = if row.key == APPS_SECTION_KEY {
+            "section-apps"
+        } else if row.key == BACKGROUND_SECTION_KEY {
+            "section-background"
+        } else {
+            "section-other"
+        };
+        div()
+            .id(id)
+            .role(Role::RowHeader)
+            .aria_label(row.label.clone())
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px_3()
+            .bg(rgb(palette().mantle))
+            .text_sm()
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(palette().subtext))
+            .child(row.label.clone())
+            .into_any_element()
+    }
+
     fn process_row(
         &mut self,
-        index: usize,
+        data_index: usize,
         app_row: Option<&AppGroupRow>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let tree_view = self.dashboard.tree_view();
         let grouped = self.dashboard.app_group_view();
         let view =
-            resolve_process_row_with_names(&self.dashboard, index, app_row, &self.app_names)?;
+            resolve_process_row_with_names(&self.dashboard, data_index, app_row, &self.app_names)?;
         let key = view.key;
         let selected = view.selected;
         let depth = view.depth;
@@ -3785,12 +3984,12 @@ impl TaskManagerApp {
         // Keep a stable handle per row so Tab + Enter/Space reaches the same
         // `on_click` that a mouse activation uses (WCAG 2.1.1). Flat/tree rows
         // are deliberately left non-focusable to preserve the existing Tab order.
-        if grouped && self.grouped_row_focus.len() <= index {
-            let extra = index + 1 - self.grouped_row_focus.len();
+        if grouped && self.grouped_row_focus.len() <= data_index {
+            let extra = data_index + 1 - self.grouped_row_focus.len();
             self.grouped_row_focus
                 .extend(std::iter::repeat_with(|| cx.focus_handle()).take(extra));
         }
-        let row_focus = grouped.then(|| self.grouped_row_focus[index].clone());
+        let row_focus = grouped.then(|| self.grouped_row_focus[data_index].clone());
 
         let marker = if has_children {
             if expanded { "▾ " } else { "▸ " }
@@ -3843,11 +4042,11 @@ impl TaskManagerApp {
 
         Some(
             div()
-                .id(("proc-row", index))
+                .id(("proc-row", data_index))
                 .role(Role::Row)
                 .aria_label(view.row_a11y_label)
                 .aria_selected(selected)
-                .aria_row_index(index + 1)
+                .aria_row_index(data_index + 1)
                 .when(has_children, |this| this.aria_expanded(expanded))
                 .when(grouped, |this| {
                     this.track_focus(row_focus.as_ref().expect("grouped row focus"))
@@ -3881,7 +4080,7 @@ impl TaskManagerApp {
                     MouseButton::Right,
                     cx.listener(move |this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
-                        this.open_row_menu(key, index, cx);
+                        this.open_row_menu(key, data_index, cx);
                     }),
                 )
                 .child(
@@ -4342,7 +4541,18 @@ impl TaskManagerApp {
             .unwrap_or_else(|| "-".to_string());
         let ime_selection = self.filter_input.selection();
         let ime_selection = format!("{}:{}", ime_selection.start, ime_selection.end);
-        let rows = self.dashboard.visible_count();
+        // Data rows plus the additive section headings actually drawn on the
+        // canvas (0..=2). Only the integer changes: the `rows=<n>;` grammar and
+        // every other field stay byte-for-byte, and no heading text is copied.
+        let mut rows = self.dashboard.visible_count();
+        if self.dashboard.app_group_view() {
+            rows += self
+                .dashboard
+                .app_group_display_rows()
+                .iter()
+                .filter(|row| row.kind == AppRowKind::SectionHeader)
+                .count();
+        }
         // `interval=` keeps the user-configured value byte-for-byte for the
         // existing CDP hooks; the additive `sampling_ms=` reports the adaptive
         // cadence the sampler actually waits for (R1-I11).
@@ -4466,7 +4676,7 @@ impl TaskManagerApp {
         let data_html = if self.dashboard.app_group_view() {
             a11y_mirror_grouped_data_html_with_names(
                 self.dashboard.snapshot(),
-                &self.dashboard.app_group_rows(),
+                &self.dashboard.app_group_display_rows(),
                 self.dashboard.selected_key(),
                 self.dashboard.sort_spec(),
                 &self.app_names,
@@ -5383,6 +5593,17 @@ fn a11y_mirror_rows_html_with_names(
     html
 }
 
+/// One mirrored section heading, emitted as a `row` so the CDP
+/// `row == proof["rows"] + 1` count keeps holding when headings are present.
+/// A `rowheader` cell exposes the heading text; no `aria-rowindex` is assigned
+/// because headings are not data rows (C3-WEBSECTIONS).
+fn a11y_mirror_section_header_html(label: &str) -> String {
+    format!(
+        "<div role=\"row\" aria-label=\"{label}\"><div role=\"rowheader\">{label}</div></div>",
+        label = escape_html(label)
+    )
+}
+
 /// Body rowgroup for the application-grouped view (C2-WEBDRAW).
 ///
 /// Mirrors the exact rows the canvas draws: a group row publishes its totals,
@@ -5411,7 +5632,15 @@ fn a11y_mirror_group_rows_html_with_names(
     // the DOM mirror reports the same normalised value the canvas draws
     // (C1-CPUNORM). Individual process rows keep their raw snapshot value.
     let core_count = snapshot.map_or(0, |snapshot| snapshot.cpu.core_count());
-    for (index, row) in rows.iter().enumerate() {
+    // Headings keep the CDP `row == proof["rows"] + 1` contract: they are real
+    // `role="row"` nodes, but `aria-rowindex` is numbered over data rows only.
+    let mut data_index = 0usize;
+    for row in rows.iter() {
+        if row.kind == AppRowKind::SectionHeader {
+            html.push_str(&a11y_mirror_section_header_html(&row.label));
+            continue;
+        }
+        data_index += 1;
         let is_group = row.kind == AppRowKind::Group;
         let is_others = row.kind == AppRowKind::Others;
         let is_aggregate = is_group || is_others;
@@ -5446,7 +5675,7 @@ fn a11y_mirror_group_rows_html_with_names(
                     .map(|process| process.key.pid)
                     .unwrap_or(0),
                 row_selected,
-                index + 1,
+                data_index,
             ));
             continue;
         }
@@ -5487,7 +5716,7 @@ fn a11y_mirror_group_rows_html_with_names(
             escape_html(&name_text),
             escape_html(&usage_value_text(display_cpu)),
             escape_html(&format::format_bytes(row.memory_bytes)),
-            row_index = index + 1,
+            row_index = data_index,
         ));
     }
     html.push_str("</div>");
@@ -6844,6 +7073,60 @@ mod tests {
         assert!(!proof.contains("icon"), "icons stay out of the DOM proof");
     }
 
+    /// Builds a classified grouped dashboard used by the section-heading tests.
+    /// One key is marked as an app and every other real key as background, so
+    /// the viewmodel emits both headings (+2 display rows).
+    fn classified_demo_dashboard() -> Dashboard {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        dashboard.ingest(tm_core::demo::demo_snapshot(0));
+        let keys: BTreeSet<String> = dashboard
+            .app_group_rows()
+            .into_iter()
+            .filter(|row| matches!(row.kind, AppRowKind::Group) && row.key != OTHERS_APP_GROUP_KEY)
+            .map(|row| row.key)
+            .collect();
+        assert!(keys.len() >= 2, "demo snapshot needs two app classes");
+        let app_key = keys.iter().next().cloned().expect("app key");
+        dashboard.set_app_keys(BTreeSet::from([app_key]));
+        dashboard
+    }
+
+    #[test]
+    fn section_headings_are_counted_in_the_proof_but_their_labels_never_are() {
+        let (_reconnect, _live_error, _status, proof) = run_sse_steps(|app| {
+            let dashboard = classified_demo_dashboard();
+            let display_len = dashboard.app_group_display_rows().len();
+            assert_eq!(display_len, dashboard.visible_count() + 2);
+            app.dashboard = dashboard;
+            let proof = app.proof_string(0, 0);
+            assert!(
+                proof.contains(&format!("rows={display_len};")),
+                "rows= must include the two headings: {proof}"
+            );
+        });
+        // Only the integer changed: no heading text may enter the proof grammar.
+        assert!(!proof.contains(tm_viewmodel::APPS_SECTION_LABEL));
+        assert!(!proof.contains(tm_viewmodel::BACKGROUND_SECTION_LABEL));
+        assert!(!proof.contains(";アプリ="));
+    }
+
+    #[test]
+    fn a11y_mirror_emits_heading_rows_but_numbers_only_data_rows() {
+        let dashboard = classified_demo_dashboard();
+        let data_count = dashboard.visible_count();
+        let rows = dashboard.app_group_display_rows();
+        let snapshot = dashboard.snapshot().expect("demo snapshot");
+        let html = a11y_mirror_group_rows_html(Some(snapshot), &rows, None);
+        // Section headings are role=row nodes, so CDP's `row == rows+1`
+        // relationship keeps holding with the heading-inclusive proof.
+        assert_eq!(html.matches("role=\"row\"").count(), rows.len());
+        assert_eq!(html.matches("role=\"rowheader\"").count(), 2);
+        assert_eq!(html.matches("aria-rowindex=").count(), data_count);
+        assert!(html.contains("aria-rowindex=\"1\""));
+        assert!(html.contains(&format!("aria-rowindex=\"{data_count}\"")));
+        assert!(!html.contains(&format!("aria-rowindex=\"{}\"", data_count + 1)));
+    }
+
     /// Runs production state transitions on a real (headless) `TaskManagerApp`
     /// and snapshots the observable state afterwards. The instance matches
     /// `TaskManagerApp::new` minus the window-bound sampler / subscription
@@ -6867,6 +7150,9 @@ mod tests {
                 app_icons: HashMap::new(),
                 app_names: HashMap::new(),
                 icon_refresh_running: false,
+                app_key_classes: HashMap::new(),
+                refresh_batch_keys: BTreeSet::new(),
+                classification_committed: false,
                 nav_section: NavSection::Applications,
                 row_menu_item_focus: cx.focus_handle(),
                 scroll_handle: UniformListScrollHandle::new(),
@@ -6977,6 +7263,9 @@ mod tests {
                         app_icons: HashMap::new(),
                         app_names: HashMap::new(),
                         icon_refresh_running: false,
+                        app_key_classes: HashMap::new(),
+                        refresh_batch_keys: BTreeSet::new(),
+                        classification_committed: false,
                         nav_section: NavSection::Applications,
                         row_menu_item_focus: test_cx.focus_handle(),
                         scroll_handle: UniformListScrollHandle::new(),

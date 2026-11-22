@@ -45,8 +45,8 @@ use tm_core::icon::{icon_search_env, AppIconResolver, IconFs};
 use tm_core::model::SystemSnapshot;
 use tm_core::port::SystemProbe;
 use tm_core::wire::{
-    ErrorCode, APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT, ICON_PATH, MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH,
-    STREAM_PATH,
+    ErrorCode, APP_NAME_NOT_FOUND_STATUS, APP_NAME_PATH, DEFAULT_SNAPSHOT_LIMIT, ICON_PATH,
+    MAX_SNAPSHOT_LIMIT, SNAPSHOT_PATH, STREAM_PATH,
 };
 use tm_core::FORBIDDEN_GUIDANCE;
 use tm_platform::NativeProbe;
@@ -2708,7 +2708,7 @@ fn app_name_response(
         ICON_RESOLVER.with(|cell| cell.borrow_mut().resolve_display_name(&canonical_key));
     let Some(raw_name) = raw_name else {
         return http::Response::json(
-            404,
+            APP_NAME_NOT_FOUND_STATUS,
             "Not Found",
             error_body(ErrorCode::NotFound, APP_NAME_NOT_FOUND_MESSAGE),
         );
@@ -2725,7 +2725,7 @@ fn app_name_response(
             request_error_fields(request_id, json!({})),
         );
         return http::Response::json(
-            404,
+            APP_NAME_NOT_FOUND_STATUS,
             "Not Found",
             error_body(ErrorCode::NotFound, APP_NAME_NOT_FOUND_MESSAGE),
         );
@@ -3277,7 +3277,12 @@ mod tests {
         assert_eq!(parse_body(&missing)["code"], "bad_request");
         assert!(traversal.starts_with("HTTP/1.1 400"), "{traversal}");
         assert_eq!(parse_body(&traversal)["code"], "bad_request");
-        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
+        // The fixed miss status is the shared wire constant the web shell uses
+        // to tell a definitive "background process" from a retryable failure.
+        assert!(
+            unknown.starts_with(&format!("HTTP/1.1 {APP_NAME_NOT_FOUND_STATUS}")),
+            "{unknown}"
+        );
         assert_eq!(parse_body(&unknown)["code"], "not_found");
         assert!(!unknown.to_lowercase().contains("passwd"));
     }
