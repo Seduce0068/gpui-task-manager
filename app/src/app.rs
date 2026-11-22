@@ -20,7 +20,7 @@ use tm_core::demo::DemoProbe;
 use tm_core::format;
 use tm_core::{
     PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, Signal, SortDirection, SortKey,
-    SystemProbe, Timestamp,
+    SortSpec, SystemProbe, Timestamp,
 };
 use tm_viewmodel::{
     AppGroupRow, AppRowKind, Command, Dashboard, EditOutcome, Effect, FilterInput,
@@ -372,6 +372,8 @@ pub struct TaskManagerApp {
     /// すべて [`EntityInputHandler`] 経由でここを通る。
     filter_input: FilterInput,
     show_help: bool,
+    /// 表示設定モーダルの開閉状態。ヘルプ・確認ダイアログと排他にする。
+    show_settings: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
@@ -388,6 +390,8 @@ pub struct TaskManagerApp {
     dialog_confirm_focus: FocusHandle,
     /// ヘルプの「閉じる」ボタンのフォーカス先。
     help_close_focus: FocusHandle,
+    /// 設定モーダルの「閉じる」ボタンのフォーカス先。
+    settings_close_focus: FocusHandle,
     /// グループ行の装飾用ネイティブアプリアイコン。解決結果はキー単位でキャッシュされ、
     /// 毎フレームの描画では `HashMap` 参照だけを行う（a11y ラベルには影響しない）。
     icon_resolver: tm_core::icon::AppIconResolver,
@@ -498,6 +502,7 @@ impl TaskManagerApp {
             filter_editing: false,
             filter_input: FilterInput::new(),
             show_help: false,
+            show_settings: false,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             sort_header_focus: std::array::from_fn(|_| cx.focus_handle()),
@@ -505,6 +510,7 @@ impl TaskManagerApp {
             dialog_cancel_focus: cx.focus_handle(),
             dialog_confirm_focus: cx.focus_handle(),
             help_close_focus: cx.focus_handle(),
+            settings_close_focus: cx.focus_handle(),
             last_overlay: OverlayKind::None,
             focus_before_overlay: None,
             demo_mode,
@@ -913,6 +919,28 @@ impl TaskManagerApp {
             return;
         }
 
+        // Settings sits between the confirmation dialog and help in the key
+        // priority chain. It uses the same narrow contract as help: Esc closes
+        // it, Tab re-focuses the single 「閉じる」 control, and no other key
+        // leaks through to the table underneath.
+        if self.show_settings {
+            let unmodified = !modifiers.control
+                && !modifiers.platform
+                && !modifiers.alt
+                && !modifiers.shift
+                && !modifiers.function;
+            if key == "tab" {
+                self.settings_close_focus.focus(window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            if unmodified && key == "escape" {
+                self.show_settings = false;
+                cx.notify();
+            }
+            return;
+        }
+
         // Help overlay keeps its original priority over filter editing: a bare
         // Esc/F1 always closes it. Modified keys are ignored here as well, so
         // the overlay cannot be dismissed by an IME/shortcut gesture.
@@ -1022,6 +1050,8 @@ impl TaskManagerApp {
             KeyAction::ToggleDetails => self.handle_command(Command::ToggleDetails, cx),
             KeyAction::Refresh => self.handle_command(Command::Tick, cx),
             KeyAction::ShowHelp => {
+                // ヘルプと設定は排他（dialog は常に 1 つ以下）。
+                self.show_settings = false;
                 self.show_help = true;
                 cx.notify();
             }
@@ -1198,6 +1228,7 @@ impl TaskManagerApp {
                         true,
                         cx.listener(|this, _event, window, cx| {
                             this.focus_handle.focus(window, cx);
+                            this.show_settings = false;
                             this.show_help = true;
                             cx.notify();
                         }),
@@ -1219,6 +1250,19 @@ impl TaskManagerApp {
                             };
                             crate::theme::set_theme(new_theme);
                             this.save_settings();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(action_button(
+                        "show-settings",
+                        "設定",
+                        palette().surface_hi,
+                        true,
+                        cx.listener(|this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            // ヘルプと排他（dialog は常に 1 つ以下）。
+                            this.show_help = false;
+                            this.show_settings = true;
                             cx.notify();
                         }),
                     )),
@@ -2721,7 +2765,8 @@ impl TaskManagerApp {
     }
 
     fn help_overlay(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        if !self.show_help {
+        // ヘルプ・設定・確認ダイアログは同時に 1 つだけ表示する。
+        if !self.show_help || self.show_settings || self.dashboard.pending_kill().is_some() {
             return None;
         }
         let shortcuts = help_shortcuts();
@@ -2806,6 +2851,246 @@ impl TaskManagerApp {
                                 ),
                         )
                         .children(rows),
+                ),
+        )
+    }
+
+    /// 表示設定モーダル。テキスト入力を作らず、既存の `Command` とボタンだけ
+    /// で更新間隔・ソート・テーマ・詳細パネル・グループ/ツリー表示を変更できる。
+    /// 表示設定コマンドは `handle_command` の persist ゲートを通るので変更が
+    /// その場で保存され、テーマだけはグローバル状態のため明示的に保存する。
+    fn settings_overlay(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        // ヘルプ・確認ダイアログと排他（dialog は常に 1 つ以下）。
+        if !self.show_settings || self.show_help || self.dashboard.pending_kill().is_some() {
+            return None;
+        }
+        let interval = self.dashboard.interval();
+        let sort = self.dashboard.sort_spec();
+        let details_visible = self.dashboard.details_visible();
+        let tree_view = self.dashboard.tree_view();
+        let grouped = self.dashboard.app_group_view();
+
+        // ラベル + ボタンの 1 行。ラベルは装飾テキストで、操作はすべてボタン。
+        fn row(label: &'static str, buttons: Vec<Stateful<Div>>) -> Div {
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(104.0))
+                        .text_xs()
+                        .text_color(rgb(palette().muted))
+                        .child(label),
+                )
+                .children(buttons)
+        }
+
+        let mut interval_buttons = Vec::new();
+        for (millis, label) in [
+            (500u64, "0.5s"),
+            (1_000, "1s"),
+            (2_000, "2s"),
+            (5_000, "5s"),
+        ] {
+            let active = interval == Duration::from_millis(millis);
+            interval_buttons.push(action_button(
+                format!("settings-interval-{millis}"),
+                label,
+                if active {
+                    palette().blue
+                } else {
+                    palette().surface_hi
+                },
+                true,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.handle_command(Command::SetInterval(Duration::from_millis(millis)), cx);
+                }),
+            ));
+        }
+
+        let mut sort_buttons = Vec::new();
+        for (key, label, id) in [
+            (SortKey::Cpu, "CPU", "cpu"),
+            (SortKey::Memory, "メモリ", "memory"),
+            (SortKey::Name, "名前", "name"),
+            (SortKey::Pid, "PID", "pid"),
+            (SortKey::User, "ユーザー", "user"),
+            (SortKey::Status, "状態", "status"),
+            (SortKey::Threads, "スレッド", "threads"),
+        ] {
+            let active = sort.key == key;
+            sort_buttons.push(action_button(
+                format!("settings-sort-{id}"),
+                label,
+                if active {
+                    palette().blue
+                } else {
+                    palette().surface_hi
+                },
+                true,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.handle_command(Command::SetSortSpec(SortSpec::new(key)), cx);
+                }),
+            ));
+        }
+        let direction = sort.direction;
+        let direction_button = action_button(
+            "settings-sort-direction",
+            if direction == SortDirection::Descending {
+                "降順 ↓"
+            } else {
+                "昇順 ↑"
+            },
+            palette().surface_hi,
+            true,
+            cx.listener(move |this, _event, _window, cx| {
+                this.handle_command(
+                    Command::SetSortSpec(SortSpec {
+                        key: this.dashboard.sort_spec().key,
+                        direction: direction.flipped(),
+                    }),
+                    cx,
+                );
+            }),
+        );
+
+        let theme_button = action_button(
+            "settings-theme",
+            if crate::theme::theme() == tm_viewmodel::Theme::Dark {
+                "ライト"
+            } else {
+                "ダーク"
+            },
+            palette().surface_hi,
+            true,
+            cx.listener(|this, _event, _window, cx| {
+                let new_theme = match crate::theme::theme() {
+                    tm_viewmodel::Theme::Dark => tm_viewmodel::Theme::Light,
+                    tm_viewmodel::Theme::Light => tm_viewmodel::Theme::Dark,
+                };
+                crate::theme::set_theme(new_theme);
+                this.save_settings();
+                cx.notify();
+            }),
+        );
+
+        let details_button = action_button(
+            "settings-details",
+            if details_visible {
+                "非表示にする"
+            } else {
+                "表示する"
+            },
+            palette().surface_hi,
+            true,
+            cx.listener(move |this, _event, _window, cx| {
+                this.handle_command(Command::SetDetailsVisible(!details_visible), cx);
+            }),
+        );
+
+        // グループ / ツリー / フラットは相互排他。`SetTreeView` は persist
+        // ゲートに入っているが `SetAppGrouping` は一時表示状態なので対象外。
+        let view_buttons = vec![
+            action_button(
+                "settings-view-group",
+                "グループ",
+                if grouped {
+                    palette().blue
+                } else {
+                    palette().surface_hi
+                },
+                true,
+                cx.listener(|this, _event, _window, cx| {
+                    this.handle_command(Command::SetAppGrouping(true), cx);
+                }),
+            ),
+            action_button(
+                "settings-view-tree",
+                "ツリー",
+                if tree_view {
+                    palette().blue
+                } else {
+                    palette().surface_hi
+                },
+                true,
+                cx.listener(|this, _event, _window, cx| {
+                    this.handle_command(Command::SetTreeView(true), cx);
+                }),
+            ),
+            action_button(
+                "settings-view-flat",
+                "フラット",
+                if !grouped && !tree_view {
+                    palette().blue
+                } else {
+                    palette().surface_hi
+                },
+                true,
+                cx.listener(|this, _event, _window, cx| {
+                    this.handle_command(Command::SetTreeView(false), cx);
+                    this.handle_command(Command::SetAppGrouping(false), cx);
+                }),
+            ),
+        ];
+
+        Some(
+            div()
+                .id("settings-overlay")
+                .role(Role::Dialog)
+                .aria_label("設定")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x000000A6))
+                .occlude()
+                .on_click(cx.listener(|_this, _event, _window, _cx| {}))
+                .child(
+                    v_flex()
+                        .w(px(600.0))
+                        .max_h(px(600.0))
+                        .p_5()
+                        .gap_3()
+                        .rounded_lg()
+                        .bg(rgb(palette().mantle))
+                        .border_1()
+                        .border_color(rgb(palette().surface))
+                        .shadow_lg()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(div().text_lg().font_weight(FontWeight::BOLD).child("設定"))
+                                .child(
+                                    action_button(
+                                        "settings-close",
+                                        "閉じる",
+                                        palette().surface_hi,
+                                        true,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.focus_handle.focus(window, cx);
+                                            this.show_settings = false;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .track_focus(&self.settings_close_focus),
+                                ),
+                        )
+                        .child(row("更新間隔", interval_buttons))
+                        .child(row("並び順", sort_buttons))
+                        .child(row("並び方向", vec![direction_button]))
+                        .child(row("テーマ", vec![theme_button]))
+                        .child(row("詳細パネル", vec![details_button]))
+                        .child(row("表示形式", view_buttons))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child("エージェント接続先は Web 側で設定します。"),
+                        ),
                 ),
         )
     }
@@ -2948,6 +3233,9 @@ impl Render for TaskManagerApp {
         // element (the root handle used for row navigation) is restored.
         let overlay_now = if self.dashboard.pending_kill().is_some() {
             OverlayKind::Dialog
+        } else if self.show_settings {
+            // 設定はヘルプより先に評価する（両方が立った場合も設定が勝つ）。
+            OverlayKind::Settings
         } else if self.show_help {
             OverlayKind::Help
         } else {
@@ -2971,6 +3259,14 @@ impl Render for TaskManagerApp {
                     // 安全側（キャンセル）を初期フォーカスにする。
                     self.dialog_cancel_focus.focus(window, cx);
                 }
+                OverlayKind::Settings => {
+                    self.focus_before_overlay = Some(
+                        window
+                            .focused(cx)
+                            .unwrap_or_else(|| self.focus_handle.clone()),
+                    );
+                    self.settings_close_focus.focus(window, cx);
+                }
                 OverlayKind::Help => {
                     self.focus_before_overlay = Some(
                         window
@@ -2989,6 +3285,7 @@ impl Render for TaskManagerApp {
         let main = self.main_area(cx);
         let status = self.status_bar();
         let dialog = self.kill_dialog(cx);
+        let settings = self.settings_overlay(cx);
         let help = self.help_overlay(cx);
 
         div()
@@ -3007,6 +3304,7 @@ impl Render for TaskManagerApp {
             .child(main)
             .child(status)
             .children(dialog)
+            .children(settings)
             .children(help)
     }
 }
@@ -3432,6 +3730,7 @@ fn help_shortcuts() -> [(&'static str, &'static str); 13] {
 enum OverlayKind {
     None,
     Dialog,
+    Settings,
     Help,
 }
 
@@ -4031,6 +4330,231 @@ mod tests {
             overlay.contains(concat!("\"help-", "close\"")),
             "the close control must use the shared action_button (Role::Button)"
         );
+    }
+
+    #[test]
+    fn settings_overlay_exposes_a_named_dialog_and_fixed_controls() {
+        let source = include_str!("app.rs");
+        let overlay = source
+            .split(concat!("fn settings_", "overlay("))
+            .nth(1)
+            .expect("settings_overlay must exist")
+            .split("impl EntityInputHandler")
+            .next()
+            .expect("settings_overlay slice must end at the next impl");
+        let header = overlay
+            .split(".absolute()")
+            .next()
+            .expect("settings overlay header must exist");
+        assert!(
+            header.contains(concat!(".role(", "Role::Dialog)")),
+            "the settings modal must be a dialog node in the real AccessKit tree"
+        );
+        assert!(
+            header.contains(concat!(".aria_label(", "\"設定\")")),
+            "the dialog must carry its Japanese title as accessible name"
+        );
+        assert!(
+            header.contains(concat!("\"settings-", "overlay\"")),
+            "the settings overlay must use its fixed id"
+        );
+        assert!(
+            overlay.contains(".occlude()"),
+            "the modal must occlude the table underneath"
+        );
+        assert!(
+            overlay.contains(concat!("\"settings-", "close\"")),
+            "the close control must use the shared action_button (Role::Button)"
+        );
+        assert!(
+            overlay.contains("エージェント接続先は Web 側で設定します"),
+            "the fixed note must not expose any real connection value"
+        );
+        assert!(
+            overlay.contains("self.show_help"),
+            "settings must be hidden while help is open"
+        );
+        assert!(
+            overlay.contains("pending_kill"),
+            "settings must be hidden while the kill dialog is open"
+        );
+    }
+
+    #[test]
+    fn gear_button_opens_settings_and_keeps_help_exclusive() {
+        let source = include_str!("app.rs");
+        let top = source
+            .split("fn top_bar(")
+            .nth(1)
+            .expect("top_bar must exist")
+            .split("fn overview(")
+            .next()
+            .expect("top_bar slice must end at overview");
+        assert!(
+            top.contains(concat!("\"show-", "settings\"")),
+            "the header gear button must use the fixed id"
+        );
+        assert!(
+            top.contains(concat!("action_", "button(")),
+            "the gear must be the shared action button (Role::Button + name)"
+        );
+        assert!(top.contains("this.show_settings = true;"));
+        assert!(top.contains(concat!("this.show_", "help = false;")));
+        assert!(top.contains("this.show_help = true;"));
+        assert!(top.contains(concat!("this.show_", "settings = false;")));
+        assert!(
+            source.contains(concat!("show_settings: ", "false,")),
+            "settings must start closed"
+        );
+        assert!(
+            source.contains(concat!("settings_", "close_focus: cx.focus_handle(),")),
+            "the close button must own a stable focus handle"
+        );
+    }
+
+    #[test]
+    fn render_prioritises_settings_before_help_and_restores_focus() {
+        let source = include_str!("app.rs");
+        let render = source
+            .split("fn render(&mut self")
+            .nth(1)
+            .expect("Render::render must exist")
+            .split("fn signal_enabled(")
+            .next()
+            .expect("render slice must end at the next helper");
+        assert!(
+            render.contains(concat!("OverlayKind::", "Settings")),
+            "settings must be a first-class overlay state"
+        );
+        let kill = render
+            .find("pending_kill")
+            .expect("kill dialog must be evaluated first");
+        let settings = render
+            .find("self.show_settings")
+            .expect("show_settings must be read in render");
+        let help = render
+            .find("self.show_help")
+            .expect("show_help must be read in render");
+        assert!(
+            kill < settings && settings < help,
+            "overlay priority must be kill → settings → help"
+        );
+        assert!(render.contains(concat!("settings_", "close_focus.focus(window, cx)")));
+        assert!(render.contains(concat!(".children(", "settings)")));
+    }
+
+    #[test]
+    fn settings_key_path_closes_on_escape_and_help_is_exclusive() {
+        let source = include_str!("app.rs");
+        let keys = source
+            .split("fn on_key_down(")
+            .nth(1)
+            .expect("on_key_down must exist")
+            .split("fn display(")
+            .next()
+            .expect("key handler slice must end at display");
+        let kill = keys.find("pending_kill").expect("kill dialog first");
+        let settings = keys
+            .find(concat!("self.show_", "settings"))
+            .expect("settings second");
+        let help = keys
+            .find(concat!("self.show_", "help"))
+            .expect("help third");
+        assert!(
+            kill < settings && settings < help,
+            "key priority must be kill → settings → help"
+        );
+        let block = keys
+            .split(concat!("if self.show_", "settings {"))
+            .nth(1)
+            .expect("settings key block must exist")
+            .split(concat!("if self.show_", "help {"))
+            .next()
+            .expect("settings block must end before help block");
+        assert!(block.contains("key == \"escape\""));
+        assert!(block.contains(concat!("self.show_settings = ", "false;")));
+        assert!(block.contains(concat!("settings_", "close_focus.focus(window, cx)")));
+        let help_action = keys
+            .split(concat!("KeyAction::", "ShowHelp =>"))
+            .nth(1)
+            .expect("ShowHelp action must exist")
+            .split(concat!("KeyAction::", "ClearFilter"))
+            .next()
+            .expect("ShowHelp arm slice must end");
+        assert!(
+            help_action.contains(concat!("self.show_settings = ", "false;")),
+            "opening help must close settings"
+        );
+        let help_overlay = source
+            .split(concat!("fn help_", "overlay("))
+            .nth(1)
+            .expect("help_overlay must exist")
+            .split(concat!("fn settings_", "overlay("))
+            .next()
+            .expect("help_overlay slice must end at settings_overlay");
+        assert!(
+            help_overlay.contains("self.show_settings"),
+            "help must be hidden while settings is open"
+        );
+    }
+
+    #[test]
+    fn settings_controls_only_emit_persisted_commands() {
+        let source = include_str!("app.rs");
+        let overlay = source
+            .split(concat!("fn settings_", "overlay("))
+            .nth(1)
+            .expect("settings_overlay must exist")
+            .split("impl EntityInputHandler")
+            .next()
+            .expect("settings_overlay slice must end");
+        for command in [
+            concat!("Command::Set", "Interval("),
+            concat!("Command::Set", "SortSpec("),
+            concat!("Command::Set", "DetailsVisible("),
+            concat!("Command::Set", "TreeView("),
+            concat!("Command::Set", "AppGrouping("),
+        ] {
+            assert!(overlay.contains(command), "settings must wire {command}");
+        }
+        assert!(overlay.contains(concat!("crate::theme::", "set_theme(new_theme)")));
+        assert!(overlay.contains(concat!("this.", "save_settings()")));
+        assert!(
+            !overlay.contains(concat!("Role::", "TextInput")),
+            "the settings modal must be mouse-only, with no text input"
+        );
+        let gate = source
+            .split("let persist = matches!(")
+            .nth(1)
+            .expect("persist gate must exist")
+            .split(");")
+            .next()
+            .expect("persist gate slice must end");
+        for command in [
+            concat!("Command::Set", "Interval(_)"),
+            concat!("Command::Set", "SortSpec(_)"),
+            concat!("Command::Set", "DetailsVisible(_)"),
+            concat!("Command::Set", "TreeView(_)"),
+        ] {
+            assert!(gate.contains(command), "persist gate must keep {command}");
+        }
+    }
+
+    #[test]
+    fn settings_overlay_does_not_replace_existing_export_and_wire_contracts() {
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains(concat!("snapshot_", "to_csv(&snapshot, &ids)")),
+            "the 12-column export contract must stay intact"
+        );
+        for role in [
+            concat!("Role::", "Dialog"),
+            concat!("Role::", "Button"),
+            concat!("Role::", "Table"),
+            concat!("Role::", "Status"),
+        ] {
+            assert!(source.contains(role), "missing AccessKit role {role}");
+        }
     }
 
     #[test]

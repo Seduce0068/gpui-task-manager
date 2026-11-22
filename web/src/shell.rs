@@ -22,10 +22,10 @@ use std::time::Duration;
 use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, SortDirection as AccessKitSortDirection, Toggled};
 use gpui::{
-    AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, Image,
-    ImageFormat, ImageSource, KeyDownEvent, Modifiers, MouseButton, Pixels, Render, ScrollStrategy,
-    Stateful, Task, TextInputConfiguration, UTF16Selection, UniformListScrollHandle, Window,
-    canvas, div, img, prelude::*, px, rgb, uniform_list,
+    AnyElement, Bounds, Context, Div, ElementId, ElementInputHandler, EntityInputHandler,
+    FocusHandle, Image, ImageFormat, ImageSource, KeyDownEvent, Modifiers, MouseButton, Pixels,
+    Render, ScrollStrategy, Stateful, Task, TextInputConfiguration, UTF16Selection,
+    UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb, uniform_list,
 };
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv_with_total, snapshot_to_json_with_total};
@@ -100,6 +100,10 @@ const A11Y_MIRROR_DATA_DOM_ID: &str = "tm-web-a11y-data";
 const A11Y_MIRROR_HELP_DOM_ID: &str = "tm-web-a11y-help";
 /// ミラー内のヘルプ「閉じる」ボタン。DOM フォーカスの移動先。
 const A11Y_HELP_CLOSE_DOM_ID: &str = "tm-web-a11y-help-close";
+/// 設定ダイアログの領域。ヘルプと排他にするため専用コンテナを使う。
+const A11Y_MIRROR_SETTINGS_DOM_ID: &str = "tm-web-a11y-settings";
+/// ミラー内の設定「閉じる」ボタン。DOM フォーカスの移動先。
+const A11Y_SETTINGS_CLOSE_DOM_ID: &str = "tm-web-a11y-settings-close";
 /// 視覚的に隠すが AX ツリーには残すスタイル。live リージョンとミラーで共用。
 const A11Y_HIDDEN_STYLE: &str =
     "position:fixed;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap";
@@ -155,6 +159,25 @@ const DEMO_MODE_STATUS_NOTICE: &str = "デモ表示中。実データ接続は�
 
 /// ヘルプオーバーレイの見出し（ネイティブと同じ固定文言）。
 const HELP_TITLE: &str = "キーボード操作";
+
+/// Web 設定モーダルの見出し。トークン実値や状態フックの値は決して載せない。
+const SETTINGS_TITLE: &str = "設定";
+/// 接続先は別担当（エージェント側）の対象なので、設定モーダルには固定注記だけを
+/// 表示する。URL / トークンの実値は DOM / AX / proof / console に出さない。
+const SETTINGS_AGENT_NOTICE: &str =
+    "エージェントの接続先（URL / トークン）はエージェント側で設定します。";
+/// 設定モーダルのソート候補。列見出しと同じ SortKey を使い、SetSortSpec で保存する。
+const SETTINGS_SORT_KEYS: &[SortKey] = &[
+    SortKey::Cpu,
+    SortKey::Memory,
+    SortKey::VirtualMemory,
+    SortKey::Pid,
+    SortKey::Name,
+    SortKey::User,
+    SortKey::Status,
+    SortKey::Threads,
+    SortKey::StartTime,
+];
 
 /// ネイティブの `help_shortcuts()` と同等の一覧（V2-HELP）。
 ///
@@ -517,16 +540,26 @@ pub struct TaskManagerApp {
     poll_backoff: PollBackoff,
     /// F1 / ヘッダーのヘルプボタンで開くキーボード操作オーバーレイの状態。
     show_help: bool,
+    /// ヘッダーの歯車ボタンで開く設定モーダル。`show_help` と決して同時に
+    /// true にならない（AX の dialog を常に 0/1 に保つため）。
+    show_settings: bool,
     /// ヘルプの「閉じる」ボタン用フォーカスハンドル。キーボードだけで
     /// オーバーレイを開いて閉じられるようにする（V2-HELP）。
     help_close_focus: FocusHandle,
+    /// 設定の「閉じる」ボタン用フォーカスハンドル。ヘルプと同じ契約。
+    settings_close_focus: FocusHandle,
     /// 直前フレームのヘルプ表示状態。表示遷移のときだけフォーカスを移動する。
     last_help_shown: bool,
+    /// 直前フレームの設定表示状態。表示遷移のときだけフォーカスを移動する。
+    last_settings_shown: bool,
     /// ヘルプを開く前に DOM でフォーカスされていた要素。閉じたときに復帰する。
     /// GPUI 側の `help_close_focus` はキー入力の宛先だけを担い、DOM の
     /// activeElement 復帰はこの 1 箇所でだけ行う（二重管理を避ける）。
     #[cfg(target_family = "wasm")]
     dom_help_previous_focus: Option<web_sys::HtmlElement>,
+    /// 設定を開く前に DOM でフォーカスされていた要素（ヘルプと独立）。
+    #[cfg(target_family = "wasm")]
+    dom_settings_previous_focus: Option<web_sys::HtmlElement>,
 }
 
 /// Values drawn in one process-table row, resolved from either the additive
@@ -818,10 +851,15 @@ impl TaskManagerApp {
             sse_retry_at: None,
             poll_backoff: PollBackoff::default(),
             show_help: false,
+            show_settings: false,
             help_close_focus: cx.focus_handle(),
+            settings_close_focus: cx.focus_handle(),
             last_help_shown: false,
+            last_settings_shown: false,
             #[cfg(target_family = "wasm")]
             dom_help_previous_focus: None,
+            #[cfg(target_family = "wasm")]
+            dom_settings_previous_focus: None,
         };
         app.restore_settings();
         app.spawn_settings_storage_sync(cx);
@@ -1528,6 +1566,11 @@ impl TaskManagerApp {
                 | Command::SetDetailsVisible(_)
                 | Command::ToggleTreeView
                 | Command::SetTreeView(_)
+                // グループ/ツリーの排他切替も同じ保存経路を通す。グループ表示は
+                // Settings に専用フィールドを持たないが、このコマンドで tree_view が
+                // false になるため、保存された値と現在の表示が食い違わない。
+                | Command::ToggleAppGrouping
+                | Command::SetAppGrouping(_)
         );
         for effect in self.dashboard.apply(command) {
             match effect {
@@ -1549,7 +1592,8 @@ impl TaskManagerApp {
         cx.notify();
     }
 
-    /// Keyboard filter + selection navigation (the browser shell has no modal).
+    /// Keyboard filter + selection navigation, plus the two mutually exclusive
+    /// overlays (F1 help / header settings).
     ///
     /// 文字入力・Backspace・Delete・貼り付け・IME 変換は **ここでは扱わない**。
     /// ブラウザ側の隠し `<textarea>`（`gpui-pre-web` の IME ミラー）が DOM の
@@ -1568,6 +1612,33 @@ impl TaskManagerApp {
             && !modifiers.shift
             && !modifiers.function;
 
+        // 設定モーダルはヘルプと排他。表示中は Esc で閉じ、F1 でヘルプへ
+        // 切り替える（この順番で handle することで dialog は常に 1 つ以下）。
+        if self.show_settings {
+            if unmodified {
+                match key.as_str() {
+                    "f1" => {
+                        (self.show_help, self.show_settings) = exclusive_modal(ModalRequest::Help);
+                    }
+                    "escape" => {
+                        (self.show_help, self.show_settings) = exclusive_modal(ModalRequest::Close);
+                    }
+                    "tab" => {
+                        self.settings_close_focus.focus(window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    _ => {}
+                }
+                self.sync_a11y_dom_now();
+                cx.stop_propagation();
+                cx.notify();
+            } else {
+                cx.stop_propagation();
+            }
+            return;
+        }
+
         // V2-HELP のヘルプオーバーレイが最優先。F1 はトグル、Esc は表示中だけ
         // 閉じる（表示中の Esc が絞り込みを消さない）。修飾キー付きは IME /
         // ショートカット手势としてオーバーレイへ渡さない。
@@ -1575,7 +1646,14 @@ impl TaskManagerApp {
             && let Some(route) = HelpCloseRoute::from_key(&key)
             && let Some(next_shown) = help_close_state(self.show_help, route)
         {
-            self.show_help = next_shown;
+            // 排他を 1 箇所でも保証する（設定ボタン経由で両方が立つ前に F1 が
+            // 来ても、ヘルプのほうを採用して dialog を 1 つに戻す）。
+            let request = if next_shown {
+                ModalRequest::Help
+            } else {
+                ModalRequest::Close
+            };
+            (self.show_help, self.show_settings) = exclusive_modal(request);
             // ヘルプの開閉はコマンド扱い。ここでミラーを更新してから notify し、
             // render の表示遷移で DOM の「閉じる」へフォーカスを移せるようにする。
             self.sync_a11y_dom_now();
@@ -1897,7 +1975,8 @@ impl TaskManagerApp {
                                         .text_color(rgb(palette().text))
                                         .hover(|style| style.bg(rgb(palette().surface)))
                                         .on_click(cx.listener(|this, _event, window, cx| {
-                                            this.show_help = false;
+                                            (this.show_help, this.show_settings) =
+                                                exclusive_modal(ModalRequest::Close);
                                             // ミラーからダイアログを除いてから render の
                                             // 表示遷移で DOM フォーカスを復帰させる。
                                             this.sync_a11y_dom_now();
@@ -1932,6 +2011,333 @@ impl TaskManagerApp {
                                         .child(DEMO_MODE_NOTICE),
                                 )
                         }))
+                        .into_any_element(),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// 設定モーダル内の汎用ボタン。すべて既存 Command を `handle_command` へ
+    /// 流すので、persist ゲート → localStorage → 他タブ同期の経路を共有する。
+    fn settings_command_button<I: Into<ElementId>>(
+        &self,
+        id: I,
+        label: String,
+        aria_label: String,
+        active: bool,
+        command: Command,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(aria_label)
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(palette().surface))
+            .bg(rgb(if active {
+                palette().surface
+            } else {
+                palette().mantle
+            }))
+            .text_color(rgb(if active {
+                palette().blue
+            } else {
+                palette().muted
+            }))
+            .hover(|style| {
+                style
+                    .bg(rgb(palette().surface))
+                    .text_color(rgb(palette().text))
+            })
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.handle_command(command.clone(), cx);
+            }))
+            .child(label)
+    }
+
+    /// ヘッダーの歯車ボタンで開く表示設定モーダル（C2-WEBSETTINGSPANEL）。
+    ///
+    /// テキスト入力は作らない（DOM proof / IME / トークン非露出の契約を壊さない
+    /// ため）。変更はすべて既存 Command またはテーマの既存経路だけを使う。
+    /// 絶対配置のフルスクリーン層なので既存レイアウト座標は変わらない。
+    fn settings_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.show_settings {
+            return None;
+        }
+        let active_interval = self.dashboard.interval();
+        let sort = self.dashboard.sort_spec();
+        let details = self.dashboard.details_visible();
+        let app_group = self.dashboard.app_group_view();
+        let tree = self.dashboard.tree_view();
+
+        let interval_buttons: Vec<Stateful<Div>> = INTERVAL_PRESETS_MS
+            .iter()
+            .map(|&millis| {
+                let label = interval_label(millis);
+                let active = active_interval == Duration::from_millis(millis);
+                self.settings_command_button(
+                    ("settings-interval", millis),
+                    label.clone(),
+                    format!(
+                        "更新間隔 {label}（{}）",
+                        if active { "選択中" } else { "未選択" }
+                    ),
+                    active,
+                    Command::SetInterval(Duration::from_millis(millis)),
+                    cx,
+                )
+            })
+            .collect();
+
+        let sort_buttons: Vec<Stateful<Div>> = SETTINGS_SORT_KEYS
+            .iter()
+            .enumerate()
+            .map(|(index, &key)| {
+                let label = key.label().to_string();
+                let active = sort.key == key;
+                self.settings_command_button(
+                    ("settings-sort", index),
+                    label.clone(),
+                    format!(
+                        "並び順 {label}（{}）",
+                        if active { "選択中" } else { "未選択" }
+                    ),
+                    active,
+                    Command::SetSortSpec(SortSpec::new(key)),
+                    cx,
+                )
+            })
+            .collect();
+        let direction_label = a11y_sort_direction(sort.direction).to_string();
+        let direction_button = self.settings_command_button(
+            "settings-sort-direction",
+            format!("向き: {}", sort.direction.arrow()),
+            format!("並び方向 {direction_label}。押すと反転します"),
+            false,
+            Command::SetSortSpec(SortSpec {
+                key: sort.key,
+                direction: sort.direction.flipped(),
+            }),
+            cx,
+        );
+
+        let theme_buttons: Vec<Stateful<Div>> =
+            [tm_viewmodel::Theme::Dark, tm_viewmodel::Theme::Light]
+                .into_iter()
+                .map(|value| {
+                    let (id, label) = match value {
+                        tm_viewmodel::Theme::Dark => ("settings-theme-dark", "ダーク"),
+                        tm_viewmodel::Theme::Light => ("settings-theme-light", "ライト"),
+                    };
+                    let active = theme() == value;
+                    div()
+                        .id(id)
+                        .role(Role::Button)
+                        .aria_label(format!(
+                            "テーマ {label}（{}）",
+                            if active { "選択中" } else { "未選択" }
+                        ))
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_xs()
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(rgb(palette().surface))
+                        .bg(rgb(if active {
+                            palette().surface
+                        } else {
+                            palette().mantle
+                        }))
+                        .text_color(rgb(if active {
+                            palette().blue
+                        } else {
+                            palette().muted
+                        }))
+                        .hover(|style| {
+                            style
+                                .bg(rgb(palette().surface))
+                                .text_color(rgb(palette().text))
+                        })
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            // テーマは Command を持たないので、ヘッダーの切替と同じ
+                            // 明示的な経路（set_theme → save → DOM 証跡の同期）を使う。
+                            set_theme(value);
+                            this.persist_settings();
+                            this.sync_proof_dom();
+                            cx.notify();
+                        }))
+                        .child(label)
+                })
+                .collect();
+
+        let details_button = self.settings_command_button(
+            "settings-details",
+            format!("詳細: {}", if details { "ON" } else { "OFF" }),
+            format!(
+                "詳細パネルを{}にする",
+                if details { "非表示" } else { "表示" }
+            ),
+            details,
+            Command::SetDetailsVisible(!details),
+            cx,
+        );
+        let group_button = self.settings_command_button(
+            "settings-view-group",
+            "アプリグループ".to_string(),
+            format!(
+                "アプリグループ表示（{}）",
+                if app_group { "選択中" } else { "未選択" }
+            ),
+            app_group,
+            Command::SetAppGrouping(true),
+            cx,
+        );
+        let tree_button = self.settings_command_button(
+            "settings-view-tree",
+            "ツリー".to_string(),
+            format!("ツリー表示（{}）", if tree { "選択中" } else { "未選択" }),
+            tree,
+            Command::SetTreeView(true),
+            cx,
+        );
+        let flat_button = self.settings_command_button(
+            "settings-view-flat",
+            "フラット".to_string(),
+            format!(
+                "フラット表示（{}）",
+                if !app_group && !tree {
+                    "選択中"
+                } else {
+                    "未選択"
+                }
+            ),
+            !app_group && !tree,
+            Command::SetAppGrouping(false),
+            cx,
+        );
+
+        Some(
+            div()
+                .id("settings-overlay")
+                .role(Role::Dialog)
+                .aria_label(SETTINGS_TITLE)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x000000A6))
+                .occlude()
+                .child(
+                    v_flex()
+                        .id("settings-panel")
+                        .w(px(560.0))
+                        .p_4()
+                        .gap_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(palette().surface))
+                        .bg(rgb(palette().mantle))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child(SETTINGS_TITLE),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings-close")
+                                        .role(Role::Button)
+                                        .aria_label("設定を閉じる")
+                                        .px_3()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .rounded_md()
+                                        .bg(rgb(palette().surface_hi))
+                                        .text_xs()
+                                        .text_color(rgb(palette().text))
+                                        .hover(|style| style.bg(rgb(palette().surface)))
+                                        .on_click(cx.listener(|this, _event, window, cx| {
+                                            (this.show_help, this.show_settings) =
+                                                exclusive_modal(ModalRequest::Close);
+                                            this.sync_a11y_dom_now();
+                                            this.focus_handle.focus(window, cx);
+                                            cx.notify();
+                                        }))
+                                        .track_focus(&self.settings_close_focus)
+                                        .child("閉じる"),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child("更新間隔"),
+                                )
+                                .child(h_flex().items_center().gap_1().children(interval_buttons)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child("ソート"),
+                                )
+                                .child(h_flex().items_center().gap_1().children(sort_buttons))
+                                .child(h_flex().items_center().gap_1().child(direction_button)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child("テーマ"),
+                                )
+                                .child(h_flex().items_center().gap_1().children(theme_buttons)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child("表示"),
+                                )
+                                .child(details_button)
+                                .child(h_flex().items_center().gap_1().children([
+                                    group_button,
+                                    tree_button,
+                                    flat_button,
+                                ])),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child(SETTINGS_AGENT_NOTICE),
+                        )
                         .into_any_element(),
                 )
                 .into_any_element(),
@@ -2190,13 +2596,41 @@ impl TaskManagerApp {
                             .text_color(rgb(palette().text))
                             .hover(|style| style.bg(rgb(palette().surface)))
                             .on_click(cx.listener(|this, _event, window, cx| {
-                                this.show_help = true;
+                                (this.show_help, this.show_settings) =
+                                    exclusive_modal(ModalRequest::Help);
                                 // F1 と同じくコマンド時にミラーを更新する（毎フレームではない）。
                                 this.sync_a11y_dom_now();
                                 this.focus_handle.focus(window, cx);
                                 cx.notify();
                             }))
                             .child("ヘルプ"),
+                    )
+                    .child(
+                        // ヘルプとテーマの間に挿入する。テーマは右グループの最後の
+                        // 子のままで、CDP が決め打ちする右端座標は動かさない。
+                        div()
+                            .id("open-settings-web")
+                            .role(Role::Button)
+                            .aria_label("設定を開く")
+                            .w(px(56.0))
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(palette().surface))
+                            .bg(rgb(palette().surface_hi))
+                            .text_color(rgb(palette().text))
+                            .hover(|style| style.bg(rgb(palette().surface)))
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                (this.show_help, this.show_settings) =
+                                    exclusive_modal(ModalRequest::Settings);
+                                // ヘルプと同じコマンド経路でミラーを即更新する。
+                                this.sync_a11y_dom_now();
+                                this.focus_handle.focus(window, cx);
+                                cx.notify();
+                            }))
+                            .child("設定"),
                     )
                     .child(
                         // 固定幅にしてヘッダー右端からの座標を決め打ちできるようにする
@@ -3897,12 +4331,32 @@ impl TaskManagerApp {
         let Some(help) = hidden_child_node(document, &mirror, A11Y_MIRROR_HELP_DOM_ID) else {
             return;
         };
-        // ミラーの「閉じる」/ F1 / Esc を GPUI のヘルプトグルへ橋渡しする。
+        let Some(settings) = hidden_child_node(document, &mirror, A11Y_MIRROR_SETTINGS_DOM_ID)
+        else {
+            return;
+        };
+        // ミラーの「閉じる」/ F1 / Esc を GPUI のヘルプ・設定トグルへ橋渡しする。
         // リスナは安定したコンテナに一度だけ張られ、内_html の差し替えで失われない。
         ensure_help_dom_bridge();
-        let help_html = a11y_mirror_help_html(self.show_help);
+        ensure_settings_dom_bridge();
+        // ヘルプと設定は排他。active_modal が 1 つだけを選ぶので AX ツリーの
+        // dialog は常に 0/1 で、CDP の EXPECTED_AX_ROLES は変更不要。
+        let modal = active_modal(self.show_help, self.show_settings);
+        let help_html = if modal == WebModal::Help {
+            a11y_mirror_help_html(true)
+        } else {
+            String::new()
+        };
+        let settings_html = if modal == WebModal::Settings {
+            a11y_mirror_settings_html(true)
+        } else {
+            String::new()
+        };
         if help.inner_html() != help_html {
             help.set_inner_html(&help_html);
+        }
+        if settings.inner_html() != settings_html {
+            settings.set_inner_html(&settings_html);
         }
         self.sync_filter_textarea_a11y(document);
     }
@@ -3970,6 +4424,38 @@ impl TaskManagerApp {
 
     #[cfg(not(target_family = "wasm"))]
     fn sync_dom_help_focus(&mut self, _change: DomHelpFocus) {}
+
+    /// Moves the *DOM* focus for a settings transition. Same contract as the
+    /// help path, but with its own previous-focus slot and close-button id so
+    /// switching between the two dialogs cannot restore a stale element.
+    #[cfg(target_family = "wasm")]
+    fn sync_dom_settings_focus(&mut self, change: DomHelpFocus) {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        match change {
+            DomHelpFocus::Enter => {
+                self.dom_settings_previous_focus = document
+                    .active_element()
+                    .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok());
+                let Some(close) = document.get_element_by_id(A11Y_SETTINGS_CLOSE_DOM_ID) else {
+                    return;
+                };
+                if let Ok(close) = close.dyn_into::<web_sys::HtmlElement>() {
+                    let _ = close.focus();
+                }
+            }
+            DomHelpFocus::Leave => {
+                if let Some(previous) = self.dom_settings_previous_focus.take() {
+                    let _ = previous.focus();
+                }
+            }
+            DomHelpFocus::Unchanged => {}
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sync_dom_settings_focus(&mut self, _change: DomHelpFocus) {}
 
     /// Native builds have no DOM; the hook is a no-op there.
     #[cfg(not(target_family = "wasm"))]
@@ -4108,10 +4594,22 @@ impl EntityInputHandler for TaskManagerApp {
 
 impl Render for TaskManagerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // ヘルプの表示遷移のときだけフォーカスを移動する。キー・ボタンのどちらで
-        // 開いても同じ経路を通り、閉じたらルートへ戻って行操作を再開できる。
-        // GPUI の `help_close_focus` と DOM の activeElement は同じ遷移判定
-        // （`dom_help_focus`）から一度ずつ更新するので、復帰処理が二重化しない。
+        // ダイアログの表示遷移のときだけフォーカスを移動する。キー・ボタンの
+        // どちらで開いても同じ経路を通り、閉じたらルートへ戻って行操作を再開
+        // できる。GPUI のフォーカスと DOM の activeElement は同じ遷移判定
+        // （`dom_help_focus`）から一度ずつ更新するので復帰処理が二重化しない。
+        // 設定を先に、ヘルプを後に処理する。両者は排他なので切り替え時は
+        // 最後に処理したヘルプの Enter が最終フォーカスとして残る。
+        let settings_focus = dom_help_focus(self.last_settings_shown, self.show_settings);
+        if settings_focus != DomHelpFocus::Unchanged {
+            if self.show_settings {
+                self.settings_close_focus.focus(window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+            self.sync_dom_settings_focus(settings_focus);
+            self.last_settings_shown = self.show_settings;
+        }
         let help_focus = dom_help_focus(self.last_help_shown, self.show_help);
         if help_focus != DomHelpFocus::Unchanged {
             if self.show_help {
@@ -4130,6 +4628,7 @@ impl Render for TaskManagerApp {
         let status_bar = self.status_bar();
         let row_menu = self.row_context_menu(cx);
         let help = self.help_overlay(cx);
+        let settings = self.settings_overlay(cx);
 
         // IME ミラー（隠し textarea）からの composition / input をこのビューへ
         // 届けるための登録。GPUI の作法では paint 中に `Window::handle_input` を
@@ -4173,6 +4672,7 @@ impl Render for TaskManagerApp {
             .child(status_bar)
             .children(row_menu)
             .children(help)
+            .children(settings)
             .child(input_registration)
     }
 }
@@ -4851,6 +5351,54 @@ fn a11y_mirror_metrics_html(snapshot: Option<&SystemSnapshot>) -> String {
     html
 }
 
+/// Which modal is exposed in the AX mirror. At most one variant is ever active,
+/// so `Accessibility.getFullAXTree` sees 0 or 1 `dialog` nodes (CDP contract).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebModal {
+    None,
+    Help,
+    Settings,
+}
+
+/// Single source of truth for the exclusive modal decision.
+fn active_modal(show_help: bool, show_settings: bool) -> WebModal {
+    if show_help {
+        WebModal::Help
+    } else if show_settings {
+        WebModal::Settings
+    } else {
+        WebModal::None
+    }
+}
+
+/// A user request that changes which dialog is visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModalRequest {
+    Help,
+    Settings,
+    Close,
+}
+
+/// Pure transition for every open/close path (header buttons, close buttons,
+/// F1 / Escape). Returning both flags together makes mutual exclusion local and
+/// testable: callers cannot accidentally leave the other dialog open.
+fn exclusive_modal(request: ModalRequest) -> (bool, bool) {
+    match request {
+        ModalRequest::Help => (true, false),
+        ModalRequest::Settings => (false, true),
+        ModalRequest::Close => (false, false),
+    }
+}
+
+/// Pure builder used by tests to assert that only one dialog is ever emitted.
+fn a11y_mirror_modal_html(modal: WebModal) -> String {
+    match modal {
+        WebModal::None => String::new(),
+        WebModal::Help => a11y_mirror_help_html(true),
+        WebModal::Settings => a11y_mirror_settings_html(true),
+    }
+}
+
 /// Help dialog mirror. Empty when the overlay is closed, so the AX tree has no
 /// stale modal. The close button is `tabindex=-1`: GPUI keeps owning Tab, while
 /// assistive tech sees a focusable button that `sync_dom_help_focus` targets.
@@ -4873,6 +5421,74 @@ fn a11y_mirror_help_html(show_help: bool) -> String {
     html.push_str(&format!(
         "<div id=\"{}\" role=\"button\" tabindex=\"-1\" aria-label=\"ヘルプを閉じる\">閉じる</div>",
         A11Y_HELP_CLOSE_DOM_ID,
+    ));
+    html.push_str("</div>");
+    html
+}
+
+/// Settings dialog mirror. Only fixed labels and already-derived display text
+/// are written — never a token, URL, proof field or user input. The close
+/// button is `tabindex=-1` for the same reason as the help mirror.
+fn a11y_mirror_settings_html(show_settings: bool) -> String {
+    if !show_settings {
+        return String::new();
+    }
+    let title = escape_html(SETTINGS_TITLE);
+    let mut html = format!(
+        "<div role=\"dialog\" aria-modal=\"true\" aria-label=\"{title}\">\
+         <div role=\"heading\" aria-level=\"1\">{title}</div>"
+    );
+    fn push_section(html: &mut String, label: &str, items: Vec<String>) {
+        html.push_str(&format!(
+            "<div role=\"group\" aria-label=\"{}\">",
+            escape_html(label)
+        ));
+        for item in items {
+            html.push_str(&format!(
+                "<div role=\"button\" tabindex=\"-1\">{}</div>",
+                escape_html(&item)
+            ));
+        }
+        html.push_str("</div>");
+    }
+    push_section(
+        &mut html,
+        "更新間隔",
+        INTERVAL_PRESETS_MS
+            .iter()
+            .map(|&millis| interval_label(millis))
+            .collect(),
+    );
+    push_section(
+        &mut html,
+        "ソート",
+        SETTINGS_SORT_KEYS
+            .iter()
+            .map(|key| key.label().to_string())
+            .collect(),
+    );
+    push_section(
+        &mut html,
+        "テーマ",
+        vec!["ダーク".to_string(), "ライト".to_string()],
+    );
+    push_section(
+        &mut html,
+        "表示",
+        vec![
+            "詳細パネル".to_string(),
+            "アプリグループ".to_string(),
+            "ツリー".to_string(),
+            "フラット".to_string(),
+        ],
+    );
+    html.push_str(&format!(
+        "<div>{}</div>",
+        escape_html(SETTINGS_AGENT_NOTICE)
+    ));
+    html.push_str(&format!(
+        "<div id=\"{}\" role=\"button\" tabindex=\"-1\" aria-label=\"設定を閉じる\">閉じる</div>",
+        A11Y_SETTINGS_CLOSE_DOM_ID,
     ));
     html.push_str("</div>");
     html
@@ -5015,6 +5631,17 @@ fn ensure_help_dom_bridge() {
         A11Y_MIRROR_HELP_DOM_ID,
         A11Y_HELP_CLOSE_DOM_ID,
         "data-tm-help-bridge",
+    );
+}
+
+/// Same bridge for the settings dialog. The generic JS shim takes the container
+/// and close-button ids as arguments, so no second inline script is needed.
+#[cfg(target_family = "wasm")]
+fn ensure_settings_dom_bridge() {
+    tm_install_help_bridge(
+        A11Y_MIRROR_SETTINGS_DOM_ID,
+        A11Y_SETTINGS_CLOSE_DOM_ID,
+        "data-tm-settings-bridge",
     );
 }
 
@@ -6016,8 +6643,11 @@ mod tests {
                 sse_retry_at: None,
                 poll_backoff: PollBackoff::default(),
                 show_help: false,
+                show_settings: false,
                 help_close_focus: cx.focus_handle(),
+                settings_close_focus: cx.focus_handle(),
                 last_help_shown: false,
+                last_settings_shown: false,
             }
         }
 
@@ -6121,8 +6751,11 @@ mod tests {
                         sse_retry_at: None,
                         poll_backoff: PollBackoff::default(),
                         show_help: false,
+                        show_settings: false,
                         help_close_focus: test_cx.focus_handle(),
+                        settings_close_focus: test_cx.focus_handle(),
                         last_help_shown: false,
+                        last_settings_shown: false,
                     }
                 });
                 entity.update(cx, |app, _| {
@@ -8484,6 +9117,63 @@ mod tests {
         assert!(open.contains("閉じる"), "{open}");
         assert!(!open.contains("aria-hidden"), "{open}");
         assert!(a11y_mirror_help_html(false).is_empty());
+    }
+
+    #[test]
+    fn modal_requests_are_mutually_exclusive() {
+        assert_eq!(exclusive_modal(ModalRequest::Help), (true, false));
+        assert_eq!(exclusive_modal(ModalRequest::Settings), (false, true));
+        assert_eq!(exclusive_modal(ModalRequest::Close), (false, false));
+    }
+
+    #[test]
+    fn active_modal_never_emits_more_than_one_dialog() {
+        for (help, settings) in [(false, false), (true, false), (false, true), (true, true)] {
+            let modal = active_modal(help, settings);
+            let html = a11y_mirror_modal_html(modal);
+            assert!(
+                html.matches("role=\"dialog\"").count() <= 1,
+                "help={help} settings={settings}: {html}"
+            );
+            if help {
+                assert_eq!(modal, WebModal::Help);
+                assert!(html.contains(HELP_TITLE), "{html}");
+            } else if settings {
+                assert_eq!(modal, WebModal::Settings);
+                assert!(html.contains(SETTINGS_TITLE), "{html}");
+            } else {
+                assert_eq!(modal, WebModal::None);
+                assert!(html.is_empty(), "{html}");
+            }
+        }
+    }
+
+    #[test]
+    fn mirror_settings_dialog_exposes_fixed_options_without_secret_values() {
+        assert!(a11y_mirror_settings_html(false).is_empty());
+        let html = a11y_mirror_settings_html(true);
+        assert_eq!(html.matches("role=\"dialog\"").count(), 1, "{html}");
+        assert!(html.contains("aria-modal=\"true\""), "{html}");
+        assert!(html.contains("aria-label=\"設定\""), "{html}");
+        assert!(html.contains("role=\"heading\""), "{html}");
+        for label in ["更新間隔", "ソート", "テーマ", "表示"] {
+            assert!(html.contains(label), "{html}");
+        }
+        assert!(html.contains("0.5s") && html.contains("5s"), "{html}");
+        assert!(html.contains("CPU") && html.contains("名前"), "{html}");
+        assert!(html.contains("ダーク") && html.contains("ライト"), "{html}");
+        assert!(html.contains(SETTINGS_AGENT_NOTICE), "{html}");
+        assert!(
+            html.contains(&format!("id=\"{}\"", A11Y_SETTINGS_CLOSE_DOM_ID)),
+            "{html}"
+        );
+        assert!(html.contains("tabindex=\"-1\""), "{html}");
+        assert!(!html.contains("aria-hidden"), "{html}");
+        // 入力欄もトークン実値も DOM proof の区切り文字も出さない。
+        assert!(!html.contains("<input"), "{html}");
+        assert!(!html.contains("token="), "{html}");
+        assert!(!html.contains(';'), "{html}");
+        assert!(!html.contains("rows="), "{html}");
     }
 
     #[test]
