@@ -362,34 +362,6 @@ fn process_row_values(
             command_emphasis: group.process_count > 1,
             process_count: group.process_count,
         },
-        // Idle processes hidden by default are summarised in one expandable
-        // row. The view-model label already carries the redaction-safe
-        // "アイドル N 件（メモリ X GiB）" text; the aggregated memory makes the
-        // table total match the overview memory card.
-        Some(group) if group.kind == AppRowKind::IdleSummary => ProcessRowView {
-            key: group.process_key,
-            group_key: Some(group.key.clone()),
-            icon_key: None,
-            name: group.label.clone(),
-            command: "クリックで展開".to_string(),
-            cpu_percent: group.cpu_percent,
-            memory_bytes: group.memory_bytes,
-            swap_bytes: group.swap_bytes,
-            virtual_memory_bytes: group.virtual_memory_bytes,
-            pid: "—".to_string(),
-            user: "—".to_string(),
-            status: ProcessStatus::Unknown,
-            status_text: "—".to_string(),
-            threads: "—".to_string(),
-            selected,
-            depth,
-            has_children: true,
-            is_group: true,
-            is_others: true,
-            is_section_header: false,
-            command_emphasis: true,
-            process_count: group.process_count,
-        },
         Some(group) if group.kind == AppRowKind::Others => ProcessRowView {
             key: group.process_key,
             group_key: Some(group.key.clone()),
@@ -6363,10 +6335,6 @@ mod tests {
         let first = snapshot.processes[0].clone();
         snapshot.processes[1].name = first.name.clone();
         snapshot.processes[1].command = first.command.clone();
-        // Idle (0%) rows are hidden by default, so give both members a
-        // non-zero CPU reading to keep this group visible.
-        snapshot.processes[0].cpu_percent = 1.0;
-        snapshot.processes[1].cpu_percent = 1.0;
         dashboard.ingest(snapshot);
 
         let group = dashboard

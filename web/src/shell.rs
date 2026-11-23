@@ -702,10 +702,6 @@ fn grouped_row_display_name_with(row: &AppGroupRow, label: &str) -> String {
             format!("{label} ×{}", row.process_count)
         }
         AppRowKind::Group | AppRowKind::Process => label.to_string(),
-        // Idle summary carries the view-model's redaction-safe
-        // "アイドル N 件（メモリ X GiB）" label. Keep it verbatim: no hidden
-        // member identity may leak into canvas or the AX mirror.
-        AppRowKind::IdleSummary => label.to_string(),
         // Headings are display-only; callers short-circuit before reaching the
         // normal row resolver, but keep the pure helper total for safety.
         AppRowKind::SectionHeader => label.to_string(),
@@ -772,9 +768,9 @@ fn resolve_process_row_with_names(
     if let Some(row) = app_row {
         let process = snapshot.processes.get(row.index)?;
         let is_group = row.kind == AppRowKind::Group;
-        // IdleSummary and Others both carry redaction-safe aggregate labels and
-        // reserved keys: never resolve a name or icon for either.
-        let is_others = matches!(row.kind, AppRowKind::Others | AppRowKind::IdleSummary);
+        // Others carries a redaction-safe aggregate label and a reserved key:
+        // never resolve a name or icon for it.
+        let is_others = row.kind == AppRowKind::Others;
         let is_aggregate = is_group || is_others;
         // A hidden member of a collapsed group (or of the Others summary)
         // highlights the aggregate row; an expanded member has its own row and
@@ -5903,9 +5899,9 @@ fn a11y_mirror_group_rows_html_with_names(
         }
         data_index += 1;
         let is_group = row.kind == AppRowKind::Group;
-        // IdleSummary and Others both carry redaction-safe aggregate labels and
-        // reserved keys: never resolve a name or icon for either.
-        let is_others = matches!(row.kind, AppRowKind::Others | AppRowKind::IdleSummary);
+        // Others carries a redaction-safe aggregate label and a reserved key:
+        // never resolve a name or icon for it.
+        let is_others = row.kind == AppRowKind::Others;
         let is_aggregate = is_group || is_others;
         let display_cpu = if is_aggregate {
             normalised_group_cpu(row.cpu_percent, core_count)
