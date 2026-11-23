@@ -297,6 +297,9 @@ pub fn snapshot_to_json_with_total(
             out.push_str(",\n");
             push_key(&mut out, 4, "parent_pid");
             push_optional(&mut out, process.parent_pid, push_display);
+            out.push_str(",\n");
+            push_key(&mut out, 4, "swap_bytes");
+            push_display(&mut out, process.swap_bytes);
             out.push('\n');
 
             push_indent(&mut out, 3);
@@ -715,6 +718,7 @@ mod tests {
                 virtual_memory_bytes: 2_048,
                 threads: Some(4),
                 parent_pid: None,
+                swap_bytes: 4_096,
             }],
             network: NetworkSnapshot {
                 interfaces: vec![NetworkInterfaceSnapshot {
@@ -1226,6 +1230,7 @@ mod tests {
         );
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
+        assert!(json.contains("\"swap_bytes\": 4096"), "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");
     }
 
@@ -1242,6 +1247,7 @@ mod tests {
         assert!(elapsed["nanos"].is_number(), "{json}");
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
+        assert!(json.contains("\"swap_bytes\": 4096"), "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");
     }
 

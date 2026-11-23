@@ -649,6 +649,14 @@ pub struct AppGroupRow {
     /// Computed from `snapshot.processes` inside this additive view; the wire
     /// and export contracts keep reading the snapshot directly and are unchanged.
     pub virtual_memory_bytes: u64,
+    /// Saturating sum of the members' swap bytes in bytes for a group row, or
+    /// the individual process swap reading for a process row (C2-NATIVESWAP).
+    ///
+    /// Mirrors [`Self::virtual_memory_bytes`]: derived from the filtered member
+    /// snapshots inside this additive view, so the wire/export contracts keep
+    /// reading `snapshot.processes` and stay unchanged. A process with no
+    /// swap reading contributes zero.
+    pub swap_bytes: u64,
     /// Number of grouped processes (`1` for individual process rows), or the
     /// number of compacted applications for the "others" row.
     pub process_count: usize,
@@ -664,6 +672,19 @@ pub struct AppGroupRow {
 fn group_virtual_memory_bytes(group: &ProcessGroup, filtered: &[ProcessSnapshot]) -> u64 {
     group.members.iter().fold(0_u64, |sum, &index| {
         sum.saturating_add(filtered[index].virtual_memory_bytes)
+    })
+}
+
+/// Saturating sum of a group's member swap bytes (C2-NATIVESWAP).
+///
+/// Uses the same filtered-index accumulation as
+/// [`group_virtual_memory_bytes`]: `group_by_app` stores members as indices into
+/// the filtered snapshot, so no field needs to be added to the core
+/// `ProcessGroup` and neither the wire nor the export contract changes. Swap is
+/// a `u64` byte count, so there are no non-finite or negative values to guard.
+fn group_swap_bytes(group: &ProcessGroup, filtered: &[ProcessSnapshot]) -> u64 {
+    group.members.iter().fold(0_u64, |sum, &index| {
+        sum.saturating_add(filtered[index].swap_bytes)
     })
 }
 
@@ -701,6 +722,9 @@ fn sort_app_groups(
                 .cmp(&filtered[right.members[0]].key.pid),
             SortKey::VirtualMemory => group_virtual_memory_bytes(left, filtered)
                 .cmp(&group_virtual_memory_bytes(right, filtered)),
+            SortKey::Swap => {
+                group_swap_bytes(left, filtered).cmp(&group_swap_bytes(right, filtered))
+            }
             // The remaining columns have no aggregate equivalent; keep the
             // stable BTreeMap key order for them.
             SortKey::Name
@@ -746,6 +770,9 @@ fn others_row(
     let virtual_memory_bytes = singles.iter().fold(0_u64, |sum, group| {
         sum.saturating_add(group_virtual_memory_bytes(group, filtered))
     });
+    let swap_bytes = singles.iter().fold(0_u64, |sum, group| {
+        sum.saturating_add(group_swap_bytes(group, filtered))
+    });
     AppGroupRow {
         kind: AppRowKind::Others,
         key: OTHERS_APP_GROUP_KEY.to_string(),
@@ -762,6 +789,7 @@ fn others_row(
         cpu_percent,
         memory_bytes,
         virtual_memory_bytes,
+        swap_bytes,
         process_count: singles.len(),
     }
 }
@@ -799,6 +827,9 @@ fn idle_summary_row(
     let virtual_memory_bytes = hidden.iter().fold(0_u64, |sum, &index| {
         sum.saturating_add(snapshot.processes[index].virtual_memory_bytes)
     });
+    let swap_bytes = hidden.iter().fold(0_u64, |sum, &index| {
+        sum.saturating_add(snapshot.processes[index].swap_bytes)
+    });
     Some(AppGroupRow {
         kind: AppRowKind::IdleSummary,
         key: IDLE_SUMMARY_KEY.to_string(),
@@ -815,6 +846,7 @@ fn idle_summary_row(
         cpu_percent: 0.0,
         memory_bytes,
         virtual_memory_bytes,
+        swap_bytes,
         process_count: hidden.len(),
     })
 }
@@ -835,6 +867,7 @@ fn idle_process_row(index: usize, snapshot: &SystemSnapshot) -> AppGroupRow {
         cpu_percent: process.cpu_percent,
         memory_bytes: process.memory_bytes,
         virtual_memory_bytes: process.virtual_memory_bytes,
+        swap_bytes: process.swap_bytes,
         process_count: 1,
     }
 }
@@ -859,6 +892,7 @@ fn section_header(key: &'static str, label: &'static str, index: usize) -> AppGr
         cpu_percent: 0.0,
         memory_bytes: 0,
         virtual_memory_bytes: 0,
+        swap_bytes: 0,
         process_count: 0,
     }
 }
@@ -887,6 +921,7 @@ fn single_group_row(
         cpu_percent: group.cpu_percent,
         memory_bytes: group.memory_bytes,
         virtual_memory_bytes: process.virtual_memory_bytes,
+        swap_bytes: process.swap_bytes,
         process_count: 1,
     }
 }
@@ -1236,8 +1271,8 @@ impl Dashboard {
     /// [`Command::ToggleAppGroup`] is likewise followed by its individual
     /// processes at `depth = 1`; collapsing it removes them again. The current
     /// filter is applied first and the active sort spec orders the group rows
-    /// (`Cpu`, `Memory`, `VirtualMemory` and `Pid` use their totals, other
-    /// columns fall back to the deterministic group key).
+    /// (`Cpu`, `Memory`, `VirtualMemory`, `Swap` and `Pid` use their totals,
+    /// other columns fall back to the deterministic group key).
     ///
     /// With idle suppression active, 0% CPU processes are absent as individual
     /// rows but reported by one trailing [`AppRowKind::IdleSummary`] row placed
@@ -1298,6 +1333,7 @@ impl Dashboard {
             let has_children = group.members.len() > 1;
             let expanded = has_children && self.expanded_app_groups.contains(&group.key);
             let virtual_memory_bytes = group_virtual_memory_bytes(&group, &filtered);
+            let swap_bytes = group_swap_bytes(&group, &filtered);
             rows.push(AppGroupRow {
                 kind: AppRowKind::Group,
                 key: group.key.clone(),
@@ -1311,6 +1347,7 @@ impl Dashboard {
                 cpu_percent: group.cpu_percent,
                 memory_bytes: group.memory_bytes,
                 virtual_memory_bytes,
+                swap_bytes,
                 process_count: group.process_count,
             });
             if expanded {
@@ -1329,6 +1366,7 @@ impl Dashboard {
                         cpu_percent: process.cpu_percent,
                         memory_bytes: process.memory_bytes,
                         virtual_memory_bytes: process.virtual_memory_bytes,
+                        swap_bytes: process.swap_bytes,
                         process_count: 1,
                     });
                 }
@@ -3900,6 +3938,7 @@ mod tests {
                 cpu_percent: 0.25,
                 memory_bytes: 300,
                 virtual_memory_bytes: 3_000,
+                swap_bytes: 3_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3909,6 +3948,7 @@ mod tests {
                 cpu_percent: 1.5,
                 memory_bytes: 100,
                 virtual_memory_bytes: 1_000,
+                swap_bytes: 1_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3918,6 +3958,7 @@ mod tests {
                 cpu_percent: 2.25,
                 memory_bytes: 200,
                 virtual_memory_bytes: 2_000,
+                swap_bytes: 2_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3935,6 +3976,7 @@ mod tests {
                 cpu_percent: 3.0,
                 memory_bytes: 42,
                 virtual_memory_bytes: 42_000,
+                swap_bytes: 42,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -3963,6 +4005,10 @@ mod tests {
         assert_eq!(firefox.cpu_percent, 4.0);
         assert_eq!(firefox.memory_bytes, 600);
         assert_eq!(firefox.virtual_memory_bytes, 6_000);
+        assert_eq!(
+            firefox.swap_bytes, 6_000,
+            "member swap bytes saturating sum"
+        );
         assert!(firefox.has_children);
         assert!(!firefox.expanded);
         assert_eq!(firefox.process_key, ProcessKey::new(10, 1));
@@ -3979,6 +4025,7 @@ mod tests {
         assert_eq!(solo.cpu_percent, 3.0);
         assert_eq!(solo.memory_bytes, 42);
         assert_eq!(solo.virtual_memory_bytes, 42_000);
+        assert_eq!(solo.swap_bytes, 42);
         assert!(!solo.has_children, "a single member is not expandable");
         assert!(rows.iter().all(|row| !row.key.is_empty()));
     }
@@ -4020,6 +4067,47 @@ mod tests {
         {
             assert_ne!(member.virtual_memory_bytes, 6_000);
             totals = totals.saturating_add(member.virtual_memory_bytes);
+        }
+        assert_eq!(totals, 6_000);
+    }
+
+    #[test]
+    fn app_group_rows_sort_by_swap_totals_independently_of_virtual_memory() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+
+        // Descending swap puts the three-member firefox total (6_000) ahead of
+        // solo (42) — the opposite of the descending virtual-memory order, so
+        // the comparator is proven to read the swap aggregate (C2-NATIVESWAP).
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Swap,
+            direction: SortDirection::Descending,
+        }));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows[0].key, "firefox");
+        assert_eq!(rows[1].key, "solo");
+        assert_eq!(rows[0].swap_bytes, 6_000);
+        assert_eq!(rows[1].swap_bytes, 42);
+
+        // Ascending flips the same swap totals.
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::Swap,
+            direction: SortDirection::Ascending,
+        }));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows[0].key, "solo");
+        assert_eq!(rows[1].key, "firefox");
+
+        // Expanded members carry their own swap reading, never the group sum.
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        let expanded = dashboard.app_group_rows();
+        let mut totals = 0_u64;
+        for member in expanded
+            .iter()
+            .filter(|row| row.kind == AppRowKind::Process)
+        {
+            assert_ne!(member.swap_bytes, 6_000);
+            totals = totals.saturating_add(member.swap_bytes);
         }
         assert_eq!(totals, 6_000);
     }

@@ -238,6 +238,18 @@ pub struct ProcessSnapshot {
     pub threads: Option<u32>,
     /// Parent PID, when the platform reports it.
     pub parent_pid: Option<u32>,
+    /// Swap used by this process in bytes (`VmSwap` from `/proc/<pid>/status`
+    /// on Linux, converted from kB); `0` when unavailable or on other targets.
+    ///
+    /// The sum over all processes need not equal
+    /// [`MemorySnapshot::swap_used_bytes`] (SwapUsed): shared swapped pages can
+    /// be charged to more than one process, some swapped pages are not
+    /// attributable to any sampled process, and per-process reads happen at
+    /// slightly different instants from the system-wide counter (取值競合,
+    /// sampling race). Treat these as independent measurements; do not assert
+    /// numeric equality. `serde(default)` keeps older wire snapshots readable.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub swap_bytes: u64,
 }
 
 /// Cumulative byte counters for one network interface.

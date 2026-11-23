@@ -407,6 +407,14 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 } else {
                     Some(421)
                 },
+                // Deterministic per-process swap for the new column/sort. It is
+                // deliberately not derived from DEMO_SWAP_USED: shared and
+                // unattributed pages mean the two totals need not agree.
+                swap_bytes: if demo.base_memory == 0 {
+                    0
+                } else {
+                    (index as u64 % 6) * 1_048_576
+                },
             }
         })
         .collect::<Vec<ProcessSnapshot>>();

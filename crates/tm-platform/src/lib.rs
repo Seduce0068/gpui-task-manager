@@ -390,6 +390,7 @@ impl NativeProbe {
                     // other platforms report `None` (shown as "—").
                     threads: thread_count(process),
                     parent_pid: process.parent().map(Pid::as_u32),
+                    swap_bytes: process_swap_bytes(pid.as_u32()),
                 }
             })
             .collect::<Vec<_>>();
@@ -634,6 +635,39 @@ fn read_sysfs_u64(path: &std::path::Path) -> Option<u64> {
         .trim()
         .parse::<u64>()
         .ok()
+}
+
+/// Parses the `VmSwap:` field of a `/proc/<pid>/status` text into bytes.
+///
+/// The kernel reports kB, so the parsed value is multiplied by 1 024. A missing
+/// field, a non-numeric value or an unreadable entry yields `0`, the honest
+/// "unavailable" figure. The multiplication saturates so a corrupt reading
+/// cannot wrap into a plausible small number.
+fn vm_swap_bytes_from_status(status: &str) -> u64 {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmSwap:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map_or(0, |kb| kb.saturating_mul(1_024))
+}
+
+/// Reads one process's swap usage in bytes from `/proc/<pid>/status` (VmSwap).
+///
+/// Missing files, permission errors, absent fields and parse failures all yield
+/// `0`: an unavailable figure must never be reported as a real measurement.
+#[cfg(target_os = "linux")]
+fn process_swap_bytes(pid: u32) -> u64 {
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return 0;
+    };
+    vm_swap_bytes_from_status(&status)
+}
+
+/// Non-Linux targets have no `/proc/<pid>/status` VmSwap field; report `0`.
+#[cfg(not(target_os = "linux"))]
+fn process_swap_bytes(_pid: u32) -> u64 {
+    0
 }
 
 /// Maps a sysfs `status` string onto the domain battery state (R1-I10).
@@ -1154,6 +1188,24 @@ mod tests {
     use std::process::{Child, Command};
     use std::thread::sleep;
     use std::time::Duration;
+
+    #[test]
+    fn vmswap_status_parsing_is_best_effort() {
+        // kB -> bytes, and every failure mode degrades to an honest zero.
+        assert_eq!(
+            vm_swap_bytes_from_status("Name:\tx\nVmSwap:\t   1234 kB\n"),
+            1_234 * 1_024
+        );
+        assert_eq!(vm_swap_bytes_from_status("VmSwap:\t0 kB\n"), 0);
+        assert_eq!(vm_swap_bytes_from_status("Name:\tx\n"), 0);
+        assert_eq!(vm_swap_bytes_from_status("VmSwap:\tbad kB\n"), 0);
+        assert_eq!(vm_swap_bytes_from_status("VmSwap:\t-1 kB\n"), 0);
+        // Saturation keeps a corrupt huge reading from wrapping.
+        assert_eq!(
+            vm_swap_bytes_from_status("VmSwap:\t18446744073709551615 kB\n"),
+            u64::MAX
+        );
+    }
 
     /// Spawns a `sleep 30` child that tests may signal, and guarantees cleanup.
     #[cfg(unix)]

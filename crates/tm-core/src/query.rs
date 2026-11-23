@@ -32,6 +32,8 @@ pub enum SortKey {
     Threads,
     /// Process start time.
     StartTime,
+    /// Swap usage in bytes.
+    Swap,
 }
 
 impl SortKey {
@@ -47,13 +49,16 @@ impl SortKey {
             Self::Status => "状態",
             Self::Threads => "スレッド",
             Self::StartTime => "起動時刻",
+            Self::Swap => "スワップ",
         }
     }
 
     /// Direction that makes sense as the first click for this column.
     pub const fn default_direction(self) -> SortDirection {
         match self {
-            Self::Cpu | Self::Memory | Self::VirtualMemory => SortDirection::Descending,
+            Self::Cpu | Self::Memory | Self::VirtualMemory | Self::Swap => {
+                SortDirection::Descending
+            }
             _ => SortDirection::Ascending,
         }
     }
@@ -273,6 +278,7 @@ fn compare(left: &ProcessSnapshot, right: &ProcessSnapshot, key: SortKey) -> Ord
         SortKey::Status => left.status.id().cmp(right.status.id()),
         SortKey::Threads => left.threads.unwrap_or(0).cmp(&right.threads.unwrap_or(0)),
         SortKey::StartTime => left.key.start_time_secs.cmp(&right.key.start_time_secs),
+        SortKey::Swap => left.swap_bytes.cmp(&right.swap_bytes),
     }
 }
 
@@ -1545,6 +1551,7 @@ mod tests {
             (SortKey::Status, "状態", SortDirection::Ascending),
             (SortKey::Threads, "スレッド", SortDirection::Ascending),
             (SortKey::StartTime, "起動時刻", SortDirection::Ascending),
+            (SortKey::Swap, "スワップ", SortDirection::Descending),
         ];
         for (key, label, direction) in cases {
             assert_eq!(key.label(), label);

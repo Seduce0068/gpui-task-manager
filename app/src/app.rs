@@ -34,6 +34,7 @@ use crate::ui::{accessible_metric_bar, action_button, card, kv, pill, section_ti
 
 const COL_CPU: f32 = 76.0;
 const COL_MEMORY: f32 = 96.0;
+const COL_SWAP: f32 = 96.0;
 const COL_VIRTUAL_MEMORY: f32 = 112.0;
 const COL_PID: f32 = 64.0;
 const COL_USER: f32 = 104.0;
@@ -71,16 +72,18 @@ fn cgroup_group_text(label: &str, members: usize) -> String {
 ///
 /// The four aggregate-only columns (PID / ユーザー / 状態 / スレッド) show
 /// nothing but "—" on a grouped row, so they are hidden by default. The
-/// settings overlay can re-enable them for the flat process table. 仮想メモリ is
-/// a real group aggregate (saturating sum of member VM bytes), so it is shown
-/// by default alongside 名前 / CPU / メモリ. The header, each row and the
-/// table's `aria_column_count` all read this one layout, so they cannot drift
-/// apart.
+/// settings overlay can re-enable them for the flat process table. スワップ and
+/// 仮想メモリ are real group aggregates (saturating sums of member swap/VM
+/// bytes), so they are shown by default alongside 名前 / CPU / メモリ — in that
+/// order, with スワップ between RSS and virtual memory (C2-NATIVESWAP). The
+/// header, each row and the table's `aria_column_count` all read this one
+/// layout, so they cannot drift apart.
 fn table_columns(verbose: bool) -> Vec<(&'static str, SortKey, Option<f32>)> {
     let mut columns = vec![
         ("名前", SortKey::Name, None),
         ("CPU", SortKey::Cpu, Some(COL_CPU)),
         ("メモリ", SortKey::Memory, Some(COL_MEMORY)),
+        ("スワップ", SortKey::Swap, Some(COL_SWAP)),
         (
             "仮想メモリ",
             SortKey::VirtualMemory,
@@ -234,6 +237,8 @@ struct ProcessRowView {
     command: String,
     cpu_percent: f32,
     memory_bytes: u64,
+    /// Group swap total, or the individual process swap reading (C2-NATIVESWAP).
+    swap_bytes: u64,
     /// Group VM total, or the individual process VM reading.
     virtual_memory_bytes: u64,
     pid: String,
@@ -315,6 +320,7 @@ fn process_row_values(
             command: String::new(),
             cpu_percent: 0.0,
             memory_bytes: 0,
+            swap_bytes: 0,
             virtual_memory_bytes: 0,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -338,6 +344,7 @@ fn process_row_values(
             command: format!("{} プロセス", group.process_count),
             cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
             memory_bytes: group.memory_bytes,
+            swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -367,6 +374,7 @@ fn process_row_values(
             command: "クリックで展開".to_string(),
             cpu_percent: group.cpu_percent,
             memory_bytes: group.memory_bytes,
+            swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -394,6 +402,7 @@ fn process_row_values(
             command: "クリックで展開".to_string(),
             cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
             memory_bytes: group.memory_bytes,
+            swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
@@ -421,6 +430,7 @@ fn process_row_values(
             command: process.command.clone(),
             cpu_percent: process.cpu_percent,
             memory_bytes: process.memory_bytes,
+            swap_bytes: process.swap_bytes,
             virtual_memory_bytes: process.virtual_memory_bytes,
             pid: process.key.pid.to_string(),
             user: process.user.clone().unwrap_or_else(|| "—".to_string()),
@@ -634,10 +644,10 @@ pub struct TaskManagerApp {
     use_donut_charts: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// 列見出し（8 列 = 既定4列 + verbose4列）のフォーカスハンドル。Tab で辿り、
+    /// 列見出し（9 列 = 既定5列 + verbose4列）のフォーカスハンドル。Tab で辿り、
     /// Enter/Space で既存の `on_click`（`Command::SetSortKey`）を発火させる
     /// （WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
-    sort_header_focus: [FocusHandle; 8],
+    sort_header_focus: [FocusHandle; 9],
     /// 表示行のフォーカスハンドル（visible index 対応）。Enter/Space で行の
     /// `on_click`（Group 行は `ToggleAppGroup`、他は `Select`）を発火させる。
     /// 行は仮想リストで再利用されるため index をキーにハンドルを保持する。
@@ -2487,6 +2497,7 @@ impl TaskManagerApp {
         let threads = view.threads.clone();
         let cpu = view.cpu_percent;
         let memory = view.memory_bytes;
+        let swap_bytes = view.swap_bytes;
         let virtual_memory = view.virtual_memory_bytes;
         let pid = view.pid.clone();
         let process_count = view.process_count;
@@ -2574,6 +2585,7 @@ impl TaskManagerApp {
                 &name,
                 cpu,
                 memory,
+                swap_bytes,
                 virtual_memory,
                 process_count,
                 selected,
@@ -2585,6 +2597,7 @@ impl TaskManagerApp {
                 status,
                 cpu,
                 memory,
+                swap_bytes,
                 virtual_memory,
                 key.pid,
                 selected,
@@ -2728,6 +2741,17 @@ impl TaskManagerApp {
                         "—".to_string()
                     } else {
                         format::format_bytes(memory)
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(COL_SWAP))
+                    .text_sm()
+                    .text_color(rgb(palette().subtext))
+                    .child(if is_section_header {
+                        "—".to_string()
+                    } else {
+                        format::format_bytes(swap_bytes)
                     }),
             )
             .child(
@@ -3468,6 +3492,7 @@ impl TaskManagerApp {
         for (key, label, id) in [
             (SortKey::Cpu, "CPU", "cpu"),
             (SortKey::Memory, "メモリ", "memory"),
+            (SortKey::Swap, "スワップ", "swap"),
             (SortKey::VirtualMemory, "仮想メモリ", "virtual-memory"),
             (SortKey::Name, "名前", "name"),
             (SortKey::Pid, "PID", "pid"),
@@ -4202,22 +4227,25 @@ fn a11y_temperature_label(
 ///
 /// `name` is the already-displayed (possibly 伏せ字化済み) value, so a screen
 /// reader never hears an identifier that the screenshot hides.
+#[allow(clippy::too_many_arguments)]
 fn a11y_row_label(
     name: &str,
     status: ProcessStatus,
     cpu: f32,
     memory_bytes: u64,
+    swap_bytes: u64,
     virtual_memory_bytes: u64,
     pid: u32,
     selected: bool,
 ) -> String {
     let suffix = if selected { "、選択中" } else { "" };
     format!(
-        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、仮想メモリ {virtual_memory_label}、PID {pid}{suffix}",
+        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、スワップ {swap_label}、仮想メモリ {virtual_memory_label}、PID {pid}{suffix}",
         status_label = status.label(),
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
+        swap_label = format::format_bytes(swap_bytes),
         virtual_memory_label = format::format_bytes(virtual_memory_bytes),
     )
 }
@@ -4230,10 +4258,12 @@ fn a11y_row_label(
 /// For the synthetic Others row the headline is built from `process_count`
 /// instead of the reserved view-model label, so the accessible name always
 /// contains the visible `その他 N アプリ` text.
+#[allow(clippy::too_many_arguments)]
 fn a11y_group_row_label(
     name: &str,
     cpu: f32,
     memory_bytes: u64,
+    swap_bytes: u64,
     virtual_memory_bytes: u64,
     process_count: usize,
     selected: bool,
@@ -4246,11 +4276,12 @@ fn a11y_group_row_label(
         format!("アプリ {name}")
     };
     format!(
-        "{headline}、{count} プロセス、CPU 合計 {cpu_label}（{severity}）、メモリ合計 {memory_label}、仮想メモリ合計 {virtual_memory_label}{suffix}",
+        "{headline}、{count} プロセス、CPU 合計 {cpu_label}（{severity}）、メモリ合計 {memory_label}、スワップ合計 {swap_label}、仮想メモリ合計 {virtual_memory_label}{suffix}",
         count = process_count,
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
+        swap_label = format::format_bytes(swap_bytes),
         virtual_memory_label = format::format_bytes(virtual_memory_bytes),
     )
 }
@@ -4943,11 +4974,13 @@ mod tests {
             ProcessStatus::Running,
             90.0,
             1_024,
+            2_048,
             4_096,
             42,
             true,
         );
         assert!(label.contains("仮想メモリ 4.0 KiB"), "{label}");
+        assert!(label.contains("スワップ 2.0 KiB"), "{label}");
         assert!(label.starts_with("プロセス emacs、状態 "), "{label}");
         assert!(label.contains("CPU 90.0%（高）"), "{label}");
         assert!(label.contains("PID 42"), "{label}");
@@ -4957,7 +4990,7 @@ mod tests {
             "{label}"
         );
 
-        let plain = a11y_row_label("emacs", ProcessStatus::Sleeping, 10.0, 0, 0, 1, false);
+        let plain = a11y_row_label("emacs", ProcessStatus::Sleeping, 10.0, 0, 0, 0, 1, false);
         assert!(!plain.contains("選択中"), "{plain}");
         assert!(plain.contains("CPU 10.0%（低）"), "{plain}");
     }
@@ -5737,6 +5770,7 @@ mod tests {
             status: ProcessStatus::Sleeping,
             cpu_percent: 1.0,
             memory_bytes: 1_024,
+            swap_bytes: 2_048,
             virtual_memory_bytes: 4_096,
             threads: Some(7),
             parent_pid: Some(1),
@@ -5757,6 +5791,7 @@ mod tests {
             expanded: false,
             cpu_percent: 12.5,
             memory_bytes: 3 * 1_024 * 1_024,
+            swap_bytes: 6 * 1_024 * 1_024,
             virtual_memory_bytes: 12 * 1_024 * 1_024,
             process_count: 3,
         }
@@ -5776,6 +5811,7 @@ mod tests {
             expanded: false,
             cpu_percent: 20.0,
             memory_bytes: 4 * 1_024 * 1_024,
+            swap_bytes: 8 * 1_024 * 1_024,
             virtual_memory_bytes: 16 * 1_024 * 1_024,
             process_count: app_count,
         }
@@ -5826,6 +5862,7 @@ mod tests {
         );
         assert_eq!(view.cpu_percent, others.cpu_percent);
         assert_eq!(view.memory_bytes, others.memory_bytes);
+        assert_eq!(view.swap_bytes, others.swap_bytes);
         assert_eq!(view.virtual_memory_bytes, others.virtual_memory_bytes);
         // No representative process identity leaks into an aggregate row.
         assert_eq!(view.pid, "—");
@@ -5847,10 +5884,12 @@ mod tests {
         assert_eq!(view.command, "3 プロセス");
         assert_eq!(view.cpu_percent, group.cpu_percent);
         assert_eq!(view.memory_bytes, group.memory_bytes);
+        assert_eq!(view.swap_bytes, group.swap_bytes);
         assert_eq!(view.virtual_memory_bytes, group.virtual_memory_bytes);
         // The representative's single-process numbers never stand in for the sum.
         assert_ne!(view.cpu_percent, representative.cpu_percent);
         assert_ne!(view.memory_bytes, representative.memory_bytes);
+        assert_ne!(view.swap_bytes, representative.swap_bytes);
         assert_ne!(
             view.virtual_memory_bytes,
             representative.virtual_memory_bytes
@@ -5877,6 +5916,7 @@ mod tests {
             assert_eq!(view.command, process.command);
             assert_eq!(view.cpu_percent, process.cpu_percent);
             assert_eq!(view.memory_bytes, process.memory_bytes);
+            assert_eq!(view.swap_bytes, process.swap_bytes);
             assert_eq!(view.virtual_memory_bytes, process.virtual_memory_bytes);
             assert_eq!(view.pid, "42");
             assert_eq!(view.user, "alice");
@@ -5902,6 +5942,7 @@ mod tests {
             expanded: false,
             cpu_percent: 99.0,
             memory_bytes: 9_999,
+            swap_bytes: 4_999,
             virtual_memory_bytes: 19_998,
             process_count: 1,
         };
@@ -5937,18 +5978,21 @@ mod tests {
     }
 
     #[test]
-    fn default_table_shows_virtual_memory_and_hides_the_four_dash_only_columns() {
+    fn default_table_shows_swap_between_memory_and_virtual_memory() {
         let compact = table_columns(false);
-        assert_eq!(compact.len(), 4);
+        assert_eq!(compact.len(), 5);
         assert_eq!(compact[0].0, "名前");
         assert_eq!(compact[2].0, "メモリ");
-        assert_eq!(compact[3].0, "仮想メモリ");
-        assert_eq!(compact[3].1, SortKey::VirtualMemory);
+        assert_eq!(compact[3].0, "スワップ");
+        assert_eq!(compact[3].1, SortKey::Swap);
+        assert_eq!(compact[4].0, "仮想メモリ");
+        assert_eq!(compact[4].1, SortKey::VirtualMemory);
         let verbose = table_columns(true);
-        assert_eq!(verbose.len(), 8);
-        assert_eq!(verbose[3].0, "仮想メモリ");
-        assert_eq!(verbose[4].0, "PID");
-        assert_eq!(verbose[7].0, "スレッド");
+        assert_eq!(verbose.len(), 9);
+        assert_eq!(verbose[3].0, "スワップ");
+        assert_eq!(verbose[4].0, "仮想メモリ");
+        assert_eq!(verbose[5].0, "PID");
+        assert_eq!(verbose[8].0, "スレッド");
     }
 
     #[test]
@@ -5999,6 +6043,10 @@ mod tests {
         assert!(row.contains("resolve_display_name("));
         assert!(row.contains("sanitize_app_display_name("));
         assert!(row.contains("if self.verbose_columns"));
+        assert!(
+            row.contains("format::format_bytes(swap_bytes)"),
+            "the スワップ cell must render the group/process swap value"
+        );
         assert!(
             row.contains("format::format_bytes(virtual_memory)"),
             "the 仮想メモリ cell must render the group/process VM value"
@@ -6075,12 +6123,14 @@ mod tests {
             "firefox",
             12.5,
             3 * 1_024 * 1_024,
+            6 * 1_024 * 1_024,
             12 * 1_024 * 1_024,
             3,
             true,
             false,
         );
         assert!(label.contains("仮想メモリ合計 12.0 MiB"), "{label}");
+        assert!(label.contains("スワップ合計 6.0 MiB"), "{label}");
         assert!(
             label.starts_with("アプリ firefox、3 プロセス、CPU 合計 12.5%"),
             "{label}"
@@ -6097,6 +6147,7 @@ mod tests {
             "others",
             20.0,
             4 * 1_024 * 1_024,
+            8 * 1_024 * 1_024,
             16 * 1_024 * 1_024,
             4,
             true,
@@ -6105,6 +6156,7 @@ mod tests {
         assert!(label.starts_with("その他 4 アプリ"), "{label}");
         assert!(label.contains("CPU 合計 20.0%"), "{label}");
         assert!(label.contains("メモリ合計 4.0 MiB"), "{label}");
+        assert!(label.contains("スワップ合計 8.0 MiB"), "{label}");
         assert!(label.ends_with("、選択中"), "{label}");
         assert!(!label.contains("PID"), "{label}");
         assert!(!label.contains("--flag"), "{label}");
@@ -6187,6 +6239,7 @@ mod tests {
             // Hostile values: a heading must never borrow them.
             cpu_percent: 99.0,
             memory_bytes: 999,
+            swap_bytes: 777,
             virtual_memory_bytes: 1_998,
             process_count: 42,
         };
@@ -6201,6 +6254,7 @@ mod tests {
         assert_eq!(view.pid, "—");
         assert_eq!(view.cpu_percent, 0.0);
         assert_eq!(view.memory_bytes, 0);
+        assert_eq!(view.swap_bytes, 0);
         assert_eq!(view.virtual_memory_bytes, 0);
         assert_eq!(view.process_count, 0);
         assert!(!view.selected, "a heading can never be selected");

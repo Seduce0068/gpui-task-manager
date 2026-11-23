@@ -79,6 +79,8 @@ const ROOT_PAD: f32 = 12.0;
 const COL_NAME: f32 = 170.0;
 const COL_CPU: f32 = 68.0;
 const COL_MEMORY: f32 = 84.0;
+/// スワップ列の固定幅。メモリ列と同じ幅で RSS と並べて比較しやすくする。
+const COL_SWAP: f32 = 84.0;
 const COL_VIRTUAL_MEMORY: f32 = 104.0;
 const COL_PID: f32 = 60.0;
 const COL_USER: f32 = 96.0;
@@ -180,6 +182,8 @@ const SETTINGS_SORT_KEYS: &[SortKey] = &[
     SortKey::Status,
     SortKey::Threads,
     SortKey::StartTime,
+    // 末尾に追加して既存の settings-sort インデックスを変えない（DOM 契約不変）。
+    SortKey::Swap,
 ];
 
 /// ネイティブの `help_shortcuts()` と同等の一覧（V2-HELP）。
@@ -493,10 +497,12 @@ pub struct TaskManagerApp {
     /// 書き出すことはなく、置換後の `***` だけが証跡に現れる。
     proof_token: Option<String>,
     focus_handle: FocusHandle,
-    /// 列見出し（8 列 = 既定5列 + 隠し3列）のフォーカスハンドル。Tab で辿り、
-    /// Enter/Space で既存の `on_click`（`Command::SetSortKey`）を発火させる
-    /// （WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
-    sort_header_focus: [FocusHandle; 8],
+    /// ソート可能な列見出しのフォーカスハンドル（9 列 = 表示 5 列と隠し 4 列）。
+    /// Tab で辿り、Enter/Space で既存の `on_click`（`Command::SetSortKey`）を
+    /// 発火させる（WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため
+    /// `render` 内では生成しない。スワップを index 3 へ挿入し、
+    /// 仮想メモリ以降を 1 つ後ろへずらす。
+    sort_header_focus: [FocusHandle; 9],
     /// アプリ別グループ表示の行フォーカスハンドル（C2-WEBDRAW）。
     ///
     /// 行を Tab で到達可能にし、Enter/Space を GPUI の組み込み活性化から
@@ -629,6 +635,9 @@ struct ProcessRowView {
     command: String,
     cpu: f32,
     memory: u64,
+    /// グループのスワップ合計、または個別プロセスのスワップ読値。
+    /// RSS / 仮想メモリと同じ行から表示するが、DOM proof / export には出さない。
+    swap: u64,
     /// Group VM total, or the individual process VM reading.
     virtual_memory: u64,
     pid_text: String,
@@ -842,6 +851,8 @@ fn resolve_process_row_with_names(
             },
             cpu: display_cpu,
             memory: row.memory_bytes,
+            // C2 の付加ビューが持つグループ合計（個別行はそのプロセス値）。
+            swap: row.swap_bytes,
             virtual_memory: row.virtual_memory_bytes,
             pid_text: if is_aggregate {
                 fixed.clone()
@@ -909,6 +920,7 @@ fn resolve_process_row_with_names(
         command: process.command.clone(),
         cpu: process.cpu_percent,
         memory: process.memory_bytes,
+        swap: process.swap_bytes,
         virtual_memory: process.virtual_memory_bytes,
         pid_text: process.key.pid.to_string(),
         user: process.user.clone().unwrap_or_else(|| fixed.clone()),
@@ -3884,9 +3896,9 @@ impl TaskManagerApp {
             .role(Role::Table)
             .aria_label("プロセス一覧")
             .aria_row_count(count)
-            // 名前 / コマンド / CPU / メモリ / 仮想メモリ are shown by default;
-            // PID, ユーザー, 状態 and スレッド stay in the details panel instead.
-            .aria_column_count(5)
+            // 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ are shown by
+            // default; PID, ユーザー, 状態 and スレッド stay in the details panel.
+            .aria_column_count(6)
             .flex()
             .flex_col()
             .flex_1()
@@ -3971,17 +3983,28 @@ impl TaskManagerApp {
             )
             .child(
                 self.sort_cell(
+                    "sort-swap",
+                    "スワップ",
+                    SortKey::Swap,
+                    &self.sort_header_focus[3],
+                    cx,
+                )
+                .w(px(COL_SWAP))
+                .flex_shrink_0(),
+            )
+            .child(
+                self.sort_cell(
                     "sort-virtual-memory",
                     "仮想メモリ",
                     SortKey::VirtualMemory,
-                    &self.sort_header_focus[3],
+                    &self.sort_header_focus[4],
                     cx,
                 )
                 .w(px(COL_VIRTUAL_MEMORY))
                 .flex_shrink_0(),
             )
         // PID / ユーザー / 状態 / スレッド are hidden by default. Their
-        // focus handles stay allocated (indices 4..7) but are never
+        // focus handles stay allocated (indices 5..8) but are never
         // attached to a header, so they create no tab stops; sorting by
         // those keys remains available from the settings dialog.
     }
@@ -4252,6 +4275,14 @@ impl TaskManagerApp {
                 )
                 .child(
                     div()
+                        .w(px(COL_SWAP))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(palette().subtext))
+                        .child(format::format_bytes(view.swap)),
+                )
+                .child(
+                    div()
                         .w(px(COL_VIRTUAL_MEMORY))
                         .flex_shrink_0()
                         .text_xs()
@@ -4260,8 +4291,8 @@ impl TaskManagerApp {
                 )
                 // PID / ユーザー / 状態 / スレッド are hidden by default. The
                 // data still feeds the AX row label and the details panel, so
-                // no redaction or DOM-proof contract changes; five cells
-                // are drawn, matching `aria_column_count(5)` above.
+                // no redaction or DOM-proof contract changes; six cells
+                // are drawn, matching `aria_column_count(6)` above.
                 .into_any_element(),
         )
     }
@@ -5657,6 +5688,7 @@ const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
     ("コマンド", None),
     ("CPU", Some(SortKey::Cpu)),
     ("メモリ", Some(SortKey::Memory)),
+    ("スワップ", Some(SortKey::Swap)),
     ("仮想メモリ", Some(SortKey::VirtualMemory)),
 ];
 
@@ -5722,7 +5754,11 @@ fn a11y_mirror_header_html(sort: SortSpec) -> String {
 }
 
 /// One mirrored process row: selection state plus a text name that repeats
-/// PID / name / CPU / memory and the colour-coded severity word.
+/// PID / name / CPU / memory / swap and the colour-coded severity word.
+///
+/// The six `gridcell` nodes follow the canvas header order
+/// (名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ), matching the six
+/// `columnheader` nodes from [`a11y_mirror_header_html`].
 ///
 /// The enclosing `role="grid"` is deliberate: per ARIA, `aria-selected` is only
 /// exposed on rows inside `grid`/`treegrid`, so a `role="table"` mirror makes
@@ -5733,9 +5769,11 @@ fn a11y_mirror_header_html(sort: SortSpec) -> String {
 #[allow(clippy::too_many_arguments)]
 fn a11y_mirror_row_html(
     name: &str,
+    command: &str,
     status: ProcessStatus,
     cpu: f32,
     memory_bytes: u64,
+    swap_bytes: u64,
     virtual_memory_bytes: u64,
     pid: u32,
     selected: bool,
@@ -5759,11 +5797,14 @@ fn a11y_mirror_row_html(
         "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected}\"{current_attribute} \
          aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
          <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
+         <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
          <div role=\"gridcell\">{}</div></div>",
         escape_html(&label),
         escape_html(name),
+        escape_html(command),
         escape_html(&usage_value_text(cpu)),
         escape_html(&format::format_bytes(memory_bytes)),
+        escape_html(&format::format_bytes(swap_bytes)),
         escape_html(&format::format_bytes(virtual_memory_bytes)),
     )
 }
@@ -5797,9 +5838,11 @@ fn a11y_mirror_rows_html_with_names(
                 .unwrap_or(&process.name);
             html.push_str(&a11y_mirror_row_html(
                 name,
+                &process.command,
                 process.status,
                 process.cpu_percent,
                 process.memory_bytes,
+                process.swap_bytes,
                 process.virtual_memory_bytes,
                 process.key.pid,
                 selected == Some(process.key),
@@ -5887,9 +5930,14 @@ fn a11y_mirror_group_rows_html_with_names(
                 .unwrap_or(ProcessStatus::Unknown);
             html.push_str(&a11y_mirror_row_html(
                 &grouped_row_display_name_with(row, base_label),
+                snapshot
+                    .and_then(|snapshot| snapshot.processes.get(row.index))
+                    .map(|process| process.command.as_str())
+                    .unwrap_or("—"),
                 status,
                 row.cpu_percent,
                 row.memory_bytes,
+                row.swap_bytes,
                 row.virtual_memory_bytes,
                 snapshot
                     .and_then(|snapshot| snapshot.processes.get(row.index))
@@ -5931,15 +5979,19 @@ fn a11y_mirror_group_rows_html_with_names(
             )
         };
         let name_text = grouped_row_display_name_with(row, base_label);
+        // 集計行のコマンド列はキャンバスと同じく "—"。スワップ合計は
+        // メモリと仮想メモリの間にある独立した gridcell として公開する。
         html.push_str(&format!(
             "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected_value}\"{current_attribute}{expanded_attribute} \
              aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
+             <div role=\"gridcell\">—</div><div role=\"gridcell\">{}</div>\
              <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
              <div role=\"gridcell\">{}</div></div>",
             escape_html(&label),
             escape_html(&name_text),
             escape_html(&usage_value_text(display_cpu)),
             escape_html(&format::format_bytes(row.memory_bytes)),
+            escape_html(&format::format_bytes(row.swap_bytes)),
             escape_html(&format::format_bytes(row.virtual_memory_bytes)),
             row_index = data_index,
         ));
@@ -8054,6 +8106,7 @@ mod tests {
                 virtual_memory_bytes: 2_048,
                 threads: Some(4),
                 parent_pid: None,
+                swap_bytes: 512,
             }],
             ..SystemSnapshot::default()
         }
@@ -9854,6 +9907,11 @@ mod tests {
             A11Y_MIRROR_COLUMNS.contains(&("仮想メモリ", Some(SortKey::VirtualMemory))),
             "the VM column must be part of the mirrored grid"
         );
+        // スワップ列もミラーに含まれ、同じ SortKey でソートできる。
+        assert!(
+            A11Y_MIRROR_COLUMNS.contains(&("スワップ", Some(SortKey::Swap))),
+            "the swap column must be part of the mirrored grid"
+        );
 
         let dashboard = grouped_dashboard();
         let rows = dashboard.app_group_rows();
@@ -9861,27 +9919,83 @@ mod tests {
             a11y_mirror_group_rows_html(Some(dashboard.snapshot().expect("snapshot")), &rows, None);
         assert!(html.contains("5.9 KiB"), "{html}");
         assert!(html.contains("合計仮想メモリ 5.9 KiB"), "{html}");
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 5);
+        // スワップ列の合計が 6 列目の手前の gridcell に現れる。
+        assert!(html.contains(">180 B<"), "{html}");
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
+    }
+
+    #[test]
+    fn swap_column_is_sortable_and_keeps_proof_grammar_unchanged() {
+        // キャンバス列見出し・AX ミラー・設定モーダルが同じ SortKey::Swap を使う。
+        let header = a11y_mirror_header_html(SortSpec {
+            key: SortKey::Swap,
+            direction: SortDirection::Descending,
+        });
+        assert!(header.contains("スワップ ↓"), "{header}");
+        assert_eq!(header.matches("aria-sort=\"descending\"").count(), 1);
+        assert_eq!(
+            header.matches("role=\"columnheader\"").count(),
+            A11Y_MIRROR_COLUMNS.len()
+        );
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
+        assert!(SETTINGS_SORT_KEYS.contains(&SortKey::Swap));
+        assert_eq!(SETTINGS_SORT_KEYS.len(), 10);
+
+        // グループ行はメンバーごとのスワップ合計（90+30+60）で降順に並ぶ。
+        let mut dashboard = grouped_dashboard();
+        dashboard.apply(Command::SetSortSpec(SortSpec::new(SortKey::Swap)));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(dashboard.sort_spec().key, SortKey::Swap);
+        assert_eq!(rows[0].swap_bytes, 180, "{rows:?}");
+        assert_eq!(rows[1].swap_bytes, 42, "{rows:?}");
+        assert!(rows[0].label.contains("firefox"), "{rows:?}");
+
+        // sort= の値がラベル「スワップ」に変わっても key=value; 形式と
+        // rows= / total= などのフィールド集合は不変（DOM proof 契約）。
+        let (_, _, _, proof) = run_sse_steps(|app| {
+            app.dashboard = grouped_dashboard();
+            app.dashboard
+                .apply(Command::SetSortSpec(SortSpec::new(SortKey::Swap)));
+        });
+        assert!(proof.contains("sort=スワップ;"), "{proof}");
+        assert!(proof.contains("rows=2;"), "{proof}");
+        for field in [
+            "mode=",
+            "tick=",
+            "cpu=",
+            "mem=",
+            "total=",
+            "filter=",
+            "selected_pid=",
+            "dir=",
+        ] {
+            assert!(proof.contains(field), "missing {field} in {proof}");
+        }
+        assert!(!proof.contains('\n') && !proof.contains('\r'), "{proof}");
     }
 
     #[test]
     fn mirror_row_exposes_selection_and_escaped_display_values() {
         let selected = a11y_mirror_row_html(
             "<script>alert(1)</script>",
+            "cat /proc/1/status",
             ProcessStatus::Zombie,
             92.0,
             4_096,
+            2_048,
             8_192,
             42,
             true,
             3,
         );
         assert!(selected.contains("role=\"row\""), "{selected}");
+        // 6 列 = 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ。
         assert_eq!(
             selected.matches("role=\"gridcell\"").count(),
-            4,
+            6,
             "{selected}"
         );
+        assert!(selected.contains("2.0 KiB"), "{selected}");
         assert!(selected.contains("8.0 KiB"), "{selected}");
         assert!(!selected.contains("role=\"cell\""), "{selected}");
         assert!(selected.contains("aria-rowindex=\"3\""), "{selected}");
@@ -9892,7 +10006,18 @@ mod tests {
         assert!(selected.contains("高"), "{selected}");
         assert!(selected.contains("&lt;script&gt;"), "{selected}");
         assert!(!selected.contains("<script>"), "{selected}");
-        let unselected = a11y_mirror_row_html("idle", ProcessStatus::Idle, 1.0, 0, 0, 7, false, 1);
+        let unselected = a11y_mirror_row_html(
+            "idle",
+            "idle",
+            ProcessStatus::Idle,
+            1.0,
+            0,
+            0,
+            0,
+            7,
+            false,
+            1,
+        );
         assert!(
             unselected.contains("aria-selected=\"false\""),
             "{unselected}"
@@ -10089,7 +10214,7 @@ mod tests {
         assert!(!html.contains("role=\"cell\""), "{html}");
         assert_eq!(
             html.matches("role=\"gridcell\"").count(),
-            4 * visible.len(),
+            6 * visible.len(),
             "{html}"
         );
         assert_eq!(
@@ -10330,6 +10455,7 @@ mod tests {
                 cpu_percent: 0.25,
                 memory_bytes: 300,
                 virtual_memory_bytes: 3_000,
+                swap_bytes: 90,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -10339,6 +10465,7 @@ mod tests {
                 cpu_percent: 1.5,
                 memory_bytes: 100,
                 virtual_memory_bytes: 1_000,
+                swap_bytes: 30,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -10348,6 +10475,7 @@ mod tests {
                 cpu_percent: 2.25,
                 memory_bytes: 200,
                 virtual_memory_bytes: 2_000,
+                swap_bytes: 60,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -10357,6 +10485,7 @@ mod tests {
                 cpu_percent: 3.0,
                 memory_bytes: 42,
                 virtual_memory_bytes: 42_000,
+                swap_bytes: 42,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -10385,6 +10514,9 @@ mod tests {
         assert_eq!(view.memory, 600);
         assert_eq!(group.virtual_memory_bytes, 6_000);
         assert_eq!(view.virtual_memory, 6_000);
+        // スワップもメンバー合計（90 + 30 + 60 = 180 B）を公開する。
+        assert_eq!(group.swap_bytes, 180);
+        assert_eq!(view.swap, 180);
         assert!(view.name.contains("firefox") && view.name.contains('3'));
         // Aggregates have no single-process command / PID / user / status / threads.
         assert_eq!(view.command, "—");
@@ -10675,7 +10807,7 @@ mod tests {
                 "{hidden} must stay hidden"
             );
         }
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 5);
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
         assert_eq!(
             TaskManagerApp::nav_section_from_id("nav-overview"),
             Some(NavSection::Overview)
@@ -10795,6 +10927,7 @@ mod tests {
             expanded: false,
             cpu_percent: 3.0,
             memory_bytes: 42,
+            swap_bytes: 21,
             virtual_memory_bytes: 84,
             process_count: 1,
         };
