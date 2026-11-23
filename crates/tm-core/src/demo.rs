@@ -390,6 +390,25 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 )
             };
             let start_time_secs = demo_process_start_time(demo.pid);
+            // Deterministic cumulative block I/O (C1-IODATA). `sampled_elapsed`
+            // is one tick, so each tick adds a fixed per-process amount and the
+            // viewmodel derives a stable B/s rate. Kernel threads / zombies
+            // (zero base memory) do no block I/O and stay at zero.
+            let (read_bytes, write_bytes) = if demo.base_memory == 0 {
+                (0, 0)
+            } else {
+                let read_step = 65_536_u64.saturating_add((index as u64 % 4).saturating_mul(4_096));
+                let write_step =
+                    16_384_u64.saturating_add((index as u64 % 3).saturating_mul(2_048));
+                (
+                    (index as u64 % 6)
+                        .saturating_mul(1_048_576)
+                        .saturating_add(tick.saturating_mul(read_step)),
+                    (index as u64 % 5)
+                        .saturating_mul(524_288)
+                        .saturating_add(tick.saturating_mul(write_step)),
+                )
+            };
             ProcessSnapshot {
                 key: ProcessKey::new(demo.pid, start_time_secs),
                 name: demo.name.to_string(),
@@ -415,6 +434,8 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
                 } else {
                     (index as u64 % 6) * 1_048_576
                 },
+                read_bytes,
+                write_bytes,
             }
         })
         .collect::<Vec<ProcessSnapshot>>();
@@ -742,6 +763,30 @@ mod tests {
     fn demo_snapshot_is_deterministic() {
         assert_eq!(demo_snapshot(7), demo_snapshot(7));
         assert_ne!(demo_snapshot(7), demo_snapshot(8));
+    }
+
+    #[test]
+    fn demo_cumulative_io_advances_by_a_fixed_amount_per_tick() {
+        // C1-IODATA: the viewmodel needs monotonically increasing cumulative
+        // counters to derive a stable B/s rate from each one-second tick.
+        let first = demo_snapshot(0);
+        let second = demo_snapshot(1);
+        assert_eq!(first.sampled_elapsed, std::time::Duration::from_secs(1));
+        let mut active = 0;
+        for (left, right) in first.processes.iter().zip(&second.processes) {
+            assert_eq!(left.key, right.key);
+            assert!(right.read_bytes >= left.read_bytes);
+            assert!(right.write_bytes >= left.write_bytes);
+            if right.read_bytes > left.read_bytes {
+                active += 1;
+                assert!(right.write_bytes > left.write_bytes);
+            }
+        }
+        assert!(active > 0, "demo must exercise the rate path");
+        // A tick-zero baseline of zero is legitimate for the first process;
+        // what matters for the rate is that the next tick advances it.
+        assert_eq!(first.processes[0].read_bytes, 0);
+        assert!(second.processes[0].read_bytes > 0);
     }
 
     #[test]

@@ -82,6 +82,9 @@ const COL_MEMORY: f32 = 84.0;
 /// スワップ列の固定幅。メモリ列と同じ幅で RSS と並べて比較しやすくする。
 const COL_SWAP: f32 = 84.0;
 const COL_VIRTUAL_MEMORY: f32 = 104.0;
+/// 読み込み／書き込みのレート列幅（C3-WEBIO）。ネイティブ側と同じ幅。
+const COL_READ: f32 = 88.0;
+const COL_WRITE: f32 = 88.0;
 const COL_PID: f32 = 60.0;
 const COL_USER: f32 = 96.0;
 const COL_STATUS: f32 = 74.0;
@@ -497,12 +500,13 @@ pub struct TaskManagerApp {
     /// 書き出すことはなく、置換後の `***` だけが証跡に現れる。
     proof_token: Option<String>,
     focus_handle: FocusHandle,
-    /// ソート可能な列見出しのフォーカスハンドル（9 列 = 表示 5 列と隠し 4 列）。
-    /// Tab で辿り、Enter/Space で既存の `on_click`（`Command::SetSortKey`）を
-    /// 発火させる（WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため
-    /// `render` 内では生成しない。スワップを index 3 へ挿入し、
-    /// 仮想メモリ以降を 1 つ後ろへずらす。
-    sort_header_focus: [FocusHandle; 9],
+    /// 列見出しのフォーカスハンドル（11 列 = 表示 7 列と隠し 4 列）。
+    /// Tab で辿り、Enter/Space でソート列の `on_click`（`Command::SetSortKey`）
+    /// を発火させる（WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため
+    /// `render` 内では生成しない。index 0..4 がソート可能な表示列、
+    /// index 5, 6 がレート列（読み込み／書き込み・ソート不可だが Tab 到達可能、
+    /// C3-WEBIO）、index 7..10 が隠し列の予約枠。
+    sort_header_focus: [FocusHandle; 11],
     /// アプリ別グループ表示の行フォーカスハンドル（C2-WEBDRAW）。
     ///
     /// 行を Tab で到達可能にし、Enter/Space を GPUI の組み込み活性化から
@@ -594,6 +598,11 @@ pub struct TaskManagerApp {
     /// Independent of [`Self::sse_retry_at`] so the two retry paths cannot
     /// accelerate or delay each other (WA-RETRY).
     poll_backoff: PollBackoff,
+    /// Most recent transfer speed measured on a polling response, in Mbps.
+    /// SSE frames (which carry no timed request body) and transient errors never
+    /// overwrite it, so the network card keeps showing the last real reading.
+    /// Loopback/proxy only — never presented as the host's line speed.
+    agent_transfer_mbps: Option<f64>,
     /// F1 / ヘッダーのヘルプボタンで開くキーボード操作オーバーレイの状態。
     show_help: bool,
     /// ヘッダーの歯車ボタンで開く設定モーダル。`show_help` と決して同時に
@@ -640,6 +649,11 @@ struct ProcessRowView {
     swap: u64,
     /// Group VM total, or the individual process VM reading.
     virtual_memory: u64,
+    /// Block-I/O rates in bytes per second: the group aggregate from the
+    /// viewmodel, or the individual process rate from its rate map. Display
+    /// only — never written into DOM proof / AX row labels / export.
+    read_rate: u64,
+    write_rate: u64,
     pid_text: String,
     user: String,
     status: ProcessStatus,
@@ -867,6 +881,8 @@ fn resolve_process_row_with_names(
             // C2 の付加ビューが持つグループ合計（個別行はそのプロセス値）。
             swap: row.swap_bytes,
             virtual_memory: row.virtual_memory_bytes,
+            read_rate: row.read_rate,
+            write_rate: row.write_rate,
             pid_text: if is_aggregate {
                 fixed.clone()
             } else {
@@ -910,6 +926,7 @@ fn resolve_process_row_with_names(
         .copied()
         .unwrap_or(false);
     let process = snapshot.processes.get(row_index)?;
+    let (read_rate, write_rate) = dashboard.process_snapshot_io_rates(process);
     let selected = selected == Some(process.key);
     let flat_key = tm_core::model::app_group_key(process);
     let resolved = app_names.get(flat_key).and_then(|value| value.as_deref());
@@ -935,6 +952,8 @@ fn resolve_process_row_with_names(
         memory: process.memory_bytes,
         swap: process.swap_bytes,
         virtual_memory: process.virtual_memory_bytes,
+        read_rate,
+        write_rate,
         pid_text: process.key.pid.to_string(),
         user: process.user.clone().unwrap_or_else(|| fixed.clone()),
         status: process.status,
@@ -1025,6 +1044,7 @@ impl TaskManagerApp {
             sse_connect_started_at: None,
             sse_retry_at: None,
             poll_backoff: PollBackoff::default(),
+            agent_transfer_mbps: None,
             show_help: false,
             show_settings: false,
             use_donut_charts: false,
@@ -1692,6 +1712,11 @@ impl TaskManagerApp {
                 self.poll_backoff.record_success();
                 self.ticks = self.ticks.saturating_add(1);
                 self.live_total = Some(response.total_process_count);
+                // Only a timed polling response carries a value; SSE frames and
+                // errors leave the last reading intact (直近値保持).
+                if let Some(mbps) = response.transfer_mbps {
+                    self.agent_transfer_mbps = Some(mbps);
+                }
                 self.live_error = None;
                 self.reconnect_required = false;
                 self.dashboard.ingest(response.snapshot);
@@ -3113,6 +3138,12 @@ impl TaskManagerApp {
         let mem_history = history.memory_percent.to_vec();
 
         let (rx_rate, tx_rate) = self.dashboard.network_rates();
+        // Loopback/proxy throughput from the last timed poll, never a claim about
+        // the host's real line speed. SSE frames do not carry a new value.
+        let agent_transfer = self
+            .agent_transfer_mbps
+            .map(|mbps| format!("{mbps:.1} Mbps"))
+            .unwrap_or_else(|| "—".to_string());
         let rx_history: Vec<f32> = history
             .network_rx_rate
             .iter()
@@ -3378,6 +3409,17 @@ impl TaskManagerApp {
                             format::format_rate(tx_rate)
                         )),
                 )
+                // 実回線速度ではなく、エージェントとの loopback/代理 HTTP
+                // 転送速度であることを文言で明記する（DOM proof には出さない）。
+                .child(
+                    div()
+                        .id("agent-transfer-rate")
+                        .text_xs()
+                        .text_color(rgb(palette().muted))
+                        .child(format!(
+                            "エージェント転送 {agent_transfer}（loopback・代理）"
+                        )),
+                )
         } else {
             v_flex()
                 .gap_1()
@@ -3415,10 +3457,23 @@ impl TaskManagerApp {
                         .child(
                             h_flex()
                                 .justify_between()
-                                .text_xs()
-                                .text_color(rgb(palette().muted))
-                                .child(mount.clone())
-                                .child(format!("{percent:.0}%")),
+                                .items_end()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().muted))
+                                        .child(mount.clone()),
+                                )
+                                // 使用率は CPU / メモリと同じ text_xl + BOLD +
+                                // usage_color に昇格（色だけに依存しない）。
+                                // 既存のバーと role / aria はそのまま維持。
+                                .child(
+                                    div()
+                                        .text_xl()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(rgb(usage_color(percent)))
+                                        .child(format!("{percent:.0}%")),
+                                ),
                         )
                         .child(accessible_metric_bar(
                             ("disk-usage-bar", index),
@@ -3935,9 +3990,10 @@ impl TaskManagerApp {
             .role(Role::Table)
             .aria_label("プロセス一覧")
             .aria_row_count(count)
-            // 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ are shown by
-            // default; PID, ユーザー, 状態 and スレッド stay in the details panel.
-            .aria_column_count(6)
+            // 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ /
+            // 読み込み / 書き込み are shown by default (C3-WEBIO); PID,
+            // ユーザー, 状態 and スレッド stay in the details panel.
+            .aria_column_count(8)
             .flex()
             .flex_col()
             .flex_1()
@@ -4042,8 +4098,34 @@ impl TaskManagerApp {
                 .w(px(COL_VIRTUAL_MEMORY))
                 .flex_shrink_0(),
             )
+            // レート列はサンプル間の差分に依存するためソート不可。列見出しの
+            // role / Tab 到達性は他列と同じに保つ（C3-WEBIO）。
+            .child(
+                div()
+                    .id("col-read-rate")
+                    .role(Role::ColumnHeader)
+                    .aria_label("読み込み")
+                    .track_focus(&self.sort_header_focus[5])
+                    .w(px(COL_READ))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("読み込み"),
+            )
+            .child(
+                div()
+                    .id("col-write-rate")
+                    .role(Role::ColumnHeader)
+                    .aria_label("書き込み")
+                    .track_focus(&self.sort_header_focus[6])
+                    .w(px(COL_WRITE))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("書き込み"),
+            )
         // PID / ユーザー / 状態 / スレッド are hidden by default. Their
-        // focus handles stay allocated (indices 5..8) but are never
+        // focus handles stay allocated (indices 7..10) but are never
         // attached to a header, so they create no tab stops; sorting by
         // those keys remains available from the settings dialog.
     }
@@ -4149,7 +4231,7 @@ impl TaskManagerApp {
                     .truncate()
                     .child(row.label.clone()),
             )
-            // Keeps the six-column alignment of a data row without showing a
+            // Keeps the eight-column alignment of a data row without showing a
             // representative process's command.
             .child(div().flex_1().min_w_0())
             .child(
@@ -4175,6 +4257,18 @@ impl TaskManagerApp {
                     .w(px(COL_VIRTUAL_MEMORY))
                     .flex_shrink_0()
                     .child(format::format_bytes(row.virtual_memory_bytes)),
+            )
+            .child(
+                div()
+                    .w(px(COL_READ))
+                    .flex_shrink_0()
+                    .child(format::format_rate(row.read_rate)),
+            )
+            .child(
+                div()
+                    .w(px(COL_WRITE))
+                    .flex_shrink_0()
+                    .child(format::format_rate(row.write_rate)),
             )
             .into_any_element()
     }
@@ -4379,10 +4473,27 @@ impl TaskManagerApp {
                         .text_color(rgb(palette().subtext))
                         .child(format::format_bytes(view.virtual_memory)),
                 )
+                .child(
+                    div()
+                        .w(px(COL_READ))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(palette().subtext))
+                        .child(format::format_rate(view.read_rate)),
+                )
+                .child(
+                    div()
+                        .w(px(COL_WRITE))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(palette().subtext))
+                        .child(format::format_rate(view.write_rate)),
+                )
                 // PID / ユーザー / 状態 / スレッド are hidden by default. The
                 // data still feeds the AX row label and the details panel, so
-                // no redaction or DOM-proof contract changes; six cells
-                // are drawn, matching `aria_column_count(6)` above.
+                // no redaction or DOM-proof contract changes; eight cells
+                // are drawn, matching `aria_column_count(8)` above. The new
+                // rate cells are display-only (C3-WEBIO).
                 .into_any_element(),
         )
     }
@@ -4922,6 +5033,19 @@ impl TaskManagerApp {
         let Some(data) = hidden_child_node(document, &mirror, A11Y_MIRROR_DATA_DOM_ID) else {
             return;
         };
+        // Flat/tree rows have no AppGroupRow to carry rates, so mirror the same
+        // per-process values the canvas resolves through the viewmodel.
+        let io_rates: HashMap<ProcessKey, (u64, u64)> = self
+            .dashboard
+            .snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .processes
+                    .iter()
+                    .map(|process| (process.key, self.dashboard.process_io_rates(process.key)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let data_html = if self.dashboard.app_group_view() {
             a11y_mirror_grouped_data_html_with_names(
                 self.dashboard.snapshot(),
@@ -4937,6 +5061,7 @@ impl TaskManagerApp {
                 self.dashboard.selected_key(),
                 self.dashboard.sort_spec(),
                 &self.app_names,
+                &io_rates,
             )
         };
         if data.inner_html() != data_html {
@@ -5802,6 +5927,10 @@ const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
     ("メモリ", Some(SortKey::Memory)),
     ("スワップ", Some(SortKey::Swap)),
     ("仮想メモリ", Some(SortKey::VirtualMemory)),
+    // レート列はソート不可（C3-WEBIO）。コマンドと同じく `None` の
+    // columnheader として公開し、列数をキャンバスの 8 列と同期する。
+    ("読み込み", None),
+    ("書き込み", None),
 ];
 
 /// Escapes dynamic text before it is written through `set_inner_html`.
@@ -5868,9 +5997,11 @@ fn a11y_mirror_header_html(sort: SortSpec) -> String {
 /// One mirrored process row: selection state plus a text name that repeats
 /// PID / name / CPU / memory / swap and the colour-coded severity word.
 ///
-/// The six `gridcell` nodes follow the canvas header order
-/// (名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ), matching the six
-/// `columnheader` nodes from [`a11y_mirror_header_html`].
+/// The eight `gridcell` nodes follow the canvas header order
+/// (名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ / 読み込み / 書き込み),
+/// matching the eight `columnheader` nodes from [`a11y_mirror_header_html`].
+/// The two rate cells are display-only and never enter the row's accessible
+/// name, so DOM proof / redaction contracts stay unchanged (C3-WEBIO).
 ///
 /// The enclosing `role="grid"` is deliberate: per ARIA, `aria-selected` is only
 /// exposed on rows inside `grid`/`treegrid`, so a `role="table"` mirror makes
@@ -5887,6 +6018,8 @@ fn a11y_mirror_row_html(
     memory_bytes: u64,
     swap_bytes: u64,
     virtual_memory_bytes: u64,
+    read_rate: u64,
+    write_rate: u64,
     pid: u32,
     selected: bool,
     row_index: usize,
@@ -5910,6 +6043,7 @@ fn a11y_mirror_row_html(
          aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
          <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
          <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
+         <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
          <div role=\"gridcell\">{}</div></div>",
         escape_html(&label),
         escape_html(name),
@@ -5918,6 +6052,8 @@ fn a11y_mirror_row_html(
         escape_html(&format::format_bytes(memory_bytes)),
         escape_html(&format::format_bytes(swap_bytes)),
         escape_html(&format::format_bytes(virtual_memory_bytes)),
+        escape_html(&format::format_rate(read_rate)),
+        escape_html(&format::format_rate(write_rate)),
     )
 }
 
@@ -5927,7 +6063,13 @@ fn a11y_mirror_rows_html(
     visible_indices: &[usize],
     selected: Option<ProcessKey>,
 ) -> String {
-    a11y_mirror_rows_html_with_names(snapshot, visible_indices, selected, &HashMap::new())
+    a11y_mirror_rows_html_with_names(
+        snapshot,
+        visible_indices,
+        selected,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
 }
 
 /// Same mirror with the agent-provided display names applied.
@@ -5936,6 +6078,7 @@ fn a11y_mirror_rows_html_with_names(
     visible_indices: &[usize],
     selected: Option<ProcessKey>,
     app_names: &HashMap<String, Option<String>>,
+    io_rates: &HashMap<ProcessKey, (u64, u64)>,
 ) -> String {
     let mut html = String::from("<div role=\"rowgroup\">");
     if let Some(snapshot) = snapshot {
@@ -5948,6 +6091,7 @@ fn a11y_mirror_rows_html_with_names(
                 .get(key)
                 .and_then(|value| value.as_deref())
                 .unwrap_or(&process.name);
+            let (read_rate, write_rate) = io_rates.get(&process.key).copied().unwrap_or((0, 0));
             html.push_str(&a11y_mirror_row_html(
                 name,
                 &process.command,
@@ -5956,6 +6100,8 @@ fn a11y_mirror_rows_html_with_names(
                 process.memory_bytes,
                 process.swap_bytes,
                 process.virtual_memory_bytes,
+                read_rate,
+                write_rate,
                 process.key.pid,
                 selected == Some(process.key),
                 index + 1,
@@ -6062,6 +6208,8 @@ fn a11y_mirror_group_rows_html_with_names(
                 row.memory_bytes,
                 row.swap_bytes,
                 row.virtual_memory_bytes,
+                row.read_rate,
+                row.write_rate,
                 snapshot
                     .and_then(|snapshot| snapshot.processes.get(row.index))
                     .map(|process| process.key.pid)
@@ -6109,6 +6257,7 @@ fn a11y_mirror_group_rows_html_with_names(
              aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
              <div role=\"gridcell\">—</div><div role=\"gridcell\">{}</div>\
              <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
+             <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
              <div role=\"gridcell\">{}</div></div>",
             escape_html(&label),
             escape_html(&name_text),
@@ -6116,6 +6265,8 @@ fn a11y_mirror_group_rows_html_with_names(
             escape_html(&format::format_bytes(row.memory_bytes)),
             escape_html(&format::format_bytes(row.swap_bytes)),
             escape_html(&format::format_bytes(row.virtual_memory_bytes)),
+            escape_html(&format::format_rate(row.read_rate)),
+            escape_html(&format::format_rate(row.write_rate)),
             row_index = data_index,
         ));
     }
@@ -6365,7 +6516,14 @@ fn a11y_mirror_data_html(
     selected: Option<ProcessKey>,
     sort: SortSpec,
 ) -> String {
-    a11y_mirror_data_html_with_names(snapshot, visible_indices, selected, sort, &HashMap::new())
+    a11y_mirror_data_html_with_names(
+        snapshot,
+        visible_indices,
+        selected,
+        sort,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
 }
 
 /// Same flat/tree mirror with the agent-provided display names applied.
@@ -6375,6 +6533,7 @@ fn a11y_mirror_data_html_with_names(
     selected: Option<ProcessKey>,
     sort: SortSpec,
     app_names: &HashMap<String, Option<String>>,
+    io_rates: &HashMap<ProcessKey, (u64, u64)>,
 ) -> String {
     let mut html = String::from("<div role=\"grid\" aria-label=\"プロセス一覧\">");
     html.push_str("<div role=\"rowgroup\">");
@@ -6385,6 +6544,7 @@ fn a11y_mirror_data_html_with_names(
         visible_indices,
         selected,
         app_names,
+        io_rates,
     ));
     html.push_str("</div>");
     html.push_str(&a11y_mirror_metrics_html(snapshot));
@@ -7670,6 +7830,7 @@ mod tests {
                 sse_connect_started_at: None,
                 sse_retry_at: None,
                 poll_backoff: PollBackoff::default(),
+                agent_transfer_mbps: None,
                 show_help: false,
                 show_settings: false,
                 use_donut_charts: false,
@@ -7784,6 +7945,7 @@ mod tests {
                         sse_connect_started_at: None,
                         sse_retry_at: None,
                         poll_backoff: PollBackoff::default(),
+                        agent_transfer_mbps: None,
                         show_help: false,
                         show_settings: false,
                         use_donut_charts: false,
@@ -8323,6 +8485,8 @@ mod tests {
                 threads: Some(4),
                 parent_pid: None,
                 swap_bytes: 512,
+                read_bytes: 1_024,
+                write_bytes: 2_048,
             }],
             ..SystemSnapshot::default()
         }
@@ -9572,6 +9736,7 @@ mod tests {
             app.ingest_guarded_poll(Ok(Some(SnapshotResponse {
                 snapshot: tm_core::demo::demo_snapshot(0),
                 total_process_count: 3,
+                transfer_mbps: None,
             })));
             (before, resumed)
         });
@@ -10137,7 +10302,7 @@ mod tests {
         assert!(html.contains("合計仮想メモリ 5.9 KiB"), "{html}");
         // スワップ列の合計が 6 列目の手前の gridcell に現れる。
         assert!(html.contains(">180 B<"), "{html}");
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 8);
     }
 
     #[test]
@@ -10153,7 +10318,7 @@ mod tests {
             header.matches("role=\"columnheader\"").count(),
             A11Y_MIRROR_COLUMNS.len()
         );
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 8);
         assert!(SETTINGS_SORT_KEYS.contains(&SortKey::Swap));
         assert_eq!(SETTINGS_SORT_KEYS.len(), 10);
 
@@ -10200,17 +10365,22 @@ mod tests {
             4_096,
             2_048,
             8_192,
+            1_024,
+            2_048,
             42,
             true,
             3,
         );
         assert!(selected.contains("role=\"row\""), "{selected}");
-        // 6 列 = 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ。
+        // 8 列 = 名前 / コマンド / CPU / メモリ / スワップ / 仮想メモリ /
+        // 読み込み / 書き込み（C3-WEBIO）。
         assert_eq!(
             selected.matches("role=\"gridcell\"").count(),
-            6,
+            8,
             "{selected}"
         );
+        assert!(selected.contains("1.0 KiB/s"), "{selected}");
+        assert!(selected.contains("2.0 KiB/s"), "{selected}");
         assert!(selected.contains("2.0 KiB"), "{selected}");
         assert!(selected.contains("8.0 KiB"), "{selected}");
         assert!(!selected.contains("role=\"cell\""), "{selected}");
@@ -10227,6 +10397,8 @@ mod tests {
             "idle",
             ProcessStatus::Idle,
             1.0,
+            0,
+            0,
             0,
             0,
             0,
@@ -10430,7 +10602,7 @@ mod tests {
         assert!(!html.contains("role=\"cell\""), "{html}");
         assert_eq!(
             html.matches("role=\"gridcell\"").count(),
-            6 * visible.len(),
+            8 * visible.len(),
             "{html}"
         );
         assert_eq!(
@@ -10980,6 +11152,7 @@ mod tests {
             None,
             SortSpec::default(),
             &names,
+            &HashMap::new(),
         );
         assert!(html.contains("Firefox Browser"), "{html}");
     }
@@ -11023,7 +11196,7 @@ mod tests {
                 "{hidden} must stay hidden"
             );
         }
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 6);
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 8);
         assert_eq!(
             TaskManagerApp::nav_section_from_id("nav-overview"),
             Some(NavSection::Overview)
@@ -11145,6 +11318,8 @@ mod tests {
             memory_bytes: 42,
             swap_bytes: 21,
             virtual_memory_bytes: 84,
+            read_rate: 100,
+            write_rate: 200,
             process_count: 1,
         };
         assert_eq!(grouped_row_display_name(&one_member), "solo");

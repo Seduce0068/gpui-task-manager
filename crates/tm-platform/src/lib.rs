@@ -375,6 +375,9 @@ impl NativeProbe {
                     _ => 0.0,
                 };
                 next_cpu_ms.insert(key, cpu_ms);
+                // Cumulative block I/O for this process (C1-IODATA). The viewmodel
+                // turns consecutive readings into B/s; a failed probe reports 0.
+                let (read_bytes, write_bytes) = process_io_bytes(pid.as_u32());
                 ProcessSnapshot {
                     key,
                     name,
@@ -391,6 +394,8 @@ impl NativeProbe {
                     threads: thread_count(process),
                     parent_pid: process.parent().map(Pid::as_u32),
                     swap_bytes: process_swap_bytes(pid.as_u32()),
+                    read_bytes,
+                    write_bytes,
                 }
             })
             .collect::<Vec<_>>();
@@ -650,6 +655,44 @@ fn vm_swap_bytes_from_status(status: &str) -> u64 {
         .and_then(|value| value.split_whitespace().next())
         .and_then(|kb| kb.parse::<u64>().ok())
         .map_or(0, |kb| kb.saturating_mul(1_024))
+}
+
+/// Parses the cumulative block-I/O counters of a `/proc/<pid>/io` text (C1-IODATA).
+///
+/// Returns `(read_bytes, write_bytes)`. Unlike `VmSwap` (kB in `/proc/<pid>/status`),
+/// the kernel already reports these two fields in **bytes**, so the parsed
+/// integers are used verbatim with no 1 024 multiplier. `rchar`/`wchar` are
+/// deliberately ignored: they count cached/pipe/network traffic, not block I/O.
+/// A missing field, non-numeric value or any other failure degrades to `0` for
+/// that counter, independently of the other one. This parser is cfg-free so the
+/// same best-effort rules are testable on every target.
+fn io_counters_from_proc_io(io: &str) -> (u64, u64) {
+    fn counter(io: &str, key: &str) -> u64 {
+        io.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|bytes| bytes.parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+    (counter(io, "read_bytes:"), counter(io, "write_bytes:"))
+}
+
+/// Reads one process's cumulative block-I/O bytes from `/proc/<pid>/io`.
+///
+/// Missing files, permission errors, absent fields and parse failures all yield
+/// `(0, 0)`: an unavailable figure must never be reported as a measurement.
+#[cfg(target_os = "linux")]
+fn process_io_bytes(pid: u32) -> (u64, u64) {
+    let Ok(io) = std::fs::read_to_string(format!("/proc/{pid}/io")) else {
+        return (0, 0);
+    };
+    io_counters_from_proc_io(&io)
+}
+
+/// Non-Linux targets have no `/proc/<pid>/io`; report `(0, 0)`.
+#[cfg(not(target_os = "linux"))]
+fn process_io_bytes(_pid: u32) -> (u64, u64) {
+    (0, 0)
 }
 
 /// Reads one process's swap usage in bytes from `/proc/<pid>/status` (VmSwap).
@@ -1188,6 +1231,32 @@ mod tests {
     use std::process::{Child, Command};
     use std::thread::sleep;
     use std::time::Duration;
+
+    #[test]
+    fn proc_io_parsing_is_best_effort_and_already_in_bytes() {
+        // C1-IODATA: `/proc/<pid>/io` reports bytes, not kB; `rchar`/`wchar`
+        // must never be mistaken for block I/O.
+        assert_eq!(
+            io_counters_from_proc_io(
+                "rchar: 100\nwchar: 200\nsyscr: 1\nsyscw: 2\nread_bytes: 1234\nwrite_bytes: 5678\n"
+            ),
+            (1_234, 5_678)
+        );
+        assert_eq!(io_counters_from_proc_io("rchar: 9\nwchar: 7\n"), (0, 0));
+        assert_eq!(
+            io_counters_from_proc_io("read_bytes: bad\nwrite_bytes: -1\n"),
+            (0, 0)
+        );
+        // One bad counter must not suppress the other one.
+        assert_eq!(
+            io_counters_from_proc_io("read_bytes: bad\nwrite_bytes: 42\n"),
+            (0, 42)
+        );
+        assert_eq!(
+            io_counters_from_proc_io("read_bytes: 18446744073709551615\n"),
+            (u64::MAX, 0)
+        );
+    }
 
     #[test]
     fn vmswap_status_parsing_is_best_effort() {

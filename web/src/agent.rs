@@ -368,6 +368,9 @@ impl SnapshotEnvelope {
         SnapshotResponse {
             snapshot: self.inner.snapshot,
             total_process_count: self.inner.total_process_count,
+            // SSE has one long-lived stream instead of a timed request body;
+            // only `fetch_snapshot_once` fills this in for the polling path.
+            transfer_mbps: None,
         }
     }
 }
@@ -420,6 +423,14 @@ pub struct SnapshotResponse {
     pub snapshot: SystemSnapshot,
     /// Number of processes on the machine before `?limit=` was applied.
     pub total_process_count: usize,
+    /// Transfer speed of the polling HTTP response body in megabits per second.
+    ///
+    /// Measured only on the polling path: SSE frames have no single bounded
+    /// request body to time, so [`SnapshotEnvelope::into_response`] leaves this
+    /// as `None`. The shell keeps the most recent polled value across SSE frames
+    /// and transient errors (直近値保持). This is loopback/proxy throughput,
+    /// **not** the host's real network line speed.
+    pub transfer_mbps: Option<f64>,
 }
 
 /// Connection settings shared with the sampler task.
@@ -1061,6 +1072,19 @@ impl AgentClient {
     }
 }
 
+/// Transfer speed of one polling response body in megabits per second.
+///
+/// `byte_count * 8 / elapsed / 1_000_000`: bits per second converted to Mbps.
+/// The 1 ms floor keeps a sub-millisecond loopback round trip from producing a
+/// meaningless spike (and avoids dividing by zero). Only the byte count and a
+/// monotonic duration are involved — no token, URL or snapshot field reaches
+/// this calculation, and SSE never calls it.
+fn measure_transfer_mbps(byte_count: usize, elapsed: Duration) -> Option<f64> {
+    let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+    let mbps = (byte_count as f64) * 8.0 / elapsed_secs / 1_000_000.0;
+    mbps.is_finite().then_some(mbps)
+}
+
 /// One snapshot request/parse pipeline, with the transport injected.
 ///
 /// This is the single testable seam for [`AgentClient::fetch_snapshot_inner`]:
@@ -1103,6 +1127,9 @@ where
     let request = builder.body(AsyncBody::empty()).map_err(|error| {
         FetchError::Build(redact_token(&format!("{error:#}"), config.token.as_deref()))
     })?;
+    // t0 sits immediately before the request leaves: the measured window is the
+    // request plus its body read, not JSON parsing or shell ingest.
+    let t0 = Instant::now();
     let response = http.send(request).await.map_err(|error| {
         // 画面には 1 行の要約だけを出し、詳細（スタックを含む）は
         // トークンを伏せたうえで console に残す。
@@ -1146,6 +1173,9 @@ where
         aborted,
     )
     .await?;
+    // t1 sits immediately after the last body byte: only the polling path times
+    // its response, SSE frames keep `transfer_mbps = None`.
+    let t1 = Instant::now();
 
     // Second supersession check: the first SSE frame may arrive while the body
     // was streaming. Parsing and redaction have not happened yet, so the stale
@@ -1165,7 +1195,9 @@ where
     // and its `--redact` flag defaults to false, so host / user / home /
     // tailnet identifiers must be masked here too. Do NOT duplicate the
     // redaction call in this reader — that would split the boundary again.
-    Ok(envelope.into_response())
+    let mut response = envelope.into_response();
+    response.transfer_mbps = measure_transfer_mbps(buffer.len(), t1.duration_since(t0));
+    Ok(response)
 }
 
 /// Races a fallible operation against a deadline future.
@@ -1796,6 +1828,22 @@ mod tests {
         // Internal variable names and numbers are console-only, never UI text.
         assert!(!text.contains("agent="));
         assert!(!text.contains(&(WIRE_SCHEMA_VERSION + 1).to_string()));
+    }
+
+    #[test]
+    fn polling_transfer_mbps_has_a_1ms_floor_and_no_token_data() {
+        // 1 MB in 1 ms is clamped to the floor: 8_000_000 bits / 0.001 s / 1e6.
+        assert_eq!(
+            measure_transfer_mbps(1_000_000, Duration::from_micros(1)),
+            Some(8_000.0)
+        );
+        // 1 MB in 500 ms is 16 Mbps.
+        assert_eq!(
+            measure_transfer_mbps(1_000_000, Duration::from_millis(500)),
+            Some(16.0)
+        );
+        // Zero bytes/zero elapsed stays finite and zero, never NaN or inf.
+        assert_eq!(measure_transfer_mbps(0, Duration::ZERO), Some(0.0));
     }
 
     #[test]

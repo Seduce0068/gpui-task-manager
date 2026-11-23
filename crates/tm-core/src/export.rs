@@ -300,6 +300,15 @@ pub fn snapshot_to_json_with_total(
             out.push_str(",\n");
             push_key(&mut out, 4, "swap_bytes");
             push_display(&mut out, process.swap_bytes);
+            out.push_str(",\n");
+            // Cumulative block I/O in bytes, in the same order as the serde
+            // fields on `ProcessSnapshot` (C1-IODATA). `rchar`/`wchar` are not
+            // exported: only actual block-layer reads/writes are meaningful.
+            push_key(&mut out, 4, "read_bytes");
+            push_display(&mut out, process.read_bytes);
+            out.push_str(",\n");
+            push_key(&mut out, 4, "write_bytes");
+            push_display(&mut out, process.write_bytes);
             out.push('\n');
 
             push_indent(&mut out, 3);
@@ -719,6 +728,8 @@ mod tests {
                 threads: Some(4),
                 parent_pid: None,
                 swap_bytes: 4_096,
+                read_bytes: 8_192,
+                write_bytes: 16_384,
             }],
             network: NetworkSnapshot {
                 interfaces: vec![NetworkInterfaceSnapshot {
@@ -1231,6 +1242,15 @@ mod tests {
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
         assert!(json.contains("\"swap_bytes\": 4096"), "{json}");
+        // C1-IODATA: the cumulative block-IO fields follow `swap_bytes` in the
+        // same order serde declares them, so exported files parse with the
+        // exact same model struct as the live wire endpoint.
+        let swap_at = json.find("\"swap_bytes\": 4096").expect("swap_bytes field");
+        let read_at = json.find("\"read_bytes\": 8192").expect("read_bytes field");
+        let write_at = json
+            .find("\"write_bytes\": 16384")
+            .expect("write_bytes field");
+        assert!(swap_at < read_at && read_at < write_at, "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");
     }
 
@@ -1248,6 +1268,8 @@ mod tests {
         assert!(json.contains("\"threads\": 4"), "{json}");
         assert!(json.contains("\"parent_pid\": null"), "{json}");
         assert!(json.contains("\"swap_bytes\": 4096"), "{json}");
+        assert!(json.contains("\"read_bytes\": 8192"), "{json}");
+        assert!(json.contains("\"write_bytes\": 16384"), "{json}");
         assert!(json.contains("\"max_c\": null"), "{json}");
     }
 

@@ -250,6 +250,21 @@ pub struct ProcessSnapshot {
     /// numeric equality. `serde(default)` keeps older wire snapshots readable.
     #[cfg_attr(feature = "serde", serde(default))]
     pub swap_bytes: u64,
+    /// Cumulative block-layer bytes read by this process, taken verbatim from
+    /// the `read_bytes` line of Linux `/proc/<pid>/io` (already bytes, unlike
+    /// `VmSwap`'s kB). This is **not** `rchar`: cached reads, pipe and network
+    /// traffic counted by `rchar` are excluded, so the figure describes actual
+    /// block I/O. `0` when unavailable or on other targets; `serde(default)`
+    /// keeps older wire snapshots readable.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub read_bytes: u64,
+    /// Cumulative block-layer bytes written by this process, taken verbatim
+    /// from the `write_bytes` line of Linux `/proc/<pid>/io` (already bytes).
+    /// Like [`Self::read_bytes`] this excludes `wchar`'s cached writes; `0` when
+    /// unavailable or on other targets. `serde(default)` keeps older wire
+    /// snapshots readable.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub write_bytes: u64,
 }
 
 /// Cumulative byte counters for one network interface.
@@ -1116,6 +1131,30 @@ mod tests {
         // Known values still deserialise to their exact variants.
         let known: SamplingProfile = serde_json::from_str("\"Background\"").expect("known profile");
         assert_eq!(known, SamplingProfile::Background);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn process_io_bytes_default_to_zero_on_older_wire_snapshots() {
+        // C1-IODATA: an agent that predates the cumulative IO fields must still
+        // deserialise; the missing fields become honest zeros, not an error.
+        let json = r#"{
+            "key": {"pid": 42, "start_time_secs": 1},
+            "name": "p",
+            "command": "p",
+            "user": null,
+            "status": "Running",
+            "cpu_percent": 0.0,
+            "memory_bytes": 0,
+            "virtual_memory_bytes": 0,
+            "threads": null,
+            "parent_pid": null,
+            "swap_bytes": 0
+        }"#;
+        let process: ProcessSnapshot =
+            serde_json::from_str(json).expect("legacy process must still deserialise");
+        assert_eq!(process.key.pid, 42);
+        assert_eq!((process.read_bytes, process.write_bytes), (0, 0));
     }
 
     #[test]

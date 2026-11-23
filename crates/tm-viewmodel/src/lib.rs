@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use tm_core::format;
@@ -640,6 +640,14 @@ pub struct AppGroupRow {
     /// reading `snapshot.processes` and stay unchanged. A process with no
     /// swap reading contributes zero.
     pub swap_bytes: u64,
+    /// Saturating sum of the members' block-I/O read rate in bytes per second
+    /// for a group row, or the individual process read rate for a process row
+    /// (C1-IODATA). Derived from the viewmodel's rate map, so the wire and CSV
+    /// contracts stay unchanged; `(0, 0)` when no rate is available yet.
+    pub read_rate: u64,
+    /// Saturating sum of the members' block-I/O write rate in bytes per second
+    /// for a group row, or the individual process write rate for a process row.
+    pub write_rate: u64,
     /// Number of grouped processes (`1` for individual process rows), or the
     /// number of compacted applications for the "others" row.
     pub process_count: usize,
@@ -669,6 +677,30 @@ fn group_swap_bytes(group: &ProcessGroup, filtered: &[ProcessSnapshot]) -> u64 {
     group.members.iter().fold(0_u64, |sum, &index| {
         sum.saturating_add(filtered[index].swap_bytes)
     })
+}
+
+/// Saturating sum of a group's member block-I/O rates in bytes per second
+/// (C1-IODATA).
+///
+/// Uses the same filtered-index accumulation as the memory/swap helpers, but
+/// reads the published rate map instead of the snapshot: a filtered-out or
+/// vanished process has no rate and contributes zero. Overflow saturates.
+fn group_io_rates(
+    group: &ProcessGroup,
+    filtered: &[ProcessSnapshot],
+    rates: &HashMap<ProcessKey, (u64, u64)>,
+) -> (u64, u64) {
+    group
+        .members
+        .iter()
+        .fold((0_u64, 0_u64), |(read, write), &index| {
+            let (member_read, member_write) =
+                rates.get(&filtered[index].key).copied().unwrap_or((0, 0));
+            (
+                read.saturating_add(member_read),
+                write.saturating_add(member_write),
+            )
+        })
 }
 
 /// Orders application groups with the injected classification as the primary
@@ -734,6 +766,7 @@ fn others_row(
     filtered: &[ProcessSnapshot],
     base: &[usize],
     expanded: bool,
+    rates: &HashMap<ProcessKey, (u64, u64)>,
 ) -> AppGroupRow {
     let representative = &singles[0];
     let process = &filtered[representative.members[0]];
@@ -756,6 +789,13 @@ fn others_row(
     let swap_bytes = singles.iter().fold(0_u64, |sum, group| {
         sum.saturating_add(group_swap_bytes(group, filtered))
     });
+    let (read_rate, write_rate) = singles.iter().fold((0_u64, 0_u64), |(read, write), group| {
+        let (group_read, group_write) = group_io_rates(group, filtered, rates);
+        (
+            read.saturating_add(group_read),
+            write.saturating_add(group_write),
+        )
+    });
     AppGroupRow {
         kind: AppRowKind::Others,
         key: OTHERS_APP_GROUP_KEY.to_string(),
@@ -773,6 +813,8 @@ fn others_row(
         memory_bytes,
         virtual_memory_bytes,
         swap_bytes,
+        read_rate,
+        write_rate,
         process_count: singles.len(),
     }
 }
@@ -790,6 +832,8 @@ struct SectionTotals {
     memory_bytes: u64,
     virtual_memory_bytes: u64,
     swap_bytes: u64,
+    read_rate: u64,
+    write_rate: u64,
     process_count: usize,
 }
 
@@ -801,6 +845,8 @@ impl SectionTotals {
             .virtual_memory_bytes
             .saturating_add(row.virtual_memory_bytes);
         self.swap_bytes = self.swap_bytes.saturating_add(row.swap_bytes);
+        self.read_rate = self.read_rate.saturating_add(row.read_rate);
+        self.write_rate = self.write_rate.saturating_add(row.write_rate);
         self.process_count = self.process_count.saturating_add(row.process_count);
     }
 
@@ -841,6 +887,8 @@ fn section_header(
         memory_bytes: totals.memory_bytes,
         virtual_memory_bytes: totals.virtual_memory_bytes,
         swap_bytes: totals.swap_bytes,
+        read_rate: totals.read_rate,
+        write_rate: totals.write_rate,
         process_count: totals.process_count,
     }
 }
@@ -854,8 +902,10 @@ fn single_group_row(
     filtered: &[ProcessSnapshot],
     base: &[usize],
     depth: usize,
+    rates: &HashMap<ProcessKey, (u64, u64)>,
 ) -> AppGroupRow {
     let process = &filtered[group.members[0]];
+    let (read_rate, write_rate) = rates.get(&process.key).copied().unwrap_or((0, 0));
     AppGroupRow {
         kind: AppRowKind::Group,
         key: group.key.clone(),
@@ -870,6 +920,8 @@ fn single_group_row(
         memory_bytes: group.memory_bytes,
         virtual_memory_bytes: process.virtual_memory_bytes,
         swap_bytes: process.swap_bytes,
+        read_rate,
+        write_rate,
         process_count: 1,
     }
 }
@@ -940,6 +992,14 @@ pub struct Dashboard {
     /// status or become the network baseline.
     last_ingested_at: Option<Timestamp>,
     network_rates: (u64, u64),
+    /// Cumulative `(read_bytes, write_bytes)` of the last accepted sample,
+    /// keyed by stable process identity (C1-IODATA). Only a current snapshot may
+    /// move these baselines, so a late arrival cannot poison the next rate.
+    process_io_baseline: HashMap<ProcessKey, (u64, u64)>,
+    /// Published `(read, write)` block-I/O rates in bytes per second, keyed by
+    /// the identities present in the current snapshot. A vanished key is absent
+    /// and therefore reads as `(0, 0)` through [`Self::process_io_rates`].
+    process_io_rates: HashMap<ProcessKey, (u64, u64)>,
 }
 
 impl Dashboard {
@@ -974,6 +1034,8 @@ impl Dashboard {
             last_network_interfaces: HashSet::new(),
             last_ingested_at: None,
             network_rates: (0, 0),
+            process_io_baseline: HashMap::new(),
+            process_io_rates: HashMap::new(),
         }
     }
 
@@ -1241,6 +1303,7 @@ impl Dashboard {
             let expanded = has_children && self.expanded_app_groups.contains(&group.key);
             let virtual_memory_bytes = group_virtual_memory_bytes(&group, &filtered);
             let swap_bytes = group_swap_bytes(&group, &filtered);
+            let (read_rate, write_rate) = group_io_rates(&group, &filtered, &self.process_io_rates);
             rows.push(AppGroupRow {
                 kind: AppRowKind::Group,
                 key: group.key.clone(),
@@ -1255,11 +1318,14 @@ impl Dashboard {
                 memory_bytes: group.memory_bytes,
                 virtual_memory_bytes,
                 swap_bytes,
+                read_rate,
+                write_rate,
                 process_count: group.process_count,
             });
             if expanded {
                 for &member in &group.members {
                     let process = &filtered[member];
+                    let (read_rate, write_rate) = self.process_io_rates(process.key);
                     rows.push(AppGroupRow {
                         kind: AppRowKind::Process,
                         key: group.key.clone(),
@@ -1274,6 +1340,8 @@ impl Dashboard {
                         memory_bytes: process.memory_bytes,
                         virtual_memory_bytes: process.virtual_memory_bytes,
                         swap_bytes: process.swap_bytes,
+                        read_rate,
+                        write_rate,
                         process_count: 1,
                     });
                 }
@@ -1283,13 +1351,17 @@ impl Dashboard {
             // Trailing summary: only its own revealed one-process rows may
             // follow it, so expanding "others" never pushes the bucket away
             // from the end of the list (C4-VIEWMODEL).
-            rows.push(others_row(&singles, &filtered, &base, others_expanded));
+            rows.push(others_row(
+                &singles,
+                &filtered,
+                &base,
+                others_expanded,
+                &self.process_io_rates,
+            ));
             if others_expanded {
-                rows.extend(
-                    singles
-                        .iter()
-                        .map(|single| single_group_row(single, &filtered, &base, 1)),
-                );
+                rows.extend(singles.iter().map(|single| {
+                    single_group_row(single, &filtered, &base, 1, &self.process_io_rates)
+                }));
             }
         }
         rows
@@ -1510,6 +1582,25 @@ impl Dashboard {
     /// Latest network rates in bytes per second.
     pub fn network_rates(&self) -> (u64, u64) {
         self.network_rates
+    }
+
+    /// Latest `(read, write)` block-I/O rates in bytes per second for `key`
+    /// (C1-IODATA).
+    ///
+    /// The rate is derived from consecutive cumulative readings of `/proc/<pid>/io`
+    /// using [`NetworkCounters::rate_since`] with the probe's monotonic
+    /// `sampled_elapsed`. It is `(0, 0)` before the first sample, for a process
+    /// that disappeared from the latest snapshot, and after a late snapshot (a
+    /// delayed arrival never advances the baseline). Shells call this with
+    /// `ProcessSnapshot::key` to display per-process disk traffic.
+    pub fn process_io_rates(&self, key: ProcessKey) -> (u64, u64) {
+        self.process_io_rates.get(&key).copied().unwrap_or((0, 0))
+    }
+
+    /// Convenience form of [`Self::process_io_rates`] that takes the sampled
+    /// process itself, for UI code already holding a [`ProcessSnapshot`].
+    pub fn process_snapshot_io_rates(&self, process: &ProcessSnapshot) -> (u64, u64) {
+        self.process_io_rates(process.key)
     }
 
     /// CPU trend from the oldest retained sample to the newest (R5-I05).
@@ -1930,6 +2021,32 @@ impl Dashboard {
             let (total_rx, total_tx) = snapshot.network_totals();
             self.last_network = Some((total_rx, total_tx));
             self.last_network_interfaces = physical_interfaces;
+
+            // C1-IODATA: per-process block-I/O rates reuse the exact network
+            // pattern above — saturating cumulative deltas over the probe's
+            // monotonic elapsed time, via `NetworkCounters::rate_since`. The
+            // first sample of a key has no baseline (rate 0), and a key that
+            // vanished is dropped from both maps so a later recycled PID is
+            // treated as a fresh process rather than compared to stale bytes.
+            let mut next_io_baseline = HashMap::with_capacity(snapshot.processes.len());
+            let mut next_io_rates = HashMap::with_capacity(snapshot.processes.len());
+            for process in &snapshot.processes {
+                let current = (process.read_bytes, process.write_bytes);
+                let rate = self.process_io_baseline.get(&process.key).map_or(
+                    (0, 0),
+                    |&(previous_read, previous_write)| {
+                        NetworkCounters::new(current.0, current.1).rate_since(
+                            NetworkCounters::new(previous_read, previous_write),
+                            snapshot.sampled_elapsed,
+                        )
+                    },
+                );
+                next_io_baseline.insert(process.key, current);
+                next_io_rates.insert(process.key, rate);
+            }
+            self.process_io_baseline = next_io_baseline;
+            self.process_io_rates = next_io_rates;
+
             self.history.push(
                 snapshot.cpu.total_percent,
                 snapshot.memory.used_percent(),
@@ -2705,6 +2822,139 @@ mod tests {
             Some(&1_234_567)
         );
         assert_eq!(dashboard.history().network_tx_rate.latest(), Some(&321_456));
+    }
+
+    #[test]
+    fn process_io_rates_start_at_zero_and_follow_cumulative_deltas() {
+        // C1-IODATA: the first sample only records the cumulative baseline.
+        let mut dashboard = dashboard();
+        let first = demo_snapshot(0);
+        let key = first.processes[0].key;
+        dashboard.ingest(first);
+        assert_eq!(dashboard.process_io_rates(key), (0, 0));
+
+        // A known delta over half a second must be scaled to bytes per second.
+        let mut second = demo_snapshot(1);
+        for process in &mut second.processes {
+            process.read_bytes = 10_000;
+            process.write_bytes = 3_000;
+        }
+        second.sampled_elapsed = Duration::from_millis(500);
+        dashboard.ingest(second);
+        assert_eq!(dashboard.process_io_rates(key), (20_000, 6_000));
+        let process = dashboard
+            .snapshot()
+            .and_then(|snapshot| snapshot.process(key))
+            .expect("selected process still sampled");
+        assert_eq!(
+            dashboard.process_snapshot_io_rates(process),
+            (20_000, 6_000)
+        );
+    }
+
+    #[test]
+    fn late_snapshot_does_not_advance_the_process_io_baseline() {
+        let mut dashboard = dashboard();
+        let first = demo_snapshot(0);
+        let key = first.processes[0].key;
+        dashboard.ingest(first.clone());
+
+        let mut current = demo_snapshot(1);
+        for process in &mut current.processes {
+            let previous = first.process(process.key).expect("same process");
+            process.read_bytes = previous.read_bytes + 4_000;
+            process.write_bytes = previous.write_bytes + 2_000;
+        }
+        dashboard.ingest(current);
+        assert_eq!(dashboard.process_io_rates(key), (4_000, 2_000));
+
+        // A delayed snapshot must not become the new baseline even when its own
+        // counters are lower: the next current sample still measures from the
+        // last accepted reading.
+        let mut late = demo_snapshot(0);
+        late.network = dashboard
+            .snapshot()
+            .expect("current snapshot")
+            .network
+            .clone();
+        late.sampled_at = tm_core::Timestamp::from_millis(1);
+        dashboard.ingest(late);
+        assert_eq!(dashboard.process_io_rates(key), (4_000, 2_000));
+
+        let mut next = demo_snapshot(2);
+        for process in &mut next.processes {
+            let previous = first.process(process.key).expect("same process");
+            process.read_bytes = previous.read_bytes + 8_000;
+            process.write_bytes = previous.write_bytes + 4_000;
+        }
+        dashboard.ingest(next);
+        assert_eq!(dashboard.process_io_rates(key), (4_000, 2_000));
+    }
+
+    #[test]
+    fn app_group_rows_aggregate_member_io_rates() {
+        let mut dashboard = dashboard();
+        let mut first = SystemSnapshot {
+            sampled_elapsed: Duration::from_secs(1),
+            ..SystemSnapshot::default()
+        };
+        for (pid, name) in [(1_u32, "firefox"), (2, "firefox"), (3, "solo")] {
+            first.processes.push(ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                name: name.into(),
+                command: format!("/usr/bin/{name}"),
+                ..ProcessSnapshot::default()
+            });
+        }
+        dashboard.ingest(first.clone());
+        for row in dashboard.app_group_rows() {
+            assert_eq!((row.read_rate, row.write_rate), (0, 0));
+        }
+
+        let mut second = first;
+        second.sampled_at = tm_core::Timestamp::from_millis(2_000);
+        for (process, read, write) in [(0, 1_000_u64, 400_u64), (1, 2_000, 600), (2, 8_000, 7_000)]
+        {
+            second.processes[process].read_bytes = read;
+            second.processes[process].write_bytes = write;
+        }
+        dashboard.ingest(second);
+        let rows = dashboard.app_group_rows();
+        let firefox = rows
+            .iter()
+            .find(|row| row.key == "firefox")
+            .expect("firefox group");
+        assert_eq!((firefox.read_rate, firefox.write_rate), (3_000, 1_000));
+        let solo = rows
+            .iter()
+            .find(|row| row.key == "solo")
+            .expect("solo group");
+        assert_eq!((solo.read_rate, solo.write_rate), (8_000, 7_000));
+
+        // Section headings carry the same saturating totals (C1-TOTALS).
+        dashboard.set_app_keys(std::iter::once("firefox".to_string()).collect());
+        let apps = dashboard
+            .app_group_display_rows()
+            .into_iter()
+            .find(|row| row.key == APPS_SECTION_KEY)
+            .expect("apps heading");
+        assert_eq!((apps.read_rate, apps.write_rate), (3_000, 1_000));
+
+        // A vanished key is no longer published, so it reads as zero even though
+        // its cumulative counters were higher in the previous snapshot.
+        let mut third = SystemSnapshot {
+            sampled_elapsed: Duration::from_secs(1),
+            sampled_at: tm_core::Timestamp::from_millis(3_000),
+            ..SystemSnapshot::default()
+        };
+        third.processes.push(ProcessSnapshot {
+            key: ProcessKey::new(1, 1),
+            name: "firefox".into(),
+            command: "/usr/bin/firefox".into(),
+            ..ProcessSnapshot::default()
+        });
+        dashboard.ingest(third);
+        assert_eq!(dashboard.process_io_rates(ProcessKey::new(3, 1)), (0, 0));
     }
 
     #[test]

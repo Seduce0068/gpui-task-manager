@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::accesskit::{Live, Node, SortDirection as AccessKitSortDirection};
 use gpui_kit::base::{h_flex, v_flex};
@@ -36,6 +36,9 @@ const COL_CPU: f32 = 76.0;
 const COL_MEMORY: f32 = 96.0;
 const COL_SWAP: f32 = 96.0;
 const COL_VIRTUAL_MEMORY: f32 = 112.0;
+/// 読み込み／書き込みのレート列幅 (C2-NATIVEIO)。
+const COL_READ: f32 = 88.0;
+const COL_WRITE: f32 = 88.0;
 const COL_PID: f32 = 64.0;
 const COL_USER: f32 = 104.0;
 const COL_STATUS: f32 = 78.0;
@@ -75,27 +78,31 @@ fn cgroup_group_text(label: &str, members: usize) -> String {
 /// settings overlay can re-enable them for the flat process table. スワップ and
 /// 仮想メモリ are real group aggregates (saturating sums of member swap/VM
 /// bytes), so they are shown by default alongside 名前 / CPU / メモリ — in that
-/// order, with スワップ between RSS and virtual memory (C2-NATIVESWAP). The
-/// header, each row and the table's `aria_column_count` all read this one
-/// layout, so they cannot drift apart.
-fn table_columns(verbose: bool) -> Vec<(&'static str, SortKey, Option<f32>)> {
+/// order, with スワップ between RSS and virtual memory (C2-NATIVESWAP). 読み込み
+/// and 書き込み follow 仮想メモリ: they render sampled B/s rates and are
+/// deliberately display-only (`None` sort key), because a sampled rate is not a
+/// stable sort key (C2-NATIVEIO). The header, each row and the table's
+/// `aria_column_count` all read this one layout, so they cannot drift apart.
+fn table_columns(verbose: bool) -> Vec<(&'static str, Option<SortKey>, Option<f32>)> {
     let mut columns = vec![
-        ("名前", SortKey::Name, None),
-        ("CPU", SortKey::Cpu, Some(COL_CPU)),
-        ("メモリ", SortKey::Memory, Some(COL_MEMORY)),
-        ("スワップ", SortKey::Swap, Some(COL_SWAP)),
+        ("名前", Some(SortKey::Name), None),
+        ("CPU", Some(SortKey::Cpu), Some(COL_CPU)),
+        ("メモリ", Some(SortKey::Memory), Some(COL_MEMORY)),
+        ("スワップ", Some(SortKey::Swap), Some(COL_SWAP)),
         (
             "仮想メモリ",
-            SortKey::VirtualMemory,
+            Some(SortKey::VirtualMemory),
             Some(COL_VIRTUAL_MEMORY),
         ),
+        ("読み込み", None, Some(COL_READ)),
+        ("書き込み", None, Some(COL_WRITE)),
     ];
     if verbose {
         columns.extend([
-            ("PID", SortKey::Pid, Some(COL_PID)),
-            ("ユーザー", SortKey::User, Some(COL_USER)),
-            ("状態", SortKey::Status, Some(COL_STATUS)),
-            ("スレッド", SortKey::Threads, Some(COL_THREADS)),
+            ("PID", Some(SortKey::Pid), Some(COL_PID)),
+            ("ユーザー", Some(SortKey::User), Some(COL_USER)),
+            ("状態", Some(SortKey::Status), Some(COL_STATUS)),
+            ("スレッド", Some(SortKey::Threads), Some(COL_THREADS)),
         ]);
     }
     columns
@@ -258,6 +265,10 @@ struct ProcessRowView {
     swap_bytes: u64,
     /// Group VM total, or the individual process VM reading.
     virtual_memory_bytes: u64,
+    /// Sampled read rate in bytes per second; display-only, never sorted (C2-NATIVEIO).
+    read_rate: u64,
+    /// Sampled write rate in bytes per second; display-only, never sorted (C2-NATIVEIO).
+    write_rate: u64,
     pid: String,
     user: String,
     status: ProcessStatus,
@@ -315,7 +326,9 @@ fn normalised_group_cpu(total: f32, core_count: usize) -> f32 {
 ///
 /// `core_count` is the machine's logical core count used by
 /// [`normalised_group_cpu`] to scale aggregate CPU rows to 0–100. Individual
-/// rows ignore it.
+/// rows ignore it. `io_rates` carries the view-model's (read, write) B/s rates
+/// for an individual process row; group rows use the `AppGroupRow` aggregates
+/// instead (C1-IODATA, C2-NATIVEIO).
 fn process_row_values(
     group: Option<&AppGroupRow>,
     process: &ProcessSnapshot,
@@ -323,6 +336,7 @@ fn process_row_values(
     selected: bool,
     depth: usize,
     has_children: bool,
+    io_rates: (u64, u64),
 ) -> ProcessRowView {
     match group {
         // A heading reuses an in-range snapshot index only so the row stays
@@ -343,6 +357,8 @@ fn process_row_values(
             memory_bytes: group.memory_bytes,
             swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
+            read_rate: group.read_rate,
+            write_rate: group.write_rate,
             pid: "—".to_string(),
             user: "—".to_string(),
             status: ProcessStatus::Unknown,
@@ -367,6 +383,8 @@ fn process_row_values(
             memory_bytes: group.memory_bytes,
             swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
+            read_rate: group.read_rate,
+            write_rate: group.write_rate,
             pid: "—".to_string(),
             user: "—".to_string(),
             status: ProcessStatus::Unknown,
@@ -397,6 +415,8 @@ fn process_row_values(
             memory_bytes: group.memory_bytes,
             swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
+            read_rate: group.read_rate,
+            write_rate: group.write_rate,
             pid: "—".to_string(),
             user: "—".to_string(),
             status: ProcessStatus::Unknown,
@@ -425,6 +445,8 @@ fn process_row_values(
             memory_bytes: process.memory_bytes,
             swap_bytes: process.swap_bytes,
             virtual_memory_bytes: process.virtual_memory_bytes,
+            read_rate: io_rates.0,
+            write_rate: io_rates.1,
             pid: process.key.pid.to_string(),
             user: process.user.clone().unwrap_or_else(|| "—".to_string()),
             status: process.status,
@@ -637,10 +659,10 @@ pub struct TaskManagerApp {
     use_donut_charts: bool,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// 列見出し（9 列 = 既定5列 + verbose4列）のフォーカスハンドル。Tab で辿り、
+    /// 列見出し（11 列 = 既定7列 + verbose4列）のフォーカスハンドル。Tab で辿り、
     /// Enter/Space で既存の `on_click`（`Command::SetSortKey`）を発火させる
     /// （WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
-    sort_header_focus: [FocusHandle; 9],
+    sort_header_focus: [FocusHandle; 11],
     /// 表示行のフォーカスハンドル（visible index 対応）。Enter/Space で行の
     /// `on_click`（Group 行は `ToggleAppGroup`、他は `Select`）を発火させる。
     /// 行は仮想リストで再利用されるため index をキーにハンドルを保持する。
@@ -666,6 +688,11 @@ pub struct TaskManagerApp {
     /// the persistent startup error stays visible and sampling is suppressed so
     /// a transient "probe is not available" message cannot replace it (R3-S02B).
     probe_unavailable: bool,
+    /// Bandwidth proxy for the network card, in Mbps. The very first accepted
+    /// sample is deliberately 0; later samples derive it from the serialised
+    /// snapshot size divided by the probe wall time (C2-NATIVEIO). This is NOT a
+    /// measurement of the host's physical link speed.
+    probe_proxy_mbps: Option<f64>,
 }
 
 /// Surfaces a failed settings save on the status bar.
@@ -786,6 +813,7 @@ impl TaskManagerApp {
             demo_mode,
             redact,
             probe_unavailable: had_startup_error,
+            probe_proxy_mbps: None,
         }
     }
 
@@ -934,6 +962,10 @@ impl TaskManagerApp {
         let probe = self.probe.clone();
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
+            // Wall time of the probe call, used only for the clearly-labelled
+            // "プローブ取得の代理" bandwidth proxy on the network card
+            // (C2-NATIVEIO). It is not a physical link-speed measurement.
+            let started = Instant::now();
             let result = background
                 .spawn(async move {
                     let mut guard = probe
@@ -947,11 +979,29 @@ impl TaskManagerApp {
                     }
                 })
                 .await;
+            let elapsed_secs = started.elapsed().as_secs_f64().max(1e-9);
+            let proxy_mbps = match &result {
+                Ok(snapshot) => match serde_json::to_vec(snapshot) {
+                    Ok(bytes) => (bytes.len() as f64) * 8.0 / elapsed_secs / 1_000_000.0,
+                    // Serialisation is only a proxy source; a failure must not
+                    // manufacture a nonzero figure.
+                    Err(_) => 0.0,
+                },
+                Err(_) => 0.0,
+            };
             if this
                 .update(cx, |this, cx| {
                     this.sampling_in_flight = false;
                     match result {
                         Ok(snapshot) => {
+                            // The first accepted sample has no baseline, so the
+                            // proxy deliberately reads 0; later samples show
+                            // the serialised-bytes / probe-time figure.
+                            this.probe_proxy_mbps = Some(if this.probe_proxy_mbps.is_none() {
+                                0.0
+                            } else {
+                                proxy_mbps
+                            });
                             // Capture the scroll anchor *before* ingest: once
                             // rows are added the viewport is no longer at the
                             // end, so the old answer would be lost (C1-TOTALS).
@@ -1926,7 +1976,18 @@ impl TaskManagerApp {
                     max_rate,
                     palette().peach,
                     14.0,
-                )),
+                ))
+                // C2-NATIVEIO: 実回線速度ではなく、シリアライズ済みスナップ
+                // ショットのバイト数を probe 取得時間で割った代理値である。
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(palette().muted))
+                        .child(format!(
+                            "プローブ取得の代理 {:.1} Mbps",
+                            self.probe_proxy_mbps.unwrap_or(0.0)
+                        )),
+                ),
         )
         .h(px(200.0))
         .flex_1()
@@ -1949,10 +2010,22 @@ impl TaskManagerApp {
                     .child(
                         h_flex()
                             .justify_between()
-                            .text_xs()
-                            .text_color(rgb(palette().muted))
-                            .child(disk.mount.clone())
-                            .child(format!("{:.0}%", disk.percent)),
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(palette().muted))
+                                    .child(disk.mount.clone()),
+                            )
+                            // C2-NATIVEIO: 使用率を大きく太字で表示。バーと
+                            // AccessKit の role/aria は従来どおり維持する。
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(usage_color(disk.percent)))
+                                    .child(format!("{:.0}%", disk.percent)),
+                            ),
                     )
                     .child(accessible_metric_bar(
                         ("disk-usage-bar", index),
@@ -2270,11 +2343,21 @@ impl TaskManagerApp {
         // single layout so hidden columns stay consistent across all three.
         let columns = table_columns(self.verbose_columns);
         let mut headers = Vec::new();
-        for (index, (label, key, width)) in columns.iter().enumerate() {
-            let active = sort.key == *key;
+        for (index, (label, sort_key, width)) in columns.iter().enumerate() {
+            let active = *sort_key == Some(sort.key);
             let text = sort_header_text(label, active, sort.direction);
-            let key = *key;
             let header_focus = self.sort_header_focus[index].clone();
+            // 読み込み／書き込みはサンプル依存のレート列なのでソート不可
+            // (C2-NATIVEIO)。見出しは残すが SetSortKey を発火させない。
+            let sort_click = sort_key.map(|key| {
+                let focus = header_focus.clone();
+                cx.listener(move |this, _event, window, cx| {
+                    // マウスでもキーボードでもソート後に見出しへフォーカスを
+                    // 保ち、続けて Enter/Space を押してもソートできるようにする。
+                    focus.focus(window, cx);
+                    this.handle_command(Command::SetSortKey(key), cx);
+                })
+            });
             // AccessKit role/name for the column header. The browser shell
             // exposes the same `ColumnHeader` role; a bare ↑/↓ arrow carries no
             // text, so the direction is spelled out in Japanese in aria_label.
@@ -2285,7 +2368,6 @@ impl TaskManagerApp {
                 // Mouse clicks keep the old path; track_focus adds Tab access
                 // and lets GPUI activate the same on_click on Enter/Space.
                 .track_focus(&header_focus)
-                .aria_keyshortcuts("Enter, Space")
                 // Native equivalent of the browser mirror's `aria-sort`.
                 .a11y_synthetic_children(move |builder| {
                     match a11y_sort_accesskit(active, sort.direction) {
@@ -2295,26 +2377,24 @@ impl TaskManagerApp {
                 })
                 .flex()
                 .items_center()
-                .cursor_pointer()
                 .text_xs()
                 .text_color(rgb(if active {
                     palette().blue
                 } else {
                     palette().muted
                 }))
-                .hover(|style| style.text_color(rgb(palette().text)))
-                .on_click(cx.listener(move |this, _event, window, cx| {
-                    // マウスでもキーボードでもソート後に見出しへフォーカスを
-                    // 保ち、続けて Enter/Space を押してもソートできるようにする。
-                    header_focus.focus(window, cx);
-                    this.handle_command(Command::SetSortKey(key), cx);
-                }))
-                .child(text);
+                .hover(|style| style.text_color(rgb(palette().text)));
+            if let Some(listener) = sort_click {
+                cell = cell
+                    .cursor_pointer()
+                    .aria_keyshortcuts("Enter, Space")
+                    .on_click(listener);
+            }
             cell = match width {
                 Some(width) => cell.w(px(*width)),
                 None => cell.flex_1().min_w(px(200.0)),
             };
-            headers.push(cell);
+            headers.push(cell.child(text));
         }
         h_flex()
             .id("table-header")
@@ -2478,8 +2558,20 @@ impl TaskManagerApp {
                     .unwrap_or_else(|| !self.dashboard.is_collapsed(process.key))
             };
             let core_count = snapshot.cpu.core_count();
+            // 個別プロセス行のレートはビューモデルが公開する累積カウンタ差分
+            // (C1-IODATA) を使う。グループ行は `process_row_values` 内で
+            // ビューモデルの合計レートを使う (C2-NATIVEIO)。
+            let io_rates = self.dashboard.process_snapshot_io_rates(process);
             (
-                process_row_values(group, process, core_count, selected, depth, has_children),
+                process_row_values(
+                    group,
+                    process,
+                    core_count,
+                    selected,
+                    depth,
+                    has_children,
+                    io_rates,
+                ),
                 expanded,
             )
         };
@@ -2507,6 +2599,8 @@ impl TaskManagerApp {
         let memory = view.memory_bytes;
         let swap_bytes = view.swap_bytes;
         let virtual_memory = view.virtual_memory_bytes;
+        let read_rate = view.read_rate;
+        let write_rate = view.write_rate;
         let pid = view.pid.clone();
         let process_count = view.process_count;
         let is_group = view.is_group;
@@ -2767,6 +2861,20 @@ impl TaskManagerApp {
                     .text_sm()
                     .text_color(rgb(palette().subtext))
                     .child(format::format_bytes(virtual_memory)),
+            )
+            .child(
+                div()
+                    .w(px(COL_READ))
+                    .text_sm()
+                    .text_color(rgb(palette().subtext))
+                    .child(format::format_rate(read_rate)),
+            )
+            .child(
+                div()
+                    .w(px(COL_WRITE))
+                    .text_sm()
+                    .text_color(rgb(palette().subtext))
+                    .child(format::format_rate(write_rate)),
             );
         // Aggregate rows have no PID/user/status/threads, so those columns are
         // dash-only noise by default. The settings overlay restores them for
@@ -5800,6 +5908,8 @@ mod tests {
             memory_bytes: 1_024,
             swap_bytes: 2_048,
             virtual_memory_bytes: 4_096,
+            read_bytes: 8_192,
+            write_bytes: 4_096,
             threads: Some(7),
             parent_pid: Some(1),
         }
@@ -5821,6 +5931,8 @@ mod tests {
             memory_bytes: 3 * 1_024 * 1_024,
             swap_bytes: 6 * 1_024 * 1_024,
             virtual_memory_bytes: 12 * 1_024 * 1_024,
+            read_rate: 3_000,
+            write_rate: 1_000,
             process_count: 3,
         }
     }
@@ -5841,6 +5953,8 @@ mod tests {
             memory_bytes: 4 * 1_024 * 1_024,
             swap_bytes: 8 * 1_024 * 1_024,
             virtual_memory_bytes: 16 * 1_024 * 1_024,
+            read_rate: 7_000,
+            write_rate: 2_000,
             process_count: app_count,
         }
     }
@@ -5848,7 +5962,15 @@ mod tests {
     #[test]
     fn multi_process_group_command_is_emphasised_but_single_is_not() {
         let representative = sample_process(100, "firefox");
-        let multi = process_row_values(Some(&sample_group()), &representative, 1, false, 0, true);
+        let multi = process_row_values(
+            Some(&sample_group()),
+            &representative,
+            1,
+            false,
+            0,
+            true,
+            (0, 0),
+        );
         assert!(multi.command_emphasis, "3 プロセス must stand out");
         assert_eq!(multi.command, "3 プロセス");
         assert!(multi.is_group);
@@ -5858,11 +5980,11 @@ mod tests {
         single.process_count = 1;
         single.has_children = false;
         single.member_keys = vec![single.process_key];
-        let one = process_row_values(Some(&single), &representative, 1, false, 0, false);
+        let one = process_row_values(Some(&single), &representative, 1, false, 0, false, (0, 0));
         assert!(!one.command_emphasis, "one process keeps the normal style");
         assert_eq!(one.command, "1 プロセス");
 
-        let flat = process_row_values(None, &representative, 1, false, 0, false);
+        let flat = process_row_values(None, &representative, 1, false, 0, false, (0, 0));
         assert!(!flat.command_emphasis);
         assert_eq!(flat.command, representative.command);
     }
@@ -5872,7 +5994,7 @@ mod tests {
         let others = sample_others(4);
         let representative = sample_process(200, "firefox");
         let before = representative.clone();
-        let view = process_row_values(Some(&others), &representative, 1, false, 0, true);
+        let view = process_row_values(Some(&others), &representative, 1, false, 0, true, (0, 0));
 
         assert!(
             view.is_group,
@@ -5904,7 +6026,7 @@ mod tests {
     fn grouped_row_shows_totals_and_fixed_non_aggregatable_columns() {
         let group = sample_group();
         let representative = sample_process(100, "firefox");
-        let view = process_row_values(Some(&group), &representative, 1, false, 0, true);
+        let view = process_row_values(Some(&group), &representative, 1, false, 0, true, (0, 0));
 
         assert!(view.is_group);
         assert_eq!(view.group_key.as_deref(), Some("firefox"));
@@ -5914,6 +6036,9 @@ mod tests {
         assert_eq!(view.memory_bytes, group.memory_bytes);
         assert_eq!(view.swap_bytes, group.swap_bytes);
         assert_eq!(view.virtual_memory_bytes, group.virtual_memory_bytes);
+        // レート列もグループ合計を表示し、代表プロセスの値を使わない (C2-NATIVEIO)。
+        assert_eq!(view.read_rate, group.read_rate);
+        assert_eq!(view.write_rate, group.write_rate);
         // The representative's single-process numbers never stand in for the sum.
         assert_ne!(view.cpu_percent, representative.cpu_percent);
         assert_ne!(view.memory_bytes, representative.memory_bytes);
@@ -5935,8 +6060,8 @@ mod tests {
     #[test]
     fn flat_tree_and_expanded_member_rows_keep_snapshot_values() {
         let process = sample_process(42, "emacs");
-        let flat = process_row_values(None, &process, 1, true, 0, false);
-        let tree = process_row_values(None, &process, 1, false, 1, true);
+        let flat = process_row_values(None, &process, 1, true, 0, false, (0, 0));
+        let tree = process_row_values(None, &process, 1, false, 1, true, (0, 0));
         for view in [&flat, &tree] {
             assert!(!view.is_group);
             assert_eq!(view.group_key, None);
@@ -5972,9 +6097,13 @@ mod tests {
             memory_bytes: 9_999,
             swap_bytes: 4_999,
             virtual_memory_bytes: 19_998,
+            read_rate: 99_000,
+            write_rate: 88_000,
             process_count: 1,
         };
-        let view = process_row_values(Some(&member), &process, 1, false, 1, false);
+        let view = process_row_values(Some(&member), &process, 1, false, 1, false, (12_000, 3_400));
+        assert_eq!(view.read_rate, 12_000);
+        assert_eq!(view.write_rate, 3_400);
         assert!(!view.is_group);
         assert_eq!(view.group_key, None);
         assert_eq!(view.cpu_percent, process.cpu_percent);
@@ -6008,30 +6137,51 @@ mod tests {
     #[test]
     fn default_table_shows_swap_between_memory_and_virtual_memory() {
         let compact = table_columns(false);
-        assert_eq!(compact.len(), 5);
+        assert_eq!(compact.len(), 7);
         assert_eq!(compact[0].0, "名前");
         assert_eq!(compact[2].0, "メモリ");
         assert_eq!(compact[3].0, "スワップ");
-        assert_eq!(compact[3].1, SortKey::Swap);
+        assert_eq!(compact[3].1, Some(SortKey::Swap));
         assert_eq!(compact[4].0, "仮想メモリ");
-        assert_eq!(compact[4].1, SortKey::VirtualMemory);
+        assert_eq!(compact[4].1, Some(SortKey::VirtualMemory));
+        assert_eq!(compact[5].0, "読み込み");
+        assert_eq!(compact[5].1, None);
+        assert_eq!(compact[6].0, "書き込み");
+        assert_eq!(compact[6].1, None);
         let verbose = table_columns(true);
-        assert_eq!(verbose.len(), 9);
+        assert_eq!(verbose.len(), 11);
         assert_eq!(verbose[3].0, "スワップ");
         assert_eq!(verbose[4].0, "仮想メモリ");
-        assert_eq!(verbose[5].0, "PID");
-        assert_eq!(verbose[8].0, "スレッド");
+        assert_eq!(verbose[5].0, "読み込み");
+        assert_eq!(verbose[6].0, "書き込み");
+        assert_eq!(verbose[7].0, "PID");
+        assert_eq!(verbose[10].0, "スレッド");
     }
 
     #[test]
     fn icon_key_is_shared_by_group_and_process_but_never_by_others() {
         let representative = sample_process(100, "firefox");
-        let group = process_row_values(Some(&sample_group()), &representative, 1, false, 0, true);
+        let group = process_row_values(
+            Some(&sample_group()),
+            &representative,
+            1,
+            false,
+            0,
+            true,
+            (0, 0),
+        );
         assert_eq!(group.icon_key.as_deref(), Some("firefox"));
-        let others =
-            process_row_values(Some(&sample_others(4)), &representative, 1, false, 0, true);
+        let others = process_row_values(
+            Some(&sample_others(4)),
+            &representative,
+            1,
+            false,
+            0,
+            true,
+            (0, 0),
+        );
         assert_eq!(others.icon_key, None, "NUL bucket must not resolve an icon");
-        let flat = process_row_values(None, &representative, 1, false, 0, false);
+        let flat = process_row_values(None, &representative, 1, false, 0, false, (0, 0));
         assert!(
             flat.icon_key.is_some() && flat.group_key.is_none(),
             "a process row gets an icon key without changing activation"
@@ -6079,6 +6229,25 @@ mod tests {
             row.contains("format::format_bytes(virtual_memory)"),
             "the 仮想メモリ cell must render the group/process VM value"
         );
+        assert!(
+            row.contains("format::format_rate(read_rate)"),
+            "the 読み込み cell must render a B/s rate"
+        );
+        assert!(
+            row.contains("format::format_rate(write_rate)"),
+            "the 書き込み cell must render a B/s rate"
+        );
+        let overview = source
+            .split("let network_card = card(")
+            .nth(1)
+            .expect("network card must exist")
+            .split("let disk_rows")
+            .next()
+            .expect("overview slice must end");
+        assert!(
+            overview.contains("プローブ取得の代理"),
+            "network card must label the bandwidth proxy explicitly"
+        );
         let table = source
             .split("fn main_area(")
             .nth(1)
@@ -6123,14 +6292,14 @@ mod tests {
         group.cpu_percent = 150.0;
 
         // Group row: divided by 2 cores -> 75.0.
-        let view = process_row_values(Some(&group), &representative, 2, false, 0, true);
+        let view = process_row_values(Some(&group), &representative, 2, false, 0, true, (0, 0));
         assert!(view.is_group);
         assert!((view.cpu_percent - 75.0).abs() < f32::EPSILON);
 
         // Others row: same rule applies.
         let mut others = sample_others(4);
         others.cpu_percent = 150.0;
-        let view = process_row_values(Some(&others), &representative, 2, false, 0, true);
+        let view = process_row_values(Some(&others), &representative, 2, false, 0, true, (0, 0));
         assert!(view.is_others);
         assert!((view.cpu_percent - 75.0).abs() < f32::EPSILON);
 
@@ -6140,7 +6309,7 @@ mod tests {
             kind: AppRowKind::Process,
             ..group.clone()
         };
-        let view = process_row_values(Some(&member), &representative, 2, false, 1, false);
+        let view = process_row_values(Some(&member), &representative, 2, false, 1, false, (0, 0));
         assert!(!view.is_group);
         assert_eq!(view.cpu_percent, representative.cpu_percent);
     }
@@ -6242,7 +6411,8 @@ mod tests {
         assert!(row.contains(concat!("Command::Toggle", "AppGroup(group_key)")));
         assert!(row.contains(concat!("app_group_display_", "rows()")));
         assert!(row.contains(concat!("AppRowKind::", "Group")));
-        assert!(row.contains(concat!("process_row_values(", "group")));
+        assert!(row.contains("process_row_values("));
+        assert!(row.contains("group,"));
         assert!(row.contains(concat!(".aria_label(", "aria_label)")));
         assert!(row.contains(concat!(".aria_expanded(", "expanded)")));
         assert!(row.contains(concat!(".track_focus(&", "row_focus)")));
@@ -6269,9 +6439,11 @@ mod tests {
             memory_bytes: 999,
             swap_bytes: 777,
             virtual_memory_bytes: 1_998,
+            read_rate: 5_000,
+            write_rate: 6_000,
             process_count: 42,
         };
-        let view = process_row_values(Some(&header), &representative, 1, true, 0, true);
+        let view = process_row_values(Some(&header), &representative, 1, true, 0, true, (0, 0));
         assert!(view.is_section_header);
         assert!(!view.is_group);
         assert!(!view.is_others);
@@ -6284,6 +6456,8 @@ mod tests {
         assert_eq!(view.memory_bytes, header.memory_bytes);
         assert_eq!(view.swap_bytes, header.swap_bytes);
         assert_eq!(view.virtual_memory_bytes, header.virtual_memory_bytes);
+        assert_eq!(view.read_rate, header.read_rate);
+        assert_eq!(view.write_rate, header.write_rate);
         assert_eq!(view.process_count, header.process_count);
         assert!(!view.selected, "a heading can never be selected");
         assert!(!view.has_children);
@@ -6418,7 +6592,8 @@ mod tests {
         // Both aggregate kinds reach process_row_values, so Others also gets
         // the totals, the reserved toggle key and the expand affordance.
         assert!(row.contains(concat!("AppRowKind::", "Others")));
-        assert!(row.contains(concat!("process_row_values(", "group")));
+        assert!(row.contains("process_row_values("));
+        assert!(row.contains("group,"));
         // Emphasis is data-driven and applies both weight and accent colour.
         assert!(row.contains("command_emphasis"));
         assert!(row.contains("FontWeight::BOLD"));
@@ -6503,7 +6678,15 @@ mod tests {
         let before = snapshot.processes.clone();
         let group = sample_group();
         // Building an aggregate display row only borrows the snapshot.
-        let _ = process_row_values(Some(&group), &snapshot.processes[0], 1, false, 0, true);
+        let _ = process_row_values(
+            Some(&group),
+            &snapshot.processes[0],
+            1,
+            false,
+            0,
+            true,
+            (0, 0),
+        );
         assert_eq!(snapshot.processes, before);
 
         let ids = RedactionIdentifiers {
