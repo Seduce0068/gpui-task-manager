@@ -391,6 +391,27 @@ pub fn snapshot_to_json_with_total(
     });
     out.push_str(",\n");
 
+    // R1-GPUDATA: written immediately after `components`, in the same order as
+    // the serde fields on `SystemSnapshot`. Option values stay `null` when the
+    // driver did not report them; never substitute a fabricated zero.
+    push_key(&mut out, 2, "gpus");
+    push_json_object_array(&mut out, 2, snap.gpus.len(), |out, index| {
+        let gpu = &snap.gpus[index];
+        push_key(out, 4, "name");
+        push_json_string(out, &gpu.name);
+        out.push_str(",\n");
+        push_key(out, 4, "usage_percent");
+        push_optional(out, gpu.usage_percent, push_f32);
+        out.push_str(",\n");
+        push_key(out, 4, "memory_used_bytes");
+        push_optional(out, gpu.memory_used_bytes, push_display);
+        out.push_str(",\n");
+        push_key(out, 4, "memory_total_bytes");
+        push_optional(out, gpu.memory_total_bytes, push_display);
+        out.push('\n');
+    });
+    out.push_str(",\n");
+
     // Additive wire fields (R1-I10 / R1-I11 / R1-I12). The keys and enum
     // spellings mirror serde's representation of the model types, so a consumer
     // can parse both the live endpoint and an exported file with one struct.
@@ -749,6 +770,14 @@ mod tests {
                 temperature_c: Some(42.0),
                 max_c: None,
                 critical_c: Some(100.0),
+            }],
+            // R1-GPUDATA: a GPU name is OS-provided display text, so the export
+            // audit must prove it is redacted like every other label.
+            gpus: vec![crate::model::GpuSnapshot {
+                name: "my-host alice GPU".into(),
+                usage_percent: Some(12.5),
+                memory_used_bytes: Some(3_221_225_472),
+                memory_total_bytes: Some(8_589_934_592),
             }],
             power: crate::model::PowerSnapshot {
                 source: PowerSource::Battery,
@@ -1178,8 +1207,13 @@ mod tests {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         eprintln!("WIRE_ENVELOPE_HASH {hash:016x} len={}", bytes.len());
-        assert_eq!(hash, 0x1265_fcb5_b2d4_e6f4, "wire bytes changed: {bytes}");
-        assert_eq!(bytes.len(), 595, "wire byte count changed");
+        // R1-GPUDATA: the additive `"gpus":[]` key after `components` intentionally
+        // changes the baseline (595 -> 605 bytes). `serde(default)` keeps older
+        // payloads readable and WIRE_SCHEMA_VERSION stays 1, so this is an
+        // additive shape change, not a compatibility break. Measured with
+        // `cargo test -p tm-core --features serde wire_envelope_json_bytes_are_stable -- --nocapture`.
+        assert_eq!(hash, 0x2fec_fc0e_1041_41ed, "wire bytes changed: {bytes}");
+        assert_eq!(bytes.len(), 605, "wire byte count changed");
     }
 
     /// Replaces every scalar with `null` while preserving object keys and array
@@ -1234,6 +1268,14 @@ mod tests {
             exported["snapshot"]["sampled_elapsed"], wire["snapshot"]["sampled_elapsed"],
             "sampled_elapsed must match serde's Duration representation: {json}"
         );
+        // R1-GPUDATA: `gpus` is part of the compared shape on both sides, so a
+        // stale exporter (or a model field added without an export key) fails
+        // this assertion rather than silently producing a different schema.
+        assert_eq!(
+            exported["snapshot"]["gpus"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(wire["snapshot"]["gpus"].as_array().map(Vec::len), Some(1));
         assert_eq!(
             shape_only(exported),
             shape_only(wire),
@@ -1314,6 +1356,49 @@ mod tests {
                 .next()
                 .expect("header"),
             PROCESS_CSV_HEADER
+        );
+    }
+
+    #[test]
+    fn json_export_registers_gpus_in_serde_order() {
+        // R1-GPUDATA: the exporter must emit the same keys, order and null
+        // semantics as serde's `SystemSnapshot`, in both the populated and the
+        // empty case (the shape_only guard above compares the full envelope).
+        let json = snapshot_to_json(&secret_snapshot(), &secret_ids());
+        assert_well_formed_json(&json);
+        for key in [
+            "\"gpus\"",
+            "\"name\": \"host user GPU\"",
+            "\"usage_percent\": 12.5",
+            "\"memory_used_bytes\": 3221225472",
+            "\"memory_total_bytes\": 8589934592",
+        ] {
+            assert!(json.contains(key), "missing GPU key {key}: {json}");
+        }
+        let components_at = json.find("\"components\"").expect("components key");
+        let gpus_at = json.find("\"gpus\"").expect("gpus key");
+        let power_at = json.find("\"power\"").expect("power key");
+        assert!(
+            components_at < gpus_at && gpus_at < power_at,
+            "gpus must sit between components and power: {json}"
+        );
+        for secret in SECRETS {
+            assert!(!json.contains(secret), "GPU name leaked {secret:?}: {json}");
+        }
+
+        // A snapshot with no reported values keeps `null` instead of 0, and an
+        // empty snapshot still emits a parseable array.
+        let mut snapshot = SystemSnapshot::default();
+        snapshot.gpus.push(crate::model::GpuSnapshot {
+            name: "NVIDIA".into(),
+            ..crate::model::GpuSnapshot::default()
+        });
+        let sparse = snapshot_to_json(&snapshot, &secret_ids());
+        assert!(sparse.contains("\"usage_percent\": null"), "{sparse}");
+        assert!(sparse.contains("\"memory_used_bytes\": null"), "{sparse}");
+        assert!(sparse.contains("\"memory_total_bytes\": null"), "{sparse}");
+        assert!(
+            snapshot_to_json(&SystemSnapshot::default(), &secret_ids()).contains("\"gpus\": []")
         );
     }
 

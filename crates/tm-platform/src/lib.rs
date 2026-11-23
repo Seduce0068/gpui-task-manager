@@ -3,7 +3,7 @@
 //! This crate is the only place in the workspace that talks to the operating
 //! system directly:
 //!
-//! - [`sysinfo`] 0.40 collects CPU, memory, process, network and disk data.
+//! - [`sysinfo`] 0.40 collects CPU, memory, process, network, disk and GPU data.
 //! - `rustix` sends POSIX signals with its safe API on Unix and reads the
 //!   filesystem's `f_bfree` counter through its safe `fs::statvfs` wrapper, so
 //!   the crate stays free of `unsafe` code.
@@ -78,18 +78,19 @@ use rustix::io::Errno;
 #[cfg(unix)]
 use rustix::process::{kill_process, Pid as RustixPid, Signal as RustixSignal};
 use sysinfo::{
-    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
+    Components, CpuRefreshKind, Disks, Gpus, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind,
     ProcessStatus as SysinfoProcessStatus, ProcessesToUpdate, RefreshKind, System, ThreadKind,
     UpdateKind, Users,
 };
 use tm_core::model::{
     cgroup_label, group_by_cgroup, is_virtual_interface, recommended_sampling_plan,
     BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
-    MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
-    ProcessCgroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SystemSnapshot,
-    Timestamp, WindowVisibility,
+    GpuSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot,
+    PowerSource, ProcessCgroup, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan,
+    SystemSnapshot, Timestamp, WindowVisibility,
 };
 use tm_core::port::{ControlError, PlatformInfo, ProbeError, Signal, SystemProbe};
+use tm_core::redact::redact_text;
 use tm_core::sanitize::{sanitize_display, MAX_COMMAND_CHARS, MAX_NAME_CHARS};
 
 /// Native [`SystemProbe`] backed by `sysinfo` and `rustix`.
@@ -101,6 +102,16 @@ pub struct NativeProbe {
     system: System,
     networks: Option<Networks>,
     disks: Option<Disks>,
+    /// Last GPU section (R1-GPUDATA), empty when sysinfo cannot enumerate GPUs.
+    ///
+    /// `sysinfo::Gpus` is deliberately **not** stored here: on Linux it owns a
+    /// raw NVML library handle (`*mut c_void`) and is therefore not `Send`,
+    /// while [`SystemProbe`] requires `Send` because the native shell samples
+    /// on a worker thread. The enumerator is a short-lived local inside
+    /// [`NativeProbe::refresh_gpu`]; only the derived, owned snapshots cross
+    /// the thread boundary. A failed enumeration clears the section instead of
+    /// failing the whole sample, mirroring the network/disk collectors.
+    gpus: Vec<GpuSnapshot>,
     users: Option<Users>,
     hostname: Option<String>,
     os_name: Option<String>,
@@ -157,6 +168,11 @@ impl NativeProbe {
             system,
             networks: Networks::new_with_refreshed_list().ok(),
             disks: Disks::new_with_refreshed_list().ok(),
+            // Take one initial GPU sample here so the very first `snapshot`
+            // already carries telemetry; refresh() keeps it up to date.
+            gpus: Gpus::new_with_refreshed_list()
+                .map(|gpus| gpu_snapshots_from(&gpus, hostname.as_deref()))
+                .unwrap_or_default(),
             users: Users::new_with_refreshed_list().ok(),
             hostname,
             os_name,
@@ -225,6 +241,7 @@ impl NativeProbe {
         if let Some(disks) = self.disks.as_mut() {
             disks.refresh(true);
         }
+        self.refresh_gpu();
         // The uid -> name mapping is not static: users and groups can be added
         // or renamed while the app runs. `Users` was only populated once in
         // `new()`, so without this refresh the user column goes stale (R2X-P7).
@@ -253,6 +270,7 @@ impl NativeProbe {
             network: self.network_snapshot(),
             disks: self.disk_snapshots(),
             components: self.component_snapshots(),
+            gpus: self.gpus.clone(),
             power,
             sampling,
             // Membership collection only reads /proc: no sysinfo refresh, so
@@ -279,6 +297,22 @@ impl NativeProbe {
                 }
             })
             .collect()
+    }
+
+    /// Refreshes the GPU section (R1-GPUDATA).
+    ///
+    /// The `sysinfo::Gpus` handle is intentionally local: it is not `Send` on
+    /// Linux (raw NVML handle), so keeping it in the probe would violate the
+    /// [`SystemProbe`] thread contract. `refresh(true)` drops devices that
+    /// disappeared since the previous sample; an enumeration failure clears the
+    /// section instead of failing the sample.
+    fn refresh_gpu(&mut self) {
+        let Ok(mut gpus) = Gpus::new_with_refreshed_list() else {
+            self.gpus.clear();
+            return;
+        };
+        gpus.refresh(true);
+        self.gpus = gpu_snapshots_from(&gpus, self.hostname.as_deref());
     }
 
     fn cpu_snapshot(&self) -> CpuSnapshot {
@@ -1203,6 +1237,47 @@ fn map_signal(signal: Signal) -> RustixSignal {
     }
 }
 
+/// Chooses a GPU's display name: model, then vendor, then a fixed fallback (R1-GPUDATA).
+///
+/// Empty strings are treated as missing information so a driver that reports
+/// `Some("")` cannot erase the vendor or produce a blank table cell. The helper
+/// is cfg-free and pure so the precedence is regression-tested on every target.
+fn gpu_display_name<'a>(model: Option<&'a str>, vendor: Option<&'a str>) -> &'a str {
+    let usable = |value: Option<&'a str>| value.filter(|name| !name.trim().is_empty());
+    usable(model)
+        .or_else(|| usable(vendor))
+        .unwrap_or("Unknown GPU")
+}
+
+/// Converts one sysinfo GPU list into owned domain snapshots (R1-GPUDATA).
+///
+/// Usage and VRAM stay [`Option`] so an unreported driver value is never
+/// invented as `0`. Names are sanitised here at the OS boundary and passed
+/// through [`redact_text`] with the host identifier already held by the probe;
+/// the central `redact_snapshot` pass applies the full identifier set before any
+/// snapshot is published. Sorting by name keeps wire/export output deterministic.
+fn gpu_snapshots_from(gpus: &Gpus, hostname: Option<&str>) -> Vec<GpuSnapshot> {
+    let ids = tm_core::redact::RedactionIdentifiers {
+        home: "",
+        user: "",
+        hostname: hostname.unwrap_or(""),
+    };
+    let mut snapshots = gpus
+        .iter()
+        .map(|gpu| {
+            let name = gpu_display_name(gpu.model(), gpu.vendor());
+            GpuSnapshot {
+                name: redact_text(&sanitize_display(name, MAX_NAME_CHARS), &ids),
+                usage_percent: gpu.usage(),
+                memory_used_bytes: gpu.used_memory(),
+                memory_total_bytes: gpu.total_memory(),
+            }
+        })
+        .collect::<Vec<_>>();
+    snapshots.sort_by(|left, right| left.name.cmp(&right.name));
+    snapshots
+}
+
 /// Average non-zero core frequency, or `None` when the platform reports none.
 fn average_frequency_mhz(cpus: &[sysinfo::Cpu]) -> Option<u64> {
     let mut sum = 0u64;
@@ -1231,6 +1306,47 @@ mod tests {
     use std::process::{Child, Command};
     use std::thread::sleep;
     use std::time::Duration;
+
+    #[test]
+    fn gpu_display_name_prefers_model_then_vendor_then_unknown() {
+        // R1-GPUDATA: empty driver strings must not shadow a usable fallback.
+        assert_eq!(
+            gpu_display_name(Some("GTX 1660 SUPER"), Some("NVIDIA")),
+            "GTX 1660 SUPER"
+        );
+        assert_eq!(gpu_display_name(None, Some("NVIDIA")), "NVIDIA");
+        assert_eq!(gpu_display_name(Some(""), Some("NVIDIA")), "NVIDIA");
+        assert_eq!(gpu_display_name(Some("  "), None), "Unknown GPU");
+        assert_eq!(gpu_display_name(None, None), "Unknown GPU");
+    }
+
+    #[test]
+    fn sample_exposes_a_gpu_section_without_fabricating_telemetry() {
+        let mut probe = NativeProbe::new().expect("native probe");
+        let snapshot = probe.sample().expect("sample");
+        // The section is always present; an unsupported host reports no GPUs.
+        for gpu in &snapshot.gpus {
+            assert!(!gpu.name.is_empty(), "GPU name must not be blank");
+            assert!(
+                !gpu.name.chars().any(char::is_control),
+                "control character in GPU name: {:?}",
+                gpu.name
+            );
+            assert!(gpu.name.chars().count() <= MAX_NAME_CHARS + 1);
+            // None is an honest "driver did not report"; never coerce it to 0.
+            // When a value is present, keep it as reported by sysinfo.
+            assert!(gpu.usage_percent.is_none_or(f32::is_finite));
+        }
+        // Deterministic order keeps the wire/export shape stable.
+        let names = snapshot
+            .gpus
+            .iter()
+            .map(|gpu| gpu.name.as_str())
+            .collect::<Vec<_>>();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "GPUs must be sorted by name");
+    }
 
     #[test]
     fn proc_io_parsing_is_best_effort_and_already_in_bytes() {
@@ -2274,6 +2390,7 @@ mod tests {
         // cgroup data must not weaken that existing thread contract.
         fn assert_send<T: Send>() {}
         assert_send::<NativeProbe>();
+        assert_send::<GpuSnapshot>();
         assert_send::<PowerSnapshot>();
         assert_send::<SamplingPlan>();
         assert_send::<ProcessCgroup>();

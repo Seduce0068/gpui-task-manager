@@ -45,6 +45,12 @@ pub fn sanitize_snapshot(snapshot: &mut SystemSnapshot) {
     for component in &mut snapshot.components {
         component.label = sanitize_display(&component.label, MAX_NAME_CHARS);
     }
+    // R1-GPUDATA: a GPU model/vendor string is OS- or agent-provided text and
+    // must not carry ANSI/bidi controls into a widget, even on the wire path
+    // where the native probe's own sanitisation was bypassed.
+    for gpu in &mut snapshot.gpus {
+        gpu.name = sanitize_display(&gpu.name, MAX_NAME_CHARS);
+    }
     // Battery names and cgroup labels are OS/agent-provided text too. The probe
     // already sanitises them, but an agent wire payload is a separate trust
     // boundary: re-sanitise defensively here (R1-I10 / R1-I12).
@@ -510,6 +516,7 @@ mod tests {
         snapshot.network.interfaces[0].name = dirty.to_string();
         snapshot.disks[0].mount_point = dirty.to_string();
         snapshot.components[0].label = dirty.to_string();
+        snapshot.gpus[0].name = dirty.to_string();
 
         sanitize_snapshot(&mut snapshot);
         for value in [
@@ -522,6 +529,7 @@ mod tests {
             &snapshot.network.interfaces[0].name,
             &snapshot.disks[0].mount_point,
             &snapshot.components[0].label,
+            &snapshot.gpus[0].name,
         ] {
             assert!(!value.contains('\u{1b}'), "ANSI survived: {value:?}");
             assert!(!value.contains('\u{202e}'), "bidi survived: {value:?}");

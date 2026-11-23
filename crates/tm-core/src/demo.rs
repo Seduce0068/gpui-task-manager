@@ -11,9 +11,9 @@
 
 use crate::model::{
     BatterySnapshot, BatteryState, CgroupGroup, ComponentSnapshot, CpuSnapshot, DiskUsageSnapshot,
-    MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot, PowerSource,
-    ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SamplingProfile, SystemSnapshot,
-    Timestamp, INTERACTIVE_INTERVAL_MS,
+    GpuSnapshot, MemorySnapshot, NetworkInterfaceSnapshot, NetworkSnapshot, PowerSnapshot,
+    PowerSource, ProcessKey, ProcessSnapshot, ProcessStatus, SamplingPlan, SamplingProfile,
+    SystemSnapshot, Timestamp, INTERACTIVE_INTERVAL_MS,
 };
 use crate::port::{ControlError, PlatformInfo, ProbeError, SystemProbe};
 
@@ -341,6 +341,9 @@ const DEMO_MEMORY_TOTAL: u64 = 16 * 1_024 * 1_024 * 1_024;
 const DEMO_MEMORY_USED_BASE: u64 = 9 * 1_024 * 1_024 * 1_024;
 const DEMO_SWAP_TOTAL: u64 = 2 * 1_024 * 1_024 * 1_024;
 const DEMO_SWAP_USED: u64 = 256 * 1_024 * 1_024;
+/// Deterministic demo VRAM figures: 3 GiB used out of 8 GiB total.
+const DEMO_GPU_USED_BYTES: u64 = 3 * 1_024 * 1_024 * 1_024;
+const DEMO_GPU_TOTAL_BYTES: u64 = 8 * 1_024 * 1_024 * 1_024;
 /// Reference wall-clock time used by the synthetic data.
 pub const DEMO_BASE_UNIX_SECS: u64 = 1_760_000_000;
 
@@ -561,6 +564,15 @@ pub fn demo_snapshot(tick: u64) -> SystemSnapshot {
             },
         ],
         components,
+        // R1-GPUDATA: a fixed dummy GPU keeps the browser/demo wire shape
+        // identical to the native probe's, with no tick-dependent jitter so two
+        // runs at the same tick stay byte-for-byte equal.
+        gpus: vec![GpuSnapshot {
+            name: "DEMO GPU".to_string(),
+            usage_percent: Some(12.5),
+            memory_used_bytes: Some(DEMO_GPU_USED_BYTES),
+            memory_total_bytes: Some(DEMO_GPU_TOTAL_BYTES),
+        }],
         power,
         sampling: SamplingPlan {
             interval_ms: INTERACTIVE_INTERVAL_MS,
@@ -882,6 +894,25 @@ mod tests {
             demo_snapshot(5).components[0].temperature_c,
             demo_snapshot(6).components[0].temperature_c
         );
+    }
+
+    #[test]
+    fn demo_snapshot_exposes_a_deterministic_gpu() {
+        // R1-GPUDATA: the demo source must exercise the GPU wire/export path.
+        for tick in [0, 1, 7, u64::MAX] {
+            let snapshot = demo_snapshot(tick);
+            assert_eq!(snapshot.gpus.len(), 1);
+            let gpu = &snapshot.gpus[0];
+            assert_eq!(gpu.name, "DEMO GPU");
+            assert_eq!(gpu.usage_percent, Some(12.5));
+            assert_eq!(gpu.memory_used_bytes, Some(DEMO_GPU_USED_BYTES));
+            assert_eq!(gpu.memory_total_bytes, Some(DEMO_GPU_TOTAL_BYTES));
+            assert!(
+                gpu.memory_used_bytes <= gpu.memory_total_bytes,
+                "used VRAM must not exceed total"
+            );
+        }
+        assert_eq!(demo_snapshot(7).gpus, demo_snapshot(7).gpus);
     }
 
     #[test]

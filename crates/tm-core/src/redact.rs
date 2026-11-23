@@ -233,6 +233,12 @@ pub fn redact_snapshot(snapshot: &mut SystemSnapshot, ids: &RedactionIdentifiers
     for component in &mut snapshot.components {
         component.label = redact_text(&component.label, ids);
     }
+    // R1-GPUDATA: GPU model/vendor strings come from the driver and can carry a
+    // host-specific identifier. Redact them like every other OS-provided label;
+    // the probe already sanitised them at the collection boundary.
+    for gpu in &mut snapshot.gpus {
+        gpu.name = redact_text(&gpu.name, ids);
+    }
     // Battery names come from sysfs and cgroup labels are derived from /proc
     // paths; both can embed a user name or host-specific identifier. Neither is
     // used for classification, so they are redacted like any other display text
@@ -698,6 +704,12 @@ mod tests {
                 label: "my-host CPU Package".into(),
                 temperature_c: Some(42.0),
                 ..crate::model::ComponentSnapshot::default()
+            }],
+            // R1-GPUDATA: the GPU name is another display string filled with
+            // identifiers, so the "every display string" audit must cover it.
+            gpus: vec![crate::model::GpuSnapshot {
+                name: "alice-my-host-GPU".into(),
+                ..crate::model::GpuSnapshot::default()
             }],
             ..SystemSnapshot::default()
         }

@@ -387,6 +387,29 @@ pub struct ComponentSnapshot {
     pub critical_c: Option<f32>,
 }
 
+/// One GPU enumerated by the platform (R1-GPUDATA).
+///
+/// The three telemetry values stay [`Option`] on purpose: an unavailable usage
+/// or VRAM reading is reported as `None`, never as a fabricated zero that a
+/// consumer could mistake for a real measurement. Every OS-provided name has
+/// passed through [`crate::sanitize::sanitize_display`] at the probe boundary
+/// and through [`crate::redact::redact_snapshot`] before publication.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GpuSnapshot {
+    /// Display-safe name: model, then vendor, then `"Unknown GPU"`.
+    pub name: String,
+    /// GPU utilisation in percent (`0.0..=100.0`), when the driver reports it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub usage_percent: Option<f32>,
+    /// Used VRAM in bytes, when the driver reports it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub memory_used_bytes: Option<u64>,
+    /// Total VRAM in bytes, when the driver reports it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub memory_total_bytes: Option<u64>,
+}
+
 /// A complete point-in-time view of the machine.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -416,6 +439,14 @@ pub struct SystemSnapshot {
     /// Hardware component temperatures, when the platform reports them.
     #[cfg_attr(feature = "serde", serde(default))]
     pub components: Vec<ComponentSnapshot>,
+    /// Enumerated GPUs and their VRAM/usage telemetry (R1-GPUDATA).
+    ///
+    /// `serde(default)` keeps older wire snapshots readable: an agent that
+    /// predates this field deserialises to an honest empty list rather than
+    /// rejecting the whole snapshot. `WIRE_SCHEMA_VERSION` is unchanged because
+    /// the field is purely additive.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub gpus: Vec<GpuSnapshot>,
     /// Aggregate power source and enumerated batteries (R1-I10).
     ///
     /// `serde(default)` keeps the wire compatible with agents that predate this
@@ -1155,6 +1186,25 @@ mod tests {
             serde_json::from_str(json).expect("legacy process must still deserialise");
         assert_eq!(process.key.pid, 42);
         assert_eq!((process.read_bytes, process.write_bytes), (0, 0));
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn older_wire_snapshots_without_gpus_deserialise_to_an_empty_list() {
+        // R1-GPUDATA: removing the additive key from a serialised snapshot must
+        // still round-trip, because older agents and stored exports lack it.
+        let snapshot = SystemSnapshot::default();
+        let mut wire = serde_json::to_value(&snapshot).expect("snapshot must serialise");
+        assert!(
+            wire.as_object_mut()
+                .expect("snapshot is an object")
+                .remove("gpus")
+                .is_some(),
+            "the snapshot must carry the gpus key before removal"
+        );
+        let restored: SystemSnapshot =
+            serde_json::from_value(wire).expect("legacy snapshot must still deserialise");
+        assert!(restored.gpus.is_empty());
     }
 
     #[test]

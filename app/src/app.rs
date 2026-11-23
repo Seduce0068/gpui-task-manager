@@ -596,6 +596,13 @@ struct Summary {
     paused: bool,
     interval_ms: u64,
     disks: Vec<DiskRow>,
+    /// R1-GPUDATA: only the first enumerated GPU feeds the overview card.
+    /// Telemetry stays optional so an unavailable reading renders as "—",
+    /// never as a fabricated zero.
+    gpu_name: String,
+    gpu_usage: Option<f32>,
+    gpu_used: Option<u64>,
+    gpu_total: Option<u64>,
     cpu_history: Vec<f32>,
     mem_history: Vec<f32>,
     rx_history: Vec<f32>,
@@ -1575,6 +1582,7 @@ impl TaskManagerApp {
             .iter()
             .map(|&value| value as f32)
             .collect();
+        let gpu = snapshot.and_then(|s| s.gpus.first());
         Summary {
             cpu_total: snapshot.map(|s| s.cpu.total_percent).unwrap_or(0.0),
             cores: snapshot
@@ -1618,6 +1626,12 @@ impl TaskManagerApp {
                         .collect()
                 })
                 .unwrap_or_default(),
+            gpu_name: gpu
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "—".to_string()),
+            gpu_usage: gpu.and_then(|g| g.usage_percent),
+            gpu_used: gpu.and_then(|g| g.memory_used_bytes),
+            gpu_total: gpu.and_then(|g| g.memory_total_bytes),
             cpu_history,
             mem_history,
             rx_history,
@@ -2099,11 +2113,71 @@ impl TaskManagerApp {
                 summary.process_count
             ));
 
+        // R1-GPUDATA: the first enumerated GPU gets its own card. All driver
+        // readings are optional, so a missing value renders as "—" and the
+        // progress indicator reports an unknown state instead of a fake zero.
+        let gpu_percent = summary.gpu_usage.unwrap_or(0.0);
+        let gpu_usage_label = gpu_usage_a11y_label(summary.gpu_usage);
+        let gpu_usage_value = gpu_usage_text(summary.gpu_usage);
+        let gpu_vram = gpu_vram_text(summary.gpu_used, summary.gpu_total);
+        let gpu_card = card(
+            "GPU",
+            palette().yellow,
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .items_end()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(usage_color(gpu_percent)))
+                                .child(gpu_usage_value),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette().muted))
+                                .child(summary.gpu_name.clone()),
+                        ),
+                )
+                // A driver that reports no usage gets no gauge at all: a
+                // ProgressIndicator pinned to 0% would invent a measurement
+                // that the "—" headline explicitly disclaims.
+                .when(summary.gpu_usage.is_some(), |this| {
+                    this.child(accessible_metric_bar(
+                        "gpu-usage-bar",
+                        gpu_percent,
+                        usage_color(gpu_percent),
+                        gpu_usage_label.clone(),
+                    ))
+                })
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(rgb(palette().muted))
+                        .child("VRAM")
+                        .child(gpu_vram),
+                ),
+        )
+        .h(px(200.0))
+        .flex_1()
+        .min_w_0()
+        .id("overview-gpu")
+        .role(Role::Group)
+        .aria_label(gpu_usage_label);
+
+        // No fixed OVERVIEW_HEIGHT exists: every card is flex_1 + min_w_0, so
+        // the five cards share the row and shrink together on narrow windows.
         h_flex().gap_3().px_4().py_3().items_start().children(vec![
             cpu_card,
             memory_card,
             network_card,
             system_card,
+            gpu_card,
         ])
     }
 
@@ -4216,6 +4290,28 @@ fn a11y_usage_label(title: &str, percent: f32) -> String {
     )
 }
 
+/// Displayed GPU utilisation; an unreported driver value stays an honest "—".
+fn gpu_usage_text(usage: Option<f32>) -> String {
+    usage
+        .map(format::format_percent)
+        .unwrap_or_else(|| "—".to_string())
+}
+
+/// Displayed VRAM pair; both halves must be present before a ratio is shown.
+fn gpu_vram_text(used: Option<u64>, total: Option<u64>) -> String {
+    match (used, total) {
+        (Some(used), Some(total)) => format::format_used_of_total(used, total),
+        _ => "—".to_string(),
+    }
+}
+
+/// Accessible name of the GPU gauge, matching the other utilisation gauges.
+fn gpu_usage_a11y_label(usage: Option<f32>) -> String {
+    usage
+        .map(|percent| a11y_usage_label("GPU 使用率", percent))
+        .unwrap_or_else(|| "GPU 使用率 —、不明".to_string())
+}
+
 /// Circular alternative to [`accessible_metric_bar`], drawn with GPUI's existing
 /// canvas/path primitives (no new dependency, no `unsafe`, no custom element).
 ///
@@ -4637,13 +4733,13 @@ mod tests {
         a11y_filter_hint, a11y_filter_label, a11y_group_row_label, a11y_live_text, a11y_row_label,
         a11y_section_header_label, a11y_sort_accesskit, a11y_sort_direction,
         a11y_temperature_label, a11y_usage_label, app_lookup_key, apply_retry_status,
-        bottom_pinned_row_index, cgroup_group_text, dialog_command, help_shortcuts,
-        is_row_activation, is_sort_key_activation, key_action, normalised_group_cpu,
-        power_summary_text, process_row_values, report_save_result, resolve_probe_retry,
-        sanitize_app_display_name, signal_enabled, sort_header_label, sort_header_text,
-        table_columns, temperature_severity_label, truncate_label, usage_severity,
-        AccessKitSortDirection, BackendInit, DialogButton, KeyAction, ProbeRetry,
-        MAX_APP_DISPLAY_NAME_CHARS,
+        bottom_pinned_row_index, cgroup_group_text, dialog_command, gpu_usage_a11y_label,
+        gpu_usage_text, gpu_vram_text, help_shortcuts, is_row_activation, is_sort_key_activation,
+        key_action, normalised_group_cpu, power_summary_text, process_row_values,
+        report_save_result, resolve_probe_retry, sanitize_app_display_name, signal_enabled,
+        sort_header_label, sort_header_text, table_columns, temperature_severity_label,
+        truncate_label, usage_severity, AccessKitSortDirection, BackendInit, DialogButton,
+        KeyAction, ProbeRetry, MAX_APP_DISPLAY_NAME_CHARS,
     };
     use gpui_kit::Modifiers;
     use std::time::Duration;
@@ -5449,6 +5545,21 @@ mod tests {
         );
         // Out-of-range probe data is clamped like the visible bar.
         assert_eq!(a11y_usage_label("CPU 使用率", 140.0), "CPU 使用率 100%、高");
+    }
+
+    #[test]
+    fn gpu_overview_helpers_never_fabricate_missing_telemetry() {
+        assert_eq!(gpu_usage_text(None), "—");
+        assert_eq!(gpu_usage_text(Some(62.5)), "62.5%");
+        assert_eq!(gpu_vram_text(None, None), "—");
+        assert_eq!(gpu_vram_text(Some(1_073_741_824), None), "—");
+        assert_eq!(gpu_vram_text(None, Some(4 * 1_073_741_824)), "—");
+        assert_eq!(
+            gpu_vram_text(Some(1_073_741_824), Some(4 * 1_073_741_824)),
+            format::format_used_of_total(1_073_741_824, 4 * 1_073_741_824)
+        );
+        assert_eq!(gpu_usage_a11y_label(None), "GPU 使用率 —、不明");
+        assert_eq!(gpu_usage_a11y_label(Some(90.0)), "GPU 使用率 90%、高");
     }
 
     #[test]

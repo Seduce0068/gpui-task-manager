@@ -9,14 +9,17 @@ description = "Native SystemProbe implementation (sysinfo; rustix on Unix) for t
 
 [dependencies]
 tm-core = { workspace = true }
-# default features を絞りつつ、温度センサー等の component 収集も有効化する
-# （GPU 利用率の詳細収集は将来検討）。system/disk/network/user は基本機能。
+# default features を絞りつつ、温度センサー等の component 収集と GPU 列挙も有効化する
+# （R1-GPUDATA）。system/disk/network/user は基本機能。
+# gpu feature は sysinfo 0.40.3 の `Gpus`/`Gpu` API を有効化するだけなので
+# Cargo.lock の依存グラフは変わらない（feature は lock に記録されない）。
 sysinfo = { version = "=0.40.3", default-features = false, features = [
     "component",
     "system",
     "disk",
     "network",
     "user",
+    "gpu",
 ] }
 
 # rustix は POSIX シグナル送信（process::kill_process）と、R2X-D5B の

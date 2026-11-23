@@ -3174,6 +3174,9 @@ impl TaskManagerApp {
                     .collect()
             })
             .unwrap_or_default();
+        // R1-GPUDATA: only the first enumerated GPU gets a card. Missing
+        // telemetry stays missing ("—") instead of becoming a fabricated zero.
+        let gpu = GpuOverview::from_snapshot(snapshot);
 
         let frequency_label = frequency
             .map(|mhz| format!(" / {:.2} GHz", mhz as f32 / 1_000.0))
@@ -3347,7 +3350,7 @@ impl TaskManagerApp {
         .aria_label(a11y_usage_label("メモリ使用率", mem_percent));
 
         // 取得不可でもカード枠と既存の id / aria は残す（CDP の座標定数を壊さない）。
-        // 中身を説明へ差し替えるだけで、4 枚のカード構成は常に不変。
+        // 中身を説明へ差し替えるだけで、5 枚のカード構成は常に不変。
         let network_body = if self.dashboard.platform_info().supports(Section::Network) {
             v_flex()
                 .gap_1()
@@ -3517,6 +3520,60 @@ impl TaskManagerApp {
                 "システム概要、ホスト {hostname}、プロセス {process_count} 件"
             ));
 
+        // GPU カードは既存行に 5 枚目として加えるだけ。OVERVIEW_HEIGHT は
+        // 変更しないので、CDP が座標を決め打ちするヘッダー／ツールバー／
+        // テーブル行の Y 座標は一切動かない。内容も 260 px に収まるよう
+        // 名前・使用率・バー・VRAM の 4 行に限定する。
+        let gpu_body = v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child(gpu.name.clone()),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_end()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(gpu.usage_color()))
+                            .child(gpu.usage_text()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(palette().muted))
+                            .child("使用率"),
+                    ),
+            )
+            // The shared helper keeps Role::ProgressIndicator and the
+            // aria_label / aria_numeric_value / aria_value contract intact.
+            .child(accessible_metric_bar(
+                "gpu-usage-bar",
+                gpu.usage.unwrap_or(0.0),
+                gpu.usage_color(),
+                gpu.bar_label(),
+            ))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(rgb(palette().muted))
+                    .child("VRAM")
+                    .child(gpu.vram.clone()),
+            );
+        let gpu_card = card("GPU", palette().yellow, gpu_body)
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .id("overview-gpu")
+            .role(Role::Group)
+            .aria_label(gpu.aria_label());
+
         div()
             .flex()
             .gap_3()
@@ -3526,6 +3583,7 @@ impl TaskManagerApp {
             .child(memory_card)
             .child(network_card)
             .child(system_card)
+            .child(gpu_card)
     }
 
     // --------------------------------------------------------------- toolbar
@@ -5759,6 +5817,67 @@ fn a11y_usage_label(title: &str, percent: f32) -> String {
     )
 }
 
+/// GPU values shown by the first enumerated GPU's overview card.
+///
+/// Every telemetry field is optional at the probe boundary (R1-GPUDATA), so a
+/// driver that cannot report usage or VRAM renders as `—` rather than a
+/// fabricated `0`. This pure resolver keeps that display contract testable
+/// without a GPUI window and never feeds the DOM proof or the AX mirror.
+#[derive(Clone, Debug, PartialEq)]
+struct GpuOverview {
+    name: String,
+    usage: Option<f32>,
+    vram: String,
+}
+
+impl GpuOverview {
+    fn from_snapshot(snapshot: Option<&SystemSnapshot>) -> Self {
+        let Some(gpu) = snapshot.and_then(|s| s.gpus.first()) else {
+            return Self {
+                name: "—".to_string(),
+                usage: None,
+                vram: "—".to_string(),
+            };
+        };
+        let name = if gpu.name.is_empty() {
+            "—".to_string()
+        } else {
+            gpu.name.clone()
+        };
+        let usage = gpu.usage_percent.filter(|percent| percent.is_finite());
+        let vram = match (gpu.memory_used_bytes, gpu.memory_total_bytes) {
+            (Some(used), Some(total)) => format::format_used_of_total(used, total),
+            _ => "—".to_string(),
+        };
+        Self { name, usage, vram }
+    }
+
+    fn usage_text(&self) -> String {
+        self.usage
+            .map(usage_value_text)
+            .unwrap_or_else(|| "—".to_string())
+    }
+
+    fn usage_color(&self) -> u32 {
+        self.usage.map(usage_color).unwrap_or(palette().muted)
+    }
+
+    fn bar_label(&self) -> String {
+        self.usage
+            .map(|percent| a11y_usage_label("GPU 使用率", percent))
+            .unwrap_or_else(|| "GPU 使用率、取得不可".to_string())
+    }
+
+    fn aria_label(&self) -> String {
+        format!(
+            "GPU 概要、{name}、使用率 {usage}、VRAM {vram}",
+            name = self.name,
+            usage = self.usage_text(),
+            vram = self.vram,
+        )
+    }
+}
+
 /// Circular counterpart of [`accessible_metric_bar`], drawn with GPUI's own
 /// canvas/path primitives (no new dependency, no `unsafe`).
 ///
@@ -7636,6 +7755,100 @@ mod tests {
             assert_eq!(before, app.proof_string(0, 0));
         });
         assert!(!proof.contains("icon"), "icons stay out of the DOM proof");
+    }
+
+    #[test]
+    fn gpu_overview_renders_first_gpu_and_keeps_missing_telemetry_honest() {
+        use tm_core::model::GpuSnapshot;
+
+        // No snapshot / no GPU: every field is the em-dash placeholder.
+        let empty = GpuOverview::from_snapshot(None);
+        assert_eq!(empty.name, "—");
+        assert_eq!(empty.usage, None);
+        assert_eq!(empty.vram, "—");
+        assert_eq!(empty.usage_text(), "—");
+        assert!(empty.bar_label().contains("取得不可"));
+        assert_eq!(
+            GpuOverview::from_snapshot(Some(&SystemSnapshot::default())),
+            empty
+        );
+
+        let snapshot = SystemSnapshot {
+            gpus: vec![
+                GpuSnapshot {
+                    name: "GeForce GTX 1660 SUPER".into(),
+                    usage_percent: Some(72.4),
+                    memory_used_bytes: Some(2 * 1_024 * 1_024 * 1_024),
+                    memory_total_bytes: Some(6 * 1_024 * 1_024 * 1_024),
+                },
+                GpuSnapshot {
+                    name: "second GPU".into(),
+                    usage_percent: Some(99.0),
+                    memory_used_bytes: Some(1),
+                    memory_total_bytes: Some(2),
+                },
+            ],
+            ..SystemSnapshot::default()
+        };
+        let gpu = GpuOverview::from_snapshot(Some(&snapshot));
+        assert_eq!(gpu.name, "GeForce GTX 1660 SUPER");
+        assert_eq!(gpu.usage, Some(72.4));
+        assert_eq!(gpu.vram, "2.0 GiB / 6.0 GiB");
+        assert!(gpu.usage_text().starts_with("72.4%"));
+        assert_eq!(gpu.bar_label(), a11y_usage_label("GPU 使用率", 72.4));
+        let aria = gpu.aria_label();
+        assert!(aria.contains("GeForce GTX 1660 SUPER"));
+        assert!(aria.contains("2.0 GiB / 6.0 GiB"));
+        assert!(!aria.contains("second GPU"), "only the first GPU is shown");
+
+        // A partially reported GPU never invents a zero or a VRAM total.
+        let partial = SystemSnapshot {
+            gpus: vec![GpuSnapshot {
+                name: String::new(),
+                usage_percent: Some(f32::NAN),
+                memory_used_bytes: Some(512),
+                memory_total_bytes: None,
+            }],
+            ..SystemSnapshot::default()
+        };
+        let gpu = GpuOverview::from_snapshot(Some(&partial));
+        assert_eq!(gpu.name, "—");
+        assert_eq!(gpu.usage, None, "non-finite percentages are not telemetry");
+        assert_eq!(gpu.vram, "—");
+        assert_eq!(gpu.usage_text(), "—");
+        assert_eq!(gpu.usage_color(), palette().muted);
+        assert!(gpu.bar_label().contains("取得不可"));
+    }
+
+    #[test]
+    fn gpu_card_keeps_dom_proof_and_ax_mirror_role_contract_unchanged() {
+        use tm_core::model::GpuSnapshot;
+
+        // The GPU card is canvas-only: no new `key=value;` proof field and no
+        // change to the DOM mirror's role/selected structure.
+        let snapshot = SystemSnapshot {
+            gpus: vec![GpuSnapshot {
+                name: "GPU-9".into(),
+                usage_percent: Some(42.0),
+                memory_used_bytes: Some(3),
+                memory_total_bytes: Some(4),
+            }],
+            ..SystemSnapshot::default()
+        };
+        let html = a11y_mirror_metrics_html(Some(&snapshot));
+        assert_eq!(html.matches("role=\"").count(), 1, "one metrics group");
+        assert!(
+            !html.contains("GPU-9"),
+            "GPU values stay out of the AX mirror"
+        );
+        assert!(
+            !html.contains("aria-selected"),
+            "selected property unchanged"
+        );
+
+        // Geometry constants the CDP script recomputes from must stay fixed.
+        assert_eq!(OVERVIEW_HEIGHT, 260.0);
+        assert_eq!(TOOLBAR_HEIGHT, 36.0);
     }
 
     /// Builds a classified grouped dashboard used by the section-heading tests.
