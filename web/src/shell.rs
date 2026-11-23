@@ -4114,9 +4114,15 @@ impl TaskManagerApp {
         } else {
             "section-other"
         };
+        let core_count = self
+            .dashboard
+            .snapshot()
+            .map(|snapshot| snapshot.cpu.core_count().max(1))
+            .unwrap_or(1);
+        let section_cpu = normalised_group_cpu(row.cpu_percent, core_count);
         let a11y_label = a11y_section_header_label(
             &row.label,
-            row.cpu_percent,
+            section_cpu,
             row.memory_bytes,
             row.swap_bytes,
             row.virtual_memory_bytes,
@@ -4150,7 +4156,7 @@ impl TaskManagerApp {
                 div()
                     .w(px(COL_CPU))
                     .flex_shrink_0()
-                    .child(format::format_cpu_percent(row.cpu_percent)),
+                    .child(format::format_cpu_percent(section_cpu)),
             )
             .child(
                 div()

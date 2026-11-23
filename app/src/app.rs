@@ -337,7 +337,9 @@ fn process_row_values(
             icon_key: None,
             name: group.label.clone(),
             command: String::new(),
-            cpu_percent: group.cpu_percent,
+            // Section totals are raw view-model sums; scale by logical cores
+            // exactly like the group rows so the column never reads >100%.
+            cpu_percent: normalised_group_cpu(group.cpu_percent, core_count),
             memory_bytes: group.memory_bytes,
             swap_bytes: group.swap_bytes,
             virtual_memory_bytes: group.virtual_memory_bytes,
