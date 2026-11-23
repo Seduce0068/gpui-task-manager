@@ -729,6 +729,23 @@ fn normalised_group_cpu(total: f32, core_count: usize) -> f32 {
     (total / core_count as f32).min(100.0)
 }
 
+/// Display-row index to keep on screen when rows are added while the user is
+/// scrolled to the end (C1-TOTALS, Others reachability).
+///
+/// The Others bucket is the last top-level aggregate row; expanding it reveals
+/// depth-1 rows after it, so the bucket itself is the target rather than the
+/// literal last child. `None` leaves ordinary scroll positions and the
+/// selection-following `ScrollStrategy::Nearest` path untouched. Pure so the
+/// contract is testable without a browser window.
+fn bottom_pinned_row_index(rows: &[AppGroupRow], was_at_bottom: bool) -> Option<usize> {
+    if !was_at_bottom {
+        return None;
+    }
+    rows.iter()
+        .rposition(|row| row.key == OTHERS_APP_GROUP_KEY && row.depth == 0)
+        .or_else(|| rows.len().checked_sub(1))
+}
+
 /// Resolves one visible row without touching GPUI state, so the grouped and
 /// flat/tree data paths can be asserted in native unit tests.
 ///
@@ -1584,6 +1601,10 @@ impl TaskManagerApp {
 
     /// Takes one sample from the deterministic demo probe.
     fn ingest_demo(&mut self) {
+        // Capture before ingest: after new rows arrive the viewport is no
+        // longer at the end, so the anchor must be read from the old layout.
+        let was_at_bottom = self.scroll_handle.is_scrolled_to_end() == Some(true);
+        let selected_before = self.dashboard.selected_key();
         if let DataSource::Demo(probe) = &mut self.source {
             match probe.sample() {
                 Ok(snapshot) => {
@@ -1597,8 +1618,25 @@ impl TaskManagerApp {
                 }
             }
         }
+        self.pin_bottom_after_ingest(was_at_bottom, selected_before);
         self.revalidate_row_menu();
         self.sync_proof_dom();
+    }
+
+    /// Restores a bottom-anchored viewport after a sample changes the row count.
+    ///
+    /// Selection changes keep their existing `ScrollStrategy::Nearest` path in
+    /// `handle_command`; only an unchanged selection is pinned here, so the two
+    /// scroll intents can never overwrite each other in one frame.
+    fn pin_bottom_after_ingest(&self, was_at_bottom: bool, selected_before: Option<ProcessKey>) {
+        if !self.dashboard.app_group_view() || self.dashboard.selected_key() != selected_before {
+            return;
+        }
+        let rows = self.dashboard.app_group_display_rows();
+        if let Some(index) = bottom_pinned_row_index(&rows, was_at_bottom) {
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Bottom);
+        }
     }
 
     /// Ingests one guarded poll result, returning whether anything changed.
@@ -1640,6 +1678,10 @@ impl TaskManagerApp {
         // before the new one replaces it. A failure before the first successful
         // fetch has nothing to mark stale; `live_error` covers that case.
         let had_snapshot = self.dashboard.snapshot().is_some();
+        // Bottom anchor and selection are sampled from the pre-ingest state for
+        // the same reason (C1-TOTALS): after ingest the old end is gone.
+        let was_at_bottom = self.scroll_handle.is_scrolled_to_end() == Some(true);
+        let selected_before = self.dashboard.selected_key();
         self.stale = stale_after_poll(had_snapshot, result.is_ok());
         match result {
             Ok(response) => {
@@ -1662,6 +1704,7 @@ impl TaskManagerApp {
                 self.record_live_error(&error);
             }
         }
+        self.pin_bottom_after_ingest(was_at_bottom, selected_before);
         self.revalidate_row_menu();
         self.sync_proof_dom();
     }
@@ -4057,9 +4100,12 @@ impl TaskManagerApp {
 
     /// Display-only section heading drawn between the two application classes.
     ///
-    /// No click, focus or context-menu handler: a heading is a `RowHeader` with
-    /// a filled background and bold text, not a selectable process row. Its id
-    /// is the reserved key from the viewmodel, so it is stable across frames.
+    /// The metric cells show the classified section's totals supplied by the
+    /// view model; the command cell stays empty so the heading never borrows a
+    /// representative process's identity. No click, focus or context-menu
+    /// handler: a heading is a `RowHeader` with a filled background and bold
+    /// text, not a selectable process row. Its id is the reserved key from the
+    /// viewmodel, so it is stable across frames (C3-WEBSECTIONS, C1-TOTALS).
     fn section_header_row(&self, row: &AppGroupRow) -> AnyElement {
         let id = if row.key == APPS_SECTION_KEY {
             "section-apps"
@@ -4068,20 +4114,62 @@ impl TaskManagerApp {
         } else {
             "section-other"
         };
+        let a11y_label = a11y_section_header_label(
+            &row.label,
+            row.cpu_percent,
+            row.memory_bytes,
+            row.swap_bytes,
+            row.virtual_memory_bytes,
+            row.process_count,
+        );
         div()
             .id(id)
             .role(Role::RowHeader)
-            .aria_label(row.label.clone())
+            .aria_label(a11y_label)
             .flex()
             .items_center()
             .w_full()
             .h(px(ROW_HEIGHT))
             .px_3()
+            .gap_2()
             .bg(rgb(palette().mantle))
             .text_sm()
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(palette().subtext))
-            .child(row.label.clone())
+            .child(
+                div()
+                    .w(px(COL_NAME))
+                    .flex_shrink_0()
+                    .truncate()
+                    .child(row.label.clone()),
+            )
+            // Keeps the six-column alignment of a data row without showing a
+            // representative process's command.
+            .child(div().flex_1().min_w_0())
+            .child(
+                div()
+                    .w(px(COL_CPU))
+                    .flex_shrink_0()
+                    .child(format::format_cpu_percent(row.cpu_percent)),
+            )
+            .child(
+                div()
+                    .w(px(COL_MEMORY))
+                    .flex_shrink_0()
+                    .child(format::format_bytes(row.memory_bytes)),
+            )
+            .child(
+                div()
+                    .w(px(COL_SWAP))
+                    .flex_shrink_0()
+                    .child(format::format_bytes(row.swap_bytes)),
+            )
+            .child(
+                div()
+                    .w(px(COL_VIRTUAL_MEMORY))
+                    .flex_shrink_0()
+                    .child(format::format_bytes(row.virtual_memory_bytes)),
+            )
             .into_any_element()
     }
 
@@ -5458,6 +5546,28 @@ fn a11y_group_row_label(
     )
 }
 
+/// Accessible name of a display-only section heading (C1-TOTALS).
+///
+/// Reads the same totals the heading's metric cells show plus the number of
+/// processes behind them. No process identity, status or selection state is
+/// announced: a heading stays a `RowHeader`, never a selectable data row.
+fn a11y_section_header_label(
+    name: &str,
+    cpu: f32,
+    memory_bytes: u64,
+    swap_bytes: u64,
+    virtual_memory_bytes: u64,
+    process_count: usize,
+) -> String {
+    format!(
+        "{name}、{process_count} プロセス、合計 CPU {cpu_label}、合計メモリ {memory_label}、合計スワップ {swap_label}、合計仮想メモリ {virtual_memory_label}",
+        cpu_label = format::format_cpu_percent(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+        swap_label = format::format_bytes(swap_bytes),
+        virtual_memory_label = format::format_bytes(virtual_memory_bytes),
+    )
+}
+
 /// Accessible name for the synthetic "その他 N アプリ" summary row (C1-GROUP).
 ///
 /// Uses a fixed label plus the numeric app count, so no raw process name can
@@ -5853,11 +5963,22 @@ fn a11y_mirror_rows_html_with_names(
 /// One mirrored section heading, emitted as a `row` so the CDP
 /// `row == proof["rows"] + 1` count keeps holding when headings are present.
 /// A `rowheader` cell exposes the heading text; no `aria-rowindex` is assigned
-/// because headings are not data rows (C3-WEBSECTIONS).
-fn a11y_mirror_section_header_html(label: &str) -> String {
+/// because headings are not data rows (C3-WEBSECTIONS). The accessible name
+/// carries the same section totals the canvas draws (C1-TOTALS); the DOM shape
+/// stays exactly one row with one `rowheader` cell.
+fn a11y_mirror_section_header_html(row: &AppGroupRow) -> String {
+    let a11y_label = a11y_section_header_label(
+        &row.label,
+        row.cpu_percent,
+        row.memory_bytes,
+        row.swap_bytes,
+        row.virtual_memory_bytes,
+        row.process_count,
+    );
     format!(
-        "<div role=\"row\" aria-label=\"{label}\"><div role=\"rowheader\">{label}</div></div>",
-        label = escape_html(label)
+        "<div role=\"row\" aria-label=\"{}\"><div role=\"rowheader\">{}</div></div>",
+        escape_html(&a11y_label),
+        escape_html(&row.label)
     )
 }
 
@@ -5894,7 +6015,7 @@ fn a11y_mirror_group_rows_html_with_names(
     let mut data_index = 0usize;
     for row in rows.iter() {
         if row.kind == AppRowKind::SectionHeader {
-            html.push_str(&a11y_mirror_section_header_html(&row.label));
+            html.push_str(&a11y_mirror_section_header_html(row));
             continue;
         }
         data_index += 1;
@@ -7386,6 +7507,99 @@ mod tests {
         assert!(!proof.contains(tm_viewmodel::APPS_SECTION_LABEL));
         assert!(!proof.contains(tm_viewmodel::BACKGROUND_SECTION_LABEL));
         assert!(!proof.contains(";アプリ="));
+    }
+
+    #[test]
+    fn section_heading_totals_reach_the_a11y_mirror_without_new_row_attributes() {
+        let mut dashboard = classified_demo_dashboard();
+        let mut snapshot = dashboard.snapshot().cloned().expect("demo snapshot");
+        for process in &mut snapshot.processes {
+            process.memory_bytes = 100;
+            process.virtual_memory_bytes = 1_000;
+            process.swap_bytes = 20;
+        }
+        dashboard.ingest(snapshot);
+        let rows = dashboard.app_group_display_rows();
+        let header = rows
+            .iter()
+            .find(|row| row.key == APPS_SECTION_KEY)
+            .expect("アプリ heading");
+        assert!(header.process_count > 0);
+        assert_eq!(header.memory_bytes, header.process_count as u64 * 100);
+        assert_eq!(
+            header.virtual_memory_bytes,
+            header.process_count as u64 * 1_000
+        );
+        assert_eq!(header.swap_bytes, header.process_count as u64 * 20);
+
+        let label = a11y_section_header_label(
+            &header.label,
+            header.cpu_percent,
+            header.memory_bytes,
+            header.swap_bytes,
+            header.virtual_memory_bytes,
+            header.process_count,
+        );
+        assert!(label.contains(&format::format_bytes(header.swap_bytes)));
+        assert!(label.contains(&format!("{} プロセス", header.process_count)));
+        let heading_html = a11y_mirror_section_header_html(header);
+        assert!(heading_html.contains(&escape_html(&label)));
+        assert_eq!(heading_html.matches("role=\"row\"").count(), 1);
+        assert_eq!(heading_html.matches("role=\"rowheader\"").count(), 1);
+        assert!(!heading_html.contains("aria-rowindex"));
+        assert!(!heading_html.contains("aria-selected"));
+        assert!(!heading_html.contains("aria-expanded"));
+        let html = a11y_mirror_group_rows_html(dashboard.snapshot(), &rows, None);
+        assert!(html.contains(&escape_html(&label)));
+    }
+
+    #[test]
+    fn bottom_pinned_scroll_keeps_others_reachable_after_row_growth() {
+        let mut dashboard = many_apps_dashboard(6);
+        let rows = dashboard.app_group_display_rows();
+        let others = rows
+            .iter()
+            .rposition(|row| row.key == OTHERS_APP_GROUP_KEY)
+            .expect("others row");
+        assert_eq!(others + 1, rows.len());
+        assert_eq!(bottom_pinned_row_index(&rows, false), None);
+        assert_eq!(bottom_pinned_row_index(&rows, true), Some(others));
+
+        // A longer sample adds a real group row; the pure helper follows the
+        // bucket to its new position instead of the old index.
+        let mut snapshot = many_apps_snapshot(6);
+        snapshot
+            .processes
+            .extend((0..2).map(|index| ProcessSnapshot {
+                key: ProcessKey::new(900 + index, 9),
+                name: "chrome".into(),
+                command: "/usr/bin/chrome --new-window".into(),
+                cpu_percent: 1.0,
+                memory_bytes: 10,
+                ..ProcessSnapshot::default()
+            }));
+        dashboard.ingest(snapshot);
+        let grown = dashboard.app_group_display_rows();
+        assert!(grown.len() > rows.len());
+        let grown_others = grown
+            .iter()
+            .rposition(|row| row.key == OTHERS_APP_GROUP_KEY)
+            .expect("others row after growth");
+        assert!(grown_others > others);
+        assert_eq!(bottom_pinned_row_index(&grown, true), Some(grown_others));
+        assert_eq!(bottom_pinned_row_index(&grown, false), None);
+
+        // Expanding the bucket reveals children after it; the bucket itself
+        // remains the target so it stays visible and clickable.
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        let expanded = dashboard.app_group_display_rows();
+        let bucket = expanded
+            .iter()
+            .rposition(|row| row.key == OTHERS_APP_GROUP_KEY)
+            .expect("others row when expanded");
+        assert!(bucket < expanded.len() - 1);
+        assert_eq!(bottom_pinned_row_index(&expanded, true), Some(bucket));
+        assert_eq!(bottom_pinned_row_index(&[], true), None);
     }
 
     #[test]

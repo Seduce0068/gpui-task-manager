@@ -777,13 +777,56 @@ fn others_row(
     }
 }
 
-/// Builds a display-only section heading row (C1-VMCLASSIFY).
+/// Accumulated metrics of one classified section (C1-TOTALS).
+///
+/// CPU is added in `f64` and narrowed once, mirroring [`others_row`] so a long
+/// section does not accumulate per-row rounding drift; byte counts use
+/// saturating addition. Only top-level `Group` rows are added: an expanded
+/// process row restates its parent group's metrics, and the trailing "others"
+/// bucket is deliberately unclassified.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SectionTotals {
+    cpu_percent: f64,
+    memory_bytes: u64,
+    virtual_memory_bytes: u64,
+    swap_bytes: u64,
+    process_count: usize,
+}
+
+impl SectionTotals {
+    fn add(&mut self, row: &AppGroupRow) {
+        self.cpu_percent += f64::from(row.cpu_percent.max(0.0));
+        self.memory_bytes = self.memory_bytes.saturating_add(row.memory_bytes);
+        self.virtual_memory_bytes = self
+            .virtual_memory_bytes
+            .saturating_add(row.virtual_memory_bytes);
+        self.swap_bytes = self.swap_bytes.saturating_add(row.swap_bytes);
+        self.process_count = self.process_count.saturating_add(row.process_count);
+    }
+
+    fn cpu_percent(self) -> f32 {
+        if self.cpu_percent.is_finite() {
+            self.cpu_percent as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Builds a display-only section heading row (C1-VMCLASSIFY, C1-TOTALS).
 ///
 /// `index` reuses the first classified row's in-range snapshot index so the
 /// row stays structurally valid, but `process_key` is an unreachable sentinel
 /// and `member_keys` is empty: a shell that accidentally activates the heading
-/// cannot select or signal a real process.
-fn section_header(key: &'static str, label: &'static str, index: usize) -> AppGroupRow {
+/// cannot select or signal a real process. The metric fields carry the totals
+/// of the section the heading opens, for display only — the heading still has
+/// no process identity and is never a selection or expansion target.
+fn section_header(
+    key: &'static str,
+    label: &'static str,
+    index: usize,
+    totals: SectionTotals,
+) -> AppGroupRow {
     AppGroupRow {
         kind: AppRowKind::SectionHeader,
         key: key.to_string(),
@@ -794,11 +837,11 @@ fn section_header(key: &'static str, label: &'static str, index: usize) -> AppGr
         depth: 0,
         has_children: false,
         expanded: false,
-        cpu_percent: 0.0,
-        memory_bytes: 0,
-        virtual_memory_bytes: 0,
-        swap_bytes: 0,
-        process_count: 0,
+        cpu_percent: totals.cpu_percent(),
+        memory_bytes: totals.memory_bytes,
+        virtual_memory_bytes: totals.virtual_memory_bytes,
+        swap_bytes: totals.swap_bytes,
+        process_count: totals.process_count,
     }
 }
 
@@ -1281,6 +1324,13 @@ impl Dashboard {
     /// unchanged (legacy order, no headings), so an async/classification-loading
     /// shell sees no flicker.
     ///
+    /// Each heading carries the totals of the section it opens (C1-TOTALS):
+    /// every top-level `Group` row whose key is in the injected set contributes
+    /// to 「アプリ」, every other one to 「バックグラウンド プロセス」. Expanded
+    /// process rows inherit their parent's section and are not counted again;
+    /// the trailing "others" bucket stays unclassified and is never added to
+    /// either heading.
+    ///
     /// Purely additive: [`Self::app_group_rows`], `visible_indices` and every
     /// export/wire path keep their existing shape and contracts. Heading rows
     /// carry no selectable process identity and must never reach a command.
@@ -1288,6 +1338,21 @@ impl Dashboard {
         let rows = self.app_group_rows();
         if self.app_keys.is_empty() {
             return rows;
+        }
+        // C1-TOTALS: aggregate before inserting the headings so both headings
+        // see the complete section, including groups that appear later in the
+        // display order (classification is the primary sort key).
+        let mut apps_totals = SectionTotals::default();
+        let mut background_totals = SectionTotals::default();
+        for row in &rows {
+            if row.kind != AppRowKind::Group || row.depth != 0 {
+                continue;
+            }
+            if self.app_keys.contains(&row.key) {
+                apps_totals.add(row);
+            } else {
+                background_totals.add(row);
+            }
         }
         let mut display = Vec::with_capacity(rows.len() + 2);
         let mut apps_heading = false;
@@ -1307,6 +1372,7 @@ impl Dashboard {
                         APPS_SECTION_KEY,
                         APPS_SECTION_LABEL,
                         row.index,
+                        apps_totals,
                     ));
                     apps_heading = true;
                 }
@@ -1315,6 +1381,7 @@ impl Dashboard {
                         BACKGROUND_SECTION_KEY,
                         BACKGROUND_SECTION_LABEL,
                         row.index,
+                        background_totals,
                     ));
                     background_heading = true;
                 }
@@ -5381,6 +5448,136 @@ mod tests {
         assert!(display[..display.len() - 1]
             .iter()
             .all(|row| row.key != OTHERS_APP_GROUP_KEY));
+    }
+
+    #[test]
+    fn section_headings_carry_the_totals_of_their_own_classified_groups() {
+        let mut snapshot = classification_snapshot();
+        for process in &mut snapshot.processes {
+            process.virtual_memory_bytes = 1_000;
+            process.swap_bytes = 20;
+        }
+        let mut dashboard = dashboard();
+        dashboard.ingest(snapshot);
+        dashboard.set_app_keys(key_set(&["zebra", "apple"]));
+
+        let display = dashboard.app_group_display_rows();
+        let apps = display
+            .iter()
+            .find(|row| row.key == APPS_SECTION_KEY)
+            .expect("アプリ heading");
+        let background = display
+            .iter()
+            .find(|row| row.key == BACKGROUND_SECTION_KEY)
+            .expect("バックグラウンド heading");
+        // zebra (4.0 + 3.0) + apple (1.0 + 0.5) = 8.5% over four processes;
+        // yard (6.0 + 2.0) + beach (0.9 + 0.4) = 9.3% over four processes.
+        assert!((apps.cpu_percent - 8.5).abs() < 1e-4, "{apps:?}");
+        assert_eq!(apps.memory_bytes, 400);
+        assert_eq!(apps.virtual_memory_bytes, 4_000);
+        assert_eq!(apps.swap_bytes, 80);
+        assert_eq!(apps.process_count, 4);
+        assert!(
+            (background.cpu_percent - 9.3).abs() < 1e-4,
+            "{background:?}"
+        );
+        assert_eq!(background.memory_bytes, 400);
+        assert_eq!(background.virtual_memory_bytes, 4_000);
+        assert_eq!(background.swap_bytes, 80);
+        assert_eq!(background.process_count, 4);
+
+        // The folded alpha/beta "others" bucket (0.75%, 2 processes, 2_000
+        // virtual bytes) belongs to neither heading and stays at the end.
+        let others = display.last().expect("others row");
+        assert_eq!(others.key, OTHERS_APP_GROUP_KEY);
+        assert_eq!(others.process_count, 2);
+        assert_eq!(others.virtual_memory_bytes, 2_000);
+        // Both headings together cover 8_000 bytes; the bucket's 2_000 are not
+        // folded into either one.
+        assert_eq!(
+            apps.virtual_memory_bytes + background.virtual_memory_bytes,
+            8_000
+        );
+
+        // A heading still has no selectable identity, members or children.
+        let snapshot = dashboard.snapshot().expect("snapshot");
+        for header in display
+            .iter()
+            .filter(|row| row.kind == AppRowKind::SectionHeader)
+        {
+            assert_eq!(header.process_key, ProcessKey::new(u32::MAX, u64::MAX));
+            assert!(snapshot.process(header.process_key).is_none());
+            assert!(header.member_keys.is_empty());
+            assert!(!header.has_children);
+            assert!(!header.expanded);
+        }
+    }
+
+    #[test]
+    fn others_stays_the_last_aggregate_after_row_growth_and_expansion() {
+        let mut dashboard = dashboard();
+        let mut snapshot = classification_snapshot();
+        for process in &mut snapshot.processes {
+            process.virtual_memory_bytes = 1_000;
+            process.swap_bytes = 20;
+        }
+        // A new multi-process app joins the classified section and a new single
+        // joins the "others" bucket: the display list grows on both sides.
+        for (pid, name, cpu) in [(70, "gamma", 5.0), (71, "gamma", 1.0), (80, "delta", 0.1)] {
+            snapshot.processes.push(ProcessSnapshot {
+                key: ProcessKey::new(pid, 1),
+                name: name.into(),
+                command: format!("/usr/bin/{name}"),
+                cpu_percent: cpu,
+                memory_bytes: 100,
+                virtual_memory_bytes: 1_000,
+                swap_bytes: 20,
+                ..ProcessSnapshot::default()
+            });
+        }
+        dashboard.ingest(snapshot);
+        dashboard.set_app_keys(key_set(&["zebra", "apple", "gamma"]));
+
+        let display = dashboard.app_group_display_rows();
+        let others = display
+            .iter()
+            .rposition(|row| row.kind == AppRowKind::Others)
+            .expect("others row");
+        let last_aggregate = display
+            .iter()
+            .rposition(|row| {
+                row.depth == 0 && matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
+            })
+            .expect("aggregate row");
+        assert_eq!(others, last_aggregate);
+        assert_eq!(display.last().expect("last row").key, OTHERS_APP_GROUP_KEY);
+        let apps = display
+            .iter()
+            .find(|row| row.key == APPS_SECTION_KEY)
+            .expect("アプリ heading");
+        assert_eq!(apps.process_count, 6, "zebra + apple + gamma members");
+
+        // Expanding the bucket reveals depth-1 rows after it, but the last
+        // aggregate row and each heading's totals stay put (no double count).
+        dashboard.apply(Command::ToggleAppGroup(OTHERS_APP_GROUP_KEY.into()));
+        let expanded = dashboard.app_group_display_rows();
+        assert!(expanded.len() > display.len());
+        let others = expanded
+            .iter()
+            .rposition(|row| row.kind == AppRowKind::Others)
+            .expect("others row");
+        let last_aggregate = expanded
+            .iter()
+            .rposition(|row| {
+                row.depth == 0 && matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
+            })
+            .expect("aggregate row");
+        assert_eq!(others, last_aggregate);
+        let apps_after = expanded
+            .iter()
+            .find(|row| row.key == APPS_SECTION_KEY)
+            .expect("アプリ heading");
+        assert_eq!(apps_after, apps);
     }
 
     #[test]

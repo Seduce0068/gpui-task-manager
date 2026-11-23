@@ -25,7 +25,7 @@ use tm_core::{
 };
 use tm_viewmodel::{
     AppGroupRow, AppRowKind, Command, Dashboard, EditOutcome, Effect, FilterInput,
-    DEFAULT_REFRESH_INTERVAL,
+    DEFAULT_REFRESH_INTERVAL, OTHERS_APP_GROUP_KEY,
 };
 
 use crate::settings::Settings;
@@ -148,6 +148,23 @@ fn row_to_display_index(dashboard: &Dashboard, row_index: usize) -> usize {
         real += 1;
     }
     row_index
+}
+
+/// Display-row index to keep on screen when rows are added while the user is
+/// scrolled to the bottom (C1-TOTALS, Others reachability).
+///
+/// The Others bucket is the last top-level aggregate row. Expanding it reveals
+/// depth-1 rows after it, so targeting the bucket itself — not the literal last
+/// child — keeps it visible and clickable. `None` leaves the existing
+/// selection-following `ScrollStrategy::Nearest` path untouched. Pure so the
+/// contract can be tested without a GPUI window.
+fn bottom_pinned_row_index(rows: &[AppGroupRow], was_at_bottom: bool) -> Option<usize> {
+    if !was_at_bottom {
+        return None;
+    }
+    rows.iter()
+        .rposition(|row| row.key == OTHERS_APP_GROUP_KEY && row.depth == 0)
+        .or_else(|| rows.len().checked_sub(1))
 }
 
 /// Whether a display row may receive keyboard focus / activation (C2).
@@ -311,17 +328,19 @@ fn process_row_values(
         // A heading reuses an in-range snapshot index only so the row stays
         // structurally valid. Neither the app key nor the representative
         // process may leak into any cell: the heading shows its fixed label and
-        // dashes, and it is never an activation target (C2-NATIVESECTIONS).
+        // the section totals, and it is never an activation target
+        // (C2-NATIVESECTIONS, C1-TOTALS). The totals are raw view-model sums;
+        // only ordinary multi-process Group rows scale CPU by the core count.
         Some(group) if group.kind == AppRowKind::SectionHeader => ProcessRowView {
             key: group.process_key,
             group_key: None,
             icon_key: None,
             name: group.label.clone(),
             command: String::new(),
-            cpu_percent: 0.0,
-            memory_bytes: 0,
-            swap_bytes: 0,
-            virtual_memory_bytes: 0,
+            cpu_percent: group.cpu_percent,
+            memory_bytes: group.memory_bytes,
+            swap_bytes: group.swap_bytes,
+            virtual_memory_bytes: group.virtual_memory_bytes,
             pid: "—".to_string(),
             user: "—".to_string(),
             status: ProcessStatus::Unknown,
@@ -334,7 +353,7 @@ fn process_row_values(
             is_others: false,
             is_section_header: true,
             command_emphasis: false,
-            process_count: 0,
+            process_count: group.process_count,
         },
         Some(group) if group.kind == AppRowKind::Group => ProcessRowView {
             key: group.process_key,
@@ -931,6 +950,11 @@ impl TaskManagerApp {
                     this.sampling_in_flight = false;
                     match result {
                         Ok(snapshot) => {
+                            // Capture the scroll anchor *before* ingest: once
+                            // rows are added the viewport is no longer at the
+                            // end, so the old answer would be lost (C1-TOTALS).
+                            let was_at_bottom =
+                                this.scroll_handle.is_scrolled_to_end() == Some(true);
                             let before = this.dashboard.selected_key();
                             this.dashboard.ingest(snapshot);
                             // Re-classify on every sample: a newly installed
@@ -945,6 +969,16 @@ impl TaskManagerApp {
                                     let position = row_to_display_index(&this.dashboard, position);
                                     this.scroll_handle
                                         .scroll_to_item(position, ScrollStrategy::Nearest);
+                                }
+                            } else if this.dashboard.app_group_view() {
+                                // Selection-following keeps priority; otherwise
+                                // a bottom-anchored user stays anchored so the
+                                // trailing Others row cannot be pushed away by
+                                // a longer sample (C1-TOTALS).
+                                let rows = this.dashboard.app_group_display_rows();
+                                if let Some(index) = bottom_pinned_row_index(&rows, was_at_bottom) {
+                                    this.scroll_handle
+                                        .scroll_to_item(index, ScrollStrategy::Bottom);
                                 }
                             }
                         }
@@ -2548,10 +2582,18 @@ impl TaskManagerApp {
         } else {
             format!("{}{}{}", "  ".repeat(depth.saturating_sub(1)), marker, name)
         };
-        // A heading's accessible name is exactly its visible heading text:
-        // no CPU/memory/selection noise and no process identity (C2).
+        // A heading's accessible name reads its visible heading text plus the
+        // section totals shown in the same row; no process identity, status or
+        // selection state is announced (C2, C1-TOTALS).
         let aria_label = if is_section_header {
-            name.clone()
+            a11y_section_header_label(
+                &name,
+                cpu,
+                memory,
+                swap_bytes,
+                virtual_memory,
+                process_count,
+            )
         } else if is_group {
             a11y_group_row_label(
                 &name,
@@ -2698,44 +2740,31 @@ impl TaskManagerApp {
                     } else {
                         usage_color(cpu)
                     }))
-                    .child(if is_section_header {
-                        "—".to_string()
-                    } else {
-                        format::format_cpu_percent(cpu)
-                    }),
+                    // C1-TOTALS: a heading shows its section total in every
+                    // metric column, never a dash. The view value is already
+                    // the classified section's sum for a heading row.
+                    .child(format::format_cpu_percent(cpu)),
             )
             .child(
                 div()
                     .w(px(COL_MEMORY))
                     .text_sm()
                     .text_color(rgb(palette().subtext))
-                    .child(if is_section_header {
-                        "—".to_string()
-                    } else {
-                        format::format_bytes(memory)
-                    }),
+                    .child(format::format_bytes(memory)),
             )
             .child(
                 div()
                     .w(px(COL_SWAP))
                     .text_sm()
                     .text_color(rgb(palette().subtext))
-                    .child(if is_section_header {
-                        "—".to_string()
-                    } else {
-                        format::format_bytes(swap_bytes)
-                    }),
+                    .child(format::format_bytes(swap_bytes)),
             )
             .child(
                 div()
                     .w(px(COL_VIRTUAL_MEMORY))
                     .text_sm()
                     .text_color(rgb(palette().subtext))
-                    .child(if is_section_header {
-                        "—".to_string()
-                    } else {
-                        format::format_bytes(virtual_memory)
-                    }),
+                    .child(format::format_bytes(virtual_memory)),
             );
         // Aggregate rows have no PID/user/status/threads, so those columns are
         // dash-only noise by default. The settings overlay restores them for
@@ -4258,6 +4287,28 @@ fn a11y_group_row_label(
     )
 }
 
+/// Accessible name of a display-only section heading (C1-TOTALS).
+///
+/// Reads the same totals the visible heading cells show and the number of
+/// processes they cover. No representative process identity, status or PID is
+/// ever announced: a heading remains a `RowHeader`, never a selectable row.
+fn a11y_section_header_label(
+    name: &str,
+    cpu: f32,
+    memory_bytes: u64,
+    swap_bytes: u64,
+    virtual_memory_bytes: u64,
+    process_count: usize,
+) -> String {
+    format!(
+        "{name}、{process_count} プロセス、合計 CPU {cpu_label}、合計メモリ {memory_label}、合計スワップ {swap_label}、合計仮想メモリ {virtual_memory_label}",
+        cpu_label = format::format_cpu_percent(cpu),
+        memory_label = format::format_bytes(memory_bytes),
+        swap_label = format::format_bytes(swap_bytes),
+        virtual_memory_label = format::format_bytes(virtual_memory_bytes),
+    )
+}
+
 /// Collapses whitespace and truncates for a one-line live announcement.
 fn truncate_label(text: &str, max_chars: usize) -> String {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4474,8 +4525,9 @@ mod tests {
     // were imported here.
     use super::{
         a11y_filter_hint, a11y_filter_label, a11y_group_row_label, a11y_live_text, a11y_row_label,
-        a11y_sort_accesskit, a11y_sort_direction, a11y_temperature_label, a11y_usage_label,
-        app_lookup_key, apply_retry_status, cgroup_group_text, dialog_command, help_shortcuts,
+        a11y_section_header_label, a11y_sort_accesskit, a11y_sort_direction,
+        a11y_temperature_label, a11y_usage_label, app_lookup_key, apply_retry_status,
+        bottom_pinned_row_index, cgroup_group_text, dialog_command, help_shortcuts,
         is_row_activation, is_sort_key_activation, key_action, normalised_group_cpu,
         power_summary_text, process_row_values, report_save_result, resolve_probe_retry,
         sanitize_app_display_name, signal_enabled, sort_header_label, sort_header_text,
@@ -4486,10 +4538,12 @@ mod tests {
     use gpui_kit::Modifiers;
     use std::time::Duration;
     use tm_core::{
-        PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, Signal, SortDirection, SortKey,
+        format, PlatformInfo, ProcessKey, ProcessSnapshot, ProcessStatus, Signal, SortDirection,
+        SortKey,
     };
     use tm_viewmodel::{
         AppGroupRow, AppRowKind, Command, Dashboard, StatusMessage, DEFAULT_REFRESH_INTERVAL,
+        OTHERS_APP_GROUP_KEY,
     };
 
     fn plain() -> Modifiers {
@@ -6196,7 +6250,7 @@ mod tests {
     }
 
     #[test]
-    fn section_header_values_ignore_the_representative_process() {
+    fn section_header_values_carry_totals_but_ignore_the_representative_process() {
         let representative = sample_process(100, "firefox");
         let header = AppGroupRow {
             kind: AppRowKind::SectionHeader,
@@ -6208,7 +6262,7 @@ mod tests {
             depth: 0,
             has_children: false,
             expanded: false,
-            // Hostile values: a heading must never borrow them.
+            // Section totals supplied by the view model (C1-TOTALS).
             cpu_percent: 99.0,
             memory_bytes: 999,
             swap_bytes: 777,
@@ -6224,13 +6278,90 @@ mod tests {
         assert_eq!(view.name, tm_viewmodel::APPS_SECTION_LABEL);
         assert_eq!(view.command, "");
         assert_eq!(view.pid, "—");
-        assert_eq!(view.cpu_percent, 0.0);
-        assert_eq!(view.memory_bytes, 0);
-        assert_eq!(view.swap_bytes, 0);
-        assert_eq!(view.virtual_memory_bytes, 0);
-        assert_eq!(view.process_count, 0);
+        assert_eq!(view.cpu_percent, header.cpu_percent);
+        assert_eq!(view.memory_bytes, header.memory_bytes);
+        assert_eq!(view.swap_bytes, header.swap_bytes);
+        assert_eq!(view.virtual_memory_bytes, header.virtual_memory_bytes);
+        assert_eq!(view.process_count, header.process_count);
         assert!(!view.selected, "a heading can never be selected");
         assert!(!view.has_children);
+
+        // The accessible name reads those same totals and never the
+        // representative process's identity.
+        let label = a11y_section_header_label(
+            &view.name,
+            view.cpu_percent,
+            view.memory_bytes,
+            view.swap_bytes,
+            view.virtual_memory_bytes,
+            view.process_count,
+        );
+        assert!(label.starts_with(tm_viewmodel::APPS_SECTION_LABEL));
+        assert!(label.contains("42 プロセス"));
+        assert!(label.contains(&format::format_bytes(header.memory_bytes)));
+        assert!(label.contains(&format::format_bytes(header.swap_bytes)));
+        assert!(label.contains(&format::format_bytes(header.virtual_memory_bytes)));
+        assert!(label.contains(&format::format_cpu_percent(header.cpu_percent)));
+        assert!(!label.contains(&format!("PID {}", representative.key.pid)));
+    }
+
+    #[test]
+    fn bottom_pinned_scroll_targets_the_others_row_only_when_at_the_end() {
+        let mut dashboard = Dashboard::new(PlatformInfo::demo(), DEFAULT_REFRESH_INTERVAL);
+        let mut snapshot = tm_core::demo::demo_snapshot(0);
+        // The stock demo has only one-process apps, so add a second firefox to
+        // keep a real group beside the folded singles (Others needs both).
+        snapshot.processes.push(ProcessSnapshot {
+            key: ProcessKey::new(999, 1),
+            name: "firefox".into(),
+            command: "/usr/lib/firefox/firefox --new-window".into(),
+            cpu_percent: 1.0,
+            memory_bytes: 10,
+            ..ProcessSnapshot::default()
+        });
+        dashboard.ingest(snapshot);
+        // No injected classification: one trailing Others row closes the list.
+        let rows = dashboard.app_group_display_rows();
+        let others = rows
+            .iter()
+            .rposition(|row| row.key == OTHERS_APP_GROUP_KEY)
+            .expect("others row");
+        assert_eq!(others + 1, rows.len());
+        assert_eq!(bottom_pinned_row_index(&rows, false), None);
+        assert_eq!(bottom_pinned_row_index(&rows, true), Some(others));
+
+        // More rows in a later sample shift the bucket down; the pure helper
+        // follows the new index, so scrolling there keeps it on screen.
+        let mut next = tm_core::demo::demo_snapshot(0);
+        next.processes.push(ProcessSnapshot {
+            key: ProcessKey::new(999, 1),
+            name: "firefox".into(),
+            command: "/usr/lib/firefox/firefox --new-window".into(),
+            cpu_percent: 1.0,
+            memory_bytes: 10,
+            ..ProcessSnapshot::default()
+        });
+        // A second multi-process app adds a real display row (extra single
+        // processes would only enlarge the already-folded Others bucket).
+        next.processes.extend((0..2).map(|index| ProcessSnapshot {
+            key: ProcessKey::new(500 + index, 9),
+            name: "chrome".into(),
+            command: "/usr/bin/chrome --new-window".into(),
+            cpu_percent: 1.0,
+            memory_bytes: 10,
+            ..ProcessSnapshot::default()
+        }));
+        dashboard.ingest(next);
+        let grown = dashboard.app_group_display_rows();
+        assert!(grown.len() > rows.len());
+        let grown_others = grown
+            .iter()
+            .rposition(|row| row.key == OTHERS_APP_GROUP_KEY)
+            .expect("others row after growth");
+        assert!(grown_others > others);
+        assert_eq!(bottom_pinned_row_index(&grown, true), Some(grown_others));
+        assert_eq!(bottom_pinned_row_index(&grown, false), None);
+        assert_eq!(bottom_pinned_row_index(&[], true), None);
     }
 
     #[test]
