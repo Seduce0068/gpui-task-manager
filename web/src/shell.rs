@@ -23,9 +23,10 @@ use crate::redaction::{OwnedIdentifiers, identifiers_from_snapshot};
 use gpui::accesskit::{Live, Node, Role, SortDirection as AccessKitSortDirection, Toggled};
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementId, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Image, ImageFormat, ImageSource, KeyDownEvent, Modifiers, MouseButton, Pixels,
-    Render, ScrollStrategy, Stateful, Task, TextInputConfiguration, UTF16Selection,
-    UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb, uniform_list,
+    FocusHandle, Image, ImageFormat, ImageSource, KeyDownEvent, Modifiers, MouseButton,
+    PathBuilder, Pixels, Render, ScrollStrategy, Stateful, Task, TextInputConfiguration,
+    UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, point, prelude::*, px, rgb,
+    uniform_list,
 };
 use tm_core::demo::DemoProbe;
 use tm_core::export::{snapshot_to_csv_with_total, snapshot_to_json_with_total};
@@ -78,6 +79,7 @@ const ROOT_PAD: f32 = 12.0;
 const COL_NAME: f32 = 170.0;
 const COL_CPU: f32 = 68.0;
 const COL_MEMORY: f32 = 84.0;
+const COL_VIRTUAL_MEMORY: f32 = 104.0;
 const COL_PID: f32 = 60.0;
 const COL_USER: f32 = 96.0;
 const COL_STATUS: f32 = 74.0;
@@ -491,10 +493,10 @@ pub struct TaskManagerApp {
     /// 書き出すことはなく、置換後の `***` だけが証跡に現れる。
     proof_token: Option<String>,
     focus_handle: FocusHandle,
-    /// 列見出し（7 列）のフォーカスハンドル。Tab で辿り、Enter/Space で
-    /// 既存の `on_click`（`Command::SetSortKey`）を発火させる（WCAG 2.1.1）。
-    /// フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
-    sort_header_focus: [FocusHandle; 7],
+    /// 列見出し（8 列 = 既定5列 + 隠し3列）のフォーカスハンドル。Tab で辿り、
+    /// Enter/Space で既存の `on_click`（`Command::SetSortKey`）を発火させる
+    /// （WCAG 2.1.1）。フレームをまたいで同じハンドルを使うため `render` 内では生成しない。
+    sort_header_focus: [FocusHandle; 8],
     /// アプリ別グループ表示の行フォーカスハンドル（C2-WEBDRAW）。
     ///
     /// 行を Tab で到達可能にし、Enter/Space を GPUI の組み込み活性化から
@@ -591,7 +593,10 @@ pub struct TaskManagerApp {
     /// ヘッダーの歯車ボタンで開く設定モーダル。`show_help` と決して同時に
     /// true にならない（AX の dialog を常に 0/1 に保つため）。
     show_settings: bool,
-    /// ヘルプの「閉じる」ボタン用フォーカスハンドル。キーボードだけで
+    /// 概要カードのゲージを棒（false・既定）／円（true）で描画する。
+    /// シェルローカルの表示フラグで、永続設定・wire・DOM proof には影響しない。
+    use_donut_charts: bool,
+    /// ヘルプの「閉じる」ボタン用フォーカスハンドル。キーボードだけ
     /// オーバーレイを開いて閉じられるようにする（V2-HELP）。
     help_close_focus: FocusHandle,
     /// 設定の「閉じる」ボタン用フォーカスハンドル。ヘルプと同じ契約。
@@ -624,6 +629,8 @@ struct ProcessRowView {
     command: String,
     cpu: f32,
     memory: u64,
+    /// Group VM total, or the individual process VM reading.
+    virtual_memory: u64,
     pid_text: String,
     user: String,
     status: ProcessStatus,
@@ -686,6 +693,10 @@ fn grouped_row_display_name_with(row: &AppGroupRow, label: &str) -> String {
             format!("{label} ×{}", row.process_count)
         }
         AppRowKind::Group | AppRowKind::Process => label.to_string(),
+        // Idle summary carries the view-model's redaction-safe
+        // "アイドル N 件（メモリ X GiB）" label. Keep it verbatim: no hidden
+        // member identity may leak into canvas or the AX mirror.
+        AppRowKind::IdleSummary => label.to_string(),
         // Headings are display-only; callers short-circuit before reaching the
         // normal row resolver, but keep the pure helper total for safety.
         AppRowKind::SectionHeader => label.to_string(),
@@ -752,7 +763,9 @@ fn resolve_process_row_with_names(
     if let Some(row) = app_row {
         let process = snapshot.processes.get(row.index)?;
         let is_group = row.kind == AppRowKind::Group;
-        let is_others = row.kind == AppRowKind::Others;
+        // IdleSummary and Others both carry redaction-safe aggregate labels and
+        // reserved keys: never resolve a name or icon for either.
+        let is_others = matches!(row.kind, AppRowKind::Others | AppRowKind::IdleSummary);
         let is_aggregate = is_group || is_others;
         // A hidden member of a collapsed group (or of the Others summary)
         // highlights the aggregate row; an expanded member has its own row and
@@ -788,6 +801,7 @@ fn resolve_process_row_with_names(
                 row.process_count,
                 display_cpu,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 row.expanded,
                 selected,
             )
@@ -796,6 +810,7 @@ fn resolve_process_row_with_names(
                 base_label,
                 display_cpu,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 row.process_count,
                 row.expanded,
                 selected,
@@ -806,6 +821,7 @@ fn resolve_process_row_with_names(
                 process.status,
                 display_cpu,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 process.key.pid,
                 selected,
             )
@@ -826,6 +842,7 @@ fn resolve_process_row_with_names(
             },
             cpu: display_cpu,
             memory: row.memory_bytes,
+            virtual_memory: row.virtual_memory_bytes,
             pid_text: if is_aggregate {
                 fixed.clone()
             } else {
@@ -878,6 +895,7 @@ fn resolve_process_row_with_names(
         process.status,
         process.cpu_percent,
         process.memory_bytes,
+        process.virtual_memory_bytes,
         process.key.pid,
         selected,
     );
@@ -891,6 +909,7 @@ fn resolve_process_row_with_names(
         command: process.command.clone(),
         cpu: process.cpu_percent,
         memory: process.memory_bytes,
+        virtual_memory: process.virtual_memory_bytes,
         pid_text: process.key.pid.to_string(),
         user: process.user.clone().unwrap_or_else(|| fixed.clone()),
         status: process.status,
@@ -983,6 +1002,7 @@ impl TaskManagerApp {
             poll_backoff: PollBackoff::default(),
             show_help: false,
             show_settings: false,
+            use_donut_charts: false,
             help_close_focus: cx.focus_handle(),
             settings_close_focus: cx.focus_handle(),
             last_help_shown: false,
@@ -2470,6 +2490,53 @@ impl TaskManagerApp {
                 })
                 .collect();
 
+        // 概要カードのグラフ種別。状態はシェルローカル（既定は棒）。
+        let chart_buttons: Vec<Stateful<Div>> = [
+            ("settings-chart-bar", "棒", false),
+            ("settings-chart-donut", "円", true),
+        ]
+        .into_iter()
+        .map(|(id, label, donut)| {
+            let active = self.use_donut_charts == donut;
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(format!(
+                    "グラフ {label}（{}）",
+                    if active { "選択中" } else { "未選択" }
+                ))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .border_1()
+                .border_color(rgb(palette().surface))
+                .bg(rgb(if active {
+                    palette().surface
+                } else {
+                    palette().mantle
+                }))
+                .text_color(rgb(if active {
+                    palette().blue
+                } else {
+                    palette().muted
+                }))
+                .hover(|style| {
+                    style
+                        .bg(rgb(palette().surface))
+                        .text_color(rgb(palette().text))
+                })
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.use_donut_charts = donut;
+                    this.sync_proof_dom();
+                    cx.notify();
+                }))
+                .child(label)
+        })
+        .collect();
+
         let details_button = self.settings_command_button(
             "settings-details",
             format!("詳細: {}", if details { "ON" } else { "OFF" }),
@@ -2607,6 +2674,17 @@ impl TaskManagerApp {
                                         .child("テーマ"),
                                 )
                                 .child(h_flex().items_center().gap_1().children(theme_buttons)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(palette().subtext))
+                                        .child("グラフ"),
+                                )
+                                .child(h_flex().items_center().gap_1().children(chart_buttons)),
                         )
                         .child(
                             v_flex()
@@ -3056,20 +3134,31 @@ impl TaskManagerApp {
                             label = a11y_usage_label("CPU", cpu_total)
                         )),
                 )
-                .child(
-                    h_flex().items_end().gap(px(2.0)).h(px(18.0)).children(
-                        cores
-                            .iter()
-                            .map(|&percent| {
-                                div()
-                                    .flex_1()
-                                    .h(px(((percent / 100.0) * 18.0).max(1.0)))
-                                    .rounded_sm()
-                                    .bg(rgb(usage_color(percent)))
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                )
+                // 棒（既定）はコア別バー、円選択時は CPU 全体のドーナツ。
+                .when(!self.use_donut_charts, |this| {
+                    this.child(
+                        h_flex().items_end().gap(px(2.0)).h(px(18.0)).children(
+                            cores
+                                .iter()
+                                .map(|&percent| {
+                                    div()
+                                        .flex_1()
+                                        .h(px(((percent / 100.0) * 18.0).max(1.0)))
+                                        .rounded_sm()
+                                        .bg(rgb(usage_color(percent)))
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                    )
+                })
+                .when(self.use_donut_charts, |this| {
+                    this.child(accessible_metric_donut(
+                        "cpu-usage-bar",
+                        cpu_total,
+                        usage_color(cpu_total),
+                        a11y_usage_label("CPU 使用率", cpu_total),
+                    ))
+                })
                 .child(
                     div()
                         .text_xs()
@@ -3112,12 +3201,22 @@ impl TaskManagerApp {
                                 .child(format::format_used_of_total(mem_used, mem_total)),
                         ),
                 )
-                .child(accessible_metric_bar(
-                    "memory-usage-bar",
-                    mem_percent,
-                    usage_color(mem_percent),
-                    a11y_usage_label("メモリ使用率", mem_percent),
-                ))
+                .when(!self.use_donut_charts, |this| {
+                    this.child(accessible_metric_bar(
+                        "memory-usage-bar",
+                        mem_percent,
+                        usage_color(mem_percent),
+                        a11y_usage_label("メモリ使用率", mem_percent),
+                    ))
+                })
+                .when(self.use_donut_charts, |this| {
+                    this.child(accessible_metric_donut(
+                        "memory-usage-bar",
+                        mem_percent,
+                        usage_color(mem_percent),
+                        a11y_usage_label("メモリ使用率", mem_percent),
+                    ))
+                })
                 .child(
                     h_flex()
                         .justify_between()
@@ -3126,12 +3225,22 @@ impl TaskManagerApp {
                         .child("スワップ")
                         .child(format::format_used_of_total(swap_used, swap_total)),
                 )
-                .child(accessible_metric_bar(
-                    "swap-usage-bar",
-                    swap_percent,
-                    palette().peach,
-                    a11y_usage_label("スワップ使用率", swap_percent),
-                ))
+                .when(!self.use_donut_charts, |this| {
+                    this.child(accessible_metric_bar(
+                        "swap-usage-bar",
+                        swap_percent,
+                        palette().peach,
+                        a11y_usage_label("スワップ使用率", swap_percent),
+                    ))
+                })
+                .when(self.use_donut_charts, |this| {
+                    this.child(accessible_metric_donut(
+                        "swap-usage-bar",
+                        swap_percent,
+                        palette().peach,
+                        a11y_usage_label("スワップ使用率", swap_percent),
+                    ))
+                })
                 .child(
                     sparkline(&mem_history, 100.0, palette().mauve, 18.0)
                         .id("memory-sparkline")
@@ -3775,9 +3884,9 @@ impl TaskManagerApp {
             .role(Role::Table)
             .aria_label("プロセス一覧")
             .aria_row_count(count)
-            // Only 名前 / コマンド / CPU / メモリ are shown by default; PID,
-            // ユーザー, 状態 and スレッド stay in the details panel instead.
-            .aria_column_count(4)
+            // 名前 / コマンド / CPU / メモリ / 仮想メモリ are shown by default;
+            // PID, ユーザー, 状態 and スレッド stay in the details panel instead.
+            .aria_column_count(5)
             .flex()
             .flex_col()
             .flex_1()
@@ -3860,8 +3969,19 @@ impl TaskManagerApp {
                 .w(px(COL_MEMORY))
                 .flex_shrink_0(),
             )
+            .child(
+                self.sort_cell(
+                    "sort-virtual-memory",
+                    "仮想メモリ",
+                    SortKey::VirtualMemory,
+                    &self.sort_header_focus[3],
+                    cx,
+                )
+                .w(px(COL_VIRTUAL_MEMORY))
+                .flex_shrink_0(),
+            )
         // PID / ユーザー / 状態 / スレッド are hidden by default. Their
-        // focus handles stay allocated (indices 3..6) but are never
+        // focus handles stay allocated (indices 4..7) but are never
         // attached to a header, so they create no tab stops; sorting by
         // those keys remains available from the settings dialog.
     }
@@ -4130,10 +4250,18 @@ impl TaskManagerApp {
                         .text_color(rgb(palette().subtext))
                         .child(format::format_bytes(view.memory)),
                 )
+                .child(
+                    div()
+                        .w(px(COL_VIRTUAL_MEMORY))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(palette().subtext))
+                        .child(format::format_bytes(view.virtual_memory)),
+                )
                 // PID / ユーザー / 状態 / スレッド are hidden by default. The
                 // data still feeds the AX row label and the details panel, so
-                // no redaction or DOM-proof contract changes; only four cells
-                // are drawn, matching `aria_column_count(4)` above.
+                // no redaction or DOM-proof contract changes; five cells
+                // are drawn, matching `aria_column_count(5)` above.
                 .into_any_element(),
         )
     }
@@ -5263,16 +5391,18 @@ fn a11y_row_label(
     status: ProcessStatus,
     cpu: f32,
     memory_bytes: u64,
+    virtual_memory_bytes: u64,
     pid: u32,
     selected: bool,
 ) -> String {
     let suffix = if selected { "、選択中" } else { "" };
     format!(
-        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、PID {pid}{suffix}",
+        "プロセス {name}、状態 {status_label}、CPU {cpu_label}（{severity}）、メモリ {memory_label}、仮想メモリ {virtual_memory_label}、PID {pid}{suffix}",
         status_label = status.label(),
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
+        virtual_memory_label = format::format_bytes(virtual_memory_bytes),
     )
 }
 
@@ -5285,6 +5415,7 @@ fn a11y_group_row_label(
     name: &str,
     cpu: f32,
     memory_bytes: u64,
+    virtual_memory_bytes: u64,
     process_count: usize,
     expanded: bool,
     selected: bool,
@@ -5292,10 +5423,11 @@ fn a11y_group_row_label(
     let suffix = if selected { "、選択中" } else { "" };
     let state = if expanded { "、展開済み" } else { "" };
     format!(
-        "アプリグループ {name}、{process_count} プロセス、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}{state}{suffix}",
+        "アプリグループ {name}、{process_count} プロセス、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}、合計仮想メモリ {virtual_memory_label}{state}{suffix}",
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
+        virtual_memory_label = format::format_bytes(virtual_memory_bytes),
     )
 }
 
@@ -5308,16 +5440,18 @@ fn a11y_others_row_label(
     others_count: usize,
     cpu: f32,
     memory_bytes: u64,
+    virtual_memory_bytes: u64,
     expanded: bool,
     selected: bool,
 ) -> String {
     let suffix = if selected { "、選択中" } else { "" };
     let state = if expanded { "、展開済み" } else { "" };
     format!(
-        "その他 {others_count} アプリ、クリックで展開、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}{state}{suffix}",
+        "その他 {others_count} アプリ、クリックで展開、合計 CPU {cpu_label}（{severity}）、合計メモリ {memory_label}、合計仮想メモリ {virtual_memory_label}{state}{suffix}",
         cpu_label = format::format_cpu_percent(cpu),
         severity = usage_severity(cpu),
         memory_label = format::format_bytes(memory_bytes),
+        virtual_memory_label = format::format_bytes(virtual_memory_bytes),
     )
 }
 
@@ -5355,6 +5489,76 @@ fn a11y_usage_label(title: &str, percent: f32) -> String {
         "{title} {percent:.0}%、{severity}",
         severity = usage_severity(percent)
     )
+}
+
+/// Circular counterpart of [`accessible_metric_bar`], drawn with GPUI's own
+/// canvas/path primitives (no new dependency, no `unsafe`).
+///
+/// The element keeps the bar's id, AccessKit role, numeric value and accessible
+/// name verbatim, so CDP still finds the same node and the DOM proof is byte-for-
+/// byte unchanged when the user selects the donut style.
+fn accessible_metric_donut(
+    id: impl Into<ElementId>,
+    percent: f32,
+    color: u32,
+    label: impl Into<gpui::SharedString>,
+) -> Stateful<Div> {
+    let percent = percent.clamp(0.0, 100.0);
+    let fraction = (percent / 100.0).clamp(0.0, 1.0);
+    let track_color = palette().surface;
+    let diameter = px(24.0);
+    div()
+        .w(diameter)
+        .h(diameter)
+        .flex_none()
+        .id(id)
+        .role(Role::ProgressIndicator)
+        .aria_label(label)
+        .aria_numeric_value(percent as f64)
+        .aria_value(format!("{percent:.0}%"))
+        .child(
+            canvas(
+                move |_bounds, _window, _cx| (fraction, color, track_color),
+                move |bounds, (fraction, color, track_color), window, _cx| {
+                    let thickness = px(6.0);
+                    let radius = (bounds.size.width.min(bounds.size.height) / 2.0
+                        - thickness / 2.0)
+                        .max(px(1.0));
+                    let center = bounds.center();
+                    let radii = point(radius, radius);
+                    let top = center - point(px(0.0), radius);
+                    let bottom = center + point(px(0.0), radius);
+
+                    let mut track = PathBuilder::stroke(thickness);
+                    track.move_to(top);
+                    track.arc_to(radii, px(0.0), true, true, bottom);
+                    track.arc_to(radii, px(0.0), true, true, top);
+                    if let Ok(path) = track.build() {
+                        window.paint_path(path, rgb(track_color));
+                    }
+
+                    if fraction <= 0.0 {
+                        return;
+                    }
+                    let sweep = fraction * 360.0;
+                    let mut filled = PathBuilder::stroke(thickness);
+                    filled.move_to(top);
+                    if sweep >= 359.9 {
+                        filled.arc_to(radii, px(0.0), true, true, bottom);
+                        filled.arc_to(radii, px(0.0), true, true, top);
+                    } else {
+                        let end_angle = -std::f32::consts::FRAC_PI_2 + sweep.to_radians();
+                        let (sin, cos) = end_angle.sin_cos();
+                        let end = point(center.x + radius * cos, center.y + radius * sin);
+                        filled.arc_to(radii, px(0.0), sweep > 180.0, true, end);
+                    }
+                    if let Ok(path) = filled.build() {
+                        window.paint_path(path, rgb(color));
+                    }
+                },
+            )
+            .size_full(),
+        )
 }
 
 /// Japanese direction name for sort headers (the ↑/↓ glyph alone is not text).
@@ -5453,6 +5657,7 @@ const A11Y_MIRROR_COLUMNS: &[(&str, Option<SortKey>)] = &[
     ("コマンド", None),
     ("CPU", Some(SortKey::Cpu)),
     ("メモリ", Some(SortKey::Memory)),
+    ("仮想メモリ", Some(SortKey::VirtualMemory)),
 ];
 
 /// Escapes dynamic text before it is written through `set_inner_html`.
@@ -5525,16 +5730,26 @@ fn a11y_mirror_header_html(sort: SortSpec) -> String {
 /// (header `columnheader` remains valid) the selected row publishes a
 /// `selected=true` AX property. `aria-current="true"` duplicates the state for
 /// assistive tech that does not surface `selected`.
+#[allow(clippy::too_many_arguments)]
 fn a11y_mirror_row_html(
     name: &str,
     status: ProcessStatus,
     cpu: f32,
     memory_bytes: u64,
+    virtual_memory_bytes: u64,
     pid: u32,
     selected: bool,
     row_index: usize,
 ) -> String {
-    let label = a11y_row_label(name, status, cpu, memory_bytes, pid, selected);
+    let label = a11y_row_label(
+        name,
+        status,
+        cpu,
+        memory_bytes,
+        virtual_memory_bytes,
+        pid,
+        selected,
+    );
     let (selected, current_attribute) = if selected {
         ("true", " aria-current=\"true\"")
     } else {
@@ -5543,11 +5758,13 @@ fn a11y_mirror_row_html(
     format!(
         "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected}\"{current_attribute} \
          aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
-         <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div></div>",
+         <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
+         <div role=\"gridcell\">{}</div></div>",
         escape_html(&label),
         escape_html(name),
         escape_html(&usage_value_text(cpu)),
         escape_html(&format::format_bytes(memory_bytes)),
+        escape_html(&format::format_bytes(virtual_memory_bytes)),
     )
 }
 
@@ -5583,6 +5800,7 @@ fn a11y_mirror_rows_html_with_names(
                 process.status,
                 process.cpu_percent,
                 process.memory_bytes,
+                process.virtual_memory_bytes,
                 process.key.pid,
                 selected == Some(process.key),
                 index + 1,
@@ -5642,7 +5860,9 @@ fn a11y_mirror_group_rows_html_with_names(
         }
         data_index += 1;
         let is_group = row.kind == AppRowKind::Group;
-        let is_others = row.kind == AppRowKind::Others;
+        // IdleSummary and Others both carry redaction-safe aggregate labels and
+        // reserved keys: never resolve a name or icon for either.
+        let is_others = matches!(row.kind, AppRowKind::Others | AppRowKind::IdleSummary);
         let is_aggregate = is_group || is_others;
         let display_cpu = if is_aggregate {
             normalised_group_cpu(row.cpu_percent, core_count)
@@ -5670,6 +5890,7 @@ fn a11y_mirror_group_rows_html_with_names(
                 status,
                 row.cpu_percent,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 snapshot
                     .and_then(|snapshot| snapshot.processes.get(row.index))
                     .map(|process| process.key.pid)
@@ -5694,6 +5915,7 @@ fn a11y_mirror_group_rows_html_with_names(
                 row.process_count,
                 display_cpu,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 row.expanded,
                 row_selected,
             )
@@ -5702,6 +5924,7 @@ fn a11y_mirror_group_rows_html_with_names(
                 base_label,
                 display_cpu,
                 row.memory_bytes,
+                row.virtual_memory_bytes,
                 row.process_count,
                 row.expanded,
                 row_selected,
@@ -5711,11 +5934,13 @@ fn a11y_mirror_group_rows_html_with_names(
         html.push_str(&format!(
             "<div role=\"row\" aria-rowindex=\"{row_index}\" aria-selected=\"{selected_value}\"{current_attribute}{expanded_attribute} \
              aria-label=\"{}\"><div role=\"gridcell\">{}</div>\
-             <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div></div>",
+             <div role=\"gridcell\">{}</div><div role=\"gridcell\">{}</div>\
+             <div role=\"gridcell\">{}</div></div>",
             escape_html(&label),
             escape_html(&name_text),
             escape_html(&usage_value_text(display_cpu)),
             escape_html(&format::format_bytes(row.memory_bytes)),
+            escape_html(&format::format_bytes(row.virtual_memory_bytes)),
             row_index = data_index,
         ));
     }
@@ -5926,6 +6151,11 @@ fn a11y_mirror_settings_html(show_settings: bool) -> String {
         &mut html,
         "テーマ",
         vec!["ダーク".to_string(), "ライト".to_string()],
+    );
+    push_section(
+        &mut html,
+        "グラフ",
+        vec!["棒".to_string(), "円".to_string()],
     );
     push_section(
         &mut html,
@@ -7174,6 +7404,7 @@ mod tests {
                 poll_backoff: PollBackoff::default(),
                 show_help: false,
                 show_settings: false,
+                use_donut_charts: false,
                 help_close_focus: cx.focus_handle(),
                 settings_close_focus: cx.focus_handle(),
                 last_help_shown: false,
@@ -7287,6 +7518,7 @@ mod tests {
                         poll_backoff: PollBackoff::default(),
                         show_help: false,
                         show_settings: false,
+                        use_donut_charts: false,
                         help_close_focus: test_cx.focus_handle(),
                         settings_close_focus: test_cx.focus_handle(),
                         last_help_shown: false,
@@ -7511,12 +7743,21 @@ mod tests {
 
     #[test]
     fn row_label_always_spells_out_status_and_usage_in_text() {
-        let label = a11y_row_label("systemd", ProcessStatus::Zombie, 92.0, 4_096, 1, true);
+        let label = a11y_row_label(
+            "systemd",
+            ProcessStatus::Zombie,
+            92.0,
+            4_096,
+            8_192,
+            1,
+            true,
+        );
         assert!(label.contains("systemd"), "{label}");
         assert!(label.contains("ゾンビ"), "{label}");
         assert!(label.contains("高"), "{label}");
+        assert!(label.contains("仮想メモリ 8.0 KiB"), "{label}");
         assert!(label.contains("選択中"), "{label}");
-        let unselected = a11y_row_label("idle", ProcessStatus::Idle, 1.0, 0, 2, false);
+        let unselected = a11y_row_label("idle", ProcessStatus::Idle, 1.0, 0, 0, 2, false);
         assert!(unselected.contains("アイドル"), "{unselected}");
         assert!(unselected.contains("低"), "{unselected}");
         assert!(!unselected.contains("選択中"), "{unselected}");
@@ -9600,12 +9841,37 @@ mod tests {
     }
 
     #[test]
+    fn mirror_exposes_virtual_memory_header_and_group_total() {
+        // The mirrored columnheader uses the same SortKey the canvas header
+        // click dispatches, so keyboard/DOM users can sort by VM as well.
+        let header = a11y_mirror_header_html(SortSpec {
+            key: SortKey::VirtualMemory,
+            direction: SortDirection::Descending,
+        });
+        assert!(header.contains("仮想メモリ ↓"), "{header}");
+        assert_eq!(header.matches("aria-sort=\"descending\"").count(), 1);
+        assert!(
+            A11Y_MIRROR_COLUMNS.contains(&("仮想メモリ", Some(SortKey::VirtualMemory))),
+            "the VM column must be part of the mirrored grid"
+        );
+
+        let dashboard = grouped_dashboard();
+        let rows = dashboard.app_group_rows();
+        let html =
+            a11y_mirror_group_rows_html(Some(dashboard.snapshot().expect("snapshot")), &rows, None);
+        assert!(html.contains("5.9 KiB"), "{html}");
+        assert!(html.contains("合計仮想メモリ 5.9 KiB"), "{html}");
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 5);
+    }
+
+    #[test]
     fn mirror_row_exposes_selection_and_escaped_display_values() {
         let selected = a11y_mirror_row_html(
             "<script>alert(1)</script>",
             ProcessStatus::Zombie,
             92.0,
             4_096,
+            8_192,
             42,
             true,
             3,
@@ -9613,9 +9879,10 @@ mod tests {
         assert!(selected.contains("role=\"row\""), "{selected}");
         assert_eq!(
             selected.matches("role=\"gridcell\"").count(),
-            3,
+            4,
             "{selected}"
         );
+        assert!(selected.contains("8.0 KiB"), "{selected}");
         assert!(!selected.contains("role=\"cell\""), "{selected}");
         assert!(selected.contains("aria-rowindex=\"3\""), "{selected}");
         assert!(selected.contains("aria-selected=\"true\""), "{selected}");
@@ -9625,7 +9892,7 @@ mod tests {
         assert!(selected.contains("高"), "{selected}");
         assert!(selected.contains("&lt;script&gt;"), "{selected}");
         assert!(!selected.contains("<script>"), "{selected}");
-        let unselected = a11y_mirror_row_html("idle", ProcessStatus::Idle, 1.0, 0, 7, false, 1);
+        let unselected = a11y_mirror_row_html("idle", ProcessStatus::Idle, 1.0, 0, 0, 7, false, 1);
         assert!(
             unselected.contains("aria-selected=\"false\""),
             "{unselected}"
@@ -9691,9 +9958,10 @@ mod tests {
         assert!(html.contains("aria-modal=\"true\""), "{html}");
         assert!(html.contains("aria-label=\"設定\""), "{html}");
         assert!(html.contains("role=\"heading\""), "{html}");
-        for label in ["更新間隔", "ソート", "テーマ", "表示"] {
+        for label in ["更新間隔", "ソート", "テーマ", "グラフ", "表示"] {
             assert!(html.contains(label), "{html}");
         }
+        assert!(html.contains(">棒<") && html.contains(">円<"), "{html}");
         assert!(html.contains("0.5s") && html.contains("5s"), "{html}");
         assert!(html.contains("CPU") && html.contains("名前"), "{html}");
         assert!(html.contains("ダーク") && html.contains("ライト"), "{html}");
@@ -9712,6 +9980,104 @@ mod tests {
     }
 
     #[test]
+    fn donut_gauge_keeps_the_bars_accessibility_contract() {
+        let source = include_str!("shell.rs");
+        let helper = source
+            .split(concat!("fn accessible_", "metric_donut("))
+            .nth(1)
+            .expect("accessible_metric_donut must exist")
+            .split("\n}\n")
+            .next()
+            .expect("donut helper slice must end");
+        assert!(
+            helper.contains(concat!(".role(", "Role::ProgressIndicator)")),
+            "donut must keep the bar's AccessKit role"
+        );
+        assert!(helper.contains(".aria_label(label)"));
+        assert!(helper.contains(concat!(".aria_numeric_value(", "percent as f64)")));
+        assert!(helper.contains(".aria_value(format!"));
+        assert!(
+            helper.contains("canvas(") && helper.contains("PathBuilder::stroke"),
+            "the ring must use GPUI's built-in canvas/path primitives only"
+        );
+        assert!(
+            !helper.contains("unsafe"),
+            "the donut helper must stay safe Rust"
+        );
+    }
+
+    #[test]
+    fn chart_style_toggle_defaults_to_bars_and_switches_all_three_gauges() {
+        let source = include_str!("shell.rs");
+        assert!(
+            source.contains("use_donut_charts: false"),
+            "bars are the default chart style"
+        );
+        let overview = source
+            .split("fn overview(")
+            .nth(1)
+            .expect("overview must exist")
+            .split("    // --------------------------------------------------------------- toolbar")
+            .next()
+            .expect("overview slice must end at toolbar");
+        assert_eq!(
+            overview.matches("accessible_metric_donut(").count(),
+            3,
+            "CPU, memory and swap must all switch to donuts"
+        );
+        for id in ["cpu-usage-bar", "memory-usage-bar", "swap-usage-bar"] {
+            assert!(overview.contains(id), "missing gauge id {id}");
+        }
+        let overlay = source
+            .split("fn settings_overlay(")
+            .nth(1)
+            .expect("settings_overlay must exist")
+            .split("    /// 行コンテキストメニュー")
+            .next()
+            .expect("settings slice must end");
+        assert!(
+            overlay.contains("\"グラフ\""),
+            "settings must label the chart row"
+        );
+        assert!(overlay.contains("\"settings-chart-bar\""));
+        assert!(overlay.contains("\"settings-chart-donut\""));
+        assert!(
+            overlay.contains("this.use_donut_charts = donut;"),
+            "both chart buttons must mutate the shell-local flag"
+        );
+    }
+
+    #[test]
+    fn chart_style_toggle_does_not_change_dom_proof_or_export_contract() {
+        let (_reconnect, _live_error, _status, proof) = run_sse_steps(|app| {
+            assert!(!app.use_donut_charts, "bars are the default");
+            let before = app.proof_string(0, 0);
+            app.use_donut_charts = true;
+            assert_eq!(
+                before,
+                app.proof_string(0, 0),
+                "donut must not alter DOM proof"
+            );
+            app.use_donut_charts = false;
+            assert_eq!(
+                before,
+                app.proof_string(0, 0),
+                "bars must not alter DOM proof"
+            );
+        });
+        assert!(!proof.is_empty(), "proof_string must stay observable");
+        let source = include_str!("shell.rs");
+        assert!(
+            source.contains(concat!("snapshot_", "to_csv_with_total(")),
+            "the export contract must stay intact"
+        );
+        assert!(
+            source.contains("accessible_metric_bar("),
+            "bar helper stays available"
+        );
+    }
+
+    #[test]
     fn mirror_grid_contains_header_rows_and_help_in_one_subtree() {
         let snapshot = tm_core::demo::demo_snapshot(0);
         let visible: Vec<usize> = (0..snapshot.processes.len().min(3)).collect();
@@ -9723,7 +10089,7 @@ mod tests {
         assert!(!html.contains("role=\"cell\""), "{html}");
         assert_eq!(
             html.matches("role=\"gridcell\"").count(),
-            3 * visible.len(),
+            4 * visible.len(),
             "{html}"
         );
         assert_eq!(
@@ -9963,6 +10329,7 @@ mod tests {
                 threads: Some(4),
                 cpu_percent: 0.25,
                 memory_bytes: 300,
+                virtual_memory_bytes: 3_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -9971,6 +10338,7 @@ mod tests {
                 command: "/usr/bin/firefox --pid=10".into(),
                 cpu_percent: 1.5,
                 memory_bytes: 100,
+                virtual_memory_bytes: 1_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -9979,6 +10347,7 @@ mod tests {
                 command: "/usr/bin/firefox --pid=20".into(),
                 cpu_percent: 2.25,
                 memory_bytes: 200,
+                virtual_memory_bytes: 2_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -9987,6 +10356,7 @@ mod tests {
                 command: "solo".into(),
                 cpu_percent: 3.0,
                 memory_bytes: 42,
+                virtual_memory_bytes: 42_000,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -10013,6 +10383,8 @@ mod tests {
         assert_eq!(view.group_key.as_deref(), Some("firefox"));
         assert_eq!(view.cpu, 4.0);
         assert_eq!(view.memory, 600);
+        assert_eq!(group.virtual_memory_bytes, 6_000);
+        assert_eq!(view.virtual_memory, 6_000);
         assert!(view.name.contains("firefox") && view.name.contains('3'));
         // Aggregates have no single-process command / PID / user / status / threads.
         assert_eq!(view.command, "—");
@@ -10023,6 +10395,7 @@ mod tests {
         assert!(view.row_a11y_label.contains("3 プロセス"));
         assert!(view.row_a11y_label.contains("4.0%"));
         assert!(view.row_a11y_label.contains("600 B"));
+        assert!(view.row_a11y_label.contains("合計仮想メモリ 5.9 KiB"));
         assert_eq!(
             row_activation(&view, false),
             RowActivation::ToggleGroup("firefox".into())
@@ -10302,7 +10675,7 @@ mod tests {
                 "{hidden} must stay hidden"
             );
         }
-        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 4);
+        assert_eq!(A11Y_MIRROR_COLUMNS.len(), 5);
         assert_eq!(
             TaskManagerApp::nav_section_from_id("nav-overview"),
             Some(NavSection::Overview)
@@ -10422,6 +10795,7 @@ mod tests {
             expanded: false,
             cpu_percent: 3.0,
             memory_bytes: 42,
+            virtual_memory_bytes: 84,
             process_count: 1,
         };
         assert_eq!(grouped_row_display_name(&one_member), "solo");

@@ -53,6 +53,14 @@ pub const HISTORY_CAPACITY: usize = 120;
 /// identity token, not display text, so it must never be written to the DOM.
 pub const OTHERS_APP_GROUP_KEY: &str = "\0others";
 
+/// Reserved expansion key for the trailing idle-summary row (IDLE-SUMMARY).
+///
+/// Like [`OTHERS_APP_GROUP_KEY`] it starts with NUL, so it can never collide
+/// with a canonical [`app_group_key`] or a `comm` fallback. Shells pass this
+/// value back unchanged to [`Command::ToggleAppGroup`] to reveal the hidden
+/// 0% CPU processes; it is an identity token and must never reach the DOM.
+pub const IDLE_SUMMARY_KEY: &str = "\0idle-summary";
+
 /// Fixed, already-redacted label for the "others" bucket row (C1-COLLAPSE).
 ///
 /// Shells render their own localised text (e.g. `その他 N アプリ`) from
@@ -562,6 +570,15 @@ pub enum AppRowKind {
     /// count in [`AppGroupRow::process_count`]. Expanding it reveals the original
     /// one-process group rows as `Group` rows at `depth = 1`.
     Others,
+    /// One trailing row summarising all filter-matching processes hidden by
+    /// idle suppression (IDLE-SUMMARY).
+    ///
+    /// `process_count` is the number of hidden processes and `memory_bytes` is
+    /// their RSS sum, so the displayed rows plus this row add up to the whole
+    /// filtered snapshot. Its reserved [`IDLE_SUMMARY_KEY`] is expandable via
+    /// [`Command::ToggleAppGroup`] and reveals the hidden processes as
+    /// [`AppRowKind::Process`] rows at `depth = 1`.
+    IdleSummary,
     /// A display-only section heading inserted by [`Dashboard::app_group_display_rows`]
     /// (C1-VMCLASSIFY).
     ///
@@ -626,9 +643,28 @@ pub struct AppGroupRow {
     pub cpu_percent: f32,
     /// Group memory sum, or the individual process memory reading.
     pub memory_bytes: u64,
+    /// Saturating sum of the members' virtual memory in bytes for a group row,
+    /// or the individual process virtual memory reading for a process row.
+    ///
+    /// Computed from `snapshot.processes` inside this additive view; the wire
+    /// and export contracts keep reading the snapshot directly and are unchanged.
+    pub virtual_memory_bytes: u64,
     /// Number of grouped processes (`1` for individual process rows), or the
     /// number of compacted applications for the "others" row.
     pub process_count: usize,
+}
+
+/// Saturating sum of a group's member virtual memory bytes (C3-VMCOLUMN).
+///
+/// `group_by_app` stores `members` as indices into the filtered snapshot it was
+/// built from, so the aggregation can be derived here without adding a field to
+/// the core `ProcessGroup` or changing the wire/export contracts. It mirrors the
+/// existing `memory_bytes` accumulation: non-finite/negative values never enter
+/// this path (the field is `u64`), and overflow saturates.
+fn group_virtual_memory_bytes(group: &ProcessGroup, filtered: &[ProcessSnapshot]) -> u64 {
+    group.members.iter().fold(0_u64, |sum, &index| {
+        sum.saturating_add(filtered[index].virtual_memory_bytes)
+    })
 }
 
 /// Orders application groups with the injected classification as the primary
@@ -663,14 +699,15 @@ fn sort_app_groups(
                 .key
                 .pid
                 .cmp(&filtered[right.members[0]].key.pid),
+            SortKey::VirtualMemory => group_virtual_memory_bytes(left, filtered)
+                .cmp(&group_virtual_memory_bytes(right, filtered)),
             // The remaining columns have no aggregate equivalent; keep the
             // stable BTreeMap key order for them.
             SortKey::Name
             | SortKey::User
             | SortKey::Status
             | SortKey::Threads
-            | SortKey::StartTime
-            | SortKey::VirtualMemory => left.key.cmp(&right.key),
+            | SortKey::StartTime => left.key.cmp(&right.key),
         };
         let ordering = match sort.direction {
             tm_core::SortDirection::Ascending => ordering,
@@ -706,6 +743,9 @@ fn others_row(
     let memory_bytes = singles
         .iter()
         .fold(0_u64, |sum, group| sum.saturating_add(group.memory_bytes));
+    let virtual_memory_bytes = singles.iter().fold(0_u64, |sum, group| {
+        sum.saturating_add(group_virtual_memory_bytes(group, filtered))
+    });
     AppGroupRow {
         kind: AppRowKind::Others,
         key: OTHERS_APP_GROUP_KEY.to_string(),
@@ -721,7 +761,81 @@ fn others_row(
         expanded,
         cpu_percent,
         memory_bytes,
+        virtual_memory_bytes,
         process_count: singles.len(),
+    }
+}
+
+/// Human-readable idle summary label, e.g. `アイドル 12 件（メモリ 15 GiB）`.
+///
+/// Sub-GiB totals keep one decimal so a small but non-zero RSS is never shown
+/// as `0 GiB`. The same numbers stay machine-readable in `process_count` and
+/// `memory_bytes` for shells that render their own localised text.
+fn format_idle_summary_label(count: usize, memory_bytes: u64) -> String {
+    let gib = memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let amount = if gib >= 10.0 {
+        format!("{gib:.0}")
+    } else {
+        format!("{gib:.1}")
+    };
+    format!("アイドル {count} 件（メモリ {amount} GiB）")
+}
+
+/// Trailing summary row for processes hidden by idle suppression (IDLE-SUMMARY).
+///
+/// `hidden` holds in-range snapshot indices sorted by process identity; the
+/// representative key makes selection and signal confirmation work on a real
+/// process, while `member_keys` lets a shell highlight the row when one of the
+/// revealed members is selected.
+fn idle_summary_row(
+    hidden: &[usize],
+    snapshot: &SystemSnapshot,
+    expanded: bool,
+) -> Option<AppGroupRow> {
+    let (&first, rest) = hidden.split_first()?;
+    let memory_bytes = hidden.iter().fold(0_u64, |sum, &index| {
+        sum.saturating_add(snapshot.processes[index].memory_bytes)
+    });
+    let virtual_memory_bytes = hidden.iter().fold(0_u64, |sum, &index| {
+        sum.saturating_add(snapshot.processes[index].virtual_memory_bytes)
+    });
+    Some(AppGroupRow {
+        kind: AppRowKind::IdleSummary,
+        key: IDLE_SUMMARY_KEY.to_string(),
+        label: format_idle_summary_label(hidden.len(), memory_bytes),
+        index: first,
+        process_key: snapshot.processes[first].key,
+        member_keys: std::iter::once(first)
+            .chain(rest.iter().copied())
+            .map(|index| snapshot.processes[index].key)
+            .collect(),
+        depth: 0,
+        has_children: true,
+        expanded,
+        cpu_percent: 0.0,
+        memory_bytes,
+        virtual_memory_bytes,
+        process_count: hidden.len(),
+    })
+}
+
+/// One hidden process revealed by expanding the idle summary (IDLE-SUMMARY).
+fn idle_process_row(index: usize, snapshot: &SystemSnapshot) -> AppGroupRow {
+    let process = &snapshot.processes[index];
+    AppGroupRow {
+        kind: AppRowKind::Process,
+        key: IDLE_SUMMARY_KEY.to_string(),
+        label: process.name.clone(),
+        index,
+        process_key: process.key,
+        member_keys: Vec::new(),
+        depth: 1,
+        has_children: false,
+        expanded: false,
+        cpu_percent: process.cpu_percent,
+        memory_bytes: process.memory_bytes,
+        virtual_memory_bytes: process.virtual_memory_bytes,
+        process_count: 1,
     }
 }
 
@@ -744,6 +858,7 @@ fn section_header(key: &'static str, label: &'static str, index: usize) -> AppGr
         expanded: false,
         cpu_percent: 0.0,
         memory_bytes: 0,
+        virtual_memory_bytes: 0,
         process_count: 0,
     }
 }
@@ -771,6 +886,7 @@ fn single_group_row(
         expanded: false,
         cpu_percent: group.cpu_percent,
         memory_bytes: group.memory_bytes,
+        virtual_memory_bytes: process.virtual_memory_bytes,
         process_count: 1,
     }
 }
@@ -804,12 +920,13 @@ pub struct Dashboard {
     history: MetricHistory,
     sort: SortSpec,
     filter: Filter,
-    /// Suppress rows whose normalised CPU usage is exactly zero in the default
-    /// view (C4-VIEWMODEL).
+    /// Hide rows whose normalised CPU usage is exactly zero from the normal
+    /// list (IDLE-SUMMARY).
     ///
-    /// This is presentation-only: `Filter` (and its "active" indicator) stays
-    /// untouched, export/wire code keeps reading `snapshot.processes`, and an
-    /// explicit `ClearFilter` or the `All` preset restores the idle rows.
+    /// Presentation-only: `Filter` (and its "active" indicator) is untouched,
+    /// export/wire code keeps reading `snapshot.processes`, and the hidden
+    /// processes are accounted for by the trailing idle-summary row. An
+    /// explicit `ClearFilter` or the `All` preset reveals them again.
     hide_idle_processes: bool,
     active_preset: Option<FilterPresetId>,
     selected: Option<ProcessKey>,
@@ -1062,19 +1179,43 @@ impl Dashboard {
             })
     }
 
-    /// Indices of snapshot processes eligible for a display row.
+    /// Indices of snapshot processes eligible for an individual display row.
     ///
-    /// Starts from the same filter/sort pipeline as the flat table, then drops
-    /// processes rendering as `0.0%` while the default idle suppression is in
-    /// effect. Kept in one place so grouped and flat views never disagree about
-    /// which processes exist on screen (C4-VIEWMODEL). Export/wire paths read
-    /// `snapshot.processes` directly and never come through here.
+    /// Starts from the filter/sort pipeline, then drops processes rendering as
+    /// `0.0%` while idle suppression is active. Those processes are not lost:
+    /// [`Self::idle_hidden_indices`] accounts for them in the trailing summary
+    /// row. Export/wire paths read `snapshot.processes` directly and never come
+    /// through here.
     fn display_base(&self, snapshot: &SystemSnapshot) -> Vec<usize> {
-        let mut base = filter_and_sort(&snapshot.processes, &self.filter, self.sort);
+        let mut base = self.filtered_base(snapshot);
         if self.hide_idle_processes {
             base.retain(|&index| normalise_percent(snapshot.processes[index].cpu_percent) > 0.0);
         }
         base
+    }
+
+    /// Filter/sort pipeline before idle suppression (IDLE-SUMMARY).
+    fn filtered_base(&self, snapshot: &SystemSnapshot) -> Vec<usize> {
+        filter_and_sort(&snapshot.processes, &self.filter, self.sort)
+    }
+
+    /// Snapshot indices removed from `display_base` only by idle suppression.
+    ///
+    /// By comparing the suppressed list against the same filter/sort pipeline
+    /// without suppression, the summary covers exactly the processes the user
+    /// would otherwise see — no unfiltered leaks and no double counting.
+    fn idle_hidden_indices(&self, snapshot: &SystemSnapshot) -> Vec<usize> {
+        if !self.hide_idle_processes {
+            return Vec::new();
+        }
+        let shown: HashSet<usize> = self.display_base(snapshot).into_iter().collect();
+        let mut hidden: Vec<usize> = self
+            .filtered_base(snapshot)
+            .into_iter()
+            .filter(|index| !shown.contains(index))
+            .collect();
+        hidden.sort_by_key(|&index| snapshot.processes[index].key);
+        hidden
     }
 
     /// Whether an application group is currently expanded (R1-GROUP).
@@ -1095,8 +1236,15 @@ impl Dashboard {
     /// [`Command::ToggleAppGroup`] is likewise followed by its individual
     /// processes at `depth = 1`; collapsing it removes them again. The current
     /// filter is applied first and the active sort spec orders the group rows
-    /// (`Cpu`, `Memory` and `Pid` use their totals, other columns fall back to
-    /// the deterministic group key).
+    /// (`Cpu`, `Memory`, `VirtualMemory` and `Pid` use their totals, other
+    /// columns fall back to the deterministic group key).
+    ///
+    /// With idle suppression active, 0% CPU processes are absent as individual
+    /// rows but reported by one trailing [`AppRowKind::IdleSummary`] row placed
+    /// immediately before the "others" bucket. Its `process_count` and
+    /// `memory_bytes` cover exactly the suppressed processes, so displayed
+    /// rows plus the summary account for the whole filtered snapshot. Expanding
+    /// its reserved key reveals those processes at `depth = 1`.
     ///
     /// No snapshot yields an empty vector. Export and wire code keep receiving
     /// `snapshot.processes` directly and never see these rows.
@@ -1107,6 +1255,7 @@ impl Dashboard {
         // Build the filtered subset so group totals describe exactly the rows
         // the user can see; `base` maps filtered positions back to the snapshot.
         let base = self.display_base(snapshot);
+        let hidden = self.idle_hidden_indices(snapshot);
         let filtered: Vec<ProcessSnapshot> = base
             .iter()
             .map(|&index| snapshot.processes[index].clone())
@@ -1148,6 +1297,7 @@ impl Dashboard {
             let first_key = member_keys[0]; // groups always have one member
             let has_children = group.members.len() > 1;
             let expanded = has_children && self.expanded_app_groups.contains(&group.key);
+            let virtual_memory_bytes = group_virtual_memory_bytes(&group, &filtered);
             rows.push(AppGroupRow {
                 kind: AppRowKind::Group,
                 key: group.key.clone(),
@@ -1160,6 +1310,7 @@ impl Dashboard {
                 expanded,
                 cpu_percent: group.cpu_percent,
                 memory_bytes: group.memory_bytes,
+                virtual_memory_bytes,
                 process_count: group.process_count,
             });
             if expanded {
@@ -1177,9 +1328,27 @@ impl Dashboard {
                         expanded: false,
                         cpu_percent: process.cpu_percent,
                         memory_bytes: process.memory_bytes,
+                        virtual_memory_bytes: process.virtual_memory_bytes,
                         process_count: 1,
                     });
                 }
+            }
+        }
+        if let Some(summary) = idle_summary_row(
+            &hidden,
+            snapshot,
+            self.expanded_app_groups.contains(IDLE_SUMMARY_KEY),
+        ) {
+            // The idle summary closes the ordinary app list immediately before
+            // the "others" bucket; its own revealed processes follow it, so the
+            // bucket stays the very last row (IDLE-SUMMARY).
+            rows.push(summary);
+            if self.expanded_app_groups.contains(IDLE_SUMMARY_KEY) {
+                rows.extend(
+                    hidden
+                        .iter()
+                        .map(|&index| idle_process_row(index, snapshot)),
+                );
             }
         }
         if fold_others {
@@ -1221,10 +1390,11 @@ impl Dashboard {
     /// Wraps [`Self::app_group_rows`] with two display-only
     /// [`AppRowKind::SectionHeader`] rows: 「アプリ」 before the first top-level
     /// group whose key is in the injected set, and 「バックグラウンド プロセス」
-    /// before the first one whose key is not. The trailing "others" bucket and
-    /// its revealed children stay unclassified and keep closing the list. With
-    /// no injected keys the input is returned unchanged (legacy order, no
-    /// headings), so an async/classification-loading shell sees no flicker.
+    /// before the first one whose key is not. The trailing idle summary and
+    /// "others" bucket, along with their revealed children, stay unclassified
+    /// and keep closing the list. With no injected keys the input is returned
+    /// unchanged (legacy order, no headings), so an async/classification-loading
+    /// shell sees no flicker.
     ///
     /// Purely additive: [`Self::app_group_rows`], `visible_indices` and every
     /// export/wire path keep their existing shape and contracts. Heading rows
@@ -1283,8 +1453,10 @@ impl Dashboard {
             .position(|row| row.process_key == selected)
             .or_else(|| {
                 rows.iter().position(|row| {
-                    matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
-                        && row.member_keys.contains(&selected)
+                    matches!(
+                        row.kind,
+                        AppRowKind::Group | AppRowKind::Others | AppRowKind::IdleSummary
+                    ) && row.member_keys.contains(&selected)
                 })
             })
     }
@@ -1293,7 +1465,7 @@ impl Dashboard {
     ///
     /// Uses [`Self::display_base`] rather than the raw filter so an idle
     /// process hidden from the table can never become a selection
-    /// representative (C4-VIEWMODEL).
+    /// representative (IDLE-SUMMARY).
     fn first_app_group_key(&self, key: &str) -> Option<ProcessKey> {
         self.snapshot.as_ref().and_then(|snapshot| {
             let base = self.display_base(snapshot);
@@ -1323,6 +1495,18 @@ impl Dashboard {
             return None;
         }
         let snapshot = self.snapshot.as_ref()?;
+        let hidden = self.idle_hidden_indices(snapshot);
+        if hidden
+            .iter()
+            .any(|&index| snapshot.processes[index].key == key)
+        {
+            // A revealed idle member keeps its own row; while collapsed, the
+            // summary row represents it (IDLE-SUMMARY).
+            if self.expanded_app_groups.contains(IDLE_SUMMARY_KEY) {
+                return None;
+            }
+            return idle_summary_row(&hidden, snapshot, false).map(|row| row.process_key);
+        }
         let app_key = app_group_key(snapshot.process(key)?);
         let first = self.first_app_group_key(app_key)?;
         if first != key {
@@ -1355,13 +1539,15 @@ impl Dashboard {
             self.expanded_app_groups.clear();
             return;
         };
-        let others_available = self
-            .app_group_rows()
-            .iter()
-            .any(|row| row.kind == AppRowKind::Others);
+        let rows = self.app_group_rows();
+        let others_available = rows.iter().any(|row| row.kind == AppRowKind::Others);
+        let idle_summary_available = rows.iter().any(|row| row.kind == AppRowKind::IdleSummary);
         self.expanded_app_groups.retain(|key| {
             if key == OTHERS_APP_GROUP_KEY {
                 return others_available;
+            }
+            if key == IDLE_SUMMARY_KEY {
+                return idle_summary_available;
             }
             snapshot
                 .processes
@@ -1508,8 +1694,8 @@ impl Dashboard {
                 // Clone the static preset: a preset is shared immutable data,
                 // the dashboard owns its own mutable filter.
                 self.filter = filter_preset(id).filter.clone();
-                // "すべて" is the explicit reset choice: restore idle rows that
-                // the default presentation suppressed (C4-VIEWMODEL).
+                // "すべて" is the explicit reset choice: reveal the idle rows
+                // that the default presentation suppresses (IDLE-SUMMARY).
                 if id == FilterPresetId::All {
                     self.hide_idle_processes = false;
                 }
@@ -1639,10 +1825,15 @@ impl Dashboard {
                 // signal confirmation and PID-reuse protection unchanged.
                 // The "others" bucket resolves to its representative the same
                 // way (C1-COLLAPSE).
-                let first = if key == OTHERS_APP_GROUP_KEY {
+                let first = if key == OTHERS_APP_GROUP_KEY || key == IDLE_SUMMARY_KEY {
+                    let wanted = if key == OTHERS_APP_GROUP_KEY {
+                        AppRowKind::Others
+                    } else {
+                        AppRowKind::IdleSummary
+                    };
                     self.app_group_rows()
                         .into_iter()
-                        .find(|row| row.kind == AppRowKind::Others)
+                        .find(|row| row.kind == wanted)
                         .map(|row| row.process_key)
                 } else {
                     self.first_app_group_key(&key)
@@ -1664,8 +1855,10 @@ impl Dashboard {
                 // children to reveal (R1-VISIBLE). This also ignores stale keys
                 // so the set cannot grow from clicks on removed groups.
                 let expandable = self.app_group_rows().iter().any(|row| {
-                    matches!(row.kind, AppRowKind::Group | AppRowKind::Others)
-                        && row.key == key
+                    matches!(
+                        row.kind,
+                        AppRowKind::Group | AppRowKind::Others | AppRowKind::IdleSummary
+                    ) && row.key == key
                         && row.has_children
                 });
                 if !expandable {
@@ -1677,19 +1870,24 @@ impl Dashboard {
                 if self.expanded_app_groups.remove(&key) {
                     // Collapsing a row must not leave a hidden member as the
                     // selection: move it to that row's representative instead.
-                    if key == OTHERS_APP_GROUP_KEY {
-                        // The bucket holds real processes from several apps, so
-                        // it needs its own lookup (C1-COLLAPSE).
-                        let others = self
+                    if key == OTHERS_APP_GROUP_KEY || key == IDLE_SUMMARY_KEY {
+                        // Both summary rows hold real processes from several
+                        // apps, so they need their own member lookup.
+                        let wanted = if key == OTHERS_APP_GROUP_KEY {
+                            AppRowKind::Others
+                        } else {
+                            AppRowKind::IdleSummary
+                        };
+                        let summary = self
                             .app_group_rows()
                             .into_iter()
-                            .find(|row| row.kind == AppRowKind::Others);
-                        if let Some(others) = others {
+                            .find(|row| row.kind == wanted);
+                        if let Some(summary) = summary {
                             if self.selected.is_some_and(|selected| {
-                                others.member_keys.contains(&selected)
-                                    && others.process_key != selected
+                                summary.member_keys.contains(&selected)
+                                    && summary.process_key != selected
                             }) {
-                                self.selected = Some(others.process_key);
+                                self.selected = Some(summary.process_key);
                                 self.sync_selected_cpu_history();
                             }
                         }
@@ -3043,7 +3241,8 @@ mod tests {
         dashboard.apply(Command::SetMinVirtualMemoryBytes(None));
         assert_eq!(dashboard.filter().min_virtual_memory_bytes, None);
         assert!(!dashboard.filter().is_active());
-        // The default view still suppresses idle rows until an explicit clear.
+        // Idle rows stay suppressed until an explicit clear; the summary row is
+        // only part of the grouped view, so flat visible_count stays process rows.
         assert_eq!(
             dashboard.visible_count(),
             snapshot
@@ -3700,6 +3899,7 @@ mod tests {
                 command: "/usr/bin/firefox --pid=30".into(),
                 cpu_percent: 0.25,
                 memory_bytes: 300,
+                virtual_memory_bytes: 3_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3708,6 +3908,7 @@ mod tests {
                 command: "/usr/bin/firefox --pid=10".into(),
                 cpu_percent: 1.5,
                 memory_bytes: 100,
+                virtual_memory_bytes: 1_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3716,6 +3917,7 @@ mod tests {
                 command: "/usr/bin/firefox --pid=20".into(),
                 cpu_percent: 2.25,
                 memory_bytes: 200,
+                virtual_memory_bytes: 2_000,
                 ..ProcessSnapshot::default()
             },
             ProcessSnapshot {
@@ -3732,6 +3934,7 @@ mod tests {
                 command: "solo".into(),
                 cpu_percent: 3.0,
                 memory_bytes: 42,
+                virtual_memory_bytes: 42_000,
                 ..ProcessSnapshot::default()
             },
         ];
@@ -3759,6 +3962,7 @@ mod tests {
         assert_eq!(firefox.process_count, 3);
         assert_eq!(firefox.cpu_percent, 4.0);
         assert_eq!(firefox.memory_bytes, 600);
+        assert_eq!(firefox.virtual_memory_bytes, 6_000);
         assert!(firefox.has_children);
         assert!(!firefox.expanded);
         assert_eq!(firefox.process_key, ProcessKey::new(10, 1));
@@ -3773,8 +3977,51 @@ mod tests {
         let solo = &rows[1];
         assert_eq!(solo.key, "solo");
         assert_eq!(solo.cpu_percent, 3.0);
+        assert_eq!(solo.memory_bytes, 42);
+        assert_eq!(solo.virtual_memory_bytes, 42_000);
         assert!(!solo.has_children, "a single member is not expandable");
         assert!(rows.iter().all(|row| !row.key.is_empty()));
+    }
+
+    #[test]
+    fn app_group_rows_sort_by_virtual_memory_totals_and_keep_member_values() {
+        let mut dashboard = dashboard();
+        dashboard.ingest(app_group_snapshot());
+
+        // Descending: the single-process `solo` (42_000) outranks the three-member
+        // firefox total (6_000), proving the comparator uses the aggregate and
+        // not the key order or the process count.
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::VirtualMemory,
+            direction: SortDirection::Descending,
+        }));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows[0].key, "solo");
+        assert_eq!(rows[1].key, "firefox");
+        assert_eq!(rows[0].virtual_memory_bytes, 42_000);
+        assert_eq!(rows[1].virtual_memory_bytes, 6_000);
+
+        // Ascending flips the order using the same totals.
+        dashboard.apply(Command::SetSortSpec(SortSpec {
+            key: SortKey::VirtualMemory,
+            direction: SortDirection::Ascending,
+        }));
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows[0].key, "firefox");
+        assert_eq!(rows[1].key, "solo");
+
+        // Expanded members carry their own reading, never the group sum.
+        dashboard.apply(Command::ToggleAppGroup("firefox".into()));
+        let expanded = dashboard.app_group_rows();
+        let mut totals = 0_u64;
+        for member in expanded
+            .iter()
+            .filter(|row| row.kind == AppRowKind::Process)
+        {
+            assert_ne!(member.virtual_memory_bytes, 6_000);
+            totals = totals.saturating_add(member.virtual_memory_bytes);
+        }
+        assert_eq!(totals, 6_000);
     }
 
     #[test]
@@ -4424,31 +4671,66 @@ mod tests {
     }
 
     #[test]
-    fn idle_rows_hidden_by_default_and_restored_by_clear_and_all_preset() {
+    fn idle_rows_hidden_by_default_with_summary_and_restored_by_clear_or_all_preset() {
         let snapshot = demo_snapshot(0);
-        let active = snapshot
+        let hidden: Vec<_> = snapshot
             .processes
             .iter()
-            .filter(|process| normalise_percent(process.cpu_percent) > 0.0)
-            .count();
-        assert!(
-            active < snapshot.processes.len(),
-            "demo must contain idle rows"
+            .filter(|process| normalise_percent(process.cpu_percent) == 0.0)
+            .collect();
+        assert!(!hidden.is_empty(), "demo must contain idle rows");
+        let hidden_memory: u64 = hidden.iter().map(|process| process.memory_bytes).sum();
+
+        // Flat mode has only process rows: idle ones are suppressed by default.
+        let mut flat = flat_dashboard();
+        ingest_ticks(&mut flat, 1);
+        assert_eq!(
+            flat.visible_count(),
+            snapshot.processes.len() - hidden.len()
         );
+        assert!(!flat.filter().is_active());
 
-        let mut dashboard = flat_dashboard();
-        ingest_ticks(&mut dashboard, 1);
-        assert_eq!(dashboard.visible_count(), active);
-        // Filter state stays clean: no phantom "filtered" indicator (C4-VIEWMODEL).
-        assert!(!dashboard.filter().is_active());
+        // Grouped mode reports the suppressed processes in one trailing row.
+        let mut grouped = dashboard();
+        ingest_ticks(&mut grouped, 1);
+        let rows = grouped.app_group_rows();
+        let summary = rows
+            .iter()
+            .find(|row| row.kind == AppRowKind::IdleSummary)
+            .expect("idle summary row");
+        assert_eq!(summary.key, IDLE_SUMMARY_KEY);
+        assert_eq!(summary.process_count, hidden.len());
+        assert_eq!(summary.memory_bytes, hidden_memory);
+        assert_eq!(summary.member_keys.len(), hidden.len());
+        assert!(summary.has_children);
+        assert_eq!(
+            summary.label,
+            format_idle_summary_label(hidden.len(), hidden_memory)
+        );
+        if let Some(others_index) = rows.iter().position(|row| row.kind == AppRowKind::Others) {
+            let summary_index = rows
+                .iter()
+                .position(|row| row.kind == AppRowKind::IdleSummary)
+                .expect("summary");
+            assert!(summary_index < others_index, "summary stays before others");
+        }
 
-        dashboard.apply(Command::ClearFilter);
-        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+        grouped.apply(Command::ClearFilter);
+        assert!(grouped
+            .app_group_rows()
+            .iter()
+            .all(|row| row.kind != AppRowKind::IdleSummary));
+        assert_eq!(grouped.visible_count(), snapshot.processes.len());
 
-        let mut dashboard = flat_dashboard();
-        ingest_ticks(&mut dashboard, 1);
-        dashboard.apply(Command::ApplyFilterPreset(FilterPresetId::All));
-        assert_eq!(dashboard.visible_count(), snapshot.processes.len());
+        let mut all_preset = dashboard();
+        ingest_ticks(&mut all_preset, 1);
+        all_preset.apply(Command::ApplyFilterPreset(FilterPresetId::All));
+        assert!(all_preset
+            .app_group_rows()
+            .iter()
+            .all(|row| row.kind != AppRowKind::IdleSummary));
+        assert_eq!(all_preset.visible_count(), snapshot.processes.len());
+        assert_eq!(all_preset.active_filter_preset(), Some(FilterPresetId::All));
     }
 
     #[test]
@@ -4473,11 +4755,20 @@ mod tests {
         let mut dashboard = dashboard();
         dashboard.ingest(snapshot);
         let rows = dashboard.app_group_rows();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].process_key, ProcessKey::new(20, 20));
+        let worker = rows
+            .iter()
+            .find(|row| row.kind == AppRowKind::Group)
+            .expect("visible worker group");
+        assert_eq!(worker.process_key, ProcessKey::new(20, 20));
+        assert_eq!(worker.process_count, 1);
+        let summary = rows
+            .iter()
+            .find(|row| row.kind == AppRowKind::IdleSummary)
+            .expect("idle summary");
+        assert!(summary.member_keys.contains(&ProcessKey::new(10, 10)));
 
-        // The smallest-key member is idle and hidden, so it must not become the
-        // representative of the collapsed group.
+        // The idle member is hidden, so it must not become the representative
+        // of the collapsed worker group (IDLE-SUMMARY).
         dashboard.apply(Command::Select(Some(ProcessKey::new(20, 20))));
         assert_eq!(dashboard.selected_key(), Some(ProcessKey::new(20, 20)));
         assert_eq!(dashboard.selected_app_group_row_index(), Some(0));
@@ -4503,13 +4794,190 @@ mod tests {
     }
 
     #[test]
+    fn idle_summary_accounts_for_hidden_memory_and_expands() {
+        // Real-data shape: most RSS sits in 0% CPU rows, both in a multi-process
+        // app and in a standalone daemon.
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let idle_worker_key = ProcessKey::new(10, 10);
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: idle_worker_key,
+                name: "worker".into(),
+                command: "/usr/bin/worker --idle".into(),
+                cpu_percent: 0.0,
+                memory_bytes: 15 * GIB,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 20),
+                name: "worker".into(),
+                command: "/usr/bin/worker --child".into(),
+                cpu_percent: 3.5,
+                memory_bytes: 4 * GIB,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(30, 30),
+                name: "idle-daemon".into(),
+                command: "/usr/bin/idle-daemon".into(),
+                cpu_percent: 0.0,
+                memory_bytes: 8 * GIB,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        let total_rss: u64 = snapshot
+            .processes
+            .iter()
+            .map(|process| process.memory_bytes)
+            .sum();
+        assert_eq!(total_rss, 27 * GIB);
+
+        // Grouped list: the two 0% CPU processes are absent as rows but one
+        // trailing summary reports their count and 23 GiB of hidden RSS, so
+        // displayed rows plus the summary still add up to the whole snapshot.
+        let mut grouped = dashboard();
+        grouped.ingest(snapshot.clone());
+        let rows = grouped.app_group_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].key, "worker");
+        assert_eq!(rows[0].process_count, 1);
+        assert_eq!(rows[0].memory_bytes, 4 * GIB);
+        assert!(!rows[0].member_keys.contains(&idle_worker_key));
+        let summary = &rows[1];
+        assert_eq!(summary.kind, AppRowKind::IdleSummary);
+        assert_eq!(summary.key, IDLE_SUMMARY_KEY);
+        assert_eq!(summary.process_count, 2);
+        assert_eq!(summary.memory_bytes, 23 * GIB);
+        assert_eq!(summary.label, "アイドル 2 件（メモリ 23 GiB）");
+        assert_eq!(
+            summary.member_keys,
+            vec![idle_worker_key, ProcessKey::new(30, 30)]
+        );
+        let listed_memory: u64 = rows.iter().map(|row| row.memory_bytes).sum();
+        assert_eq!(listed_memory, total_rss);
+
+        // The reserved key expands the hidden processes into selectable rows.
+        grouped.apply(Command::ToggleAppGroup(IDLE_SUMMARY_KEY.into()));
+        assert!(grouped.is_app_group_expanded(IDLE_SUMMARY_KEY));
+        let expanded = grouped.app_group_rows();
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[1].kind, AppRowKind::IdleSummary);
+        assert!(expanded[1].expanded);
+        let revealed: Vec<_> = expanded
+            .iter()
+            .filter(|row| row.kind == AppRowKind::Process)
+            .collect();
+        assert_eq!(revealed.len(), 2);
+        assert!(revealed.iter().all(|row| row.depth == 1));
+        assert_eq!(revealed[0].process_key, idle_worker_key);
+        assert_eq!(revealed[0].memory_bytes, 15 * GIB);
+        assert_eq!(revealed[1].process_key, ProcessKey::new(30, 30));
+        assert_eq!(revealed[1].memory_bytes, 8 * GIB);
+        let daemon_key = ProcessKey::new(30, 30);
+        grouped.apply(Command::Select(Some(daemon_key)));
+        assert_eq!(grouped.selected_key(), Some(daemon_key));
+        assert_eq!(grouped.selected_app_group_row_index(), Some(3));
+
+        // Collapsing restores the single summary row.
+        grouped.apply(Command::ToggleAppGroup(IDLE_SUMMARY_KEY.into()));
+        assert!(!grouped.is_app_group_expanded(IDLE_SUMMARY_KEY));
+        assert_eq!(grouped.app_group_rows().len(), 2);
+
+        // ClearFilter reveals every process and removes the summary entirely.
+        grouped.apply(Command::ClearFilter);
+        let restored = grouped.app_group_rows();
+        assert!(restored
+            .iter()
+            .all(|row| row.kind != AppRowKind::IdleSummary));
+        // Three processes still form two app groups ("worker" has two members).
+        assert_eq!(restored.len(), 2);
+        let restored_worker = restored
+            .iter()
+            .find(|row| row.key == "worker")
+            .expect("restored worker group");
+        assert_eq!(restored_worker.process_count, 2);
+        assert_eq!(restored_worker.memory_bytes, 19 * GIB);
+        let restored_memory: u64 = restored.iter().map(|row| row.memory_bytes).sum();
+        assert_eq!(restored_memory, total_rss);
+    }
+
+    #[test]
+    fn idle_summary_stays_immediately_before_the_last_others_row() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let mut snapshot = demo_snapshot(0);
+        snapshot.processes = vec![
+            ProcessSnapshot {
+                key: ProcessKey::new(10, 10),
+                name: "worker".into(),
+                command: "/usr/bin/worker --one".into(),
+                cpu_percent: 2.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(20, 20),
+                name: "worker".into(),
+                command: "/usr/bin/worker --two".into(),
+                cpu_percent: 3.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(30, 30),
+                name: "alpha".into(),
+                command: "/usr/bin/alpha".into(),
+                cpu_percent: 1.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(40, 40),
+                name: "beta".into(),
+                command: "/usr/bin/beta".into(),
+                cpu_percent: 1.0,
+                ..ProcessSnapshot::default()
+            },
+            ProcessSnapshot {
+                key: ProcessKey::new(50, 50),
+                name: "idle-daemon".into(),
+                command: "/usr/bin/idle-daemon".into(),
+                cpu_percent: 0.0,
+                memory_bytes: 5 * GIB,
+                ..ProcessSnapshot::default()
+            },
+        ];
+        let mut dashboard = dashboard();
+        dashboard.ingest(snapshot);
+        let rows = dashboard.app_group_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].key, "worker");
+        assert_eq!(rows[1].kind, AppRowKind::IdleSummary);
+        assert_eq!(rows[1].memory_bytes, 5 * GIB);
+        assert_eq!(rows[2].kind, AppRowKind::Others);
+
+        // Expanding the summary inserts its member before the bucket, keeping
+        // "others" the final row (IDLE-SUMMARY + C4-VIEWMODEL).
+        dashboard.apply(Command::ToggleAppGroup(IDLE_SUMMARY_KEY.into()));
+        let expanded = dashboard.app_group_rows();
+        assert_eq!(expanded.last().expect("others").kind, AppRowKind::Others);
+        assert_eq!(
+            expanded
+                .iter()
+                .filter(|row| row.kind == AppRowKind::IdleSummary)
+                .count(),
+            1
+        );
+        assert!(expanded.iter().any(|row| {
+            row.kind == AppRowKind::Process && row.process_key == ProcessKey::new(50, 50)
+        }));
+    }
+
+    #[test]
     fn others_is_not_created_without_a_multi_process_group() {
         let mut dashboard = dashboard();
         dashboard.ingest(demo_snapshot(0));
         let rows = dashboard.app_group_rows();
         assert!(rows.len() > 1, "demo still shows the ordinary app list");
         assert!(
-            rows.iter().all(|row| row.kind == AppRowKind::Group),
+            rows.iter().all(|row| row.kind != AppRowKind::Others),
             "an all-single-process snapshot must not gain an Others row"
         );
         assert_eq!(dashboard.visible_count(), rows.len());
