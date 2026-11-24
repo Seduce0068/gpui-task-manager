@@ -5188,13 +5188,13 @@ mod tests {
         use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
 
         let ids = RedactionIdentifiers {
-            home: "/home/koppe",
-            user: "koppe",
+            home: "/home/testuser",
+            user: "testuser",
             hostname: "nuc",
         };
-        let redacted = core_redact_text("secret /home/koppe/project user:koppe host:nuc", &ids);
-        assert!(!redacted.contains("koppe"), "{redacted}");
-        assert!(!redacted.contains("/home/koppe"), "{redacted}");
+        let redacted = core_redact_text("secret /home/testuser/project user:testuser host:nuc", &ids);
+        assert!(!redacted.contains("testuser"), "{redacted}");
+        assert!(!redacted.contains("/home/testuser"), "{redacted}");
         assert!(!redacted.contains("host:nuc"), "{redacted}");
         assert!(redacted.contains("<home>"), "{redacted}");
     }
@@ -5759,15 +5759,15 @@ mod tests {
         // paths, user names and host names from the announced error text.
         use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
         let ids = RedactionIdentifiers {
-            home: "/home/koppe",
-            user: "koppe",
+            home: "/home/testuser",
+            user: "testuser",
             hostname: "nuc",
         };
-        let raw = "probe failed under /home/koppe/proj on nuc for user koppe";
+        let raw = "probe failed under /home/testuser/proj on nuc for user testuser";
         let redacted = core_redact_text(raw, &ids);
         let announced = a11y_live_text(Some((&redacted, true)));
-        assert!(!announced.contains("/home/koppe"), "{announced}");
-        assert!(!announced.contains("koppe"), "{announced}");
+        assert!(!announced.contains("/home/testuser"), "{announced}");
+        assert!(!announced.contains("testuser"), "{announced}");
         assert!(!announced.contains("nuc"), "{announced}");
         assert!(announced.starts_with("エラー: "), "{announced}");
     }
@@ -5787,15 +5787,15 @@ mod tests {
 
         use tm_core::redact::{redact_text as core_redact_text, RedactionIdentifiers};
         let ids = RedactionIdentifiers {
-            home: "/home/koppe",
-            user: "koppe",
+            home: "/home/testuser",
+            user: "testuser",
             hostname: "nuc",
         };
-        let raw = "/home/koppe/nuc.slice";
+        let raw = "/home/testuser/nuc.slice";
         let redacted = core_redact_text(raw, &ids);
         let row = cgroup_group_text(&redacted, 3);
-        assert!(!row.contains("/home/koppe"), "{row}");
-        assert!(!row.contains("koppe"), "{row}");
+        assert!(!row.contains("/home/testuser"), "{row}");
+        assert!(!row.contains("testuser"), "{row}");
         assert!(!row.contains("nuc"), "{row}");
         assert!(row.contains("<home>"), "{row}");
         assert!(row.ends_with("— 3 件"), "{row}");

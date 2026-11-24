@@ -119,7 +119,7 @@ PoC を CI ゲートに乗せるには `app/Cargo.toml` への dev-dependency
 
 ydotool は uinput で仮想入力デバイスを作るため Wayland ネイティブにも効くが、
 v1.0.0 以降 is mandatory な `ydotoold` が `/dev/uinput` への書き込み権限を要求する。
-本環境の `/dev/uinput` は `crw------- root root` で、ユーザー `koppe` は `input` グループに
+本環境の `/dev/uinput` は `crw------- root root` で、ユーザー `testuser` は `input` グループに
 属していない。apt 候補は 1.0.4-3。導入には権限昇格／udev 設定が必要。
 
 - 出典（一次）: `https://raw.githubusercontent.com/ReimuNotMoe/ydotool/master/README.md#L77,L83,L91` （取得 2026-11-22T00:34:45+09:00）

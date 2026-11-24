@@ -449,7 +449,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 ### メモ — strings ゲート対応の経緯
 
 - release-linux の strings ゲート初回失敗は、remap-path-prefix のルール順序が
-  逆で `/build/koppe/.cargo/...` が残ったことと、redact のマスク先
+  逆で `/build/testuser/.cargo/...` が残ったことと、redact のマスク先
   `/home/user` がデモデータ・テスト期待値に混在していたことが原因。
   一般的な `/home/` `/Users/` を先に、具体的プレフィックスを後に置き、
   マスク先を `<home>` へ統一して全パターン 0 件を確認済み。
