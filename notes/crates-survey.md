@@ -42,7 +42,7 @@ serde_json = "1"
 ```
 
 - `sysinfo` の既定 features は `component, disk, gpu, network, system, user`。本プロジェクトでは GPU/温度を初期スコープ外にするなら `default-features = false` で上記 5 つに絞り、ビルドサイズと依存を削る。
-- `multithread` は `rayon` を有効化し、プロセス走査を並列化する。3,549 プロセス環境での実測（§4）を踏まえ、既定で有効にする。
+- `multithread` は `rayon` を有効化し、プロセス走査を並列化する。<count> プロセス環境での実測（§4）を踏まえ、既定で有効にする。
 - `rustix` は `kill_process(pid, Signal)` などの安全 API を提供する（`unsafe` をアプリ側に書かない）。`sysinfo` の `kill_with` でも足りるが、シグナル送出を収集層から分離したい場合に使う。
 
 ### 0.2 ローカル agent（ブラウザ向け、ネイティブ実行）
@@ -136,12 +136,12 @@ serde-wasm-bindgen = "0.6.5"  # 任意（JsValue 直接変換で足りるなら�
 
 | 分類 | API | 実測結果（2026-11-14、本機） |
 |---|---|---|
-| システム | `System::host_name/name/os_version/kernel_version/uptime/boot_time/load_average/physical_core_count/distribution_id` | host, Ubuntu 26.04, kernel 7.0.0-43-generic, uptime 522800s, load 8.39/7.99/7.31, physical 6 / logical 12 |
-| CPU | `sys.cpus()`, `Cpu::usage()`, `Cpu::brand()`, `Cpu::frequency()`, `sys.global_cpu_usage()` | Ryzen 5 3600, 3949MHz, 12 コア分の使用率（0〜100） |
-| メモリ | `total_memory/used_memory/available_memory/free_memory/total_swap/used_swap` | total 67.35GB / used 49.04GB / available 18.31GB / swap 68.72GB 中 21.14GB 使用 |
-| ネットワーク | `Networks::new_with_refreshed_list()`, `NetworkData::{total_received,total_transmitted,received,transmitted,total_packets_received,total_packets_transmitted,total_errors_on_received,mac_address,mtu,ip_networks,transmit_link_speed,receive_link_speed,operational_state}` | 8 IF（enp4s0, tailscale0, docker0, lxcbr0, virbr0, lo, br-*, br-*）。enp4s0 は累計 rx 98.1GB / tx 13.7GB |
-| ディスク | `Disks::new_with_refreshed_list()`, `Disk::{name,mount_point,file_system,kind,total_space,available_space,is_removable,is_read_only,usage}` | 12 エントリ。`/` は ext4/SSD 629.7GB 中 100.4GB 空き。overlay/lxcfs の疑似マウント 9 件（total=0）も列挙される |
-| プロセス | `sys.processes()`, `Process::{name,cmd,exe,cwd,user_id,status,start_time,run_time,cpu_usage,memory,virtual_memory,disk_usage,parent,tasks,thread_kind,environ}` | 3,549 プロセス。cmdline/user/status/start_time すべて取得（例: firefox-bin, user=user, Sleep, start_time=1794132006, cpu=214.01%） |
+| システム | `System::host_name/name/os_version/kernel_version/uptime/boot_time/load_average/physical_core_count/distribution_id` | <host>, <os> <os-version>, kernel <kernel>, uptime <uptime>s, load <load>/<load>/<load>, physical <cores> / logical <cpus> |
+| CPU | `sys.cpus()`, `Cpu::usage()`, `Cpu::brand()`, `Cpu::frequency()`, `sys.global_cpu_usage()` | <cpu>, <freq>MHz, <cpus> コア分の使用率（0〜100） |
+| メモリ | `total_memory/used_memory/available_memory/free_memory/total_swap/used_swap` | total <bytes> / used <bytes> / available <bytes> / swap <bytes> 中 <bytes> 使用 |
+| ネットワーク | `Networks::new_with_refreshed_list()`, `NetworkData::{total_received,total_transmitted,received,transmitted,total_packets_received,total_packets_transmitted,total_errors_on_received,mac_address,mtu,ip_networks,transmit_link_speed,receive_link_speed,operational_state}` | 8 IF（<iface>, <iface>, <iface>, <iface>, <iface>, <iface>, br-*, br-*）。<iface> は累計 rx <bytes> / tx <bytes> |
+| ディスク | `Disks::new_with_refreshed_list()`, `Disk::{name,mount_point,file_system,kind,total_space,available_space,is_removable,is_read_only,usage}` | <count> エントリ。`/` は ext4/SSD <bytes> 中 <bytes> 空き。overlay/lxcfs の疑似マウント <n> 件（total=0）も列挙される |
+| プロセス | `sys.processes()`, `Process::{name,cmd,exe,cwd,user_id,status,start_time,run_time,cpu_usage,memory,virtual_memory,disk_usage,parent,tasks,thread_kind,environ}` | <count> プロセス。cmdline/user/status/start_time すべて取得（例: <proc>, user=<user>, Sleep, start_time=<time>, cpu=<percent>%） |
 | ユーザー | `Users::new_with_refreshed_list()`, `get_user_by_id(&Uid)` | uid → ユーザー名の解決が可能（例: user） |
 | シグナル | `Process::{kill, kill_with, kill_and_wait, kill_with_and_wait}`, `Signal` | 自前 `sleep 30` に `kill_with(Signal::Term)` → `Some(true)`、終了 status 15 を確認 |
 | コンテナ | `System::cgroup_limits()` | 未実測（機能は存在。コンテナ内の CPU/メモリ上限取得に使える） |
@@ -152,7 +152,7 @@ serde-wasm-bindgen = "0.6.5"  # 任意（JsValue 直接変換で足りるなら�
 
 1. **CPU 使用率の更新間隔**: Linux の `MINIMUM_CPU_UPDATE_INTERVAL = 200ms`。これより短い間隔で refresh しても意味のある値にならない。サンプリングは 200ms 以上（推奨 1 秒）にする。
 2. **プロセスの CPU 使用率は 100% を超える**: マルチスレッドの合計値（実測: firefox-bin 214.01%）。UI では「コア数で正規化した全体比」と「タスクマネージャ流の合計%」を区別して表示する。
-3. **プロセスの cmdline/exe/user に欠損がある**: 実測で user=None 33/3,549、cmdline 空 325、exe=None 756。カーネルスレッドや権限制約によるもので、UI は「不明」表示を前提にする。
+3. **プロセスの cmdline/exe/user に欠損がある**: 実測で user=None <n>/<count>、cmdline 空 <n>、exe=None <n>。カーネルスレッドや権限制約によるもので、UI は「不明」表示を前提にする。
 4. **`hidepid` の影響**: 本機の `/proc` は `hidepid` なし（`proc /proc proc rw,nosuid,nodev,noexec,relatime`）のため他ユーザーのプロセスも見える。`hidepid=1/2` の環境では他ユーザーの情報が制限される（sysinfo の Linux 実装も `hidepid=invisible` を考慮したコメントを持つ）。起動時に `/proc/mounts` を読み、制限モードを UI に注記する。
 5. **per-process ネットワークは取得できない**: インターフェース単位のみ。per-process は eBPF/nethogs 等が必要（Mission Center も nethogs の手動セットアップと明記）。
 6. **ディスク一覧に疑似マウントが混ざる**: overlay, lxcfs, tmpfs 等を除外するフィルタが必要（実測 12 件中 9 件が疑似マウント）。
@@ -161,7 +161,7 @@ serde-wasm-bindgen = "0.6.5"  # 任意（JsValue 直接変換で足りるなら�
 9. **ゾンビの扱い**: kill 後 300ms 時点で sysinfo 上にまだ存在（`still_in_sysinfo=true`）。子プロセスは reap するまで残るため、UI は「消えるまでポーリング」する。
 10. **シグナル送出の権限**: 他ユーザーのプロセスには EPERM。root 権限や polkit が必要な操作は別モードに分離する。
 11. **`System` インスタンスの再利用**: README が「同じインスタンスを保持して refresh する方が良い」と明記。毎回 `new_all()` しない（コールドスタート 85ms）。
-12. **JSON サイズ**: 3,549 プロセスの全項目 JSON は 2.24MB。全件送信は避け、ページング/上位 N 件/差分にする。
+12. **JSON サイズ**: <count> プロセスの全項目 JSON は <bytes>。全件送信は避け、ページング/上位 N 件/差分にする。
 
 ### 2.4 RUSTSEC とライセンス
 
@@ -231,7 +231,7 @@ cargo check --target wasm32-unknown-unknown
 
 - `sysinfo-probe` は `[workspace]` を空宣言した独立 crate（親 workspace に入らない）。
 - 測定は `System::new_all()` を 1 回 → 250ms スリープを挟んで 7 回の tick を計測し、中央値を採用。
-- 負荷状況: load average 8 前後、プロセス数 3,549（Firefox 複数 + Docker コンテナ）という**多忙なデスクトップ**での値。空闲時の値はこれより小さくなる可能性が高い（未確認）。
+- 負荷状況: load average <load> 前後、プロセス数 <count>（ブラウザ複数 + Docker コンテナ）という**多忙なデスクトップ**での値。空闲時の値はこれより小さくなる可能性が高い（未確認）。
 
 ## 5. 未確認事項
 
@@ -258,75 +258,75 @@ cargo check --target wasm32-unknown-unknown
 
 ## 付録 A: `cargo run --release` の全出力
 
-環境: Kubuntu 2026.04 / Ryzen 5 3600（6C/12T）/ RAM 64GB / rustc 1.99.1 / sysinfo 0.40.3。実行: `cargo run --release`（`poc-crates/sysinfo-probe`）。
+環境: <os> <os-version> / <cpu>（<cores>C/<cpus>T）/ RAM <bytes> / rustc <toolchain> / sysinfo 0.40.3。実行: `cargo run --release`（`poc-crates/sysinfo-probe`）。
 
 ```text
-   Compiling sysinfo-probe v0.1.0 (~/poc-crates/sysinfo-probe)
+   Compiling sysinfo-probe v0.1.0 (<repo>/poc-crates/sysinfo-probe)
     Finished `release` profile [optimized] target(s) in 0.62s
      Running `target/release/sysinfo-probe`
 == sysinfo probe: crate version 0.40.3 ==
-[timing] System::new_all() cold start: 85.027234ms
-[timing] Disks::new_with_refreshed_list(): 1.080602ms
-[timing] Networks::new_with_refreshed_list(): 1.249091ms
-[timing] full tick  (refresh_all + disks + networks): median=31.440903ms min=30.27202ms max=36.892232ms n=7
-[timing] targeted tick (cpu+memory+processes only):   median=24.280293ms min=20.861438ms max=27.408202ms n=7
-[timing] disks.refresh only: median=898.574µs / networks.refresh only: median=1.174251ms
+[timing] System::new_all() cold start: <t>ms
+[timing] Disks::new_with_refreshed_list(): <t>ms
+[timing] Networks::new_with_refreshed_list(): <t>ms
+[timing] full tick  (refresh_all + disks + networks): median=<t>ms min=<t>ms max=<t>ms n=7
+[timing] targeted tick (cpu+memory+processes only):   median=<t>ms min=<t>ms max=<t>ms n=7
+[timing] disks.refresh only: median=<t>µs / networks.refresh only: median=<t>ms
 
 == system ==
-host=Ok("<host>") os=Ok("Ubuntu") os_version=Ok("26.04") kernel=Ok("7.0.0-43-generic")
-uptime=Ok(522800) boot_time_unix=Ok(1794131936) physical_cores=Ok(6) logical_cpus=12
-load_avg 1/5/15 = 8.39/7.99/7.31
-cpu_brand="AMD Ryzen 5 3600 6-Core Processor" cpu_frequency_mhz=3949
-global_cpu_percent=48.41
-per_core_cpu_percent (12 cores) = [42.3, 53.8, 57.7, 61.5, 51.9, 44.4, 42.3, 46.2, 36.0, 37.0, 57.7, 48.0]
+host=Ok("<host>") os=Ok("<os>") os_version=Ok("<os-version>") kernel=Ok("<kernel>")
+uptime=Ok(<uptime>) boot_time_unix=Ok(<boot-time>) physical_cores=Ok(<cores>) logical_cpus=<cpus>
+load_avg 1/5/15 = <load>/<load>/<load>
+cpu_brand="<cpu>" cpu_frequency_mhz=<freq>
+global_cpu_percent=<percent>
+per_core_cpu_percent (<cpus> cores) = [<percent>, ...]
 
 == memory ==
-total=67351371776 used=49043570688 available=18307801088 free=2297499648 swap_total=68719472640 swap_used=21142663168
+total=<bytes> used=<bytes> available=<bytes> free=<bytes> swap_total=<bytes> swap_used=<bytes>
 
 == networks ==
-if=br-19b60f1f19dc total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=3e:30:94:23:14:2b mtu=1500
-if=docker0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=ce:b0:0e:1c:43:48 mtu=1500
-if=tailscale0 total_rx=57831855 total_tx=25423078 rx_since_last=224 tx_since_last=0 pkts_rx=386304 pkts_tx=389380 err_rx=0 mac=00:00:00:00:00:00 mtu=1280
-if=lxcbr0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=10:66:6a:00:00:00 mtu=1500
-if=enp4s0 total_rx=98132741593 total_tx=13711775029 rx_since_last=4470 tx_since_last=3887 pkts_rx=95518386 pkts_tx=37564405 err_rx=0 mac=d4:5d:64:ee:7f:8f mtu=1280
-if=lo total_rx=116447834135 total_tx=116447834135 rx_since_last=3977 tx_since_last=3977 pkts_rx=47468427 pkts_tx=47468427 err_rx=0 mac=00:00:00:00:00:00 mtu=65536
-if=br-9a7ce1e92d28 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=5e:d0:b0:f1:95:50 mtu=1500
-if=virbr0 total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=52:54:00:ab:71:77 mtu=1500
+if=<iface> total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=<mac> mtu=1500
+if=<iface> total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=<mac> mtu=1500
+if=<iface> total_rx=<bytes> total_tx=<bytes> rx_since_last=<n> tx_since_last=0 pkts_rx=<n> pkts_tx=<n> err_rx=0 mac=<mac> mtu=1280
+if=<iface> total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=<mac> mtu=1500
+if=<iface> total_rx=<bytes> total_tx=<bytes> rx_since_last=<n> tx_since_last=<n> pkts_rx=<n> pkts_tx=<n> err_rx=0 mac=<mac> mtu=1280
+if=<iface> total_rx=<bytes> total_tx=<bytes> rx_since_last=<n> tx_since_last=<n> pkts_rx=<n> pkts_tx=<n> err_rx=0 mac=<mac> mtu=65536
+if=<iface> total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=<mac> mtu=1500
+if=<iface> total_rx=0 total_tx=0 rx_since_last=0 tx_since_last=0 pkts_rx=0 pkts_tx=0 err_rx=0 mac=<mac> mtu=1500
 
 == disks ==
-disk="/dev/nvme0n1p7" mount="/" fs="ext4" kind=SSD total=629697183744 available=100447502336 removable=false read_only=false
-disk="/dev/nvme0n1p2" mount="/boot/efi" fs="vfat" kind=SSD total=100663296 available=60939264 removable=false read_only=false
-disk="/dev/sdb1" mount="/mnt/timeshift" fs="ext4" kind=SSD total=471415693312 available=331495960576 removable=true read_only=false
-disk="lxcfs" mount="/var/lib/lxcfs" fs="fuse.lxcfs" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/2363ec980e8503da19476f7f564f4dfb790b14efa2c0a7779d6abe6d95dd8da1" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/cb3f2761da4750b3a80f43bd4d3030f1ec4d5a2930a9c86e11235f1bba9f02a4" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/1f1ad0723fe1a01e297849abf262e3a5d4545640ffbe82b2cd76147478705265" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/761a3a4d11561be86a2ef894e937b2130447f2da5b826e3061384ab03d6459d0" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/4552193caac72682c0937f5b6358775a71f865532d9c8604bf2b0e604e96bc65" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/c9c452aed8386d79f5949016c193c338bcf43f5fe9f514bb94d55d4be33fcabe" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/c3408f5bdb41df4a3859ce73cdf763ffb26b152cdf872a36b2d5aae708f28c30" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
-disk="overlay" mount="/var/lib/docker/rootfs/overlayfs/530f50b2009a67ea73b07074c2a91cfa7e4f1fee8c30132890924c90ba8eeb29" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk1>" mount="<mount1>" fs="ext4" kind=SSD total=<bytes> available=<bytes> removable=false read_only=false
+disk="<disk2>" mount="<mount2>" fs="vfat" kind=SSD total=<bytes> available=<bytes> removable=false read_only=false
+disk="<disk3>" mount="<mount3>" fs="ext4" kind=SSD total=<bytes> available=<bytes> removable=true read_only=false
+disk="<disk4>" mount="<mount4>" fs="<fs>" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk5>" mount="<mount5>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk6>" mount="<mount6>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk7>" mount="<mount7>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk8>" mount="<mount8>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk9>" mount="<mount9>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk10>" mount="<mount10>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk11>" mount="<mount11>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
+disk="<disk12>" mount="<mount12>" fs="overlay" kind=Unknown(-1) total=0 available=0 removable=false read_only=false
 
 == processes ==
-process_count=3549
+process_count=<count>
 top 5 by cpu:
-pid=6977 name="firefox-bin" user=Some("user") status=Sleep start_time=1794132006 run_time=522730 cpu=214.01 mem=4018008064 cmdline="/home/user/downloads/firefox/firefox --sm-client-id 1031c3692fc2e9000179380566300041380770000"
-pid=8545 name="Isolated Web Co" user=Some("user") status=Run start_time=1794132011 run_time=522725 cpu=76.43 mem=2690158592 cmdline="/home/user/downloads/firefox/firefox-bin -contentproc -isForBrowser -prefsHandle 0:37179 -prefMapHandle 1:304037 -jsInitHandle 2:161360 -parentBuildID 20261102144711 -sandboxReporter 3 -ipcHandle 4 -initialChannelId {08180635-df7a-4c53-90f7-94b9bb463c8d} -parentPid 6977 -crashHelperPid 7054 -crashHelper 5 -crashReporter 6 -greomni /home/user/downloads/firefox/omni.ja -appomni /home/user/downloads/firefox/browser/omni.ja -appDir /home/user/downloads/firefox/browser 13 tab"
-pid=8577 name="Isolated Web Co" user=Some("user") status=Sleep start_time=1794132011 run_time=522725 cpu=72.61 mem=2446483456 cmdline="/home/user/downloads/firefox/firefox-bin -contentproc -isForBrowser -prefsHandle 0:37179 -prefMapHandle 1:304037 -jsInitHandle 2:161360 -parentBuildID 20261102144711 -sandboxReporter 3 -ipcHandle 4 -initialChannelId {ebcd3eb9-b28e-4bea-8333-3f3e8e4b22b3} -parentPid 6977 -crashHelperPid 7054 -crashHelper 5 -crashReporter 6 -greomni /home/user/downloads/firefox/omni.ja -appomni /home/user/downloads/firefox/browser/omni.ja -appDir /home/user/downloads/firefox/browser 16 tab"
-pid=7226 name="TaskCon~ller #0" user=Some("user") status=Run start_time=1794132006 run_time=522730 cpu=57.32 mem=4019830784 cmdline="/home/user/downloads/firefox/firefox --sm-client-id 1031c3692fc2e9000179380566300041380770000"
-pid=4012693 name="sysinfo-probe" user=Some("user") status=Sleep start_time=1794654731 run_time=5 cpu=57.32 mem=35463168 cmdline="target/release/sysinfo-probe"
-field coverage: user=None 33/3549 / cmdline empty 325/3549 / exe=None 756/3549
+pid=<pid> name="<proc>" user=Some("<user>") status=Sleep start_time=<time> run_time=<n> cpu=<n> mem=<bytes> cmdline="<cmdline> --sm-client-id <session>"
+pid=<pid> name="<proc>" user=Some("<user>") status=Run start_time=<time> run_time=<n> cpu=<n> mem=<bytes> cmdline="<cmdline> -initialChannelId {<session>} -parentPid <pid>"
+pid=<pid> name="<proc>" user=Some("<user>") status=Sleep start_time=<time> run_time=<n> cpu=<n> mem=<bytes> cmdline="<cmdline> -initialChannelId {<session>} -parentPid <pid>"
+pid=<pid> name="<proc>" user=Some("<user>") status=Run start_time=<time> run_time=<n> cpu=<n> mem=<bytes> cmdline="<cmdline> --sm-client-id <session>"
+pid=<pid> name="<proc>" user=Some("<user>") status=Sleep start_time=<time> run_time=<n> cpu=<n> mem=<bytes> cmdline="<cmdline>"
+field coverage: user=None <n>/<count> / cmdline empty <n>/<count> / exe=None <n>/<count>
 
 /proc mount line: proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
 
 == kill test (own child only) ==
-spawned pid=4012817 before=Some(("sleep", 1794654736, "Sleep"))
+spawned pid=<pid> before=Some(("<proc>", <time>, "Sleep"))
 kill_with(Signal::Term) -> Some(true)
 after kill: still_in_sysinfo=true child.try_wait()=Ok(Some(ExitStatus(unix_wait_status(15))))
 
 == json ==
-snapshot json bytes=2241066 (processes=3549)
-head: {"schema":"gpui-task-manager/snapshot/v1","captured_at_unix":1794654737,"sysinfo_crate_version":"0.40.3","host_name":"<host>","os_name":"Ubuntu","os_version":"26.04","kernel_version":"7.0.0-43-generic","uptime_secs":522800,"boot_time_unix":1794131936,"load_avg":[8.39,7.99,7.31],"physical_cores":6,"logical_cpus":12,"cpu_brand":"AMD Ryzen 5 3600 6-Core Processor","cpu_frequency_mhz":3949,"global_cpu_percent":37.35294,"per_core_cpu_percent":[42.307693,53.846157,57.692307,61.538464,51.851852,44.444443,42.307693,46.15385,36.0,37.03704,57.692307,48.0],"memory_total":673513717
+snapshot json bytes=<bytes> (processes=<count>)
+head: {"schema":"gpui-task-manager/snapshot/v1","captured_at_unix":<time>,"sysinfo_crate_version":"0.40.3","host_name":"<host>","os_name":"<os>","os_version":"<os-version>","kernel_version":"<kernel>","uptime_secs":<uptime>,"boot_time_unix":<boot-time>,"load_avg":[<load>,<load>,<load>],"physical_cores":<cores>,"logical_cpus":<cpus>,"cpu_brand":"<cpu>","cpu_frequency_mhz":<freq>,"global_cpu_percent":<percent>,"per_core_cpu_percent":[<percent>, ...],"memory_total":<bytes>,...}
 
 DONE
 ```

@@ -4,7 +4,7 @@
 #
 # 理由:
 #   rustc は panic! の source_location や debug 情報にソースファイルの絶対パスを
-#   埋め込む。GitHub Actions の /home/runner/... や開発ホストの /home/koppe/... が
+#   埋め込む。GitHub Actions の /home/runner/... や開発ホストの /home/<user>/... が
 #   バイナリへ残ると、公開時に内部パスやアカウント識別子が漏れる。
 #   --remap-path-prefix はコンパイル時にそのプレフィックスを仮想パスへ置換する。
 #   release-linux の strings ゲートは、この設定が効かなかった場合の検出装置である。
@@ -19,26 +19,22 @@
 #     一般的な /home/ と /Users/ を先に置き、具体的なプレフィックスを後に置く
 #     （rustc は複数指定を順に適用するため、後の指定が優先される。実測:
 #     /tmp/=/build/ と /tmp/remap-probe=/build/foo の併記では後者が採用される）。
-#   - ローカル作業ツリーは /home/koppe=/build だけだと /build/document/... として
-#     残り、公開ゲートの remapped-dev-home / internal-workspace-root /
-#     internal-worktree-dir に一致する。以下のローカル固有エントリでリポジトリ
-#     ルートと、この worktree のルート（.agents/worktrees/integration-r1 配下の
-#     target/ を含む）をまとめて /build/private へ置換する。
-#     /build/document=... は remap 後に残ったパスの二次置換（多層防御）。
+#   - ローカル固有のホームや作業ツリーのパスは汎用プレースホルダで表し、
+#     実パスをリポジトリへ残さない。共通の /home/ と /Users/ の置換を先に
+#     適用し、個別のプレフィックスを後に置く（多層防御）。
 #     いずれも CI の /home/runner/... には一致しないため公開ゲートの
-#     CI 側の false positive は発生しない。他の worktree を使う場合は
-#     integration-r1 のエントリをその worktree 名に差し替えること。
+#     CI 側の false positive は発生しない。
 [build]
 rustflags = [
   "--remap-path-prefix=/home/=/build/",
   "--remap-path-prefix=/Users/=/build/",
-  "--remap-path-prefix=/home/koppe=/build",
+  "--remap-path-prefix=/home/<user>=/build",
   "--remap-path-prefix=/home/runner=/build",
   "--remap-path-prefix=/Users/runner=/build",
-  "--remap-path-prefix=/home/koppe/document=/build/private",
-  "--remap-path-prefix=/build/document=/build/private",
-  "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager=/build/private",
-  "--remap-path-prefix=/home/koppe/document/deepseek-harness/default-workspace/work/gpui-task-manager/.agents/worktrees/integration-r1=/build/private",
+  "--remap-path-prefix=/home/<user>/<workspace>=/build/private",
+  "--remap-path-prefix=/build/<workspace>=/build/private",
+  "--remap-path-prefix=/home/<user>/<workspace>/<repo>=/build/private",
+  "--remap-path-prefix=/home/<user>/<workspace>/<repo>/.agents/worktrees/<worktree>=/build/private",
 ]
 
 # ahash の compile-time-rng（zed-xim 経由）によるビルド非決定性の fix。
