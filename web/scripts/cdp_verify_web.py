@@ -11,7 +11,7 @@
 
     # 実機 CDP 検証（開発ホストで手動実行）
     # 静的配信（別シェル）
-    cd work/gpui-task-manager/web/dist
+    cd web/dist
     python3 -m http.server 8091 --bind 127.0.0.1
 
     # Chrome（別シェル）

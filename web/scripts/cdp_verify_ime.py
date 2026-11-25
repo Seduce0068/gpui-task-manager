@@ -406,8 +406,8 @@ def self_check() -> int:
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dist", default="work/gpui-task-manager/web/dist")
-    parser.add_argument("--out", default="work/gpui-task-manager/notes/assets")
+    parser.add_argument("--dist", default="web/dist")
+    parser.add_argument("--out", default="notes/assets")
     parser.add_argument("--prefix", default="ime")
     parser.add_argument("--http-port", type=int, default=8091)
     parser.add_argument("--cdp-port", type=int, default=9223)

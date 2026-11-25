@@ -11,7 +11,7 @@
    と localStorage の両方に反映される（復元経路も `theme=light` を確認する）。
 
 前提（別シェルで起動しておく）:
-    cd work/gpui-task-manager/web/dist && python3 -m http.server 8091 --bind 127.0.0.1
+    cd web/dist && python3 -m http.server 8091 --bind 127.0.0.1
     google-chrome --headless=new --no-sandbox --disable-dev-shm-usage \\
       --window-size=1440,1000 --remote-debugging-port=9223 \\
       --user-data-dir=/tmp/tm-web-chrome about:blank

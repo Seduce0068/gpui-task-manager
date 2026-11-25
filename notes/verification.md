@@ -638,11 +638,11 @@ The job was not started due to an account configuration issue.
 UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容量データ領域が隠れていた**。
 
 ```text
-修正前（tm-agent /api/v1/snapshot の disks 順）
-  0: /                        586 GiB
-  1: /boot/efi                  0 GiB   ← 96 MB の EFI パーティションが 2 番目
-  2: /mnt/timeshift           439 GiB   ← 表示されない
-  3: /run/media/<user>/Windows 333 GiB  ← 表示されない
+修正前（tm-agent /api/v1/snapshot の disks 順・容量は汎用表記）
+  0: /                         (大容量)
+  1: /boot/efi                 (小容量)  ← 小容量の EFI パーティションが 2 番目
+  2: /mnt/timeshift            (大容量)  ← 表示されない
+  3: /run/media/<user>/Windows  (大容量) ← 表示されない
 ```
 
 ### 修正
@@ -655,7 +655,7 @@ UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容�
 
 ### 検証（Runtime Proof）
 
-- 修正後（実機）: `/`(586 GiB) → `/mnt/timeshift`(439 GiB) → `/run/media/<user>/Windows`(333 GiB) → `/boot/efi`。UI の `take(2)` で `/` と `/mnt/timeshift` が表示される。
+- 修正後（容量は汎用表記）: `/`(大容量) → `/mnt/timeshift`(大容量) → `/run/media/<user>/Windows`(大容量) → `/boot/efi`(小容量)。UI の `take(2)` で `/` と `/mnt/timeshift` が表示される。
 - `cargo test --workspace`: **155 passed / 0 failed**（app 12 / tm-agent 39 / tm-core 56 / tm-platform 11 / tm-viewmodel 37）。
 - `cargo clippy --workspace --all-targets -- -D warnings`: 警告 0。
 - `cargo fmt --all` 適用済み。
@@ -668,12 +668,12 @@ UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容�
 ### 実測（Runtime Proof）
 
 ```text
-enp4s0      rx=124,641,412,687  tx=28,381,393,862   ← 物理 NIC
-tailscale0  rx=    79,901,838   tx=    35,192,774   ← 同じ通信が NIC 上も流れる
+<物理 NIC>  rx=<RxPhys>  tx=<TxPhys>   ← 物理 NIC
+tailscale0  rx=<RxVirt>  tx=<TxVirt>   ← 同じ通信が NIC 上も流れる
 docker0 / br-* / lxcbr0 / virbr0  rx=0 tx=0         ← アイドルだが合算対象だった
 
-合計（修正前の overview）: rx=124,721,314,525（tailscale 分を二重計上）
-物理のみ（修正後）        : rx=124,641,412,687
+合計（修正前の overview）: rx=<RxPhys + RxVirt>（tailscale 分を二重計上）
+物理のみ（修正後）        : rx=<RxPhys>
 ```
 
 `lo` は `tm-platform` 側で既に除外されていたが、`tm-platform` のフィルタは `lo` だけで、

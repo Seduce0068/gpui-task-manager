@@ -24,9 +24,10 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
-# Dynamic scan set: Markdown plus distributed license/notice text, tracked by
-# git or untracked-but-not-ignored, so no unlisted public file can bypass the
-# disclosure gate. `sort -u` collapses files matching more than one pathspec.
+# Dynamic scan set: Markdown, configuration (*.toml), scripts (*.py), plus
+# distributed license/notice text, tracked by git or untracked-but-not-ignored,
+# so no unlisted public file can bypass the disclosure gate. `sort -u` collapses
+# files matching more than one pathspec.
 scan_list="$(
   git ls-files --cached --others --exclude-standard -- \
     '*.md' \
@@ -37,7 +38,9 @@ scan_list="$(
     'licenses/crates/**' \
     '*.log' \
     '*.txt' \
-    '*.json' | sort -u
+    '*.json' \
+    '*.toml' \
+    '*.py' | sort -u
 )"
 if [[ -z "${scan_list}" ]]; then
   echo 'public-docs: no public documents found to scan' >&2
