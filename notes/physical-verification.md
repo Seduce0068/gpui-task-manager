@@ -23,7 +23,7 @@ status: draft
   **AWS EC2 Mac（mac-m4.metal、Dedicated Host、最低 24 時間）**。
 - **Linux ホスト上の Windows/macOS VM は推奨しない**。Windows VM は GPU パススルーなしでは
   Vulkan がソフトウェア描画になり GPUI の実行時検証にならない。macOS VM は Apple 製
-  ハードウェア前提で、本機（Ryzen/Linux）では実用的でない。
+  ハードウェア前提で、本機（汎用 Linux デスクトップ）では実用的でない。
 - 検証時は `--demo` と `--redact` を使い、**自分で起動した子プロセス以外は kill しない**。
   クラウドは使い捨てアカウント/リソースで行い、終了時に必ず停止・削除する。
 
@@ -71,8 +71,8 @@ status: draft
 
 | 方法 | 再起動 | 忠実度 | 費用 | 難易度 | 備考 |
 |---|---|---|---|---|---|
-| **KVM/VFIO で GPU パススルー**（既存 GTX 1660 SUPER を Windows VM へ） | 不要 | 高（ネイティブ GPU） | 無料（既存ハード） | 高 | Ryzen 5 3600 は AMD-V/IOMMU 対応。ただし GPU を VM に渡す間はホストの画面が使えない（iGPU なし）。SSH/別端末から操作し、VM 停止後に GPU を戻す。単一 GPU パススルーの特殊手順・リスクあり |
-| **安価な第2 GPU を追加**し、ホストはそれで表示、1660 SUPER を VM へ | 不要 | 高 | 中古 GPU 代（数千円〜） | 中 | ホストを常用したまま Windows VM を GPU 付きで使える。B450 の空き PCIe スロットと電源容量を確認 |
+| **KVM/VFIO で GPU パススルー**（既存 NVIDIA GPU を Windows VM へ） | 不要 | 高（ネイティブ GPU） | 無料（既存ハード） | 高 | 汎用 CPU は仮想化拡張/IOMMU 対応。ただし GPU を VM に渡す間はホストの画面が使えない（iGPU なし）。SSH/別端末から操作し、VM 停止後に GPU を戻す。単一 GPU パススルーの特殊手順・リスクあり |
+| **安価な第2 GPU を追加**し、ホストはそれで表示、GPU を VM へ | 不要 | 高 | 中古 GPU 代（数千円〜） | 中 | ホストを常用したまま Windows VM を GPU 付きで使える。マザーボードの空き PCIe スロットと電源容量を確認 |
 | **Windows VM + ソフトウェア Vulkan**（パススルーなし） | 不要 | 低〜中（GPU 性能・描画は非代表） | 無料 | 中 | Mesa lavapipe / SwiftShader 等の Vulkan ICD を Windows に入れて GPUI が起動するかは未検証。UI レイアウト・IME・プロセス操作の機能確認向け |
 | **クラウド GPU Windows VM**（Azure NVadsA10_v5 等） | 不要 | 高 | 無料クレジットの範囲なら無料、超過は時間課金 | 低 | RDP で操作。無料トライアルの GPU クォータが下りるかは要確認。カード登録が必要な場合あり |
 | **リモート/借用の Windows PC** | 不要 | 高 | 借用なら無料 | 低 | RDP/Parsec 等で操作。相手の環境を汚さないよう `--demo` と `--redact` を使う |
@@ -117,7 +117,7 @@ status: draft
 | libvirt | `qemu:///system` 接続可、`default` ネットワーク動作中、ユーザーは `libvirt` グループ |
 | CPU 仮想化 | `svm` あり、`/dev/kvm` あり |
 | IOMMU | `/sys/kernel/iommu_groups` は 0 件（GPU パススルーには BIOS/カーネル設定と再起動が必要） |
-| ディスク | 空き **46 GB**（Windows 11 + ツールチェーンには余裕が少ない） |
+| ディスク | 空き **数十 GB**（Windows 11 + ツールチェーンには余裕が少ない） |
 | 評価版 ISO | Microsoft Evaluation Center の ISO リンクは **`info.microsoft.com` の登録フォームへリダイレクト**され、エージェントだけではダウンロードできない |
 | Windows バイナリ | 未生成（CI で Windows ビルドの artifact を出すか、`cargo-xwin` 等が必要） |
 | ソフトウェア Vulkan（Windows 側） | Mesa-dist-win の lavapipe を利用可能（`pal1000/mesa-dist-win` 26.2.6）だが未検証 |
@@ -149,7 +149,7 @@ status: draft
 
 ### 3.1 推奨: 既存 PC へのネイティブ Windows 11（別ディスク）
 
-- 本機は Ryzen 5 3600 + GTX 1660 SUPER + SSD/HDD/USB SSD 構成。**空きの内部 SSD/HDD に
+- 本機は汎用 CPU + NVIDIA GPU + SSD/HDD/USB SSD 構成。**空きの内部 SSD/HDD に
   Windows 11 をクリーンインストール**し、BIOS/UEFI のブートメニューで切り替える。
 - 公式 ISO: Microsoft の [Windows 11 ダウンロード](https://www.microsoft.com/ja-jp/software-download/windows11)
   （2026-11-15 時点の現行リリースは **Windows 11 2026 更新 / バージョン 26H2**、ライセンス必要）。
@@ -256,7 +256,7 @@ status: draft
 
 ## 8. 未確認事項
 
-1. 物理 Windows 実機での GPUI/Vulkan 描画（GTX 1660 SUPER + NVIDIA proprietary driver）。
+1. 物理 Windows 実機での GPUI/Vulkan 描画（NVIDIA GPU + proprietary driver）。
 2. 物理 macOS 実機での Metal 描画と日本語 IME の挙動。
 3. Windows の `taskkill /F` による Terminate の権限挙動（管理者権限が必要なプロセス）。
 4. macOS の SIGSTOP/SIGCONT、プロセス一覧の `threads: None` 表示。

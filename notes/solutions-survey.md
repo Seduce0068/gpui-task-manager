@@ -16,12 +16,12 @@ status: draft
 
 ## 0. 結論（設計チームへの推奨）
 
-1. **収集層は `sysinfo = "=0.40.3"` を中核**に据える。Linux 実測で per-core CPU / メモリ / スワップ / ネットワーク / ディスク / プロセス（cmdline・user・status・start_time・kill）がすべて取得できた。full tick の中央値は **31.4ms**（3,549 プロセス時）。
+1. **収集層は `sysinfo = "=0.40.3"` を中核**に据える。Linux 実測で per-core CPU / メモリ / スワップ / ネットワーク / ディスク / プロセス（cmdline・user・status・start_time・kill）がすべて取得できた。full tick の中央値は **約 31ms**（約 3.5 千 プロセス時）。
 2. **UI は `gpui-kit = "=0.9.1"`**（既存調査どおり）。`AreaChart` + `DataTable`（仮想スクロール）が gpui-kit の `examples/system_monitor` で実証済み。ライセンス Apache-2.0 で再利用可能。
 3. **既存モニタのコードは流用しない**（GPL-3.0 / AGPL-3.0 が中心）。Mission Center（機能スコープ）、Argus（GPUI タスクマネージャのアーキテクチャ）、btop/bottom（情報設計）を**設計参考**に限定する。
 4. **ブラウザでは /proc を読めない**。`sysinfo` は wasm32 にコンパイルは通るが `System::new()` が `Err(Unsupported)` を返す（実測）。ブラウザ対応は **(a) ローカル agent の HTTP/WS 経由**を主、(b) 記録 JSONL の再生をデモ用に併用、の二段構えにする。
 5. **プロトコルは独自スキーマ `gpui-task-manager/snapshot/v1` を主**とし、Glances REST API v4 は**取り込み専用の任意互換**に留める。Glances 形式を主スキーマにすると psutil 固有の巨大 JSON（`/all`）を引き継ぐことになる。
-6. **プロセス表は必ずページング/差分**にする。3,549 プロセス全件の JSON は **2.24MB** だった。1 秒間隔で全件送る設計はブラウザでは破綻する。
+6. **プロセス表は必ずページング/差分**にする。約 3.5 千 プロセス全件の JSON は **約 2MB** だった。1 秒間隔で全件送る設計はブラウザでは破綻する。
 7. **プロセス操作は `(pid, start_time)` の組で同一性検証してから**シグナル送出（PID 再利用対策）。kill は `sysinfo::Process::kill_with` で実証済み、`rustix 1.1.6` の `kill_process` を代替に使える。
 8. **収集は UI スレッドの外**（専用スレッド + チャネル）に置く。gpui-kit の example は UI スレッドで `refresh_all()` しており、31ms/tick のスパイクが描画に乗るためそのままは採用しない。
 9. **サンプリング間隔は既定 1 秒**、非フォーカス時 2〜5 秒、プロセス詳細はオンデマンド。CPU 使用率は 200ms 未満の間隔では正しく出ない（`MINIMUM_CPU_UPDATE_INTERVAL = 200ms`）。
@@ -30,7 +30,7 @@ status: draft
 ## 1. 調査の前提と方法
 
 - 調査日: **2026-11-14**（Asia/Tokyo）。数値・日付はすべてこの日に取得。
-- 環境: Kubuntu 2026.04 / Wayland / Ryzen 5 3600（6C/12T）/ RAM 64GB / rustc 1.99.1 / cargo 1.99.1。
+- 環境: Kubuntu 2026.04 / Wayland / 汎用デスクトップCPU / 十分な RAM / rustc 1.99.1 / cargo 1.99.1。
 - 一次情報: GitHub REST API（`gh api`、認証済み）、GitLab REST API（gitlab.gnome.org / invent.kde.org / gitlab.com）、crates.io API（`curl -A 'research-agent/1.0'`）、rustsec.org、各リポジトリの README / Cargo.toml / 公式ドキュメント、crate tarball。
 - 表記: **【検証済】** = 一次情報を取得して確認。**【推測】** = 取得情報からの推定。**【未確認】** = 未検証。
 - 数値の意味: ★ = 取得時点の stars。contributors は GitHub API の `per_page=1` + Link ヘッダの最終ページ数（GitLab は contributors API が 100 件上限のため「100以上」）。
@@ -242,7 +242,7 @@ status: draft
 
 - スナップショットを JSONL（1 行 1 サンプル）で保存し、wasm デモではファイルを読み込んで再生する方式。`serde`/`serde_json` で実装可能。
 - 長所: サーバ不要でブラウザデモが完結、再現性が高い。短所: ライブ監視ではない。
-- 実測: 3,549 プロセスを含む 1 スナップショットは **2.24MB**。記録時はプロセスを上位 N 件に絞る/差分のみ保存するなどの圧縮が必要。
+- 実測: 約 3.5 千 プロセスを含む 1 スナップショットは **約 2MB**。記録時はプロセスを上位 N 件に絞る/差分のみ保存するなどの圧縮が必要。
 
 ### 4.6 推奨プロトコル（設計チーム向け）
 
@@ -251,7 +251,7 @@ status: draft
 理由:
 
 1. Glances の `processlist` は psutil 固有のフィールド体系（`cpu_times` の dict 等）で、Rust 側の DTO と二重管理になる。
-2. `/all` は全プラグインを一括で返す巨大 JSON で、毎秒の配信には向かない（実測の全件 2.24MB と同種の問題）。
+2. `/all` は全プラグインを一括で返す巨大 JSON で、毎秒の配信には向かない（実測の全件 約 2MB と同種の問題）。
 3. Glances は pull 型で、ブラウザへの push（WS/SSE）を前提にしていない。
 4. 一方で、Glances サーバが既に動いている環境では「データ源として接続できる」価値があるため、`ingest` アダプタとして `GET /api/4/all` を読む互換は残す。
 
@@ -313,7 +313,7 @@ status: draft
 
 ## 6. Runtime Proof（要約）
 
-環境: Kubuntu 2026.04 / Ryzen 5 3600（6C/12T）/ RAM 64GB / rustc 1.99.1。負荷平均 8 前後、プロセス数 3,549 の**多忙なデスクトップ**での測定。実行コマンドと生ログ:
+環境: Kubuntu 2026.04 / 汎用デスクトップCPU / 十分な RAM / rustc 1.99.1。負荷平均は中程度、スレッド込み約 3.5 千エントリの**多忙なデスクトップ**での測定。実行コマンドと丸めた参考ログ:
 
 ```bash
 cd ./poc-crates/sysinfo-probe
@@ -321,42 +321,42 @@ cargo run --release
 ```
 
 ```text
-[timing] System::new_all() cold start: 85.027234ms
-[timing] full tick  (refresh_all + disks + networks): median=31.440903ms min=30.27202ms max=36.892232ms n=7
-[timing] targeted tick (cpu+memory+processes only):   median=24.280293ms min=20.861438ms max=27.408202ms n=7
-[timing] disks.refresh only: median=898.574µs / networks.refresh only: median=1.174251ms
-process_count=3549
+[timing] System::new_all() cold start: 約 85ms
+[timing] full tick  (refresh_all + disks + networks): median=約 31ms min=約 30ms max=約 37ms n=7
+[timing] targeted tick (cpu+memory+processes only):   median=約 24ms min=約 21ms max=約 27ms n=7
+[timing] disks.refresh only: median=約 0.9ms / networks.refresh only: median=約 1.2ms
+process_count=約 3500
 kill_with(Signal::Term) -> Some(true)
 after kill: still_in_sysinfo=true child.try_wait()=Ok(Some(ExitStatus(unix_wait_status(15))))
-snapshot json bytes=2241066 (processes=3549)
+snapshot json bytes=約 2.2MB (processes=約 3500)
 ```
 
 全出力は `./notes/crates-survey.md` の付録 A、生ログは `./poc-crates/sysinfo-probe/run.log` を参照。
 
 | 項目 | 実測値 |
 |---|---|
-| `System::new_all()` コールドスタート | 85.0ms |
-| full tick（`refresh_all` + disks + networks）中央値 | **31.4ms**（min 30.3 / max 36.9, n=7） |
-| targeted tick（CPU + メモリ + プロセス）中央値 | **24.3ms**（min 20.9 / max 27.4, n=7） |
-| `Disks::new_with_refreshed_list()` / `refresh` | 1.08ms / 0.90ms |
-| `Networks::new_with_refreshed_list()` / `refresh` | 1.25ms / 1.17ms |
-| プロセス数 | 3,549 |
-| per-core CPU | 12 コア分を取得（例: 42.3, 53.8, ..., 48.0） |
-| メモリ / スワップ | total 67.35GB / used 49.04GB、swap total 68.72GB / used 21.14GB |
-| ネットワーク | 8 IF（enp4s0, tailscale0, docker0, lxcbr0, virbr0, lo 等）を取得 |
-| ディスク | 12 エントリ（うち overlay/lxcfs の疑似マウントが 9 件、total=0） |
+| `System::new_all()` コールドスタート | 約 85ms |
+| full tick（`refresh_all` + disks + networks）中央値 | **約 31ms**（min 約 30 / max 約 37, n=7） |
+| targeted tick（CPU + メモリ + プロセス）中央値 | **約 24ms**（min 約 21 / max 約 27, n=7） |
+| `Disks::new_with_refreshed_list()` / `refresh` | 約 1.1ms / 約 0.9ms |
+| `Networks::new_with_refreshed_list()` / `refresh` | 約 1.3ms / 約 1.2ms |
+| プロセス数（スレッド込み） | 約 3.5 千 |
+| per-core CPU | 複数コア分を取得（例: 数十% 台） |
+| メモリ / スワップ | 合計・使用量とも数十 GB 台、swap も同規模（丸めた参考値） |
+| ネットワーク | 複数 IF（物理 IF / 仮想 IF / loopback 等）を取得 |
+| ディスク | 複数エントリ（うち疑似マウントが過半、total=0） |
 | プロセス詳細 | cmdline / user / status / start_time / run_time / exe / cwd / parent / disk_usage を取得 |
-| user=None の割合 | 33 / 3,549（他ユーザー/カーネルスレッド由来） |
-| cmdline が空 | 325 / 3,549（カーネルスレッド等） |
-| exe=None | 756 / 3,549 |
+| user=None の割合 | 約 1%（約 3.5 千件中、他ユーザー/カーネルスレッド由来） |
+| cmdline が空 | 約 9%（同、カーネルスレッド等） |
+| exe=None | 約 21%（同） |
 | `/proc` マウント | `proc /proc proc rw,nosuid,nodev,noexec,relatime`（hidepid なし） |
 | kill 実証 | 自前の `sleep 30` に `kill_with(Signal::Term)` → `Some(true)`、`ExitStatus(unix_wait_status(15))` |
-| スナップショット JSON | **2,241,066 bytes**（3,549 プロセス、全 cmdline 込み） |
+| スナップショット JSON | **約 2.2 MB**（約 3.5 千 プロセス、全 cmdline 込み） |
 
 設計上の含意:
 
 1. 1 秒間隔なら収集コストは 1 コアの約 3%、500ms なら約 6%。UI スレッドから追い出すのが前提。
-2. 全件 JSON は 2.24MB。プロセス表はページング、ストリームはサマリのみ、が必須。
+2. 全件 JSON は 約 2MB。プロセス表はページング、ストリームはサマリのみ、が必須。
 3. ディスク一覧は overlay/lxcfs 等の擬似マウントを除外するフィルタが必要。
 4. hidepid が有効な環境では他ユーザーのプロセスが見えない。起動時に `/proc/mounts` を確認して UI に注記する。
 5. `start_time` は Unix epoch 秒（u64、`sysinfo 0.40.3` の `Process::start_time()`）。`(pid, start_time)` を同一性キーにする。

@@ -186,7 +186,7 @@ echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボ�
 - [x] `sanitize_display` で U+2028 / U+2029 を除去し、wire 由来文字列の
       レイアウト崩れと export 混入を防ぐ。根拠 R3-IV02。
 - [x] コード内の開発ホスト固有値を汎用名へ: `/boot/efi` / `/mnt/timeshift` /
-      `tailscale0` / `enp4s0` と実測トラフィック量、デモの
+      `<vpn-if>` / `<physical-if>` と実測トラフィック量、デモの
       `/home/user/.../gpui-task-manager` と `127.0.0.1:8787`。根拠 R1-AR01。
 - [x] `Dashboard::ingest` で古い/順序外スナップショットを検証し、transient status
       と network rate 基準の汚染を防ぐ。Web の config/generation を原子取得にする。

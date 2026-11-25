@@ -305,10 +305,10 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 - スキーマは `{"schema_version": 1, "snapshot": {...}}`。`WIRE_SCHEMA_VERSION` で
   互換性を管理する。
 - プロセスは CPU 降順 → PID 昇順でソートし、`?limit=N`（既定 500、最大 2000）で
-  先頭 N 件に絞る。`total_process_count` を併せて返す。実測では 618 プロセスの
-  全件 JSON が約 173 KB、既定 500 件で約 137 KB であり、大規模環境や将来の
+  先頭 N 件に絞る。`total_process_count` を併せて返す。実測では 約 600 プロセスの
+  全件 JSON が約 約 170 KB、既定 500 件で約 137 KB であり、大規模環境や将来の
   フィールド追加でも 1 秒間隔の全件送信を避けるためにページングを維持する。
-  （調査時の 2.24 MB はスレッド込み 3,549 エントリ・全項目の旧測定値。）
+  （調査時の 約 2 MB はスレッド込み 約 3.5 千 エントリ・全項目の旧測定値。）
 
 ### 6.4 実証結果（2026-11-14）
 
@@ -466,9 +466,9 @@ PID の別プロセスが起動する可能性がある。対策を多層化す�
 
 | 項目 | 実測 |
 |---|---|
-| sysinfo full tick（スレッド込み 3,549 エントリ） | 中央値 31.4 ms |
+| sysinfo full tick（スレッド込み 約 3.5 千 エントリ） | 中央値 約 31 ms |
 | sysinfo cold start | 85 ms |
-| ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（旧測定: スレッド込み 3,549 エントリで 2.24 MB） |
+| ワイヤ JSON（約 600 プロセス、limit=2000） | 約 約 170 KB（旧測定: スレッド込み 約 3.5 千 エントリで 約 2 MB） |
 | エージェント 1 スナップショット | 約 250 ms（共有プローブで直列化、接続は最大 8 並列） |
 | ネイティブ debug バイナリ | 166 MB（debuginfo 削減済み） |
 | wasm（release、wasm-opt -Oz） | 7,949,118 B / gzip 3,165,445 B（2026-11-20 計測） |
@@ -573,7 +573,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 | DESIGN.md §2.2 / §8.1 | テスト件数 | 具体値を書かず README.md「検証状況」へ参照 | 本表 | 一致（R1-D03 解消） |
 | DESIGN.md §2.2 / `tm-core::wire` / `tm-viewmodel::settings_policy` | ワイヤ契約・設定ポリシーの定義は共有モジュール一箇所 | envelope のフィールド順序・固定 `403` ガイダンス・`Retry-After` 上限を `wire` に、BOM / 間隔クランプ / version 互換 / 3-way マージ / 破損隔離を `settings_policy` に集約し、シェル側へ複製しない | `crates/tm-core/src/wire.rs`、`crates/tm-viewmodel/src/settings_policy.rs` | 一致（R1-RESIDUAL 反映） |
 | DESIGN.md §4 / ADR-012 | 永続化対象 | `tree_view` / `theme` を含む 5 項目に訂正 | §14、`tm-viewmodel::Settings` | 一致 |
-| DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 31.4 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
+| DESIGN.md §9 | 性能実測値 | 2026-11-14 計測の履歴。sysinfo full tick 約 31 ms 等は未再測定 | `notes/review-2026-11-14.md` | 要再測定（R1-G13） |
 | DESIGN.md §6.3 / SECURITY.md §3 | SSE（`/api/v1/stream`）の実装 | Bearer 認証・Host 必須検証・loopback CORS・専用接続枠 `MAX_STREAMS`（2 枠）・読み取りタイムアウト非適用を実装 | `agent/src/main.rs:51,79,1187-1262` | 一致（R2-X03 反映） |
 | notes/current-state.md | 検証状況 | workspace 745 / web 264（core 205 / viewmodel 123 / platform 44 / agent 156 / app 140）の実値と内訳を README と共通で記載 | 本文、README.md「検証状況」 | 一致（2026-11-20 実測を反映） |
 | notes/verification.md §2 | 検証状況 | 具体値を書かず README.md「検証状況」を参照。以降の時系列記録は履歴 | 本文 | 一致 |
@@ -630,7 +630,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
 - 代替: WebSocket（双方向は不要）、Glances 互換 API（将来のアダプタ）、
   WebRTC（過剰）。
 - 結果: ブラウザとエージェントが同一マシンであることが前提。
-- 追加: 実測 618 プロセスで約 173 KB（既定 500 件で約 137 KB）。大規模環境でも
+- 追加: 実測 約 600 プロセスで約 約 170 KB（既定 500 件で約 137 KB）。大規模環境でも
   1 秒間隔の全件送信を避けるため、`?limit=N`（既定 500、最大 2000）でページングし、
   `total_process_count` を返す。
 
@@ -864,7 +864,7 @@ URL フラグメントでトークンを渡し、`fetch` の `Authorization: Bea
   現スタックでは行っていない。`deny.toml` は `multiple-versions = "warn"` で
   可視化のみとし、重複はレビューで受容する（レビュー日 2026-11-21）。
   GPUI スタックを更新する際は統合の可否を再検討する。
-- ネットワーク集計は `lo` を除外する。docker0 / tailscale0 などの仮想 IF は含む。
+- ネットワーク集計は `lo` を除外する。コンテナ / VPN などの仮想 IF は含む。
 - ディスクは `total_space() == 0` の擬似マウントを除外する。
 - スレッド数が取得できないプロセスは「—」と表示する。
 - `tm-agent --once` は既定で先頭 500 件のみを出力する（全件は HTTP の `limit` 指定）。

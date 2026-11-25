@@ -175,7 +175,7 @@ sudo apt install -y gcc g++ clang pkg-config libfontconfig-dev libfreetype-dev \
   libssl-dev libzstd-dev libvulkan1
 ```
 
-Vulkan 対応 GPU ドライバが必要です（GTX 1660 SUPER + NVIDIA proprietary で検証）。
+Vulkan 対応 GPU ドライバが必要です（NVIDIA GPU + NVIDIA proprietary で検証）。
 `jq` はあえて前提一覧に含めていません。後述のエージェント例は `head -c 500` で
 出力を切るため、JSON 整形ツールの追加導入なしでコピペできます。
 `libxkbcommon-x11-dev` を入れられない場合は `scripts/dev-setup.sh` が
@@ -454,7 +454,7 @@ tm-core <── tm-viewmodel <── app (GPUI native) / web (GPUI wasm + demo/a
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 成功（警告 0、root / web とも） |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | 成功（警告 0、root / web とも） |
 | `cargo fmt --all --check` | 成功 |
-| ネイティブ起動（Wayland、実データ） | 成功。約 620 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
+| ネイティブ起動（Wayland、実データ） | 成功。約 600 プロセス、CPU/メモリ/ネットワーク表示、stderr 0 行（[画像](notes/assets/task-manager-native-wayland.png)、`--redact` でホスト名（コマンド引数内のホスト名・tailnet ドメインを含む）等をマスク） |
 | デモ起動 | 成功（`--demo`、合成データ） |
 | エージェント | `/healthz` 200、トークンなし 401、クエリトークン 401、`limit` 動作、CORS（403 含む）、Host 検証 403、405、ループバック強制を確認。並列接続（最大 8）でアイドル 3 本下でも `/healthz` 3.04 ms、超過は即 503（2026-11-16 実測） |
 | wasm スパイク | `trunk build --release` 成功、ヘッドレス Chrome で描画・CJK・入力・fetch を確認（WebGL2 フォールバック） |

@@ -156,7 +156,7 @@ serde-wasm-bindgen = "0.6.5"  # 任意（JsValue 直接変換で足りるなら�
 4. **`hidepid` の影響**: 本機の `/proc` は `hidepid` なし（`proc /proc proc rw,nosuid,nodev,noexec,relatime`）のため他ユーザーのプロセスも見える。`hidepid=1/2` の環境では他ユーザーの情報が制限される（sysinfo の Linux 実装も `hidepid=invisible` を考慮したコメントを持つ）。起動時に `/proc/mounts` を読み、制限モードを UI に注記する。
 5. **per-process ネットワークは取得できない**: インターフェース単位のみ。per-process は eBPF/nethogs 等が必要（Mission Center も nethogs の手動セットアップと明記）。
 6. **ディスク一覧に疑似マウントが混ざる**: overlay, lxcfs, tmpfs 等を除外するフィルタが必要（実測 12 件中 9 件が疑似マウント）。
-7. **ネットワーク一覧に仮想 IF が混ざる**: docker0, lxcbr0, virbr0, tailscale0, lo 等。UI で「物理 IF」と「仮想 IF」を分類するか、フィルタを用意する。
+7. **ネットワーク一覧に仮想 IF が混ざる**: コンテナ IF / ブリッジ IF / 仮想 IF / VPN IF / loopback 等。UI で「物理 IF」と「仮想 IF」を分類するか、フィルタを用意する。
 8. **PID 再利用**: `start_time()` は起動からの秒（u64）。`(pid, start_time)` を同一性キーにし、シグナル送出前に照合する。Argus も「PID と作成時刻を照合してから変更する」と明記している。
 9. **ゾンビの扱い**: kill 後 300ms 時点で sysinfo 上にまだ存在（`still_in_sysinfo=true`）。子プロセスは reap するまで残るため、UI は「消えるまでポーリング」する。
 10. **シグナル送出の権限**: 他ユーザーのプロセスには EPERM。root 権限や polkit が必要な操作は別モードに分離する。

@@ -25,13 +25,13 @@ verified: 2026-11-14T21:05:00+09:00
 
 | 項目 | 値 | 出典 |
 |---|---|---|
-| sysinfo full tick（スレッド込み 3,549 エントリ） | 中央値 31.4 ms | `notes/crates-survey.md` §4 / `poc-crates/sysinfo-probe` |
-| sysinfo cold start | 85 ms | 同上 |
-| 実プロセス数（本機） | 約 620（`ps -e` と一致） | 同上。**sysinfo は `with_tasks()` 有効時、Linux でスレッドもプロセス map に入れる**ため、スレッド除外が必要（試作で修正済み） |
-| ワイヤ JSON（618 プロセス、limit=2000） | 約 173 KB（既定 500 件で約 137 KB） | 実測。旧測定 2.24 MB はスレッド込み 3,549 エントリ・全項目の値 |
-| プロセス CPU% の飽和 | sysinfo の `cpu_usage()` が本機で全プロセス 1200%（コア数×100）に飽和 | collector-dev の実測。`accumulated_cpu_time()` の差分÷経過時間で自前計算に変更 |
+| sysinfo full tick（スレッド込み 約 3.5 千エントリ） | 中央値 数十 ms | `notes/crates-survey.md` §4 / `poc-crates/sysinfo-probe` |
+| sysinfo cold start | 約 0.1 秒 | 同上 |
+| 実プロセス数（本機） | 約 600（`ps -e` と一致） | 同上。**sysinfo は `with_tasks()` 有効時、Linux でスレッドもプロセス map に入れる**ため、スレッド除外が必要（試作で修正済み） |
+| ワイヤ JSON（約 600 プロセス、limit=2000） | 約 170 KB（既定 500 件で約 140 KB） | 実測。旧測定 約 2 MB はスレッド込み約 3.5 千エントリ・全項目の値 |
+| プロセス CPU% の飽和 | sysinfo の `cpu_usage()` が本機で全プロセスがコア数×100% に飽和 | collector-dev の実測。`accumulated_cpu_time()` の差分÷経過時間で自前計算に変更 |
 | CPU 更新の最小間隔 | 200 ms（`MINIMUM_CPU_UPDATE_INTERVAL`） | sysinfo 仕様。既定 1 秒サンプリングは妥当 |
-| 対象 GPU / セッション | GTX 1660 SUPER / Wayland / 12 論理コア / RAM 64 GB | 本機 |
+| 対象 GPU / セッション | NVIDIA GPU / Wayland / 複数論理コア / 十分な RAM | 本機 |
 
 ### 0.3 既存ソリューションの再利用判断
 
@@ -52,8 +52,8 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
 ## 1. 調査方法と前提
 
 - 調査日: **2026-11-14**（Asia/Tokyo）。数値・日付はすべてこの日に取得。
-- 環境: Kubuntu 2026.04 / KDE Plasma 6 / Wayland / Ryzen 5 3600（6C/12T）/
-  RAM 64 GB / GTX 1660 SUPER / rustc 1.99.1。
+- 環境: Kubuntu 2026.04 / KDE Plasma 6 / Wayland / 汎用デスクトップCPU /
+  十分な RAM / NVIDIA GPU / rustc 1.99.1。
 - 一次情報: GitHub REST API（`gh api`）、GitLab REST API、crates.io API、
   rustsec.org、各リポジトリの README / Cargo.toml / 公式 docs、crate tarball。
 - 外部プロジェクトの調査ノートは手掛かりとして参照。**AGPL/GPL コードの
@@ -128,13 +128,13 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
 10. **`System` インスタンスを再利用**する（コールドスタート 85 ms を毎回払わない）。
 11. **スレッド混入**: `with_tasks()` を有効にすると Linux ではスレッドも process map に
     入る。試作ではスレッド行を除外し、`threads` フィールドに件数を入れるよう修正した。
-12. **JSON サイズ**: 実装後のワイヤ形式で 618 プロセス約 173 KB（既定 500 件で約 137 KB）。旧調査の 2.24 MB はスレッド込み 3,549 エントリ・全項目の測定値。大規模環境でもページング / 上位 N 件で送る。
+12. **JSON サイズ**: 実装後のワイヤ形式で約 600 プロセス・約 170 KB（既定 500 件で約 140 KB）。旧調査の約 2 MB はスレッド込み約 3.5 千エントリ・全項目の測定値。大規模環境でもページング / 上位 N 件で送る。
 
 ### 3.3 実測（`poc-crates/sysinfo-probe`）
 
 - release ビルドで `System::new_all()` + `refresh_all()` を 10 回実行。
-- 中央値 **31.4 ms**（3,549 エントリ時）、cold start 85 ms。
-- per-core CPU（12）、メモリ / スワップ、ネットワーク 8 IF、ディスク 12 エントリ、
+- 中央値 **数十 ms**（スレッド込み約 3.5 千エントリ時）、cold start 約 0.1 秒。
+- per-core CPU（複数コア）、メモリ / スワップ、ネットワーク複数 IF、ディスク複数エントリ、
   プロセスの cmdline / user / status / start_time を確認。
 - `kill_with(Signal::Term)` で自分で spawn した `sleep 30` の終了を確認。
 
@@ -218,17 +218,17 @@ Linux の既存モニタは **GPL/AGPL が中心**で、コードの再利用は
 ```json
 {
   "schema_version": 1,
-  "total_process_count": 618,
+  "total_process_count": 600,
   "snapshot": {
     "sampled_at": { "unix_millis": 1794657411364 },
     "hostname": "...",
     "os_name": "Ubuntu",
-    "kernel_version": "7.0.0-43-generic",
-    "cpu": { "total_percent": 56.2, "per_core_percent": [51.4, ...], "load_average": [8.4, 8.0, 7.3], "uptime_secs": 522800 },
-    "memory": { "total_bytes": 67300000000, "used_bytes": 49000000000, "available_bytes": 18300000000, "swap_total_bytes": 68700000000, "swap_used_bytes": 21100000000 },
+    "kernel_version": "<kernel-version>",
+    "cpu": { "total_percent": 50.0, "per_core_percent": [50.0, ...], "load_average": [8.0, 8.0, 8.0], "uptime_secs": 522800 },
+    "memory": { "total_bytes": 64000000000, "used_bytes": 49000000000, "available_bytes": 18000000000, "swap_total_bytes": 69000000000, "swap_used_bytes": 21000000000 },
     "processes": [ { "key": { "pid": 1, "start_time_secs": 1794132006 }, "name": "systemd", "command": "/sbin/init", "user": "root", "status": "Sleeping", "cpu_percent": 0.1, "memory_bytes": 16800000, "virtual_memory_bytes": 26500000, "threads": 1, "parent_pid": null } ],
-    "network": { "interfaces": [ { "name": "eth0", "received_bytes": 98100000000, "transmitted_bytes": 13700000000 } ] },
-    "disks": [ { "mount_point": "/", "total_bytes": 629700000000, "available_bytes": 100400000000, "used_bytes": 529300000000 } ],
+    "network": { "interfaces": [ { "name": "<physical-if>", "received_bytes": 98100000000, "transmitted_bytes": 13700000000 } ] },
+    "disks": [ { "mount_point": "/", "total_bytes": 630000000000, "available_bytes": 100000000000, "used_bytes": 530000000000 } ],
     "self_pid": 12345
   }
 }

@@ -100,7 +100,7 @@ status: draft
 - sysinfo 0.40.3 の Linux 実装 `get_proc_tasks()` は `/proc/<pid>/task` を列挙し、
   主スレッド（`*pid != parent_pid`）を除外して `tasks` を作る。よって `+1` で
   `Threads:`（= `ps -o nlwp`）と一致する。
-- 一時 example で 637 プロセスを走査し、`tasks().len() + 1` と
+- 一時 example で 約 600 プロセスを走査し、`tasks().len() + 1` と
   `/proc/<pid>/status` の `Threads:` を比較した結果、**不一致 0**。
   例: pid 6977 は 171 スレッド、pid 8545 は 65 スレッドで一致した。
   別時刻の `ps -o nlwp` とも一致を確認（pid 6977: 175 = `/proc` Threads 175）。

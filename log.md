@@ -7,7 +7,7 @@
   セキュリティ）。
 - 別の AGPL プロジェクトの GPUI 調査ノート（wasm 可否・
   スタック・ビルド要件）を参照。コードはコピーせず、調査のみ。
-- 調査: 既存モニタ 11 候補、crate 17 件、sysinfo 実測（31.4 ms / 3,549 スレッド、
+- 調査: 既存モニタ 11 候補、crate 17 件、sysinfo 実測（約 31 ms / 約 3.5 千 スレッド、
   実プロセス 618）、GPUI スタック、wasm/ブラウザ戦略。
 - 設計: `tm-core` / `tm-viewmodel` / `tm-platform` / `app` / `web` / `agent` の
   5+1 構成。PID 再利用防御、読み取り専用ブラウザ、ループバック agent、
@@ -17,7 +17,7 @@
 - 検証: `cargo test --workspace` 102 passed、clippy 警告 0、Wayland 起動・
   スクリーンショット、エージェント HTTP 実測、GPUI Web スパイク
   （ヘッドレス Chrome、WebGL2 フォールバック、CJK、fetch）。
-- 修正: sysinfo のスレッド混入（プロセス数 3,549 → 618）とプロセス CPU% 飽和を
+- 修正: sysinfo のスレッド混入（プロセス数 約 3.5 千 → 618）とプロセス CPU% 飽和を
   実測で発見し、スレッド除外と `accumulated_cpu_time` 差分方式に修正。
 - 独立レビュー（blocker 0 / major 8）を受けて、クエリトークン廃止・Host 検証・
   ダイアログの安全側 Enter・個人情報マスク・性能値の再測定・CI 参照先などを修正。
@@ -363,7 +363,7 @@
 
 ## 2026-11-16（ネットワーク集計の二重計上を修正）
 
-- 実測で `tailscale0`(仮想 IF) が物理 NIC と二重計上されることを確認（a6）。
+- 実測で VPN IF(仮想 IF) が物理 NIC と二重計上されることを確認（a6）。
 - `tm-core` に `NetworkSnapshot::physical_totals()` と `is_virtual_interface()` を追加し、overview のレート/履歴計算を仮想 IF 除外へ切り替え。回帰テスト 2 件追加（tm-core 58 tests）。
 - 旧挙動を期待値にしていた `tm-viewmodel` のテスト 1 件を正しい値へ更新。
 - `cargo test --workspace` 157 passed / web 7 passed / clippy 警告 0 / fmt 適用。

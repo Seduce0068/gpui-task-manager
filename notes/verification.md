@@ -13,7 +13,7 @@ verified: 2026-11-18T10:58:00+09:00
 | 項目 | 値 |
 |---|---|
 | OS | Kubuntu 2026.04 / KDE Plasma 6 / Wayland（`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`） |
-| CPU / RAM / GPU | Ryzen 5 3600（6C/12T）/ 64 GB / GeForce GTX 1660 SUPER |
+| CPU / RAM / GPU | 汎用デスクトップCPU / 十分な RAM / NVIDIA GPU |
 | Rust | rustc 1.99.1 / cargo 1.99.1 |
 | 検証日時 | 2026-11-14 20:00–21:10 JST |
 | 作業ディレクトリ | `.` |
@@ -37,11 +37,11 @@ verified: 2026-11-18T10:58:00+09:00
 - 結果: Wayland ネイティブウィンドウが起動し、stderr 0 行。
 - 表示内容（スクリーンショット `notes/assets/task-manager-native-wayland.png`、
   `--redact` でホスト名・ユーザー名・ホームパスをマスク済み）:
-  - ホスト名 `host`（マスク）、kernel `7.0.0-43-generic`、`Linux (Ubuntu 26.04)`
+  - ホスト名 `host`（マスク）、kernel `<kernel-version>`、`Linux (Ubuntu)`
   - CPU・メモリ・ネットワーク・負荷の各カードが表示される（値はサンプル時点で
     変動するため固定値を書かない。画像を参照）
-  - プロセス **約 620 件**。実プロセス（systemd, kthreadd, firefox, chrome,
-    zed-editor 等）を表示
+  - プロセス **約 600 件**。実プロセス（systemd, kthreadd, ブラウザ, エディタ
+    等）を表示
   - 詳細パネル: PID 1（systemd）を選択、ユーザー root、スレッド 1、
     メモリ表示。**PID 1 のシグナル操作は無効化**されている
 - デモデータ起動: `./target/debug/gpui-task-manager --demo`
@@ -101,7 +101,7 @@ $ cargo run -q -p tm-agent -- --once | head -c 120
 | モード | 結果 |
 |---|---|
 | デモ（DemoProbe） | 描画・1 秒更新・スクロール・行クリック・絞り込み・ソートを確認（failures 0） |
-| ライブ（`tm-agent --redact`） | 実プロセス 500 件（全 636 件中）を表示。行クリック・絞り込み・ソート・更新を確認（failures 0）。`#token=` + `Authorization: Bearer` を CDP の Network 証拠で確認 |
+| ライブ（`tm-agent --redact`） | 実プロセス 500 件（全約 600 件中）を表示。行クリック・絞り込み・ソート・更新を確認（failures 0）。`#token=` + `Authorization: Bearer` を CDP の Network 証拠で確認 |
 | エージェント停止 | デモへフォールバックせず、`live_error=1` とエラー表示（failures 0） |
 | コンソール | panic / JS 例外 0（WebGL2 フォールバック等の想定内警告のみ） |
 
@@ -154,7 +154,7 @@ cd poc-wasm && trunk build --release
 | M1 クエリ文字列のトークン | `Authorization: Bearer` のみに変更。ブラウザは URL フラグメント + ヘッダ方式 |
 | M2 「短命トークン」記述 | 実装に合わせて「プロセス生存中は固定・再起動で無効」に修正 |
 | M3 Enter で即確定 | Enter = キャンセル、Ctrl+Enter = 確定に変更。設計書も修正 |
-| M4 2.24 MB の性能記述 | 現行実測（618 プロセス約 173 KB / 既定 500 件約 137 KB）に更新。旧値はスレッド込み 3,549 エントリの測定と注記 |
+| M4 約 2 MB の性能記述 | 現行実測（約 600 プロセス・約 170 KB / 既定 500 件約 140 KB）に更新。旧値はスレッド込み約 3.5 千エントリの測定と注記 |
 | M5 verification の数値不一致 | 動的数値を削除し画像参照に統一。テスト件数を 106 に更新 |
 | M6 個人情報 | ネイティブ / エージェントに `--redact` を実装。スクリーンショット・証拠 JSON・デモデータを汎用化 |
 | M7 コミット未作成 | 論理単位のコミットを作成（`Cargo.lock` 含む） |
@@ -226,7 +226,7 @@ cd poc-wasm && trunk build --release
 
 - Windows のシグナル送信は `%SystemRoot%\System32\taskkill.exe` の絶対パス起動
   （PATH ハイジャック回避）。Stop/Continue は非対応。
-- `thread_count` は 637 プロセスで `/proc/<pid>/status` の `Threads:` と照合し不一致 0。
+- `thread_count` は約 600 プロセスで `/proc/<pid>/status` の `Threads:` と照合し不一致 0。
 
 ## 13. 設定の永続化（2026-11-15）
 
@@ -669,15 +669,15 @@ UI が `take(2)` で先頭 2 件しか表示しないこともあり、**大容�
 
 ```text
 <物理 NIC>  rx=<RxPhys>  tx=<TxPhys>   ← 物理 NIC
-tailscale0  rx=<RxVirt>  tx=<TxVirt>   ← 同じ通信が NIC 上も流れる
-docker0 / br-* / lxcbr0 / virbr0  rx=0 tx=0         ← アイドルだが合算対象だった
+<VPN IF>    rx=<RxVirt>  tx=<TxVirt>   ← 同じ通信が NIC 上も流れる
+<コンテナ IF> / <ブリッジ IF> / <仮想 IF>  rx=0 tx=0   ← アイドルだが合算対象だった
 
-合計（修正前の overview）: rx=<RxPhys + RxVirt>（tailscale 分を二重計上）
+合計（修正前の overview）: rx=<RxPhys + RxVirt>（VPN 分を二重計上）
 物理のみ（修正後）        : rx=<RxPhys>
 ```
 
 `lo` は `tm-platform` 側で既に除外されていたが、`tm-platform` のフィルタは `lo` だけで、
-`tailscale0` / `docker0` / `br-*` / `lxcbr0` / `virbr0` は集計に含まれていた。
+VPN / コンテナ / ブリッジ / 仮想 IF は集計に含まれていた。
 
 ### 修正
 
@@ -2057,7 +2057,7 @@ worktree（round31-safe、HEAD a96e823）で実装・検証。
 
 1. **仮想 IF 判定の漏れ（実バグ）**: `is_virtual_interface()` の
    `VIRTUAL_PREFIXES` に WireGuard `wg` と macOS `utun` が無く、`lo0` も
-   loopback 判定から漏れていた。tailscale0 と同種の二重計上が起きる。
+   loopback 判定から漏れていた。VPN IF と同種の二重計上が起きる。
    `wg`/`utun` を追加し `lo`/`lo0` を明示判定（`starts_with("lo")` は
    `local0` を誤判定するため避ける）。`tm-platform` の重複 `name == "lo"`
    判定を共通 pure ヘルパに集約。`local0` が物理のままであることを固定。
@@ -2450,7 +2450,7 @@ bond0、diverge 解消。
 2 観点（デモ可視性 / 残タスク）の調査エージェントを並列起動。worktree で実装・検証。
 
 1. **デモデータの可視性を向上**（probe-demovisible、ユーザーが `--demo` の
-   16GiB を実機 64GB と誤認）:
+   デモ用の固定値を実機の値と誤認）:
    - トップバーの `pill("DEMO", ...)` を `pill("デモデータ", ...)` に変更。
    - メモリカードの値の直前に `※ デモ用の固定値` を `demo_mode` 時のみ表示。
    - ウィンドウタイトルを `--demo` 時は `GPUI Task Manager [デモデータ]` に。
