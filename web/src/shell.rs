@@ -7776,7 +7776,7 @@ mod tests {
         let snapshot = SystemSnapshot {
             gpus: vec![
                 GpuSnapshot {
-                    name: "GeForce GTX 1660 SUPER".into(),
+                    name: "Example GPU".into(),
                     usage_percent: Some(72.4),
                     memory_used_bytes: Some(2 * 1_024 * 1_024 * 1_024),
                     memory_total_bytes: Some(6 * 1_024 * 1_024 * 1_024),
@@ -7791,13 +7791,13 @@ mod tests {
             ..SystemSnapshot::default()
         };
         let gpu = GpuOverview::from_snapshot(Some(&snapshot));
-        assert_eq!(gpu.name, "GeForce GTX 1660 SUPER");
+        assert_eq!(gpu.name, "Example GPU");
         assert_eq!(gpu.usage, Some(72.4));
         assert_eq!(gpu.vram, "2.0 GiB / 6.0 GiB");
         assert!(gpu.usage_text().starts_with("72.4%"));
         assert_eq!(gpu.bar_label(), a11y_usage_label("GPU 使用率", 72.4));
         let aria = gpu.aria_label();
-        assert!(aria.contains("GeForce GTX 1660 SUPER"));
+        assert!(aria.contains("Example GPU"));
         assert!(aria.contains("2.0 GiB / 6.0 GiB"));
         assert!(!aria.contains("second GPU"), "only the first GPU is shown");
 

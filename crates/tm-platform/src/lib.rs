@@ -1311,8 +1311,8 @@ mod tests {
     fn gpu_display_name_prefers_model_then_vendor_then_unknown() {
         // R1-GPUDATA: empty driver strings must not shadow a usable fallback.
         assert_eq!(
-            gpu_display_name(Some("GTX 1660 SUPER"), Some("NVIDIA")),
-            "GTX 1660 SUPER"
+            gpu_display_name(Some("Example GPU"), Some("NVIDIA")),
+            "Example GPU"
         );
         assert_eq!(gpu_display_name(None, Some("NVIDIA")), "NVIDIA");
         assert_eq!(gpu_display_name(Some(""), Some("NVIDIA")), "NVIDIA");

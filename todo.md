@@ -118,7 +118,7 @@ status: current
 - [x] CDP クリック座標を DOM/セレクタ取得へ変更（R1S-ARCH-03/R1-OPS-11）— canvas
       rect 基準の相対座標とフォールバックを追加。
 - [x] PoC の `cdp_verify.py` に「証拠収集のみ」と明記（R1S-OPS-12）。
-- [x] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ 2560x1440 / scale 1 で再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）。確認手順と環境は notes/environment-verification.md に調査・記録済み（実機目視は未実施）。 ユーザー確認手順（Kubuntu 上で実行）: Web 版は CDP の DPR 1/2 スクリーンショットで検証済み（notes/hidpi-verification.md）。ネイティブ版は未検証。
+- [x] HiDPI／モニタ間移動時の表示を実機で確認する（R3-A05）。（現環境は単一モニタ／既定スケールで再現不能。ユーザー側で DPR 混在構成を用意し目視確認が必要 — R4）。確認手順と環境は notes/environment-verification.md に調査・記録済み（実機目視は未実施）。 ユーザー確認手順（Kubuntu 上で実行）: Web 版は CDP の DPR 1/2 スクリーンショットで検証済み（notes/hidpi-verification.md）。ネイティブ版は未検証。
 
 ```bash
 echo '=== 現在の出力と scale ==='
@@ -130,7 +130,7 @@ echo '=== ネイティブ app を scale 変更後に再起動し、文字の鮮�
 echo '=== Web 版は --force-device-scale-factor=2 の Chrome で canvas のボケと DOM proof の vw/vh を確認 ==='
 ```
 
- 現環境は単一出力 HDMI-A-1 2560x1440 / scale 1 のため、DPR 混在構成の
+ 現環境は単一モニタ／既定スケールのため、DPR 混在構成の
  再現には 2 枚目のモニタ接続または KDE 表示設定の scale 変更が必要。
 
 - [x] スクリーンショットと証跡数値の鮮度、性能記述を再測定する（ローカル確認分: 件数 435/90・CI 10 ジョブ・日付を更新。wasm/実機 CDP は最終計測日を明記）（R1-G12, R1-G13）。調査内容は notes/environment-verification.md に記録。性能再測定は実環境・大規模データが必要で未実施。
