@@ -41,7 +41,7 @@ status: verified
 | `./poc-wasm/` | 動く PoC crate（`src/lib.rs`、`Cargo.toml`、`index.html`、`Trunk.toml`） |
 | `./poc-wasm/scripts/cdp_verify.py` | ヘッドレス Chrome を CDP 操作して証拠を取るスクリプト |
 | `./poc-wasm/README.md` | ビルド・配信・検証の手順 |
-| `./notes/assets/wasm-spike-*.png` | スクリーンショット（描画・スクロール・クリック・検索） |
+| スクリーンショット | プライバシー上の理由から削除済み |
 | `./notes/assets/wasm-spike-evidence-*.json` | コンソールログ・DOM・状態フックの証拠 JSON |
 | `./notes/assets/wasm-spike-backend-variants.json` | `?backend=webgl` / `?backend=webgpu` の切り替え証拠 |
 | `./notes/assets/wasm-spike-webgpu-forced-01-initial.png` | 強制 WebGPU 時の描画停止（空白 canvas）の証拠 |

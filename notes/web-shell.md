@@ -284,9 +284,6 @@ $ cd web && trunk build --release
 
 | モード | ファイル |
 |---|---|
-| デモ | `web-shell-01-initial-demo.png` 〜 `web-shell-08-final-demo.png` |
-| ライブ | `web-shell-01-initial-live.png` 〜 `web-shell-08-final-live.png` |
-| エラー時 | `web-shell-01-initial-live-error.png`、`web-shell-09-agent-error-live-error.png` |
 
 各モードの内訳: 01 初期表示 / 02 タイマー更新後 / 03 スクロール後 /
 04 行クリック（詳細パネル）/ 05 絞り込み / 06 CPU ソート / 07 名前ソート / 08 最終。

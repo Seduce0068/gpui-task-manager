@@ -748,13 +748,11 @@
     "ime-03-backspace.png",
     "ime-04-escape-clear.png",
     "ime-05-composing-filter.png",
-    "ime-05-composing.png",
     "ime-06-composing-update.png",
     "ime-07-committed-filter.png",
     "ime-07-committed.png",
     "ime-08-escape-after-commit.png",
     "ime-09-composing-escape.png",
     "ime-10-final.png",
-    "ime-native-01-demo.png"
   ]
 }
